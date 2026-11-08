@@ -1049,6 +1049,7 @@ pub async fn run_serve(
         .route("/session/delete", post(delete_session))
         .route("/session/settle", post(settle_routes::settle_route))
         .route("/session/keep_awake", post(settle_routes::keep_awake_route))
+        .route("/session/cache", get(settle_routes::cache_route))
         .route("/session/unsettle", post(settle_routes::unsettle_route))
         .route("/session/interrupt", post(session_routes::interrupt_session))
         .route("/session/rename", post(rename_session))
@@ -1493,18 +1494,17 @@ async fn get_config(State(d): State<Shared>, Query(a): Query<Auth>) -> Response 
 
 
 fn cache_lapsed(id: &str) -> bool {
-    let Some(row) = crate::store::Store::open_cached(crate::store::default_db_path())
-        .ok()
-        .and_then(|s| s.get_session_row(id).ok().flatten())
-    else {
+    let Some(store) = crate::session::store_for_sessions() else {
         return false;
     };
-    let Some(last) = row.last_active.filter(|t| *t > 0) else {
+    let Some(row) = store.get_session_row(id).ok().flatten() else {
         return false;
     };
-    let idle = crate::settle::idle_secs(chrono::Utc::now().timestamp(), last);
+    let Ok((Some(touched), Some(context))) = store.cache_touch(&row.id) else {
+        return false;
+    };
     let ttl = crate::settle::ttl_for(&crate::settle::profile_cache_ttls(), row.profile.as_deref());
-    crate::settle::cache_state(idle, ttl) == "cold"
+    context > 0 && crate::settle::idle_secs(chrono::Utc::now().timestamp(), touched) >= ttl
 }
 
 #[cfg(test)]
