@@ -1,5 +1,4 @@
 pub mod fs;
-pub mod history;
 pub mod shell_search;
 pub mod web;
 pub mod skills;
@@ -7,7 +6,6 @@ pub mod process;
 pub mod read_only_shell;
 
 pub use fs::*;
-pub use history::HistoryTool;
 pub use shell_search::*;
 pub use web::*;
 pub use skills::*;
@@ -23,7 +21,6 @@ pub fn coding_tools(exa_api_key: Option<String>) -> ToolRegistry {
     registry.insert(ChangeFilesTool);
     registry.insert(ViewImageTool);
     registry.insert(ManageProcessTool);
-    registry.insert(HistoryTool);
     // Skill tools only when the user actually has skills installed — otherwise they
     // are dead weight in every prompt's tool list.
     if !crate::skills::discover().is_empty() {

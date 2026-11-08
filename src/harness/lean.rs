@@ -23,7 +23,7 @@ pub(super) fn handover(
 ) -> String {
     let mut out = String::from(
         "[lean_continuation] This conversation continues from an earlier stretch. Its history is archived, not sent: \
-         use history_search and history_read to bring back anything you need rather than guessing.",
+         bring back what you need with `snippet history search <words>` and `snippet history show --from <id> --to <id>` rather than guessing.",
     );
     let requests: Vec<String> = messages
         .iter()

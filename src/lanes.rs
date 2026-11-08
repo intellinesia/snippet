@@ -995,7 +995,6 @@ pub(crate) fn lane_tool_registry(
     tools.insert(crate::profiles::ListProfiles);
     tools.remove(crate::progress::TOOL_NAME);
     tools.remove("pass_turn");
-    tools.remove("history");
     if read_only {
         // Investigation lane: strip the file-mutation tools so a fan-out of
         // readers can't collide with the main agent's (or each other's) edits.
