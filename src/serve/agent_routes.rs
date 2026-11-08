@@ -47,6 +47,7 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
             let nicknames = d.store.agent_nicknames().unwrap_or_default();
             let profiles = d.store.agent_profiles().unwrap_or_default();
             let context_limits = d.store.agent_context_limits().unwrap_or_default();
+            let mut last_messages = d.store.agent_last_messages().unwrap_or_default();
             let mut grouped: HashMap<String, serde_json::Map<String, serde_json::Value>> =
                 HashMap::new();
             for (agent_id, status, count) in counts {
@@ -73,6 +74,15 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
                         }
                         if let Some(profile) = profiles.get(&agent.id) {
                             object.insert("profile".into(), profile.clone().into());
+                        }
+                        let last = last_messages
+                            .remove(&agent.id)
+                            .or_else(|| d.store.agent_last_message_or_backfill(&agent.id).ok().flatten());
+                        if let Some(last) = last {
+                            object.insert(
+                                "last_message".into(),
+                                serde_json::to_value(last).unwrap_or_default(),
+                            );
                         }
                         object.insert(
                             "max_context_tokens".into(),
@@ -224,11 +234,13 @@ pub(crate) async fn agent_inbox(
         before_id: q.before,
     };
     match d.store.read_inbox(&agent_id, &query, q.limit.clamp(1, 200)) {
-        Ok(entries) => Json(serde_json::json!({
-            "agent_id": agent_id,
-            "entries": entries,
-        }))
-        .into_response(),
+        Ok(entries) => {
+            let mut body = serde_json::json!({ "agent_id": agent_id, "entries": entries });
+            if let Some(last) = d.store.agent_last_message_or_backfill(&agent_id).ok().flatten() {
+                body["last_message"] = serde_json::to_value(last).unwrap_or_default();
+            }
+            Json(body).into_response()
+        }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("read inbox: {error}"),

@@ -13,6 +13,8 @@ pub mod typed;
 mod events;
 pub mod goals;
 pub mod handoffs;
+pub mod last_message;
+pub use last_message::LastMessage;
 pub mod turns;
 pub use turns::SessionMember;
 mod identity;
