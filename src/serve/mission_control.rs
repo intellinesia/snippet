@@ -1416,7 +1416,7 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
                 digest.push(text);
             } else {
                 daemon
-                    .deliver(mission_control::SESSION_ID, LoopInput::UserMessage(text))
+                    .deliver_wake(mission_control::SESSION_ID, LoopInput::UserMessage(text))
                     .await;
             }
             delivered_any = true;

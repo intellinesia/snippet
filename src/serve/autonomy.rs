@@ -222,7 +222,7 @@ pub(super) async fn deliver_to_mission_control(daemon: &Shared, text: String) {
         eprintln!("[autonomy] could not open Mission Control: {error}");
         return;
     }
-    daemon.deliver(SESSION_ID, LoopInput::UserMessage(text)).await;
+    daemon.deliver_wake(SESSION_ID, LoopInput::UserMessage(text)).await;
 }
 
 pub(super) async fn interrupt_mission_control(daemon: &Shared) -> bool {

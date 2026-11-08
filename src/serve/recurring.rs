@@ -209,7 +209,7 @@ async fn report_wake(
                 job.session_id,
             );
             if super::mission_control::open_mission_control(daemon, None).await.is_ok() {
-                daemon.deliver(crate::mission_control::SESSION_ID, LoopInput::UserMessage(text)).await;
+                daemon.deliver_wake(crate::mission_control::SESSION_ID, LoopInput::UserMessage(text)).await;
                 "mission_control".into()
             } else {
                 "mission_control: unavailable".into()
@@ -283,7 +283,7 @@ async fn report_run_to_mission_control(daemon: &Shared, title: &str, session_id:
         return "mission_control: unavailable";
     }
     daemon
-        .deliver(crate::mission_control::SESSION_ID, LoopInput::UserMessage(text))
+        .deliver_wake(crate::mission_control::SESSION_ID, LoopInput::UserMessage(text))
         .await;
     "mission_control"
 }

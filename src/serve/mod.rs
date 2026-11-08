@@ -706,7 +706,18 @@ impl Daemon {
         }
     }
 
+    /// A wake with nobody there to choose: once the cache has lapsed, continue lean.
+    pub(crate) async fn deliver_wake(&self, id: &str, input: LoopInput) {
+        if matches!(input, LoopInput::UserMessage(_)) && cache_lapsed(id) {
+            Box::pin(self.deliver(id, LoopInput::ContinueLean)).await;
+        }
+        Box::pin(self.deliver(id, input)).await;
+    }
+
     pub(crate) async fn deliver(&self, id: &str, input: LoopInput) {
+        if crate::session::is_inbox_session_id(id) && matches!(input, LoopInput::UserMessage(_)) && cache_lapsed(id) {
+            Box::pin(self.deliver(id, LoopInput::ContinueLean)).await;
+        }
         match &input {
             LoopInput::Unqueue(queue_id) | LoopInput::SteerQueued(queue_id) => {
                 self.hide_queued(id, queue_id).await
@@ -1480,6 +1491,21 @@ async fn get_config(State(d): State<Shared>, Query(a): Query<Auth>) -> Response 
     .into_response()
 }
 
+
+fn cache_lapsed(id: &str) -> bool {
+    let Some(row) = crate::store::Store::open_cached(crate::store::default_db_path())
+        .ok()
+        .and_then(|s| s.get_session_row(id).ok().flatten())
+    else {
+        return false;
+    };
+    let Some(last) = row.last_active.filter(|t| *t > 0) else {
+        return false;
+    };
+    let idle = crate::settle::idle_secs(chrono::Utc::now().timestamp(), last);
+    let ttl = crate::settle::ttl_for(&crate::settle::profile_cache_ttls(), row.profile.as_deref());
+    crate::settle::cache_state(idle, ttl) == "cold"
+}
 
 #[cfg(test)]
 mod tests;
