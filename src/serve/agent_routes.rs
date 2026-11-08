@@ -48,6 +48,7 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
             let profiles = d.store.agent_profiles().unwrap_or_default();
             let context_limits = d.store.agent_context_limits().unwrap_or_default();
             let mut last_messages = d.store.agent_last_messages().unwrap_or_default();
+            let desks = d.desk_profiles().await;
             let mut grouped: HashMap<String, serde_json::Map<String, serde_json::Value>> =
                 HashMap::new();
             for (agent_id, status, count) in counts {
@@ -74,6 +75,9 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
                         }
                         if let Some(profile) = profiles.get(&agent.id) {
                             object.insert("profile".into(), profile.clone().into());
+                        }
+                        if let Some(running) = desks.get(&agent.id) {
+                            object.insert("desk_profile".into(), running.clone().into());
                         }
                         let last = last_messages
                             .remove(&agent.id)
@@ -610,7 +614,10 @@ pub(crate) async fn set_agent_profile(
         }
     }
     match d.store.set_agent_profile(&agent_id, profile.as_deref()) {
-        Ok(true) => Json(serde_json::json!({ "id": agent_id, "profile": profile })).into_response(),
+        Ok(true) => {
+            d.follow_agent_profile(&agent_id);
+            Json(serde_json::json!({ "id": agent_id, "profile": profile })).into_response()
+        }
         Ok(false) => (StatusCode::NOT_FOUND, "no such agent").into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, format!("set agent profile: {error}"))
             .into_response(),

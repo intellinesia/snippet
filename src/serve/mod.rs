@@ -102,6 +102,10 @@ pub(crate) struct LiveSession {
     terms: Arc<SessionTerms>,
 }
 
+pub(crate) fn is_agent_desk(id: &str) -> bool {
+    id.starts_with("inbox-") && crate::session::is_inbox_session_id(id)
+}
+
 pub(crate) fn live_from_handle(handle: crate::session::SessionHandle, profile: Option<String>) -> LiveSession {
     let cwd = {
         let from_state = read_session_meta(&handle.state_path)
@@ -459,8 +463,49 @@ impl Daemon {
                     .filter(|t| t.session_id == id)
                     .find_map(|t| self.task_profile(&t))
             })
-            .or_else(|| read_session_profile(sp))
+            // A desk runs on its agent's profile and keeps no pin of its own.
+            .or_else(|| (!is_agent_desk(id)).then(|| read_session_profile(sp)).flatten())
             .or_else(|| self.routed_profile(id))
+    }
+
+    /// Moves a live desk onto its agent's current profile once any turn in
+    /// flight has finished.
+    pub(crate) fn follow_agent_profile(self: &Arc<Self>, agent_id: &str) {
+        let desk = format!("inbox-{agent_id}");
+        let d = self.clone();
+        tokio::spawn(async move {
+            for _ in 0..1800 {
+                let current = match d.sessions.lock().await.get(&desk) {
+                    Some(live) => live.profile.clone(),
+                    None => return,
+                };
+                let Some(target) = d.routed_profile(&desk) else { return };
+                if current.as_deref() == Some(target.as_str()) {
+                    return;
+                }
+                if !recurring::session_busy_for_recurring(&desk) {
+                    match d.run_session_on_profile(&desk, &target, false).await {
+                        Ok(()) => config_routes::notify_models(Some(&desk)),
+                        Err(error) => eprintln!("[agents] desk `{desk}` stayed on its model: {error}"),
+                    }
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+    }
+
+    /// The profile a live desk is running on right now, by agent id.
+    pub(crate) async fn desk_profiles(&self) -> HashMap<String, String> {
+        self.sessions
+            .lock()
+            .await
+            .iter()
+            .filter_map(|(id, live)| {
+                let agent = id.strip_prefix("inbox-")?;
+                Some((agent.to_string(), live.profile.clone()?))
+            })
+            .collect()
     }
 
     /// The profile an agent is configured to work on, when it names one the
