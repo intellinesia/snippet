@@ -480,6 +480,7 @@ pub(crate) fn mission_control_tool_registry(exa_api_key: Option<String>) -> Tool
     let mut tools = ToolRegistry::new();
     tools.insert(crate::builtins::BashTool);
     tools.insert(crate::builtins::ViewImageTool);
+    tools.insert(crate::builtins::HistoryTool);
     // Mission Control may research current docs and issues while routing work.
     if let Some(key) = exa_api_key.filter(|k| !k.trim().is_empty()) {
         tools.insert(crate::builtins::WebSearchTool { api_key: key.clone() });
@@ -523,6 +524,7 @@ pub(crate) fn work_tool_registry(exa_api_key: Option<String>, custom_dir: Option
 /// and web lookups. Nothing that writes files, delegates or reports a task.
 pub(crate) fn coordination_tool_registry(exa_api_key: Option<String>) -> ToolRegistry {
     let mut tools = ToolRegistry::new();
+    tools.insert(crate::builtins::HistoryTool);
     crate::coordination_tools::add_coordination_tools(&mut tools);
     crate::mission_tools::add_coordination_session_tools(&mut tools);
     tools.insert(crate::coordination_tools::DeclineTask);

@@ -539,6 +539,10 @@ impl CodingHarness {
                 }
                 false
             }
+            LoopInput::ContinueLean => {
+                self.continue_lean(state);
+                false
+            }
             LoopInput::Compact => {
                 // Manual compaction is handled directly by the outer interactive loop;
                 // it should not inject a steer or schedule another model turn.

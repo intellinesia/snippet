@@ -597,6 +597,10 @@ impl CodingHarness {
                             self.record_notice(&mut state, event);
                             self.persist(&mut state, &lanes).await?;
                         }
+                        Some(LoopInput::ContinueLean) => {
+                            self.continue_lean(&mut state);
+                            self.persist(&mut state, &lanes).await?;
+                        }
                         Some(LoopInput::Compact) => {
                             self.run_manual_compaction(model, &mut state, &lanes).await?;
                             state.pending_question = None;

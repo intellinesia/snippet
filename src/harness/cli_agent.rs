@@ -1650,6 +1650,19 @@ impl CodingHarness {
                         LoopInput::Compact => {
                             compact_wanted = true;
                         }
+                        LoopInput::ContinueLean => {
+                            if let Some(text) = self.continue_lean(&mut state) {
+                                if let Some(mut p) = process.take() {
+                                    let _ = p.child.start_kill();
+                                }
+                                generation += 1;
+                                session.restart();
+                                session.mark_synced(&state.messages, state.compactions, 0);
+                                after_compaction = Some(text);
+                                last_task_note.clear();
+                            }
+                            self.persist(&mut state, &lanes).await?;
+                        }
                         LoopInput::SpawnLane(spec) => {
                             self.spawn_requested_lane(&mut state, &mut lanes, spec);
                             self.persist(&mut state, &lanes).await?;
