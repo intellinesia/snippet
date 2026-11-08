@@ -220,7 +220,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordination::types::{Agent, AgentKind, AgentRole, AgentStatus};
+    use crate::coordination::types::{Agent, AgentKind, AgentStatus};
     use crate::llm::HarnessMessage;
 
     fn worker(id: &str) -> Agent {
@@ -230,7 +230,6 @@ mod tests {
             handle: id.into(),
             kind: AgentKind::Worker,
             status: AgentStatus::Active,
-            role: AgentRole::Implementer,
             capabilities: vec![],
         }
     }
