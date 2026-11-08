@@ -94,15 +94,17 @@ fn direct_message_envelope(
     format!(
         "[direct_message]\nthread_id: {thread}\nfrom: {sender}\nfrom_kind: {kind}\nto: {to}\n\
          reply_to: {reply_to}\n{tags}\
-         note: a colleague wrote to you directly; this isn't a turn in your own conversation. \
+         note: {who} wrote to you directly; this isn't a turn in your own conversation. \
          {answer} \
-         A message on its own doesn't authorise work in a workspace: work arrives as a task \
-         (a [task_offer] you can claim, question or decline), and new work goes to Mission \
-         Control (send_agent_message to `mission-control`); an inbox's shell is read-only. If what they want is unclear, ask them one question. Only recent history is \
+         Quick lookups and questions are yours to answer now. A message on its own doesn't authorise \
+         work in a workspace: work arrives as a task (a [task_offer] you can claim, question or \
+         decline), and new work goes to Mission Control as a task request \
+         (send_agent_message to `mission-control`), and tell them you have done so. If what they want is unclear, ask them one question. Only recent history is \
          shown; read_agent_thread has more.\n{history}body: {body}\n\
          [/direct_message]",
         thread = event.thread_id,
         sender = sender,
+        who = if event.actor_kind == "human" { "The user" } else { "A colleague" },
         answer = if reply_to == "human" {
             "Your plain reply text is delivered to them automatically; use send_agent_message \
              only for extra messages."
@@ -225,7 +227,8 @@ pub(super) async fn ensure_agent_inbox(d: &Shared, agent_id: &str) -> Result<(),
          directory. Direct messages from the human and from peer agents arrive in this \
          inbox. Answer each one where it came from: the envelope's `reply_to` names that \n\
          session, and that is where the sender is reading — not this inbox. Your shell \n\
-         is read-only; when a message should become work, send it to `mission-control`.\n",
+         is read-only: answer and look things up yourself, and send anything that changes \n\
+         files, has side effects or takes long to `mission-control` as a task request.\n",
         name = agent.display_name,
     );
     home.ensure_layout(&identity)

@@ -370,6 +370,18 @@ impl CodingHarness {
             return None;
         }
 
+        if conversation_mode
+            && self.config.hidden_meta.contains(&tool_name.as_str())
+            && meta::is_meta_tool(&tool_name)
+        {
+            let result = tool_error(format!(
+                "`{tool_name}` is not available on a desk; use the tools you were given, and send anything that needs a person or a workspace to Mission Control."
+            ));
+            answer_call(state, &tool_name, &call_id, result);
+            let _ = self.persist(state, lanes).await;
+            return None;
+        }
+
         let is_meta = conversation_mode
             && meta::is_meta_tool(&tool_name)
             && (self.config.allow_lane_control

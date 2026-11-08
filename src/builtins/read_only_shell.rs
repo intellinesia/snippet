@@ -13,7 +13,7 @@ const READERS: &[&str] = &[
     "ls", "cat", "head", "tail", "wc", "rg", "grep", "find", "tree", "stat", "file", "du", "df",
     "pwd", "echo", "printf", "date", "whoami", "uname", "which", "jq", "sort", "uniq", "cut",
     "tr", "sed", "basename", "dirname", "realpath", "readlink", "cd", "true", "column", "nl",
-    "diff", "git",
+    "diff", "git", "snippet",
 ];
 
 const GIT_READS: &[&str] = &[
@@ -45,10 +45,17 @@ pub fn read_only_verdict(command: &str) -> Result<(), String> {
         }
         let args = &words[1..];
         let refused = match program {
-            "git" => !git_subcommand(args).is_some_and(|sub| GIT_READS.contains(&sub))
-                || args.iter().any(|a| a.starts_with("--output")),
-            "sed" => args.iter().any(|a| a.starts_with("-i") || *a == "--in-place"),
-            "find" => args.iter().any(|a| matches!(*a, "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fprint" | "-fprintf" | "-fls")),
+            "git" => git_refused(args),
+            "sed" => sed_refused(args),
+            "sort" => args.iter().any(|a| {
+                a.starts_with("--output") || a.starts_with("--compress-program") || short_cluster(a, 'o')
+            }),
+            "tree" => args.iter().any(|a| a.starts_with("--output") || short_cluster(a, 'o')),
+            "rg" => args.iter().any(|a| a.starts_with("--pre") || a.starts_with("--hostname-bin")),
+            "file" => args.iter().any(|a| short_cluster(a, 'C')),
+            "uniq" => args.iter().filter(|a| !a.starts_with('-')).count() > 1,
+            "snippet" => args.first() != Some(&"history"),
+            "find" => args.iter().any(|a| matches!(*a, "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fprint" | "-fprint0" | "-fprintf" | "-fls")),
             _ => false,
         };
         if refused {
@@ -58,18 +65,162 @@ pub fn read_only_verdict(command: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn git_subcommand<'a>(args: &[&'a str]) -> Option<&'a str> {
+fn short_cluster(arg: &str, flag: char) -> bool {
+    arg.starts_with('-') && !arg.starts_with("--") && arg.contains(flag)
+}
+
+fn git_refused(args: &[&str]) -> bool {
     let mut it = args.iter();
+    let mut sub = None;
     while let Some(a) = it.next() {
         match *a {
-            "-C" | "-c" | "--git-dir" | "--work-tree" => {
+            "-C" => {
                 it.next();
             }
+            a if a.starts_with("-c")
+                || a.starts_with("--config-env")
+                || a.starts_with("--exec-path")
+                || a.starts_with("--git-dir")
+                || a.starts_with("--work-tree") =>
+            {
+                return true;
+            }
             a if a.starts_with('-') => {}
-            a => return Some(a),
+            a => {
+                sub = Some(a);
+                break;
+            }
         }
     }
-    None
+    let Some(sub) = sub else { return true };
+    !GIT_READS.contains(&sub)
+        || args.iter().any(|a| {
+            a.starts_with("--output")
+                || a.starts_with("--open-files-in-pager")
+                || a.starts_with("--ext-diff")
+                || (sub == "grep" && a.starts_with("-O"))
+        })
+}
+
+fn sed_refused(args: &[&str]) -> bool {
+    let mut scripts: Vec<String> = Vec::new();
+    let mut quoted = String::new();
+    let mut in_quote: Option<char> = None;
+    for a in args {
+        if a.starts_with("--in-place") || a.starts_with("--file") || a.starts_with("--follow") {
+            return true;
+        }
+        if short_cluster(a, 'i') || short_cluster(a, 'f') {
+            return true;
+        }
+    }
+    let mut take_next = false;
+    let mut have_script = false;
+    for a in args {
+        if let Some(q) = in_quote {
+            quoted.push(' ');
+            quoted.push_str(a.trim_end_matches(q));
+            if a.ends_with(q) {
+                scripts.push(std::mem::take(&mut quoted));
+                in_quote = None;
+            }
+            continue;
+        }
+        let is_script = take_next || (!have_script && !a.starts_with('-'));
+        if !is_script {
+            take_next = *a == "-e" || *a == "--expression";
+            if let Some(rest) = a.strip_prefix("--expression=") {
+                scripts.push(rest.trim_matches(['\'', '"']).to_string());
+                have_script = true;
+            }
+            continue;
+        }
+        take_next = false;
+        have_script = true;
+        match a.chars().next() {
+            Some(q @ ('\'' | '"')) => {
+                let body = &a[1..];
+                if body.ends_with(q) && !body.is_empty() {
+                    scripts.push(body[..body.len() - 1].to_string());
+                } else {
+                    quoted = body.to_string();
+                    in_quote = Some(q);
+                }
+            }
+            _ => scripts.push(a.to_string()),
+        }
+    }
+    in_quote.is_some() || scripts.iter().any(|s| !sed_script_is_safe(s))
+}
+
+fn sed_script_is_safe(script: &str) -> bool {
+    let c: Vec<char> = script.chars().collect();
+    let mut i = 0;
+    let skip_delimited = |i: &mut usize, delim: char| -> bool {
+        while *i < c.len() {
+            match c[*i] {
+                '\\' => *i += 2,
+                x if x == delim => {
+                    *i += 1;
+                    return true;
+                }
+                _ => *i += 1,
+            }
+        }
+        false
+    };
+    while i < c.len() {
+        match c[i] {
+            ' ' | '\t' | '\n' | ';' | '{' | '}' | '!' | ',' | '$' | '~' | '+' | '0'..='9' => i += 1,
+            '/' => {
+                i += 1;
+                if !skip_delimited(&mut i, '/') {
+                    return false;
+                }
+                while i < c.len() && matches!(c[i], 'I' | 'M') {
+                    i += 1;
+                }
+            }
+            '\\' => {
+                let Some(&d) = c.get(i + 1) else { return false };
+                i += 2;
+                if !skip_delimited(&mut i, d) {
+                    return false;
+                }
+            }
+            's' => {
+                let Some(&d) = c.get(i + 1) else { return false };
+                i += 2;
+                if !skip_delimited(&mut i, d) || !skip_delimited(&mut i, d) {
+                    return false;
+                }
+                while i < c.len() && !matches!(c[i], ';' | '}' | '\n' | ' ') {
+                    if matches!(c[i], 'w' | 'W' | 'e') {
+                        return false;
+                    }
+                    i += 1;
+                }
+            }
+            'y' => {
+                let Some(&d) = c.get(i + 1) else { return false };
+                i += 2;
+                if !skip_delimited(&mut i, d) || !skip_delimited(&mut i, d) {
+                    return false;
+                }
+            }
+            'p' | 'P' | 'd' | 'D' | 'n' | 'N' | 'g' | 'G' | 'h' | 'H' | 'x' | 'l' | 'q' | 'Q' | '=' => i += 1,
+            'a' | 'i' | 'c' | '#' | 'b' | 't' | 'T' | ':' => {
+                while i < c.len() && c[i] != '\n' && !(matches!(c[i], ';' | '}') && !matches!(c[i - 1], '\\')) {
+                    i += 1;
+                }
+                if i < c.len() && c[i] == '\n' {
+                    i += 1;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 #[async_trait]
@@ -114,6 +265,15 @@ mod tests {
             "git -C /repo status --short && cat README.md",
             "sed -n 1,40p src/lib.rs",
             "LC_ALL=C sort file.txt | uniq -c",
+            "sed -n '/foo/p' a.txt",
+            "sed 's/a b/c/g' a.txt | head",
+            "sed -n -e '2p' a.txt",
+            "sort -u -k1,1 a.txt",
+            "tree -L 2 src",
+            "rg --no-heading -n foo src",
+            "git -C /repo log --oneline -3",
+            "git diff --stat HEAD~1",
+            "snippet history search timeout",
         ] {
             assert!(read_only_verdict(ok).is_ok(), "{ok}");
         }
@@ -128,6 +288,30 @@ mod tests {
             "ls && cargo build",
             "python3 -c 'open(1)'",
             "cat a | tee b",
+            "tee out.txt",
+            "sed -n '1w out.txt' a",
+            "sed -n '/x/W out.txt' a",
+            "sed '1e id' a",
+            "sed 's/a/b/w out.txt' a",
+            "sed 's/a/b/e' a",
+            "sed --in-place s/a/b/ a",
+            "sed -ni s/a/b/p a",
+            "sed -f script.sed a",
+            "sort -o out.txt a",
+            "sort a --output=out.txt",
+            "tree -o out.txt .",
+            "rg --pre ./x foo",
+            "rg --pre-glob '*.x' foo",
+            "git -c core.pager=x log",
+            "git --exec-path=/tmp log",
+            "git --git-dir=/tmp/x log",
+            "git log --output=out.txt",
+            "git branch -D x",
+            "git config user.name x",
+            "git grep -O foo",
+            "uniq in out",
+            "snippet send x",
+            "find . -fprint0 out",
         ] {
             assert!(read_only_verdict(bad).is_err(), "{bad}");
         }

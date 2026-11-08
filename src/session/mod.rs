@@ -103,9 +103,8 @@ pub fn start_inbox_session(
 
 pub(crate) fn minimal_inbox_identity(agent_id: &str) -> String {
     format!(
-        "You are `{agent_id}`'s inbox. Answer messages and look things up with the read-only shell. \
-         Work that changes files goes to Mission Control: send_agent_message to `mission-control` \
-         with what needs doing and where."
+        "You are `{agent_id}`'s inbox. Answer messages and look things up (read-only shell, web) yourself; \
+         anything that changes files, has side effects or takes long goes to Mission Control as a task request."
     )
 }
 
@@ -433,10 +432,10 @@ impl AgentRuntime {
     /// An agent's coordination session: it answers direct messages and dispatches
     /// work, and does not touch a workspace.
     ///
-    /// The tool set is the point of this runtime. It deliberately has NO bash and
-    /// no file tools, because a session that receives messages must never turn one
-    /// into an unrequested edit to someone's repository — that is the boundary a
-    /// conversation is supposed to respect. It also has no lease or handoff tools:
+    /// The tool set is the point of this runtime. Its shell is read-only and it
+    /// has no file tools, because a session that receives messages must never turn
+    /// one into an unrequested edit to someone's repository — that is the boundary
+    /// a conversation is supposed to respect. It also has no lease or handoff tools:
     /// those exist for a session HOLDING a work turn, and a coordinator never does,
     /// so carrying them would be dead weight that invites misuse.
     ///
@@ -455,11 +454,10 @@ impl AgentRuntime {
         // and write attributable.
         .with_agent_id(agent_id.to_string());
 
-        let tools = coordination_tool_registry();
+        let tools = coordination_tool_registry(i.exa_api_key.clone());
 
-        // The environment layer states this session has bash and full filesystem
-        // access. It does not, so the flag both selects the coordination layer and
-        // keeps that claim out of the prompt.
+        // The environment layer claims a full shell and filesystem; the flag keeps
+        // that out of the prompt.
         let mut prompt_ctx = i.prompt_ctx;
         prompt_ctx.coordination = true;
 
@@ -510,14 +508,18 @@ impl AgentRuntime {
     }
 }
 
-/// An inbox's tools: messaging, its board, read-only views and a read-only
-/// shell. Nothing that writes files, delegates or reports a task.
-pub(crate) fn coordination_tool_registry() -> ToolRegistry {
+/// An inbox's tools: messaging, its board, read-only views, a read-only shell
+/// and web lookups. Nothing that writes files, delegates or reports a task.
+pub(crate) fn coordination_tool_registry(exa_api_key: Option<String>) -> ToolRegistry {
     let mut tools = ToolRegistry::new();
     crate::coordination_tools::add_coordination_tools(&mut tools);
     crate::mission_tools::add_coordination_session_tools(&mut tools);
     tools.insert(crate::coordination_tools::DeclineTask);
     tools.insert(crate::builtins::read_only_shell::ReadOnlyBashTool);
+    if let Some(key) = exa_api_key.filter(|k| !k.trim().is_empty()) {
+        tools.insert(crate::builtins::WebSearchTool { api_key: key.clone() });
+        tools.insert(crate::builtins::WebReadTool { api_key: key });
+    }
     for name in [
         "message_mission_control",
         "pass_turn",
