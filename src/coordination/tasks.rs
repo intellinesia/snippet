@@ -1865,7 +1865,6 @@ mod tests {
             handle: "ada".into(),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: crate::coordination::types::AgentRole::Implementer,
             capabilities: vec![],
         })
         .unwrap();
@@ -2003,7 +2002,6 @@ mod tests {
             handle: id.into(),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: crate::coordination::types::AgentRole::Implementer,
             capabilities: vec![],
         })
         .unwrap();
@@ -2176,7 +2174,6 @@ mod tests {
             handle: "ada".into(),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: crate::coordination::types::AgentRole::Implementer,
             capabilities: vec![],
         })
         .unwrap();
@@ -2241,7 +2238,6 @@ mod tests {
             handle: "agent1".into(),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: crate::coordination::types::AgentRole::Implementer,
             capabilities: vec![],
         })
         .unwrap();
@@ -2251,7 +2247,6 @@ mod tests {
             handle: "agent2".into(),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: crate::coordination::types::AgentRole::Reviewer,
             capabilities: vec![],
         })
         .unwrap();

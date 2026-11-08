@@ -358,8 +358,6 @@ pub(crate) struct AgentReq {
     pub(crate) kind: crate::coordination::types::AgentKind,
     #[serde(default = "default_agent_status")]
     pub(crate) status: crate::coordination::types::AgentStatus,
-    #[serde(default = "default_agent_role")]
-    pub(crate) role: crate::coordination::types::AgentRole,
     #[serde(default)]
     pub(crate) capabilities: Vec<String>,
     #[serde(default)]
@@ -372,9 +370,6 @@ fn default_agent_kind() -> crate::coordination::types::AgentKind {
 }
 fn default_agent_status() -> crate::coordination::types::AgentStatus {
     crate::coordination::types::AgentStatus::Active
-}
-fn default_agent_role() -> crate::coordination::types::AgentRole {
-    crate::coordination::types::AgentRole::Implementer
 }
 
 pub(crate) async fn create_agent(
@@ -400,7 +395,6 @@ pub(crate) async fn create_agent(
         handle: req.handle,
         kind: req.kind,
         status: req.status,
-        role: req.role,
         capabilities: req.capabilities,
     };
     let home = match crate::coordination::AgentHome::new(

@@ -1962,10 +1962,16 @@ fn specialist_directory(store: &Store) -> String {
                 && a.kind == crate::coordination::types::AgentKind::Worker
                 && a.id != crate::coordination::SNIPPET_AGENT_ID
         })
-        .map(|a| format!("{} ({})", a.id, format!("{:?}", a.role).to_lowercase()))
+        .map(|a| {
+            if a.capabilities.is_empty() {
+                a.id
+            } else {
+                format!("{} ({})", a.id, a.capabilities.join(", "))
+            }
+        })
         .collect();
     format!(
-        "No specialist or crew is on this task. Specialists available: {}. Seat one if the work needs a review, QA or research role; if no agent covers a role it needs, ask the user whether to create one.",
+        "No specialist or crew is on this task. Specialists available: {}. Seat one if the work needs a review, QA or research role; if no agent covers what it needs, ask the user whether to create one.",
         if list.is_empty() { "none".to_string() } else { list.join(", ") }
     )
 }
@@ -2842,7 +2848,6 @@ impl Tool for SessionState {
 struct RegisterAgentArgs {
     id: String,
     display_name: String,
-    role: crate::coordination::types::AgentRole,
     #[serde(default)]
     capabilities: Vec<String>,
     identity: String,
@@ -2859,18 +2864,17 @@ impl Tool for RegisterAgent {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "register_agent".into(),
-            description: "Create or rebuild a specialized agent: writes its identity.md into its agent home (~/.snippet/agents/<id>/) and registers it in the directory so it can be messaged, assigned and dispatched. The identity is the agent's whole persona and expertise, applied on top of the standard coding runtime in every session it works in. An agent is a lasting skill (a Rust expert, a motion designer), never one task or project. Call it once per build, after researching the role; calling it again with the same id replaces the identity.".into(),
+            description: "Create or rebuild a specialized agent: writes its identity.md into its agent home (~/.snippet/agents/<id>/) and registers it in the directory so it can be messaged, assigned and dispatched. The identity is the agent's whole persona and expertise, applied on top of the standard coding runtime in every session it works in. An agent is a lasting skill (a Rust expert, a motion designer), never one task or project. Call it once per build, after researching the domain; calling it again with the same id replaces the identity.".into(),
             input_schema: schema(
                 json!({
                     "id": {"type": "string", "description": "kebab-case agent id, e.g. rust-pr-reviewer"},
                     "display_name": {"type": "string"},
-                    "role": {"type": "string", "enum": ["implementer", "reviewer", "tester", "researcher", "release"]},
                     "capabilities": {"type": "array", "items": {"type": "string"}, "description": "short tags, e.g. rust, code-review"},
                     "identity": {"type": "string", "description": "identity.md in markdown: who the agent is, its mandate, how it works, what it checks, how it reports"},
                     "profile": {"type": "string", "description": "optional; the inference profile this agent always works on, named exactly as list_profiles returns it. Cheaper profiles for routine work, stronger ones for hard reasoning. Omit to leave the agent's profile unchanged."},
                     "nickname": {"type": "string", "description": "optional; a short name shown instead of the display name. Pass the nickname the user asked for, if any."}
                 }),
-                &["id", "display_name", "role", "identity"],
+                &["id", "display_name", "identity"],
             ),
         }
     }
@@ -2904,7 +2908,6 @@ impl Tool for RegisterAgent {
             handle: args.id.replace('-', "_"),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: args.role,
             capabilities: args.capabilities,
         };
         db(ctx)?
@@ -3335,7 +3338,7 @@ mod tests {
         };
         assert!(inspect_event_row(&event).is_none());
     }
-    use crate::coordination::types::{Agent, AgentKind, AgentRole, AgentStatus};
+    use crate::coordination::types::{Agent, AgentKind, AgentStatus};
 
     fn worker(id: &str) -> Agent {
         Agent {
@@ -3344,7 +3347,6 @@ mod tests {
             handle: id.into(),
             kind: AgentKind::Worker,
             status: AgentStatus::Active,
-            role: AgentRole::Implementer,
             capabilities: vec![],
         }
     }

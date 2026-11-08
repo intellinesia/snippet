@@ -20,24 +20,12 @@ pub enum AgentStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentRole {
-    Implementer,
-    Reviewer,
-    Tester,
-    Researcher,
-    Release,
-    Coordinator,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Agent {
     pub id: String,
     pub display_name: String,
     pub handle: String,
     pub kind: AgentKind,
     pub status: AgentStatus,
-    pub role: AgentRole,
     pub capabilities: Vec<String>,
 }
 

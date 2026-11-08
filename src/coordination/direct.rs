@@ -785,7 +785,7 @@ pub const LOCAL_HUMAN_ID: &str = "local";
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordination::types::{Agent, AgentKind, AgentRole, AgentStatus};
+    use crate::coordination::types::{Agent, AgentKind, AgentStatus};
 
     fn worker(id: &str) -> Agent {
         Agent {
@@ -794,7 +794,6 @@ mod tests {
             handle: id.into(),
             kind: AgentKind::Worker,
             status: AgentStatus::Active,
-            role: AgentRole::Implementer,
             capabilities: vec![],
         }
     }

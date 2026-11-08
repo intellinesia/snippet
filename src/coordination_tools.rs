@@ -288,7 +288,7 @@ impl Tool for ListCoordinationAgents {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "list_coordination_agents".into(),
-            description: "The agent directory: every agent's id, role, status, capabilities, the inference profile it works on (when it has one) and a one-line summary of what it is for. Use it to choose whom to message, invite onto a task (invite_task_agent) or run a lane as (delegate_task agent). Only active agents take new work.".into(),
+            description: "The agent directory: every agent's id, status, capabilities, the inference profile it works on (when it has one) and a one-line summary of what it is for. Use it to choose whom to message, invite onto a task (invite_task_agent) or run a lane as (delegate_task agent). Only active agents take new work.".into(),
             input_schema: schema(json!({}), &[]),
         }
     }
@@ -1671,7 +1671,7 @@ pub(crate) fn stamp_origin(ctx: &ToolContext, mut payload: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordination::types::{Agent, AgentKind, AgentRole, AgentStatus};
+    use crate::coordination::types::{Agent, AgentKind, AgentStatus};
 
     fn context(root: &std::path::Path, session: &str) -> ToolContext {
         ToolContext::new(root)
@@ -1741,7 +1741,6 @@ mod tests {
                 handle: id.into(),
                 kind: AgentKind::Worker,
                 status: AgentStatus::Active,
-                role: AgentRole::Reviewer,
                 capabilities: vec![],
             })
             .unwrap();
@@ -1788,7 +1787,6 @@ mod tests {
             handle: "reviewer".into(),
             kind: AgentKind::Worker,
             status: AgentStatus::Active,
-            role: AgentRole::Reviewer,
             capabilities: vec![],
         })
         .unwrap();
@@ -1900,7 +1898,6 @@ mod tests {
             handle: "web_researcher".into(),
             kind: AgentKind::Worker,
             status: AgentStatus::Active,
-            role: AgentRole::Researcher,
             capabilities: vec!["web_search".into()],
         })
         .unwrap();
@@ -2116,7 +2113,6 @@ mod tests {
             handle: "agent_a".into(),
             kind: AgentKind::Worker,
             status: AgentStatus::Active,
-            role: AgentRole::Implementer,
             capabilities: vec![],
         })
         .unwrap();
@@ -2126,7 +2122,6 @@ mod tests {
             handle: "agent_b".into(),
             kind: AgentKind::Worker,
             status: AgentStatus::Active,
-            role: AgentRole::Reviewer,
             capabilities: vec![],
         })
         .unwrap();

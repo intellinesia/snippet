@@ -220,7 +220,7 @@ async fn build_agent_from_prompt(
         .map(|n| format!("\n\nThe user chose the nickname \"{n}\": pass it as `nickname` to register_agent."))
         .unwrap_or_default();
     let description = format!(
-        "Build a specialized agent from this user brief:\n\n{prompt}{nickname_note}\n\nResearch the role first (web_search / web_read when available): the domain's standards, the checks an expert runs, common failure modes. Choose a short kebab-case id and a display name, then write the identity: who the agent is, its mandate, how it works step by step, what it checks, and how it reports. Create the agent with register_agent, then report this task with report_mission_task: the agent id, a two-line identity summary, and the sources you used."
+        "Build a specialized agent from this user brief:\n\n{prompt}{nickname_note}\n\nResearch the domain first (web_search / web_read when available): the domain's standards, the checks an expert runs, common failure modes. Choose a short kebab-case id and a display name, then write the identity: who the agent is, its mandate, how it works step by step, what it checks, and how it reports. Create the agent with register_agent, then report this task with report_mission_task: the agent id, a two-line identity summary, and the sources you used."
     );
     let task = Task::dispatched_to(
         task_id,
@@ -1263,7 +1263,6 @@ pub fn register_builtin_agents(d: &Shared) {
         handle: "mission-control".into(),
         kind: crate::coordination::types::AgentKind::MissionControl,
         status: crate::coordination::types::AgentStatus::Active,
-        role: crate::coordination::types::AgentRole::Coordinator,
         capabilities: vec![
             "orchestration".into(),
             "agent-directory".into(),
@@ -1276,7 +1275,6 @@ pub fn register_builtin_agents(d: &Shared) {
         handle: "snippet".into(),
         kind: crate::coordination::types::AgentKind::Worker,
         status: crate::coordination::types::AgentStatus::Active,
-        role: crate::coordination::types::AgentRole::Implementer,
         capabilities: vec![
             "coding".into(),
             "bash".into(),

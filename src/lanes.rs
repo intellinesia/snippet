@@ -82,7 +82,7 @@ pub struct LaneRecord {
     /// Investigation lane: file-mutation tools removed. Sticky across follow-ups.
     #[serde(default)]
     pub read_only: bool,
-    /// Specialized agent identity or role name (e.g. 'reviewer', 'researcher').
+    /// Specialized agent identity (e.g. 'rust-pr-reviewer').
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     /// Inference profile name chosen for this lane (omitted when using active model).

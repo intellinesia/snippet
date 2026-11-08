@@ -111,7 +111,6 @@ use super::*;
             handle: format!("handle-{id}"),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: crate::coordination::types::AgentRole::Researcher,
             capabilities: vec!["web_search".into()],
             profile: None,
             nickname: None,
@@ -722,7 +721,6 @@ use super::*;
                 handle: "reviewer".into(),
                 kind: crate::coordination::types::AgentKind::Worker,
                 status: crate::coordination::types::AgentStatus::Paused,
-                role: crate::coordination::types::AgentRole::Reviewer,
                 capabilities: vec![],
             })
             .unwrap();

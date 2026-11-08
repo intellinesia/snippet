@@ -327,7 +327,7 @@ fn delegate_task_tool() -> NativeToolDefinition {
                 },
                 "agent": {
                     "type": "string",
-                    "description": "Optional specialized agent identity or role name for this lane (e.g. 'reviewer', 'researcher', 'security')."
+                    "description": "Optional specialized agent identity for this lane (e.g. 'rust-pr-reviewer')."
                 },
                 "profile": {
                     "type": "string",
@@ -351,7 +351,7 @@ pub struct DelegateBrief {
     pub lane_id: Option<String>,
     /// Strip the lane's file-mutation tools (investigation lanes).
     pub read_only: bool,
-    /// Specialized agent identity or role name.
+    /// Specialized agent identity.
     pub agent: Option<String>,
     /// Optional inference profile name.
     pub profile: Option<String>,
