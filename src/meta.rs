@@ -331,7 +331,7 @@ fn delegate_task_tool() -> NativeToolDefinition {
                 },
                 "profile": {
                     "type": "string",
-                    "description": "Optional inference profile; omit to stay on your model and its prompt cache."
+                    "description": "A name from list_profiles; omitted, the lane runs on your profile."
                 }
             },
             "required": ["description"],

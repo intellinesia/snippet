@@ -58,7 +58,7 @@ pub fn add_mission_control_tools(registry: &mut ToolRegistry) {
     registry.insert(ListSessions);
     registry.insert(InspectSession);
     registry.insert(ListMissionTasks);
-    registry.insert(ListProfiles);
+    registry.insert(crate::profiles::ListProfiles);
     registry.insert(CreateMissionSession);
     registry.insert(CreateMissionTask);
     registry.insert(DeliverToSession);
@@ -1071,52 +1071,6 @@ impl Tool for ViewTaskBoard {
             })
             .collect();
         Ok(ToolResult::success(json!({"tasks": shown})))
-    }
-}
-
-/// The inference profiles a dispatch can name, and which one is the default.
-///
-/// Mission Control has to pick a model when it routes work, and it cannot invent
-/// a profile name: a name the config does not define is silently ignored at
-/// session start, so the task would run on the wrong model with nothing reported.
-/// This is how it learns the real names.
-pub struct ListProfiles;
-#[async_trait]
-impl Tool for ListProfiles {
-    fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition {
-            name: "list_profiles".into(),
-            description: "The inference profiles a task may name with create_mission_task(profile=…), with the active default. Names are exact and an unknown one is rejected, so pick from this list. Leave profile out normally: the assigned agent's own profile (see list_coordination_agents), or else the target session's model, applies.".into(),
-            input_schema: schema(json!({}), &[]),
-        }
-    }
-    async fn execute(&self, _ctx: &ToolContext, _arguments: Value) -> Result<ToolResult, ToolError> {
-        let config = crate::config::SnippetConfig::load(crate::config::default_config_path())
-            .await
-            .map_err(|e| ToolError::msg(format!("read config: {e}")))?;
-        let active = config.active_setup.clone();
-        let profiles: Vec<Value> = config
-            .setups
-            .as_ref()
-            .map(|setups| {
-                setups
-                    .iter()
-                    .map(|(name, cfg)| {
-                        json!({
-                            "name": name,
-                            "model": cfg.model,
-                            "provider": cfg.provider,
-                            "default": active.as_deref() == Some(name.as_str()),
-                            "has_key": !cfg.api_key.trim().is_empty(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(ToolResult::success(json!({
-            "default": active,
-            "profiles": profiles,
-        })))
     }
 }
 

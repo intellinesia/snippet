@@ -420,6 +420,7 @@ impl CodingHarness {
         )
         .with_records(state.lanes.clone())
         .with_parent(self.context.clone())
+        .with_parent_profile(self.config.profile.clone())
     }
 
     /// A running lane wrote to this agent mid-work.

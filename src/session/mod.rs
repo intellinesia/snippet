@@ -290,7 +290,6 @@ struct RuntimeInputs {
     exa_api_key: Option<String>,
     base_model: InferenceProfileConfig,
     setups: Option<std::collections::BTreeMap<String, InferenceProfileConfig>>,
-    delegate: Option<InferenceProfileConfig>,
 }
 
 /// A researched, versioned identity overlaid on the snippet runtime.
@@ -314,26 +313,7 @@ impl AgentRuntime {
             // could address it back.
             .with_agent_id(crate::mission_control::SESSION_ID);
 
-        let mut tools = ToolRegistry::new();
-        tools.insert(crate::builtins::BashTool);
-        tools.insert(crate::builtins::ViewImageTool);
-        // Mission Control may research current docs and issues while routing work.
-        if let Some(key) = i.exa_api_key.clone().filter(|k| !k.trim().is_empty()) {
-            tools.insert(crate::builtins::WebSearchTool { api_key: key.clone() });
-            tools.insert(crate::builtins::WebReadTool { api_key: key });
-        }
-        crate::mission_tools::add_mission_control_tools(&mut tools);
-        crate::coordination_tools::add_coordination_tools(&mut tools);
-        for name in [
-            "message_mission_control",
-            "claim_and_dispatch_task",
-            "pass_turn",
-            "post_coordination_message",
-            "record_coordination_note",
-            "read_agent_inbox",
-        ] {
-            tools.remove(name);
-        }
+        let tools = mission_control_tool_registry(i.exa_api_key.clone());
 
         Ok(Self {
             factory: None,
@@ -366,19 +346,7 @@ impl AgentRuntime {
         if let Some(dir) = custom_dir.as_ref() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let mut tools = coding_tools(i.exa_api_key.clone()).with_custom_dir(custom_dir.clone());
-        crate::mission_tools::add_worker_report_tool(&mut tools);
-        crate::coordination_tools::add_coordination_tools(&mut tools);
-        for name in [
-            "message_mission_control",
-            "read_agent_inbox",
-            "claim_and_dispatch_task",
-            "post_coordination_message",
-        ] {
-            tools.remove(name);
-        }
-        tools.insert(crate::progress::ReportProgress);
-        tools.insert(crate::review_tools::SubmitReview);
+        let tools = work_tool_registry(i.exa_api_key.clone(), custom_dir.clone());
 
         let prompt_ctx = i.prompt_ctx;
         let custom_section = custom_dir.as_deref().map(crate::agent_tools::prompt_section);
@@ -399,7 +367,6 @@ impl AgentRuntime {
 
         let base_model = i.base_model;
         let setups = i.setups;
-        let delegate = i.delegate.unwrap_or_else(|| base_model.clone());
         let parent_session_id = i.durable_id;
         Ok(Self {
             factory: Some(Arc::new(move |profile: Option<&str>, lane_id: Option<String>| {
@@ -418,7 +385,7 @@ impl AgentRuntime {
                         ));
                     }
                 }
-                Ok(delegate.build_model_for_session(session_id))
+                Ok(base_model.build_model_for_session(session_id))
             })),
             context,
             tools,
@@ -508,6 +475,50 @@ impl AgentRuntime {
     }
 }
 
+/// Mission Control's tools: routing and coordination, no file editing.
+pub(crate) fn mission_control_tool_registry(exa_api_key: Option<String>) -> ToolRegistry {
+    let mut tools = ToolRegistry::new();
+    tools.insert(crate::builtins::BashTool);
+    tools.insert(crate::builtins::ViewImageTool);
+    // Mission Control may research current docs and issues while routing work.
+    if let Some(key) = exa_api_key.filter(|k| !k.trim().is_empty()) {
+        tools.insert(crate::builtins::WebSearchTool { api_key: key.clone() });
+        tools.insert(crate::builtins::WebReadTool { api_key: key });
+    }
+    crate::mission_tools::add_mission_control_tools(&mut tools);
+    crate::coordination_tools::add_coordination_tools(&mut tools);
+    for name in [
+        "message_mission_control",
+        "claim_and_dispatch_task",
+        "pass_turn",
+        "post_coordination_message",
+        "record_coordination_note",
+        "read_agent_inbox",
+    ] {
+        tools.remove(name);
+    }
+    tools
+}
+
+/// A work session's tools: coding tools plus report, coordination and review.
+pub(crate) fn work_tool_registry(exa_api_key: Option<String>, custom_dir: Option<PathBuf>) -> ToolRegistry {
+    let mut tools = coding_tools(exa_api_key).with_custom_dir(custom_dir);
+    crate::mission_tools::add_worker_report_tool(&mut tools);
+    crate::coordination_tools::add_coordination_tools(&mut tools);
+    for name in [
+        "message_mission_control",
+        "read_agent_inbox",
+        "claim_and_dispatch_task",
+        "post_coordination_message",
+    ] {
+        tools.remove(name);
+    }
+    tools.insert(crate::progress::ReportProgress);
+    tools.insert(crate::review_tools::SubmitReview);
+    tools.insert(crate::profiles::ListProfiles);
+    tools
+}
+
 /// An inbox's tools: messaging, its board, read-only views, a read-only shell
 /// and web lookups. Nothing that writes files, delegates or reports a task.
 pub(crate) fn coordination_tool_registry(exa_api_key: Option<String>) -> ToolRegistry {
@@ -546,10 +557,6 @@ fn start_session_with_role(
     crate::harness::ensure_snippet_gitignored(&workspace);
     let model_config = config.model.clone();
     let setups = config.setups.clone();
-    let delegate = config
-        .delegate_setup
-        .as_deref()
-        .and_then(|name| config.setups.as_ref()?.get(name).cloned());
     let exa_api_key = config.exa_api_key.clone();
     let manual_approval = config.manual_approval;
     let context_limit = crate::agent_context::limit_for(
@@ -564,6 +571,7 @@ fn start_session_with_role(
     let compact_at_pct = model_config.compact_at_pct;
     let memory_enabled = config.memory_enabled;
     let memory_reflect = config.memory_reflect;
+    let profile = config.active_setup.clone();
     let sp = state_path.clone();
     let stream_out = stream.clone();
 
@@ -594,7 +602,6 @@ fn start_session_with_role(
                         exa_api_key: exa_api_key.clone(),
                 base_model: model_config,
                 setups,
-                delegate,
             },
         )
         .map_err(|e| e.to_string())?;
@@ -611,6 +618,7 @@ fn start_session_with_role(
                 memory_enabled: memory_enabled && runtime.memory,
                 memory_reflect,
                 allow_lane_control: runtime.allow_lane_control,
+                profile,
                 hidden_meta: runtime.hidden_meta,
                 ..HarnessConfig::default()
             },
@@ -678,7 +686,6 @@ pub async fn reflect_stored_session(config: &SnippetConfig, state_path: &Path) -
             exa_api_key: None,
             base_model: model_config,
             setups: None,
-            delegate: None,
         },
     )
     .map_err(|e| e.to_string())?;

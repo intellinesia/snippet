@@ -84,6 +84,8 @@ pub struct HarnessConfig {
     pub lane_approval: Option<crate::lanes::LaneApprovalRoute>,
     pub lane_mailbox: Option<std::sync::Arc<crate::lanes::LaneMailbox>>,
     pub session_title: Option<String>,
+    /// Inference profile this session runs on; lanes without their own inherit it.
+    pub profile: Option<String>,
     pub hidden_meta: &'static [&'static str],
 }
 
@@ -109,6 +111,7 @@ impl Default for HarnessConfig {
             lane_approval: None,
             lane_mailbox: None,
             session_title: None,
+            profile: None,
             hidden_meta: &[],
         }
     }
