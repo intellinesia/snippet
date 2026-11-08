@@ -308,6 +308,7 @@ impl CodingHarness {
                     .load(std::sync::atomic::Ordering::Acquire)
                     > state.events.len();
             let mut active = false;
+            let mut turn_text: Option<String> = None;
             if messages_rewritten {
                 on_busy(|| store.replace_conversation_messages(&id, &state.messages, &now)).await?;
             } else {
@@ -315,6 +316,12 @@ impl CodingHarness {
                     .written_messages
                     .load(std::sync::atomic::Ordering::Acquire);
                 if from < state.messages.len() {
+                    turn_text = state.messages[from..].iter().rev().find_map(|m| match m {
+                        HarnessMessage::Assistant { content, .. } if !content.trim().is_empty() => {
+                            Some(content.clone())
+                        }
+                        _ => None,
+                    });
                     active |= state.messages[from..].iter().any(|m| {
                         matches!(
                             m,
@@ -349,6 +356,12 @@ impl CodingHarness {
             if active {
                 let ts = Utc::now().timestamp();
                 let _ = on_busy(|| store.set_session_last_active(&id, ts)).await;
+            }
+            if let Some(text) = turn_text
+                && let Ok(Some(row)) = store.get_session_row(&id)
+                && let Some(agent_id) = row.agent_id.filter(|a| !a.is_empty())
+            {
+                let _ = store.note_agent_last_message(&agent_id, &text, &Utc::now().to_rfc3339(), "agent");
             }
             Ok::<(), String>(())
         }
