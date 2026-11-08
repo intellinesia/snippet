@@ -592,7 +592,7 @@ impl LaneManager {
     /// resumed from disk, so the lane keeps everything it learned (the analog of
     /// messaging an existing agent instead of spawning a fresh one). Returns the
     /// lane's title.
-    pub fn follow_up(&mut self, lane_id: &str, brief: &str) -> Result<String, String> {
+    pub fn follow_up(&mut self, lane_id: &str, brief: &str, profile: Option<String>) -> Result<String, String> {
         if self.factory.is_none() {
             return Err(
                 "delegate_task is unavailable in this run (no model factory; interactive mode only)."
@@ -628,6 +628,9 @@ impl LaneManager {
         record.summary = None;
         record.report = None;
         record.error = None;
+        if profile.is_some() {
+            record.profile = profile;
+        }
         let (title, read_only, agent, profile) = (
             record.title.clone(),
             record.read_only,
