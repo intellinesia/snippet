@@ -52,6 +52,7 @@ pub(crate) use config_routes::*;
 mod coordination;
 pub use coordination::{COORDINATION_THREAD, queue_coordination_wake};
 mod direct;
+pub(crate) use direct::relay_desk_reply;
 mod autonomy;
 mod fs;
 mod git;
