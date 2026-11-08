@@ -15,8 +15,9 @@ pub(crate) fn session_event_page(
 
 fn turn_page_start(events: &[crate::harness::HarnessEvent]) -> usize {
     const MAX_EVENTS: usize = 160;
-    const MIN_EVENTS: usize = 40;
-    const TURNS: usize = 3;
+    // Wakes count as turns, so a few quiet wakes must not empty the opening view.
+    const MIN_EVENTS: usize = 120;
+    const TURNS: usize = 8;
     let len = events.len();
     let floor = len.saturating_sub(MAX_EVENTS);
     let mut seen = 0;
