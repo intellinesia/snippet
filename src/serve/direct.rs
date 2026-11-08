@@ -94,13 +94,9 @@ fn direct_message_envelope(
     format!(
         "[direct_message]\nthread_id: {thread}\nfrom: {sender}\nfrom_kind: {kind}\nto: {to}\n\
          reply_to: {reply_to}\n{tags}\
-         note: {who} wrote to you directly; this isn't a turn in your own conversation. \
+         note: {who} wrote directly; this is not a turn in your own conversation. \
          {answer} \
-         Quick lookups and questions are yours to answer now. A message on its own doesn't authorise \
-         work in a workspace: work arrives as a task (a [task_offer] you can claim, question or \
-         decline), and new work goes to Mission Control as a task request \
-         (send_agent_message to `mission-control`), and tell them you have done so. If what they want is unclear, ask them one question. Only recent history is \
-         shown; read_agent_thread has more.\n{history}body: {body}\n\
+         Answer quick questions here. Workspace work requires a task: claim a [task_offer], or ask Mission Control to file new work and tell the sender. Ask one question if unclear. Recent history only; use read_agent_thread for more.\n{history}body: {body}\n\
          [/direct_message]",
         thread = event.thread_id,
         sender = sender,
@@ -905,7 +901,8 @@ mod tests {
         assert!(envelope.contains("from: human:local"));
         assert!(envelope.contains("to: agent:a"));
         assert!(envelope.contains("send_agent_message"));
-        assert!(envelope.contains("doesn't authorise work"));
+        assert!(envelope.contains("Workspace work requires a task"));
+        assert!(envelope.contains("plain reply text is delivered to them automatically"));
         assert!(envelope.ends_with("body: please review this\n[/direct_message]"));
     }
 

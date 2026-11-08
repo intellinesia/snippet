@@ -1861,7 +1861,7 @@ fn bind_direct_delivery(
 
 fn direct_brief_envelope(task: &Task, brief: &str, workspace: &str, ledger: &str) -> String {
     format!(
-        "[mission_control_task]\ntask_id: {}\ntitle: {}\nrequested_by: agent mission-control (delivered directly)\nworkspace: {workspace}\nscope:\n{brief}\n{ledger}\n\nThis is yours now: deliver it end to end, verified, in this session. If the scope looks wrong or unclear, say so to Mission Control (send_agent_message to mission-control) before you build. When it's done, blocked or failed, report with report_mission_task (task_id {}): what was done, files changed, how it was verified, anything left open.\n[/mission_control_task]",
+        "[mission_control_task]\ntask_id: {}\ntitle: {}\nrequested_by: agent mission-control (delivered directly)\nworkspace: {workspace}\nscope:\n{brief}\n{ledger}\n\nThis is yours now. If the scope is wrong or unclear, tell Mission Control before building. Report done, blocked or failed with report_mission_task (task_id {}).\n[/mission_control_task]",
         task.id, task.title, task.id
     )
 }
