@@ -1426,15 +1426,15 @@ mod tests {
             defs
         };
         let roles = [
-            ("work", with_meta(crate::session::work_tool_registry(key.clone(), None).definitions(), true), 34_600),
-            ("mission_control", with_meta(crate::session::mission_control_tool_registry(key.clone()).definitions(), true), 63_500),
-            ("desk", crate::session::coordination_tool_registry(key.clone()).definitions(), 14_400),
-            ("lane", lane_tool_registry(key.clone(), None, parent, false).definitions(), 12_500),
+            ("work", with_meta(crate::session::work_tool_registry(key.clone(), None).definitions(), true), 27_850),
+            ("mission_control", with_meta(crate::session::mission_control_tool_registry(key.clone()).definitions(), true), 55_750),
+            ("desk", crate::session::coordination_tool_registry(key.clone()).definitions(), 13_200),
+            ("lane", lane_tool_registry(key.clone(), None, parent, false).definitions(), 9_500),
         ];
         for (role, defs, cap) in roles {
             let sizes = tool_bytes(&defs);
             let total: usize = sizes.iter().map(|s| s.1).sum();
-            let top: Vec<String> = sizes.iter().take(10).map(|(n, b)| format!("{n} {b}")).collect();
+            let top: Vec<String> = sizes.iter().take(15).map(|(n, b)| format!("{n} {b}")).collect();
             println!("{role}: {} tools, {total} bytes; largest: {}", sizes.len(), top.join(", "));
             assert!(total <= cap, "{role} tool definitions are {total} bytes, over {cap}");
         }

@@ -551,7 +551,7 @@ impl Tool for SendAgentMessage {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "send_agent_message".into(),
-            description: "Send a direct message to another agent, or reply where you were asked. When the message you are answering came from a session, reply to `session:<id>` — the exact `reply_to` value from its envelope, copied as written — so the answer lands in the conversation where it was asked. Use `human` only when the message did not name a session. Otherwise address an agent by its agent id (list_coordination_agents shows the directory), or `task:<id>` to reach the session working on that task. It is a conversation, not a command: it never creates a task, starts work, transfers ownership, or authorises a workspace change, so never use it to give a session work: new work goes through Mission Control as a task. Task and status messages belong on a task room instead (post_task_coordination). Optional `kind` and `urgency` type the message; urgent interrupts the recipient's run, so use it sparingly.".into(),
+            description: "Reply to a message or contact an agent. For session-origin messages, copy the exact `reply_to` value (`session:<id>`); use `human` only if no session was named, otherwise an agent id or `task:<id>`. This is conversation only: it cannot create work, transfer ownership or authorise workspace changes. Use Mission Control for tasks and `post_task_coordination` for task updates. `urgent` interrupts; reserve it for blockers or wrong direction.".into(),
             input_schema: schema(
                 json!({
                     "recipient_agent_id":{"type":"string","description":"agent id from list_coordination_agents, `task:<id>`, `session:<id>` or `human`"},
@@ -835,7 +835,7 @@ impl Tool for ReadCoordinationBoard {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "read_coordination_board".into(),
-            description: "Read an agent board: work dispatched, what came back, progress logged and notes kept. Newest first, your own unless you name agent_id, or all to search everyone's. Search with contains; narrow with task_id, workspace (a project, across its worktrees) or kind; group_by gives one row per task or folder; pass next_before_id as before_id for the next page. task_id on its own reads that task's log across everyone on it.".into(),
+            description: "Read your or another agent's board, newest first. Search with `contains`; filter by task_id, workspace or kind, or group by task/folder. Use `before_id` with the returned `next_before_id` to page back. `task_id` alone reads that task's log across all agents.".into(),
             input_schema: schema(
                 json!({
                     "agent_id":{"type":"string","description":"whose board to read, or all for every agent's; defaults to your own"},
@@ -1293,7 +1293,7 @@ impl Tool for PassTurn {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "pass_turn".into(),
-            description: "Pass your turn on a task to another agent: it takes effect at once and wakes them in their own conversation on this task, seating them first if they aren't on it yet. Only the member holding the turn changes files and can pass it. What you write goes in the room for everyone on the task, and it's all the next agent knows of your work, so say what matters. End your own turn after calling this; you stay on the task and hear when someone addresses you.".into(),
+            description: "Hand the task turn to another agent, waking them in their task conversation. Only the turn holder may change files or pass it. Include what they need to continue; end your turn after passing. You remain on the task and can be addressed later.".into(),
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string"},
@@ -1411,7 +1411,7 @@ impl Tool for InspectTask {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "inspect_task".into(),
-            description: "Inspect the full details of a task: its briefing plan and the worker's working plan with each step's status, description, roster of assigned agents with active lease holder, linked blockers, owned paths, and result. Use this whenever you need full visibility and context for a task.".into(),
+            description: "Inspect a task's brief and plan, step statuses, assigned agents and lease holder, blockers, owned paths and result.".into(),
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string", "description": "The task ID to inspect"}
@@ -1470,7 +1470,7 @@ impl Tool for ClaimAndDispatchTask {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "claim_and_dispatch_task".into(),
-            description: "Take on a task offered to you: it starts in its target session under your identity within seconds, and from then on it's yours to deliver and report. Pass `profile` only when the work clearly needs another model; leaving it out keeps the session's model and its prompt cache. Finished or already-running work is refused.".into(),
+            description: "Claim an offered task to start it in its target session under your identity. Pass `profile` only to move it to another model; otherwise the session keeps its model and prompt cache. Finished or running tasks are refused.".into(),
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string", "description": "The task ID to claim"},

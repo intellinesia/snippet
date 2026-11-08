@@ -191,7 +191,7 @@ impl Tool for ReportProgress {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: TOOL_NAME.into(),
-            description: "Log what you did and why to your agent board, against this task and folder. It wakes no one, so call it alongside your other tool calls after an important event: a finding, an action done, a decision. Your desk, the next agent on the task and the user read it, and you can read it back with read_coordination_board. A question or blocker doesn't belong here: use send_agent_message for another agent, post_task_coordination for the task's room, ask_user for the user.".into(),
+            description: "Log important findings, actions or decisions to your agent board. It wakes no one. Use `send_agent_message` for another agent, `post_task_coordination` for task-room messages, and `ask_user` for user questions.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

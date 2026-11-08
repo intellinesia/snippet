@@ -36,16 +36,16 @@ impl Tool for BashTool {
         NativeToolDefinition {
             name: "bash".to_string(),
             description:
-                "Run a shell command in the workspace. Keep output narrow and deterministic. Give each command a short `label` saying what it's for. Use max_lines or max_bytes to limit output. Set background=true for long-lived processes (dev servers, watchers): it returns immediately, redirects output to a log file, and tracks the process in the live background-process list — inspect logs or terminate it using `manage_process`. For an interactive app you drive programmatically (a browser, a REPL, an emulator), work in steps rather than one big script: start it once with background=true, then drive it with small follow-up calls (browser via its remote-debugging port, REPL via a fifo stdin), reading the new output between steps, and terminate it via `manage_process` when done."
+                "Run shell commands in the workspace. Limit output with `max_lines` or `max_bytes`. Use `background=true` for long-lived processes, then manage them with `manage_process`. Drive interactive apps with follow-up calls."
                     .to_string(),
             input_schema: object_schema(
                 json!({
-                    "command": {"type": "string", "description": "The exact shell command line string to execute."},
-                    "label": {"type": "string", "description": "A concise description of what this command does (typically under 10 words, e.g. 'Run test suite', 'Check git status', 'Install dependencies', 'Build backend'). Required."},
-                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 1800, "description": "Seconds to wait (default 120). A command still running then is moved to the background, not stopped."},
-                    "max_lines": {"type": "integer", "minimum": 1, "description": "Limit stdout/stderr output to this many lines. If omitted, uses max_bytes."},
-                    "max_bytes": {"type": "integer", "minimum": 1, "default": 20000, "description": "Hard limit on output size in bytes."},
-                    "background": {"type": "boolean", "default": false, "description": "Run detached and return immediately; for servers/watchers that should keep running. Output goes to a log file; the process shows up in the background-process list."}
+                    "command": {"type": "string"},
+                    "label": {"type": "string", "description": "Command label."},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 1800, "description": "Seconds to wait; timed-out commands continue in background."},
+                    "max_lines": {"type": "integer", "minimum": 1, "description": "Maximum output lines."},
+                    "max_bytes": {"type": "integer", "minimum": 1, "default": 20000, "description": "Maximum output bytes."},
+                    "background": {"type": "boolean", "default": false, "description": "Run detached."}
                 }),
                 &["command", "label"],
             ),

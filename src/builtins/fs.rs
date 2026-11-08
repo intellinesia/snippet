@@ -209,25 +209,7 @@ impl Tool for ChangeFilesTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "change_files".to_string(),
-            description: "Create, edit, delete or move text files. This is how you change source \
-                and other text files; read and search them with bash. Directories, binary files and \
-                generated output (build folders, caches, node_modules) are handled with bash \
-                (`rm -rf`, `cargo clean`, `git clean`). Pass a list of changes; they are applied \
-                in order and all-or-nothing: if any change fails, no file is touched and the error \
-                names the failing change.\n\n\
-                Actions:\n\
-                - replace: swap `find` for `with` in an existing file. `find` must be copied \
-                exactly from the current file (whitespace differences are tolerated) and must match \
-                exactly once; include a neighbouring line to make it unique, or set \"all\": true to \
-                replace every match. Keep `find` small: just the lines you change plus enough to be \
-                unique. Several replaces in the same file are fine; each sees the result of the ones \
-                before it.\n\
-                - create: write a new file with `content` (parent folders are created). Fails if the \
-                file exists unless \"overwrite\": true; prefer replace for edits.\n\
-                - delete: remove a file.\n\
-                - move: rename `path` to `to`.\n\n\
-                The result shows the changed lines with their line numbers, so there is no need to \
-                re-read a file just to check an edit."
+            description: "Edit text files with an atomic batch; any failure leaves all files untouched. Use bash for reading, searching, directories, binaries and generated output. `replace` matches exact text once unless `all`; include context if needed. Each replacement sees earlier edits. `create` makes parent folders; `overwrite` permits an existing path. Prefer replace for edits. `delete` removes; `move` renames. Results show the changed lines, so no re-read is needed."
                 .to_string(),
             input_schema: object_schema(
                 json!({

@@ -82,30 +82,16 @@ fn set_session_title_tool() -> NativeToolDefinition {
 fn present_file_tool() -> NativeToolDefinition {
     NativeToolDefinition {
         name: "present_file".to_string(),
-        description: "Hand the user a file or show them an artifact. Sending is the default: a \
-            file they'll open or take away (an export, a render, a patch) appears as one line in the \
-            conversation, and several in a turn are grouped. An artifact is for one deliverable they'll \
-            look at and you'll iterate on (a report, a dashboard, a prototype, a diagram): give it a \
-            `title` and it opens in a viewer that renders HTML, markdown, images and CSV; present it \
-            again with the `artifact_id` you got back to add a version instead of making a new one. \
-            `display` chooses how an artifact sits in the conversation: `inline` renders it in full as \
-            part of the chat, with no frame or title, at its natural height, and suits anything that fits \
-            in a reasonable scroll of two or three screens or a few more; `card` keeps it a row the user \
-            opens, for what would be work to scroll past (a long report, a multi-view app). Pick whichever \
-            reads best in the conversation. Markdown, CSV and images are inline by default; HTML is a card unless \
-            you ask for inline. \
-            Write HTML artifacts as self-contained pages (inline CSS and JS, libraries from cdnjs or \
-            jsdelivr). For a batch of files, write them into one folder and present the folder: it \
-            becomes a single collection. The path must exist. Presenting doesn't end your turn."
+        description: "Present a file to the user. Sending is the default; a titled artifact is for a deliverable to view and iterate on. Re-present with its `artifact_id` to add a version. Markdown, CSV and images are inline by default; HTML is a card. HTML artifacts must be self-contained (inline CSS/JS; libraries from cdnjs or jsdelivr). Present a folder to send a collection. Presenting does not end your turn."
             .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "The file or folder to present, workspace-relative or absolute."},
-                "caption": {"type": "string", "description": "Optional one-line caption shown with it."},
-                "title": {"type": "string", "description": "Makes it an artifact with this title."},
-                "artifact_id": {"type": "string", "description": "Adds a version to this existing artifact."},
-                "display": {"type": "string", "enum": ["inline", "card"], "description": "For artifacts: inline renders it in full as part of the conversation, card keeps it a row to open. Defaults by kind."}
+                "path": {"type": "string", "description": "Workspace-relative or absolute path."},
+                "caption": {"type": "string", "description": "One-line caption."},
+                "title": {"type": "string", "description": "Artifact title."},
+                "artifact_id": {"type": "string", "description": "Existing artifact id to version."},
+                "display": {"type": "string", "enum": ["inline", "card"], "description": "Artifact display style; defaults by kind."}
             },
             "required": ["path"]
         }),
@@ -115,7 +101,7 @@ fn present_file_tool() -> NativeToolDefinition {
 fn monitor_tool() -> NativeToolDefinition {
     NativeToolDefinition {
         name: "monitor".to_string(),
-        description: "Watch a file and be woken with the text appended to it: how you wait on output you don't control (a build or test log, a long process's log). Register the watch, then end your turn; each matching append arrives as a [file_watch] message. Always set a `filter` regex for the lines you need (failures and completion), since every wake costs a model turn; best is a sentinel you append yourself, e.g. `<cmd>; echo \"__DONE__ exit=$?\" >> build.log` with filter `__DONE__`. Remove the watch when it has served its purpose. Actions: add (default), remove, list."
+        description: "Watch a file for appended text. Add the watch, then end your turn; matches arrive as [file_watch]. Set a regex filter, ideally a completion sentinel, and remove the watch when done."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -123,23 +109,23 @@ fn monitor_tool() -> NativeToolDefinition {
                 "action": {
                     "type": "string",
                     "enum": ["add", "remove", "list"],
-                    "description": "add registers a watch (default); remove deletes one (by watch_id, path, or label); list shows active watches."
+                    "description": "remove selects by watch_id, path or label."
                 },
                 "path": {
                     "type": "string",
-                    "description": "File to watch (absolute, or relative to the workspace). May not exist yet — the watch fires once it's created and written."
+                    "description": "Absolute or workspace-relative path; may be created later."
                 },
                 "label": {
                     "type": "string",
-                    "description": "A short, specific subject YOU choose for this watch — e.g. 'watch the build log'. This is how it's shown to the user; always refer to it by this subject."
+                    "description": "Short subject shown to the user."
                 },
                 "filter": {
                     "type": "string",
-                    "description": "Regex: wake only when the appended text matches, ideally your own completion sentinel."
+                    "description": "Regex for appended text, preferably a completion sentinel."
                 },
                 "watch_id": {
                     "type": "string",
-                    "description": "For action:\"remove\" — the id from the add result or the [file_watch] follow_up_id."
+                    "description": "Id from add or [file_watch]."
                 }
             },
             "required": []
@@ -238,7 +224,7 @@ fn update_plan_tool() -> NativeToolDefinition {
 fn ask_user_tool() -> NativeToolDefinition {
     NativeToolDefinition {
         name: "ask_user".to_string(),
-        description: "Ask the user something: a clarification, a choice, a confirmation or a missing fact. A question asked here pauses the turn and reaches the user properly, which a plain-text question doesn't; ask once context, tools or a sensible default can't settle it. It ends your turn until they answer. Pick each question's `answer_kind.kind` by the shape of the answer: free_text, single_choice or multi_choice (with `choices`: a short `label`, a one-line `description`, `recommended: true` on your pick), yes_no, or confirm (a gate before an irreversible action). Give each question a one- or two-word `header` when you ask several."
+        description: "Ask only when context, tools and sensible defaults cannot settle it. This pauses your turn until answered. Use `confirm` before irreversible actions. For multiple questions, give each a short `header`; label and describe choices, marking your pick `recommended`."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -263,7 +249,7 @@ fn ask_user_tool() -> NativeToolDefinition {
                                     },
                                     "choices": {
                                         "type": "array",
-                                        "description": "Required for single_choice and multi_choice, most likely first.",
+                                        "description": "Options for single_choice or multi_choice, most likely first.",
                                         "items": {
                                             "type": "object",
                                             "properties": {
@@ -298,7 +284,7 @@ fn ask_user_tool() -> NativeToolDefinition {
 fn delegate_task_tool() -> NativeToolDefinition {
     NativeToolDefinition {
         name: "delegate_task".to_string(),
-        description: "Hand a self-contained piece of work to a background lane: a fresh sub-agent that runs in parallel and reports back with file:line evidence. Use it to fan out independent areas or a long investigation while keeping your own context lean. The brief names the scope and the concrete deliverable. Carry on with your own share of the work meanwhile; when only waiting is left, end your turn, and each report wakes you. Your final answer waits for the lanes it depends on. Pass `lane_id` to talk to a lane you started: a running lane gets your description as a message (an answer to its question, a change of plan), and a finished one picks up again as a follow-up with its context intact. Set access `read_only` for investigation and review (its file-editing tools are removed)."
+        description: "Delegate independent work to a background lane; its report includes file:line evidence. State scope and a concrete deliverable. Continue your work in parallel; end your turn when only waiting remains. Use `lane_id` to message a running lane or continue a finished one. Set `read_only` for investigation or review."
             .to_string(),
         input_schema: json!({
             "type": "object",
