@@ -764,6 +764,8 @@ pub struct SessionInfo {
     pub idle_secs: i64,
     /// `warm` while the provider prompt cache is assumed alive, else `cold`.
     pub cache: &'static str,
+    /// How long this session's prompt cache lasts idle, in seconds.
+    pub cache_ttl_secs: i64,
     /// The task this session is working on or seated in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
@@ -1020,6 +1022,7 @@ pub fn all_device_sessions() -> Vec<SessionInfo> {
                     crate::settle::idle_secs(now, row.last_active.unwrap_or(0)),
                     crate::settle::ttl_for(&ttls, row.profile.as_deref()),
                 ),
+                cache_ttl_secs: crate::settle::ttl_for(&ttls, row.profile.as_deref()),
                 task_id,
                 parent_session_id,
                 members,
@@ -1799,6 +1802,7 @@ pub fn create_blank_session_in(
         running_since: None,
         idle_secs: 0,
         cache: "warm",
+        cache_ttl_secs: crate::settle::COLD_AFTER_SECS,
         task_id: None,
         parent_session_id: None,
         members: None,
