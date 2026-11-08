@@ -193,12 +193,43 @@ pub fn specialized_coordination_prompt(context: SpecializedAgentPromptContext<'_
 
 #[cfg(test)]
 mod tests {
-    use super::MISSION_CONTROL_LAYER;
+    use super::{
+        CODING_AGENT_LAYER, CONVERSATION_AGENT_LAYER, COORDINATION_LAYER, ECOSYSTEM_LAYER,
+        MISSION_CONTROL_LAYER, TASK_LAYER,
+    };
 
     #[test]
     fn mission_control_layer_stays_within_budget() {
-        // Mission Control re-reads this on every wake; grow it only by cutting elsewhere.
-        assert!(MISSION_CONTROL_LAYER.len() <= 41_000, "layer is {} bytes", MISSION_CONTROL_LAYER.len());
+        assert_layer_budget("mission_control_layer", MISSION_CONTROL_LAYER, 34_607);
+    }
+
+    fn assert_layer_budget(name: &str, layer: &str, budget: usize) {
+        assert!(layer.len() <= budget, "{name} is {} bytes, budget {budget}", layer.len());
+    }
+
+    #[test]
+    fn prompt_layers_stay_within_budgets() {
+        for (name, layer, budget) in [
+            ("coding_agent_layer", CODING_AGENT_LAYER, 9_850),
+            ("mission_control_layer", MISSION_CONTROL_LAYER, 35_650),
+            ("task_layer", TASK_LAYER, 5_380),
+            ("ecosystem_layer", ECOSYSTEM_LAYER, 3_915),
+            ("coordination_layer", COORDINATION_LAYER, 4_105),
+            ("conversation_agent_layer", CONVERSATION_AGENT_LAYER, 1_990),
+        ] {
+            assert_layer_budget(name, layer, budget);
+        }
+    }
+
+    #[test]
+    fn coordination_layer_keeps_desk_contracts() {
+        for guard in [
+            "What you do here, and what becomes a task",
+            "changing files or repositories",
+            "post_task_coordination",
+        ] {
+            assert!(COORDINATION_LAYER.contains(guard), "missing: {guard}");
+        }
     }
 
     #[test]

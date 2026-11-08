@@ -41,7 +41,7 @@ pub(super) const SUMMARY_SECTIONS: &[(&str, &str, bool)] = &[
     ),
 ];
 
-pub(super) const REFLECTION_INSTRUCTION: &str = r#"[reflection] This request is finished. Before the next one, curate your durable memory from this conversation. Do not call any tools and do not continue the work: reply with only one JSON object, {"changes": [...]}, and nothing else. Send {"changes": []} when nothing durable came out of it.
+pub(super) const REFLECTION_INSTRUCTION: &str = r#"[reflection] This request is finished. Before the next one, curate your durable memory from this conversation. Do not call any tools and do not continue the work: reply with only one JSON object, {"changes": [...]}, and nothing else. Send {"changes": []} when nothing durable came out of it. If this session left things it created that are no longer needed (worktrees, branches, processes, files), add a project entry listing them, expiring in a week, so the next session removes them.
 
 Each change: {"scope": "global|project|agent", "file": "MEMORY.md or a topic path such as build or architecture/harness", "op": "add|replace|remove", "entry": "one-line entry (add, replace)", "match": "text in exactly one existing entry of that file (replace, remove)", "expires": "optional YYYY-MM-DD for something true only for a while"}.
 

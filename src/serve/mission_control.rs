@@ -779,7 +779,7 @@ fn task_offer_body(task: &Task) -> String {
         task.owned_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
     };
     format!(
-        "[task_offer]\ntask_id: {}\ntitle: {}\ntarget_session: {}\nhandoff: {:?}\nowned_paths: {owned}\nbriefing:\n{}\n[/task_offer]\nMission Control is offering you this task. It starts only when you claim it: review it, then claim it with claim_and_dispatch_task (task_id above), ask Mission Control first with send_agent_message if something is unclear, or decline it with decline_task and your reason.",
+        "[task_offer]\ntask_id: {}\ntitle: {}\ntarget_session: {}\nhandoff: {:?}\nowned_paths: {owned}\nbriefing:\n{}\n[/task_offer]\nOffer only: review, then claim with claim_and_dispatch_task, ask Mission Control if unclear, or decline with a reason.",
         task.id,
         task.title,
         task.session_id,
