@@ -25,8 +25,41 @@ pub fn idle_secs(now: i64, last_active: i64) -> i64 {
     (now - last_active).max(0)
 }
 
-pub fn cache_state(idle: i64) -> &'static str {
-    if idle < COLD_AFTER_SECS { "warm" } else { "cold" }
+pub fn cache_state(idle: i64, ttl: i64) -> &'static str {
+    if idle < ttl { "warm" } else { "cold" }
+}
+
+/// How long a provider keeps an idle prompt cache, as far as it is known.
+pub fn cache_ttl_secs(provider: &str, one_hour: bool) -> i64 {
+    match provider {
+        "anthropic" | "anthropic-compatible" if one_hour => 3600,
+        "gemini" => 1800,
+        "openai" | "chatgpt" | "xai" | "grok" | "openrouter" | "openai-compatible" => 600,
+        _ => 300,
+    }
+}
+
+/// Cache lifetime per profile name, with `""` for sessions on the default profile.
+pub fn profile_cache_ttls() -> std::collections::HashMap<String, i64> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(raw) = std::fs::read_to_string(crate::config::default_config_path()) else {
+        return out;
+    };
+    let Ok(config) = toml::from_str::<crate::config::SnippetConfig>(&raw) else {
+        return out;
+    };
+    for (name, p) in config.setups.iter().flatten() {
+        let one_hour = p.cache_prompt && p.cache_ttl.as_deref().map(str::trim) == Some("1h");
+        out.insert(name.clone(), cache_ttl_secs(&p.provider, one_hour));
+    }
+    if let Some(default) = config.active_setup.as_ref().and_then(|n| out.get(n).copied()) {
+        out.insert(String::new(), default);
+    }
+    out
+}
+
+pub fn ttl_for(ttls: &std::collections::HashMap<String, i64>, profile: Option<&str>) -> i64 {
+    ttls.get(profile.unwrap_or("")).or_else(|| ttls.get("")).copied().unwrap_or(COLD_AFTER_SECS)
 }
 
 /// What decides whether a session may be settled.
@@ -112,9 +145,12 @@ mod tests {
 
     #[test]
     fn cache_flag_boundary() {
-        assert_eq!(cache_state(0), "warm");
-        assert_eq!(cache_state(COLD_AFTER_SECS - 1), "warm");
-        assert_eq!(cache_state(COLD_AFTER_SECS), "cold");
+        assert_eq!(cache_state(0, 300), "warm");
+        assert_eq!(cache_state(300, 300), "cold");
+        assert_eq!(cache_ttl_secs("anthropic", true), 3600);
+        assert_eq!(cache_ttl_secs("claude-code", false), 300);
+        assert_eq!(cache_state(COLD_AFTER_SECS - 1, COLD_AFTER_SECS), "warm");
+        assert_eq!(cache_state(COLD_AFTER_SECS, COLD_AFTER_SECS), "cold");
         assert_eq!(idle_secs(10, 50), 0);
         assert_eq!(idle_secs(100, 40), 60);
     }

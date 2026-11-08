@@ -728,6 +728,8 @@ pub enum LoopInput {
     Answer(String),
     /// Request a manual history compaction pass.
     Compact,
+    /// Archive the history and continue from a handover (the cache has lapsed).
+    ContinueLean,
     /// Approve / deny the currently pending mutating tool call (manual mode).
     Approve,
     /// Approve the pending call and switch to Auto for the rest of the run.
@@ -935,6 +937,7 @@ mod compactor;
 mod dispatch;
 mod events;
 mod guards;
+mod lean;
 mod live_context;
 mod memory_reflection;
 mod meta_tools;

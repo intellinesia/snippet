@@ -1588,7 +1588,7 @@ async fn create_task(
                 crate::session::wake_settled(&session_id);
                 note.push_str(" The target session was settled; it has been woken because it is being addressed.");
             }
-            if crate::settle::cache_state(idle) == "cold" {
+            if crate::settle::cache_state(idle, crate::settle::ttl_for(&crate::settle::profile_cache_ttls(), row.profile.as_deref())) == "cold" {
                 note.push_str(&format!(
                     " Advisory: the target session was idle {} min, so its prompt cache is cold and the next turn re-reads its whole history at full price; a fresh session (create_mission_session, handoff_mode fresh) pointed at this one's saved memory may be cheaper.",
                     idle / 60

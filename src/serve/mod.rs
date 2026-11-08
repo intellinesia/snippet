@@ -706,7 +706,18 @@ impl Daemon {
         }
     }
 
+    /// A wake with nobody there to choose: once the cache has lapsed, continue lean.
+    pub(crate) async fn deliver_wake(&self, id: &str, input: LoopInput) {
+        if matches!(input, LoopInput::UserMessage(_)) && cache_lapsed(id) {
+            Box::pin(self.deliver(id, LoopInput::ContinueLean)).await;
+        }
+        Box::pin(self.deliver(id, input)).await;
+    }
+
     pub(crate) async fn deliver(&self, id: &str, input: LoopInput) {
+        if crate::session::is_inbox_session_id(id) && matches!(input, LoopInput::UserMessage(_)) && cache_lapsed(id) {
+            Box::pin(self.deliver(id, LoopInput::ContinueLean)).await;
+        }
         match &input {
             LoopInput::Unqueue(queue_id) | LoopInput::SteerQueued(queue_id) => {
                 self.hide_queued(id, queue_id).await
@@ -1038,6 +1049,7 @@ pub async fn run_serve(
         .route("/session/delete", post(delete_session))
         .route("/session/settle", post(settle_routes::settle_route))
         .route("/session/keep_awake", post(settle_routes::keep_awake_route))
+        .route("/session/cache", get(settle_routes::cache_route))
         .route("/session/unsettle", post(settle_routes::unsettle_route))
         .route("/session/interrupt", post(session_routes::interrupt_session))
         .route("/session/rename", post(rename_session))
@@ -1480,6 +1492,20 @@ async fn get_config(State(d): State<Shared>, Query(a): Query<Auth>) -> Response 
     .into_response()
 }
 
+
+fn cache_lapsed(id: &str) -> bool {
+    let Some(store) = crate::session::store_for_sessions() else {
+        return false;
+    };
+    let Some(row) = store.get_session_row(id).ok().flatten() else {
+        return false;
+    };
+    let Ok((Some(touched), Some(context))) = store.cache_touch(&row.id) else {
+        return false;
+    };
+    let ttl = crate::settle::ttl_for(&crate::settle::profile_cache_ttls(), row.profile.as_deref());
+    context > 0 && crate::settle::idle_secs(chrono::Utc::now().timestamp(), touched) >= ttl
+}
 
 #[cfg(test)]
 mod tests;

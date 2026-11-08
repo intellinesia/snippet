@@ -277,6 +277,39 @@ pub(crate) async fn keep_awake_route(
     }
 }
 
+#[derive(Deserialize)]
+pub(crate) struct CacheQuery {
+    id: String,
+}
+
+// GET /session/cache?id= — whether the next turn would re-read the history uncached.
+pub(crate) async fn cache_route(
+    State(d): State<Shared>,
+    Query(a): Query<Auth>,
+    Query(q): Query<CacheQuery>,
+) -> Response {
+    if !d.authed(&a.token) {
+        return unauthorized();
+    }
+    let Some(store) = crate::session::store_for_sessions() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "no store").into_response();
+    };
+    let Some(row) = store.get_session_row(&q.id).ok().flatten() else {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    };
+    let (touched, context) = store.cache_touch(&row.id).unwrap_or((None, None));
+    let ttl = ttl_for(&profile_cache_ttls(), row.profile.as_deref());
+    let idle = touched.map(|t| idle_secs(now(), t));
+    let cold = idle.is_some_and(|i| i >= ttl) && context.unwrap_or(0) > 0;
+    Json(serde_json::json!({
+        "cold": cold,
+        "idle_secs": idle,
+        "cache_ttl_secs": ttl,
+        "resume_tokens": context,
+    }))
+    .into_response()
+}
+
 pub(crate) async fn settle_loop(d: Shared) {
     loop {
         tokio::time::sleep(Duration::from_secs(SWEEP_EVERY_SECS)).await;
