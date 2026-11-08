@@ -1405,6 +1405,41 @@ fn summarize_lane_outcome(outcome: &crate::harness::HarnessOutcome) -> String {
 
 #[cfg(test)]
 mod tests {
+    fn tool_bytes(defs: &[crate::llm::NativeToolDefinition]) -> Vec<(String, usize)> {
+        let mut sizes: Vec<(String, usize)> = defs
+            .iter()
+            .map(|d| (d.name.clone(), d.name.len() + d.description.len() + d.input_schema.to_string().len()))
+            .collect();
+        sizes.sort_by(|a, b| b.1.cmp(&a.1));
+        sizes
+    }
+
+    /// Bytes every request re-sends for tool definitions, per role. Bounds sit just
+    /// above today's sizes; lower them as descriptions get tighter.
+    #[test]
+    fn tool_definition_budget_per_role() {
+        let key = Some("k".to_string());
+        let (progress_tx, _rx) = mpsc::unbounded_channel();
+        let parent = MessageParent { lane_id: "lane-1".into(), progress_tx, mailbox: Arc::new(LaneMailbox::default()) };
+        let with_meta = |mut defs: Vec<crate::llm::NativeToolDefinition>, lanes: bool| {
+            defs.extend(crate::meta::conversation_meta_definitions_for(false, lanes));
+            defs
+        };
+        let roles = [
+            ("work", with_meta(crate::session::work_tool_registry(key.clone(), None).definitions(), true), 34_600),
+            ("mission_control", with_meta(crate::session::mission_control_tool_registry(key.clone()).definitions(), true), 63_500),
+            ("desk", crate::session::coordination_tool_registry(key.clone()).definitions(), 14_400),
+            ("lane", lane_tool_registry(key.clone(), None, parent, false).definitions(), 12_500),
+        ];
+        for (role, defs, cap) in roles {
+            let sizes = tool_bytes(&defs);
+            let total: usize = sizes.iter().map(|s| s.1).sum();
+            let top: Vec<String> = sizes.iter().take(10).map(|(n, b)| format!("{n} {b}")).collect();
+            println!("{role}: {} tools, {total} bytes; largest: {}", sizes.len(), top.join(", "));
+            assert!(total <= cap, "{role} tool definitions are {total} bytes, over {cap}");
+        }
+    }
+
     #[test]
     fn lane_route_order() {
         let chain = vec!["top".to_string(), "mid".to_string(), "low".to_string()];
