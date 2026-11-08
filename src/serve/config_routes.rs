@@ -521,6 +521,13 @@ pub(crate) async fn set_session_model(
     if !d.authed(&a.token) {
         return unauthorized();
     }
+    if super::is_agent_desk(&req.session) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "A desk runs on its agent's profile; change the agent's profile instead.",
+        )
+            .into_response();
+    }
     // One implementation, shared with dispatch: both need the same
     // resolve → abort → restart-on-new-model sequence, and a second copy would
     // be free to drift on the role-aware details. The DIFFERENCE is persistence:
@@ -540,7 +547,7 @@ pub(crate) async fn set_session_model(
 
 
 
-fn notify_models(session: Option<&str>) {
+pub(super) fn notify_models(session: Option<&str>) {
     crate::session::emit_device_event(match session {
         Some(id) => serde_json::json!({ "kind": "models", "session": id }),
         None => serde_json::json!({ "kind": "models" }),
