@@ -365,6 +365,9 @@ impl CodingHarness {
                 // Park any work a dead session was doing. Done AFTER the write,
                 // so the parked state never contradicts what the store holds.
                 crate::session::park_failed_session_work(&id, &prev_status, state);
+                if prev_status == "running" && status != "running" {
+                    crate::serve::relay_desk_reply(&store, &id, &state.events);
+                }
                 crate::session::emit_status_transition(
                     &id,
                     &prev_status,
