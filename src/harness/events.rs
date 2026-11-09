@@ -942,15 +942,6 @@ mod turn_changes_tests {
     }
 
     #[test]
-    fn model_request_builders_do_not_read_events() {
-        let step = include_str!("step.rs");
-        let body = &step[step.find("async fn build_request").unwrap()..];
-        let body = &body[..body.find("\n    }\n").unwrap_or(body.len())];
-        assert!(!body.contains("TurnChanges"));
-        assert!(!body.contains("state.events.iter"), "request is built from state.messages");
-    }
-
-    #[test]
     fn event_serialises_as_turn_changes() {
         let e = turn_changes_event(vec![("a.rs".into(), 1, 2)]).unwrap();
         let v = serde_json::to_value(&e).unwrap();

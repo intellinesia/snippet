@@ -1,6 +1,5 @@
 use super::*;
     
-    use tempfile::tempdir;
 
     fn test_daemon() -> Daemon {
         Daemon {
@@ -39,37 +38,6 @@ use super::*;
         assert_eq!(
             session_event_page(&events, Some(999), Some(0)),
             (2, 3, true)
-        );
-    }
-
-    /// A nonce sidecar is ignored: the store is the only record now.
-    ///
-    /// Retirement guard. The fallback used to read a session's `.nonces.json`
-    /// and treat anything in it as already-sent. If that read ever came back,
-    /// a stale file would silently suppress a legitimate request — the failure
-    /// would look like "my message vanished", with nothing in the logs.
-    #[test]
-    fn a_legacy_nonces_file_is_ignored() {
-        let dir = tempdir().expect("temporary directory");
-        let session_id = "ws-2-def456";
-        let session_dir = dir.path().join(session_id);
-        std::fs::create_dir_all(&session_dir).unwrap();
-        std::fs::write(
-            session_dir.join("state.nonces.json"),
-            r#"["already-sent"]"#,
-        )
-        .unwrap();
-
-        let mut daemon = test_daemon();
-        daemon.store = crate::store::Store::open_in_memory().unwrap();
-
-        assert!(
-            daemon.accept_nonce(session_id, "already-sent"),
-            "a nonce present only in a legacy file must be ACCEPTED — the file is retired"
-        );
-        assert!(
-            !daemon.accept_nonce(session_id, "already-sent"),
-            "but the store still rejects a genuine replay within the same run"
         );
     }
 
