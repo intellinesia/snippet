@@ -59,7 +59,7 @@ pub fn snapshot(workspace: &Path) -> Snapshot {
 }
 
 pub fn task_workspace(store: &Store, task: &Task) -> Option<std::path::PathBuf> {
-    // A task may name its session by the old `.json` path, which only some rows keep as legacy_id.
+    // A task may name its session by its `.json` state path.
     [Some(task.session_id.as_str()), task.reporting_session.as_deref()]
         .into_iter()
         .flatten()

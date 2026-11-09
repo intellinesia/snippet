@@ -907,7 +907,7 @@ pub fn session_task_contexts(store: &crate::store::Store) -> SessionTaskContexts
         Err(_) => return contexts,
     };
     for (task_id, session_id, task_status, agent_id, role, member_status, work_session_id) in records {
-        let parent_canon = crate::conversations::canonical_session_id(&session_id).0;
+        let parent_canon = crate::conversations::canonical_session_id(&session_id);
         if parent_canon.is_empty() || is_inbox_session_id(&parent_canon) || is_lane_session_id(&parent_canon) {
             continue;
         }
@@ -922,7 +922,7 @@ pub fn session_task_contexts(store: &crate::store::Store) -> SessionTaskContexts
             let status_str = member_status.unwrap_or_else(|| "waiting".to_string());
             let is_holder = status_str == "active";
 
-            let work_canon = work_session_id.as_deref().map(|ws| crate::conversations::canonical_session_id(ws).0);
+            let work_canon = work_session_id.as_deref().map(|ws| crate::conversations::canonical_session_id(ws));
 
             if !is_terminal {
                 if is_holder {
@@ -1236,7 +1236,7 @@ pub fn session_id_for_state_path(state_path: &Path) -> String {
         .unwrap_or(state_path)
         .display()
         .to_string();
-    crate::conversations::canonical_session_id(&relative).0
+    crate::conversations::canonical_session_id(&relative)
 }
 
 /// Read a session's state from the store.
@@ -1734,18 +1734,15 @@ pub fn create_blank_session_in(
     } else {
         base
     };
-    // The path is only an ID now — nothing is written to it. Canonicalised, so a
-    // session created today has the same id shape as one migrated from the old
-    // path-shaped ids; otherwise `session_id_for_state_path` (which strips the
-    // filename) would not match what this function stored.
+    // The path is only an ID now; nothing is written to it. Canonicalised to match
+    // `session_id_for_state_path`.
     let id = crate::conversations::canonical_session_id(
         &dest
             .strip_prefix(workspaces_root())
             .unwrap_or(&dest)
             .display()
             .to_string(),
-    )
-    .0;
+    );
     // Uniqueness is the STORE's question: a folder's default session is taken if a
     // row exists, whether or not any file was ever written for it.
     if !new_conversation && store.has_conversation(&id).unwrap_or(false) {

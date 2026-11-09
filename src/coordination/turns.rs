@@ -162,7 +162,7 @@ impl Store {
 
     /// All members seated on the tasks of this parent session.
     pub fn session_members(&self, session_id: &str) -> Result<Vec<SessionMember>, StoreError> {
-        let canon = crate::conversations::canonical_session_id(session_id).0;
+        let canon = crate::conversations::canonical_session_id(session_id);
         self.with_connection(|c| {
             let mut stmt = c.prepare(
                 "SELECT ta.task_id, t.session_id, ta.agent_id, ta.role, ta.status, ta.work_session_id
@@ -181,11 +181,11 @@ impl Store {
                 let is_holder = status == "active";
                 Ok(SessionMember {
                     task_id,
-                    session_id: crate::conversations::canonical_session_id(&parent_session).0,
+                    session_id: crate::conversations::canonical_session_id(&parent_session),
                     agent_id,
                     role,
                     status,
-                    work_session_id: work_session_id.map(|s| crate::conversations::canonical_session_id(&s).0),
+                    work_session_id: work_session_id.map(|s| crate::conversations::canonical_session_id(&s)),
                     is_holder,
                 })
             })?;

@@ -1329,16 +1329,14 @@ async fn open_session(
     } else {
         (base_state.clone(), req.resume)
     };
-    // Canonical (filename stripped) so this matches `session_id_for_state_path`
-    // and any row migrated from the old path-shaped ids.
+    // Canonical (filename stripped) so this matches `session_id_for_state_path`.
     let id = crate::conversations::canonical_session_id(
         &sp
             .strip_prefix(workspaces_root())
             .unwrap_or(&sp)
             .display()
             .to_string(),
-    )
-    .0;
+    );
     // Effective model: a persisted per-conversation override is AUTHORITATIVE on
     // resume — the app re-sends a profile on plain navigation (foregrounding,
     // reopening the chat), and honoring it silently reverted the model the user

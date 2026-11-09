@@ -271,7 +271,7 @@ impl Tool for SubmitReview {
             return Err(ToolError::msg("changes needs findings: say what to fix"));
         }
         let store = ctx.store().map_err(|e| ToolError::msg(format!("open store: {e}")))?;
-        let canonical = |id: &str| crate::conversations::canonical_session_id(id).0;
+        let canonical = |id: &str| crate::conversations::canonical_session_id(id);
         let is_mc = ctx.agent_id() == Some(crate::mission_control::SESSION_ID)
             || ctx.durable_session_id().is_some_and(|s| canonical(s) == crate::mission_control::SESSION_ID);
         let seat = ctx

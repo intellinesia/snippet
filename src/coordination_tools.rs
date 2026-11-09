@@ -682,12 +682,12 @@ impl Tool for SendAgentMessage {
                 )));
             }
             if ctx.agent_id() == Some(crate::mission_control::SESSION_ID) {
-                let target_canon = crate::conversations::canonical_session_id(to_id).0;
+                let target_canon = crate::conversations::canonical_session_id(to_id);
                 if let Ok(in_review) = db.list_tasks(None, Some(&TaskStatus::InReview)) {
                     let now = now_rfc3339();
                     for t in in_review {
                         let back = crate::members::working_session(&db, &t);
-                        if crate::conversations::canonical_session_id(&back).0 == target_canon {
+                        if crate::conversations::canonical_session_id(&back) == target_canon {
                             let _ = db.update_task_in(&t.id, &now, |task| {
                                 task.status = TaskStatus::InProgress;
                                 task.reporting_session = Some(back);
@@ -1246,8 +1246,8 @@ impl Tool for PostTaskCoordination {
         let mut out = json!({"event": saved});
         if !task.status.is_terminal()
             && ctx.durable_session_id().is_some_and(|s| {
-                crate::conversations::canonical_session_id(s).0
-                    == crate::conversations::canonical_session_id(&task.session_id).0
+                crate::conversations::canonical_session_id(s)
+                    == crate::conversations::canonical_session_id(&task.session_id)
             })
         {
             let step_line = body
@@ -1334,7 +1334,7 @@ impl Tool for PassTurn {
             .ok_or_else(|| ToolError::msg("nobody holds this task's turn yet"))?;
         let session = ctx.durable_session_id().or(ctx.lane_origin().map(|(s, _)| s)).unwrap_or_default();
         let bound = task.reporting_session.as_deref().unwrap_or(&task.session_id);
-        if crate::conversations::canonical_session_id(bound).0 != crate::conversations::canonical_session_id(session).0 {
+        if crate::conversations::canonical_session_id(bound) != crate::conversations::canonical_session_id(session) {
             return Err(ToolError::msg(format!("only the holder of the turn can pass it, and that is `{holder}`. Ask them in the room.")));
         }
         if to_agent == holder {

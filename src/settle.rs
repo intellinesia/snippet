@@ -226,7 +226,6 @@ mod tests {
             profile: None,
             role: "standard".into(),
             agent_id: None,
-            legacy_id: None,
             kind: "conversation".into(),
             settled_at: None,
             keep_awake: false,

@@ -2252,7 +2252,7 @@ impl Tool for InviteTaskAgent {
             .get_task(task_id)
             .map_err(|e| ToolError::msg(format!("lookup task: {e}")))?
             .ok_or_else(|| ToolError::msg(format!("task `{task_id}` not found")))?;
-        let canonical = |id: &str| crate::conversations::canonical_session_id(id).0;
+        let canonical = |id: &str| crate::conversations::canonical_session_id(id);
         let caller = canonical(caller);
         let seated = store.member_by_session(&caller).ok().flatten().is_some_and(|m| m.task_id == task.id);
         let works_it = seated || match task.reporting_session.as_deref() {
@@ -3038,7 +3038,7 @@ impl Tool for ReportMissionTask {
             _ => return Err(ToolError::msg("status must be done, blocked, or failed")),
         };
         let store = db(ctx)?;
-        let canonical = |id: &str| crate::conversations::canonical_session_id(id).0;
+        let canonical = |id: &str| crate::conversations::canonical_session_id(id);
         let caller_canonical = canonical(caller);
         let is_mc = caller_canonical == crate::mission_control::SESSION_ID
             || ctx.agent_id() == Some(crate::mission_control::SESSION_ID);
@@ -3518,7 +3518,6 @@ mod tests {
                 profile: None,
                 role: "standard".into(),
                 agent_id: None,
-                legacy_id: None,
                 kind: "conversation".into(),
                 settled_at: None,
                 keep_awake: false,
