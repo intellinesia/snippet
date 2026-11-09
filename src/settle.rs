@@ -38,7 +38,7 @@ pub fn cache_ttl_secs(provider: &str, one_hour: bool) -> i64 {
         "claude-code" => 3600,
         "openai" | "chatgpt" => 86_400,
         "gemini" => 1800,
-        "xai" | "grok" | "openrouter" | "openai-compatible" => 600,
+        "xai" | "grok" | "openrouter" | "openai-compatible" => 3600,
         _ => 300,
     }
 }
