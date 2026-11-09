@@ -715,9 +715,6 @@ impl Daemon {
     }
 
     pub(crate) async fn deliver(&self, id: &str, input: LoopInput) {
-        if crate::session::is_inbox_session_id(id) && matches!(input, LoopInput::UserMessage(_)) && cache_lapsed(id) {
-            Box::pin(self.deliver(id, LoopInput::ContinueLean)).await;
-        }
         match &input {
             LoopInput::Unqueue(queue_id) | LoopInput::SteerQueued(queue_id) => {
                 self.hide_queued(id, queue_id).await
