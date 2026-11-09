@@ -53,63 +53,6 @@ async fn tool_persistence_updates_store_without_activity_signal() {
 }
 
 #[cfg(test)]
-mod state_migration_tests {
-    use super::*;
-
-    fn legacy_state(title: Option<&str>) -> Vec<u8> {
-        serde_json::to_vec(&serde_json::json!({
-            "version": 1,
-            "status": "idle",
-            "created_at": "now",
-            "updated_at": "now",
-            "workspace": "/tmp/workspace",
-            "user_request": "Restore the old session title",
-            "title": title,
-            "messages": [],
-            "events": [],
-            "iterations": 0
-        }))
-        .expect("legacy state JSON")
-    }
-
-    #[test]
-    fn legacy_request_migrates_to_title_and_is_not_reserialized() {
-        let state = deserialize_state(&legacy_state(None)).expect("legacy state should load");
-        assert_eq!(
-            state.title.as_deref(),
-            Some("Restore the old session title")
-        );
-        assert_eq!(
-            state.initial_request(),
-            Some("Restore the old session title")
-        );
-
-        let encoded = serialize_state(&state).expect("migrated state should serialize");
-        let mut decoder = flate2::read::GzDecoder::new(encoded.as_slice());
-        let mut raw = Vec::new();
-        std::io::Read::read_to_end(&mut decoder, &mut raw).expect("decompress state");
-        let value: serde_json::Value =
-            rmp_serde::from_slice(&raw).expect("decode serialized state map");
-        assert_eq!(
-            value.get("title").and_then(|v| v.as_str()),
-            Some("Restore the old session title")
-        );
-        assert!(value.get("user_request").is_none());
-    }
-
-    #[test]
-    fn explicit_title_wins_over_legacy_request() {
-        let state =
-            deserialize_state(&legacy_state(Some("Saved title"))).expect("state should load");
-        assert_eq!(state.title.as_deref(), Some("Saved title"));
-        assert_eq!(
-            state.initial_request(),
-            Some("Restore the old session title")
-        );
-    }
-}
-
-#[cfg(test)]
 mod assistant_dedup_tests {
     use super::*;
     use crate::llm::ToolCallRecord;
@@ -122,7 +65,6 @@ mod assistant_dedup_tests {
             updated_at: "t".into(),
             workspace: "/tmp".into(),
             title: None,
-            legacy_request: String::new(),
             goal: None,
             compacting: false,
             turn_started_at: None,

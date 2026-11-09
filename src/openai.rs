@@ -843,30 +843,19 @@ fn chat_messages_from_harness(index: usize, message: &HarnessMessage) -> Vec<Cha
         }
         HarnessMessage::ToolResult {
             tool_call_id,
-            tool_name,
+            tool_name: _,
             content,
         } => {
             let (cleaned, image) = crate::llm::split_inlined_image(content);
             let body =
                 crate::llm::render_tool_result(&cleaned);
-            if tool_call_id.is_empty() {
-                // Legacy state written before native function calling — render as
-                // a text block so old sessions still load.
-                vec![ChatMessage::text(
-                    "user",
-                    &format!(
-                        "[tool_result]\ntool = \"{tool_name}\"\noutput = {body}\n[/tool_result]"
-                    ),
-                )]
-            } else {
-                // Tool messages can't carry images, so an inlined image follows as
-                // a separate user message with an image_url data URL.
-                let mut out = vec![ChatMessage::tool(tool_call_id, &body)];
-                if let Some((mime, base64)) = image {
-                    out.push(ChatMessage::user_image(&mime, &base64));
-                }
-                out
+            // Tool messages can't carry images, so an inlined image follows as
+            // a separate user message with an image_url data URL.
+            let mut out = vec![ChatMessage::tool(tool_call_id, &body)];
+            if let Some((mime, base64)) = image {
+                out.push(ChatMessage::user_image(&mime, &base64));
             }
+            out
         }
         HarnessMessage::Summary { kind, content } => vec![ChatMessage::text(
             "user",

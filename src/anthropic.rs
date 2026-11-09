@@ -967,7 +967,7 @@ fn prepare_messages(
             }
             HarnessMessage::ToolResult {
                 tool_call_id,
-                tool_name,
+                tool_name: _,
                 content,
             } => {
                 // Pull any inlined image out so it becomes a real image block, not
@@ -975,32 +975,24 @@ fn prepare_messages(
                 let (cleaned, image) = crate::llm::split_inlined_image(content);
                 let body =
                     crate::llm::render_tool_result(&cleaned);
-                if tool_call_id.is_empty() {
-                    // Legacy state (pre native function calling) — render as text.
-                    let text = format!(
-                        "[tool_result]\ntool = \"{tool_name}\"\noutput = {body}\n[/tool_result]"
-                    );
-                    push_block(&mut prepared, "user", text_block(text));
-                } else {
-                    let content_value = match image {
-                        Some((mime, base64)) => json!([
-                            {"type": "text", "text": body},
-                            {"type": "image", "source": {
-                                "type": "base64", "media_type": mime, "data": base64
-                            }},
-                        ]),
-                        None => Value::String(body),
-                    };
-                    push_block(
-                        &mut prepared,
-                        "user",
-                        AnthropicContent::ToolResult {
-                            tool_use_id: tool_call_id.clone(),
-                            content: content_value,
-                            cache_control: None,
-                        },
-                    );
-                }
+                let content_value = match image {
+                    Some((mime, base64)) => json!([
+                        {"type": "text", "text": body},
+                        {"type": "image", "source": {
+                            "type": "base64", "media_type": mime, "data": base64
+                        }},
+                    ]),
+                    None => Value::String(body),
+                };
+                push_block(
+                    &mut prepared,
+                    "user",
+                    AnthropicContent::ToolResult {
+                        tool_use_id: tool_call_id.clone(),
+                        content: content_value,
+                        cache_control: None,
+                    },
+                );
             }
             HarnessMessage::Summary { kind, content } => {
                 let text = format!("[summary:{kind}]\n{content}\n[/summary]");

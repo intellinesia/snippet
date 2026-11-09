@@ -281,8 +281,7 @@ pub fn summarize_numstat(
 /// stays bounded, while making sure everything in `keep` stays reachable.
 /// Deletion is by explicit id only: the shadow repo is shared by every session in
 /// this workspace, so "delete whatever isn't in MY keep list" would destroy the
-/// other sessions' rewind points. Best-effort (never errors). Also migrates the
-/// legacy `refs/heads/snapshots` chain.
+/// other sessions' rewind points. Best-effort (never errors).
 pub fn prune(workspace: &Path, keep: &[String], dropped: &[String]) {
     if !git_available() || !shadow_dir(workspace).exists() {
         return;
@@ -295,8 +294,6 @@ pub fn prune(workspace: &Path, keep: &[String], dropped: &[String]) {
         let refname = format!("refs/snapshots/{id}");
         let _ = git(workspace, &["update-ref", &refname, id]);
     }
-    // Drop the legacy chain branch so its intermediate commits become collectable.
-    let _ = git(workspace, &["update-ref", "-d", "refs/heads/snapshots"]);
     // Delete refs only for the snapshots this session explicitly dropped.
     for id in dropped {
         if keep.iter().any(|k| k == id) {

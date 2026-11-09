@@ -487,10 +487,6 @@ pub struct HarnessState {
     /// renaming replaces it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// Legacy migration input only. Old state files stored the first request under
-    /// this key; it is accepted when reading and never written back.
-    #[serde(rename = "user_request", default, skip_serializing)]
-    legacy_request: String,
     /// An active `/goal` the agent is autonomously working toward (None = normal
     /// interactive mode). See [`Goal`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -652,27 +648,10 @@ impl HarnessState {
                 HarnessMessage::User { content } => Some(content.as_str()),
                 _ => None,
             })
-            .or_else(|| {
-                (!self.legacy_request.trim().is_empty()).then_some(self.legacy_request.as_str())
-            })
     }
 }
 
 fn normalize_state_title(state: &mut HarnessState) {
-    let legacy_request = state.legacy_request.trim().to_string();
-    // Very old states carried the first prompt only in `user_request`. Preserve
-    // that conversational context before dropping the metadata field. Current
-    // states already have the prompt in `messages`, so this is a no-op for them.
-    if !legacy_request.is_empty()
-        && !state
-            .messages
-            .iter()
-            .any(|message| matches!(message, HarnessMessage::User { .. }))
-    {
-        state.messages.push(HarnessMessage::User {
-            content: legacy_request.clone(),
-        });
-    }
     let title_is_empty = state
         .title
         .as_deref()
@@ -688,10 +667,6 @@ fn normalize_state_title(state: &mut HarnessState) {
                 state.title = Some(label);
             }
         }
-    // The legacy field is an input-only migration bridge. Once its value has
-    // seeded the title/context, drop it so every subsequent persist emits the
-    // clean schema.
-    state.legacy_request.clear();
 }
 
 /// A working-tree snapshot the user can rewind to (a commit in the shadow repo).

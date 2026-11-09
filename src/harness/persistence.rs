@@ -14,8 +14,7 @@ impl CodingHarness {
         seeded_system: String,
         initial_request: Option<String>,
     ) -> Result<HarnessState, ToolError> {
-        // Migrate old metadata in memory; the next persist omits the legacy
-        // `user_request` field and keeps the title as identity.
+        // Seed an empty title from the first request.
         normalize_state_title(&mut state);
         // Reflect the current run's folder (backfills pre-field states).
         state.workspace = self.context.workspace_root().display().to_string();
@@ -112,7 +111,6 @@ impl CodingHarness {
             updated_at: now.clone(),
             workspace: self.context.workspace_root().display().to_string(),
             title,
-            legacy_request: String::new(),
             goal: None,
             compacting: false,
             turn_started_at: if matches!(status, HarnessStatus::Running) {
