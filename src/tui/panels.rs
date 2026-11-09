@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::boards::s;
 use super::shell::{Focus, PaneTab};
@@ -174,8 +174,8 @@ impl App {
         let session = self.current_session_id();
         let (method, path, query, body, max_age) = match tab {
             PaneTab::Inbox => (reqwest::Method::GET, "/notifications".to_string(), Self::inbox_query(), None, 15),
-            PaneTab::Procs => (reqwest::Method::POST, "/bg".into(), vec![], Some(json!({ "session": session })), 3),
-            PaneTab::Git => (reqwest::Method::POST, "/git/status".into(), vec![], Some(json!({ "session": session })), 5),
+            PaneTab::Procs => (reqwest::Method::GET, "/bg".into(), vec![("session", session.clone())], None, 3),
+            PaneTab::Git => (reqwest::Method::GET, "/git/status".into(), vec![("session", session.clone())], None, 5),
             PaneTab::Files => (
                 reqwest::Method::GET,
                 "/fs".into(),
@@ -194,10 +194,10 @@ impl App {
         let detail = match tab {
             PaneTab::Procs => Some((
                 format!("proclog:{session}:{}", s(&item, "id")),
-                reqwest::Method::POST,
+                reqwest::Method::GET,
                 "/bg/log".to_string(),
-                vec![],
-                Some(json!({ "session": session, "id": s(&item, "id"), "tail": 400 })),
+                vec![("session", session.clone()), ("id", s(&item, "id")), ("tail", "400".into())],
+                None,
                 if item.get("running").and_then(Value::as_bool).unwrap_or(false) { 2 } else { 3600 },
             )),
             PaneTab::Git => {
@@ -205,10 +205,15 @@ impl App {
                 let staged = !untracked && !item.get("unstaged").and_then(Value::as_bool).unwrap_or(false);
                 Some((
                     format!("diff:{session}:{}:{staged}", s(&item, "path")),
-                    reqwest::Method::POST,
+                    reqwest::Method::GET,
                     "/git/diff".to_string(),
-                    vec![],
-                    Some(json!({ "session": session, "file": s(&item, "path"), "staged": staged, "untracked": untracked })),
+                    vec![
+                        ("session", session.clone()),
+                        ("file", s(&item, "path")),
+                        ("staged", staged.to_string()),
+                        ("untracked", untracked.to_string()),
+                    ],
+                    None,
                     5,
                 ))
             }

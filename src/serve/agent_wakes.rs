@@ -15,7 +15,6 @@ pub fn router() -> Router<Shared> {
         .route("/wakes", get(list_wakes))
         .route("/wake-runs", get(list_runs))
         .route("/wakes/{*owner}", get(get_wake).put(put_wake).delete(delete_wake))
-        .route("/agents/{agent_id}/wake", get(get_wake).put(put_wake).delete(delete_wake))
 }
 
 fn now() -> u64 {

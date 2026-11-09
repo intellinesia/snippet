@@ -114,7 +114,6 @@ struct ZipArtifactReq {
 }
 
 async fn zip_artifact(
-    
     Json(req): Json<ZipArtifactReq>,
 ) -> Response {
     let Some(artifact) = crate::artifacts::get(&req.session, &req.id) else {
@@ -149,7 +148,6 @@ struct ZipFilesReq {
 }
 
 async fn zip_files(
-    
     Json(req): Json<ZipFilesReq>,
 ) -> Response {
     let sources: Vec<std::path::PathBuf> = req

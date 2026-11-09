@@ -629,7 +629,6 @@ pub(crate) struct NotificationReplayQuery {
 fn notification_limit() -> usize { 100 }
 
 pub(crate) async fn notification_replay(
-    
     Query(q): Query<NotificationReplayQuery>,
 ) -> Response {
     if q.since > i64::MAX as u64 || q.limit == 0 || q.limit > 500 {

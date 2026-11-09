@@ -233,7 +233,6 @@ pub(crate) async fn settle_route(
 
 // POST /session/unsettle {session}
 pub(crate) async fn unsettle_route(
-    
     Json(req): Json<SettleReq>,
 ) -> Response {
     match unsettle_session(&req.session) {
@@ -257,7 +256,6 @@ pub(crate) fn set_keep_awake(id: &str, on: bool) -> Option<serde_json::Value> {
 
 // POST /session/keep_awake {session, on}
 pub(crate) async fn keep_awake_route(
-    
     Json(req): Json<KeepAwakeReq>,
 ) -> Response {
     match set_keep_awake(&req.session, req.on) {
@@ -273,7 +271,6 @@ pub(crate) struct CacheQuery {
 
 // GET /session/cache?id= — whether the next turn would re-read the history uncached.
 pub(crate) async fn cache_route(
-    
     Query(q): Query<CacheQuery>,
 ) -> Response {
     let Some(store) = crate::session::store_for_sessions() else {
@@ -305,6 +302,7 @@ pub(crate) async fn settle_loop(d: Shared) {
 /// One sweep: delete sessions settled over `DELETE_AFTER_SECS` ago (keeping their memory), then
 /// settle at most `MAX_SETTLES_PER_TICK` cold sessions, oldest first.
 pub(crate) async fn sweep_once(d: &Shared) -> (usize, usize) {
+    super::settle_stale_running(d).await;
     let Some(store) = crate::session::store_for_sessions() else {
         return (0, 0);
     };

@@ -682,6 +682,7 @@ impl Daemon {
         if !entries.contains(&item.id) {
             entries.push(item.id.clone());
             self.queue_revision.fetch_add(1, Ordering::Release);
+            crate::conversations::signal_session_change();
         }
     }
 
@@ -1063,19 +1064,19 @@ pub async fn run_serve(
         .route("/session/interrupt", post(session_routes::interrupt_session))
         .route("/session/rename", post(rename_session))
         .route("/git/worktrees", get(git_worktrees))
-        .route("/git/status", post(git_status))
-        .route("/git/diff", post(git_diff))
-        .route("/git/log", post(git_log))
-        .route("/git/branches", post(git_branches))
+        .route("/git/status", get(git_status))
+        .route("/git/diff", get(git_diff))
+        .route("/git/log", get(git_log))
+        .route("/git/branches", get(git_branches))
         .route("/git/stage", post(git_stage))
         .route("/git/unstage", post(git_unstage))
         .route("/git/commit", post(git_commit))
         .route("/git/checkout", post(git_checkout))
         .route("/git/push", post(git_push))
         .route("/git/pull", post(git_pull))
-        .route("/bg", post(bg_list))
+        .route("/bg", get(bg_list))
         .route("/bg/kill", post(bg_kill))
-        .route("/bg/log", post(bg_log))
+        .route("/bg/log", get(bg_log))
         .route("/git/stash", post(git_stash))
         .route("/git/discard", post(git_discard))
         .route("/session/checkpoint-stats", post(checkpoint_stats))
@@ -1161,6 +1162,36 @@ async fn require_token(
     }
 }
 
+const STALE_RUNNING_SECS: i64 = 600;
+
+/// Marks idle the runs a killed worker left "running": no loop and no activity for ten minutes.
+pub(crate) async fn settle_stale_running(d: &Shared) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let stale: Vec<String> = {
+        let live = d.sessions.lock().await;
+        list_device_sessions()
+            .into_iter()
+            .filter(|s| {
+                s.status == "running"
+                    && now - s.last_active > STALE_RUNNING_SECS
+                    && !live.get(&s.id).is_some_and(|l| !l.join.is_finished())
+            })
+            .map(|s| s.id)
+            .collect()
+    };
+    for id in stale {
+        if let Some(sp) = state_path_for_id(&id)
+            && let Some(mut st) = crate::session::read_session_state(&sp)
+        {
+            st.status = crate::harness::HarnessStatus::Idle;
+            let _ = crate::session::write_session_state(&sp, &st);
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct ListQuery {
     #[serde(default)]
@@ -1193,12 +1224,7 @@ async fn list_sessions(State(d): State<Shared>, Query(q): Query<ListQuery>) -> R
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
-            if s.status == "running" && !alive && now - s.last_active > 600 {
-                if let Some(sp) = state_path_for_id(&s.id)
-                    && let Some(mut st) = crate::session::read_session_state(&sp) {
-                        st.status = crate::harness::HarnessStatus::Idle;
-                        let _ = crate::session::write_session_state(&sp, &st);
-                    }
+            if s.status == "running" && !alive && now - s.last_active > STALE_RUNNING_SECS {
                 s.status = "idle".to_string();
             }
             let running = s.status == "running";

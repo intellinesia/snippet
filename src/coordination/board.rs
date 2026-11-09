@@ -165,7 +165,7 @@ impl Store {
         entry: &NewBoardEntry<'_>,
     ) -> Result<i64, StoreError> {
         let folder = entry.workspace.filter(|w| !w.trim().is_empty()).map(project_of);
-        self.with_connection(|conn| {
+        let id = self.with_connection(|conn| {
             conn.execute(
                 "INSERT INTO agent_board
                  (agent_id, kind, session_id, workspace, summary, correlation_id, created_at, folder)
@@ -182,7 +182,13 @@ impl Store {
                 ],
             )?;
             Ok(conn.last_insert_rowid())
-        })
+        })?;
+        crate::session::emit_device_event(serde_json::json!({
+            "kind": "agent_board",
+            "agent": agent_id,
+            "correlation_id": entry.correlation_id,
+        }));
+        Ok(id)
     }
 
     /// An agent's board, newest first, with optional workspace / text / kind

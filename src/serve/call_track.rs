@@ -944,8 +944,7 @@ pub(crate) fn status_json(call: Option<&Call>) -> Value {
 }
 
 pub(crate) async fn status(State(d): State<Shared>) -> Response {
-    let fx = book().tick(now_ms());
-    apply(&d, fx).await;
+    ensure_ticker(&d);
     Json(status_json(book().active())).into_response()
 }
 

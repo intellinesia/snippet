@@ -158,7 +158,6 @@ pub(super) struct FsDeleteReq {
 // POST /fs/write {path, content, prev_hash?} — atomic write (temp + rename) with
 // optimistic-concurrency conflict detection. Token-gated; UTF-8 text only.
 pub(super) async fn write_fs_file(
-    
     Json(req): Json<FsWriteReq>,
 ) -> Response {
     if req.path.trim().is_empty() {
@@ -212,7 +211,6 @@ pub(super) async fn write_fs_file(
 
 // POST /fs/mkdir {path} — create a new directory (token-gated).
 pub(super) async fn make_fs_dir(
-    
     Json(req): Json<FsMkdirReq>,
 ) -> Response {
     if req.path.trim().is_empty() {
@@ -234,7 +232,6 @@ pub(super) async fn make_fs_dir(
 
 // POST /fs/delete {path} — remove a file or directory (recursive). Token-gated.
 pub(super) async fn delete_fs_path(
-    
     Json(req): Json<FsDeleteReq>,
 ) -> Response {
     if req.path.trim().is_empty() {
@@ -264,7 +261,6 @@ pub(super) async fn delete_fs_path(
 // Content), so the app can stream/seek images, video, and audio — not just
 // download whole files. Token-gated.
 pub(super) async fn download_fs_file(
-    
     Query(q): Query<FsQuery>,
     headers: axum::http::HeaderMap,
 ) -> Response {
@@ -465,7 +461,6 @@ pub(super) struct UploadReq {
 // user posts from the app) to a temp dir and return its absolute path, which the
 // agent can then view with `view_image` (or read).
 pub(super) async fn upload_fs_file(
-    
     Json(req): Json<UploadReq>,
 ) -> Response {
     use base64::Engine;

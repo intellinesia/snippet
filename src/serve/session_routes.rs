@@ -201,7 +201,6 @@ pub(crate) struct ExecReq {
 // POST /session/exec {session, command} — run a shell command in the session's
 // workspace and return its output. Token-gated; runs as the daemon user.
 pub(crate) async fn exec_in_session(
-    
     Json(req): Json<ExecReq>,
 ) -> Response {
     let (_sp, dir) = match load_session_workspace(&req.session) {
@@ -252,8 +251,7 @@ pub(crate) struct BgReq {
 
 // POST /bg {session} — snapshot of the session's background processes.
 pub(crate) async fn bg_list(
-    
-    Json(req): Json<BgReq>,
+    Query(req): Query<BgReq>,
 ) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
@@ -264,7 +262,6 @@ pub(crate) async fn bg_list(
 
 // POST /bg/kill {session, id} — terminate one background process.
 pub(crate) async fn bg_kill(
-    
     Json(req): Json<BgReq>,
 ) -> Response {
     let dir = match resolve_session_dir(&req.session) {
@@ -282,8 +279,7 @@ pub(crate) async fn bg_kill(
 
 // POST /bg/log {session, id, tail?} — tail a background process's log.
 pub(crate) async fn bg_log(
-    
-    Json(req): Json<BgReq>,
+    Query(req): Query<BgReq>,
 ) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
@@ -566,7 +562,6 @@ pub(crate) struct CheckpointStatsReq {
 }
 
 pub(crate) async fn checkpoint_stats(
-    
     Json(req): Json<CheckpointStatsReq>,
 ) -> Response {
     let dir = match resolve_session_dir(&req.session) {

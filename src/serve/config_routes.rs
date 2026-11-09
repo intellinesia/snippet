@@ -243,7 +243,6 @@ pub(crate) async fn vault_list() -> Response {
 
 // PUT /vault — store a secret (from the app's vault screen; TLS/tunnel carries it).
 pub(crate) async fn vault_set(
-    
     Json(req): Json<VaultSetReq>,
 ) -> Response {
     let mut vault = crate::vault::Vault::load();

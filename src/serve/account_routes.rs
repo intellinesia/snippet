@@ -35,7 +35,6 @@ pub(crate) async fn list_accounts() -> Response {
 }
 
 pub(crate) async fn add_account(
-    
     Json(req): Json<AccountReq>,
 ) -> Response {
     if let Err(r) = pooled(&req.provider) {
@@ -96,7 +95,6 @@ pub(crate) async fn add_account(
 }
 
 pub(crate) async fn remove_account(
-    
     Json(req): Json<AccountReq>,
 ) -> Response {
     if let Err(r) = pooled(&req.provider) {
@@ -112,7 +110,6 @@ pub(crate) async fn remove_account(
 }
 
 pub(crate) async fn update_account(
-    
     Json(req): Json<AccountReq>,
 ) -> Response {
     if let Err(r) = pooled(&req.provider) {

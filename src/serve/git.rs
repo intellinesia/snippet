@@ -55,8 +55,7 @@ pub(super) struct GitReq {
 
 // POST /git/status {session} — branch, upstream, ahead/behind, and changed files.
 pub(super) async fn git_status(
-    
-    Json(req): Json<GitReq>,
+    Query(req): Query<GitReq>,
 ) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
@@ -166,8 +165,7 @@ pub(super) struct GitDiffReq {
 
 // POST /git/diff {session, file?, staged?, untracked?} — unified diff (clipped).
 pub(super) async fn git_diff(
-    
-    Json(req): Json<GitDiffReq>,
+    Query(req): Query<GitDiffReq>,
 ) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
@@ -219,8 +217,7 @@ pub(super) struct GitLogReq {
 
 // POST /git/log {session, limit?} — recent commits as structured records.
 pub(super) async fn git_log(
-    
-    Json(req): Json<GitLogReq>,
+    Query(req): Query<GitLogReq>,
 ) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
@@ -253,8 +250,7 @@ pub(super) async fn git_log(
 
 // POST /git/branches {session} — local + remote-tracking branches + current.
 pub(super) async fn git_branches(
-    
-    Json(req): Json<GitReq>,
+    Query(req): Query<GitReq>,
 ) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
@@ -531,7 +527,6 @@ pub(super) struct WorktreesQuery {
 /// worktree", "this folder", or an existing worktree. `repo` is null outside a
 /// git repository.
 pub(super) async fn git_worktrees(
-    
     Query(q): Query<WorktreesQuery>,
 ) -> Response {
     let folder = std::path::PathBuf::from(&q.folder);

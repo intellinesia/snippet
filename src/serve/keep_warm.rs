@@ -20,7 +20,6 @@ pub fn router() -> Router<Shared> {
     Router::new()
         .route("/keep-warm", get(list_entries))
         .route("/keep-warm/{*owner}", get(get_entry).put(put_entry).delete(delete_entry))
-        .route("/agents/{agent_id}/keep-warm", get(get_entry).put(put_entry).delete(delete_entry))
 }
 
 fn now() -> i64 {
