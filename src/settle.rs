@@ -30,12 +30,29 @@ pub fn cache_state(idle: i64, ttl: i64) -> &'static str {
 }
 
 /// How long a provider keeps an idle prompt cache, as far as it is known.
+/// Sources (Nov 2026): Claude Code asks for a 1 h TTL on subscriptions; OpenAI keeps
+/// GPT-5-series prefixes 24 h by default; our Gemini caches are created with 30 min.
 pub fn cache_ttl_secs(provider: &str, one_hour: bool) -> i64 {
     match provider {
         "anthropic" | "anthropic-compatible" if one_hour => 3600,
+        "claude-code" => 3600,
+        "openai" | "chatgpt" => 86_400,
         "gemini" => 1800,
-        "openai" | "chatgpt" | "xai" | "grok" | "openrouter" | "openai-compatible" => 600,
+        "xai" | "grok" | "openrouter" | "openai-compatible" => 600,
         _ => 300,
+    }
+}
+
+/// A profile's own `cache_ttl` such as "5m", "1h" or "24h".
+pub fn parse_ttl(text: &str) -> Option<i64> {
+    let t = text.trim();
+    let (n, unit) = t.split_at(t.find(|c: char| !c.is_ascii_digit())?);
+    let n: i64 = n.parse().ok()?;
+    match unit {
+        "s" => Some(n),
+        "m" => Some(n * 60),
+        "h" => Some(n * 3600),
+        _ => None,
     }
 }
 
@@ -50,7 +67,8 @@ pub fn profile_cache_ttls() -> std::collections::HashMap<String, i64> {
     };
     for (name, p) in config.setups.iter().flatten() {
         let one_hour = p.cache_prompt && p.cache_ttl.as_deref().map(str::trim) == Some("1h");
-        out.insert(name.clone(), cache_ttl_secs(&p.provider, one_hour));
+        let ttl = p.cache_ttl.as_deref().and_then(parse_ttl).unwrap_or_else(|| cache_ttl_secs(&p.provider, one_hour));
+        out.insert(name.clone(), ttl);
     }
     if let Some(default) = config.active_setup.as_ref().and_then(|n| out.get(n).copied()) {
         out.insert(String::new(), default);
@@ -148,7 +166,11 @@ mod tests {
         assert_eq!(cache_state(0, 300), "warm");
         assert_eq!(cache_state(300, 300), "cold");
         assert_eq!(cache_ttl_secs("anthropic", true), 3600);
-        assert_eq!(cache_ttl_secs("claude-code", false), 300);
+        assert_eq!(cache_ttl_secs("claude-code", false), 3600);
+        assert_eq!(parse_ttl("24h"), Some(86_400));
+        assert_eq!(parse_ttl("5m"), Some(300));
+        assert_eq!(parse_ttl("1h "), Some(3600));
+        assert_eq!(parse_ttl("soon"), None);
         assert_eq!(cache_state(COLD_AFTER_SECS - 1, COLD_AFTER_SECS), "warm");
         assert_eq!(cache_state(COLD_AFTER_SECS, COLD_AFTER_SECS), "cold");
         assert_eq!(idle_secs(10, 50), 0);
