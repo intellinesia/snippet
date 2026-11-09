@@ -59,7 +59,7 @@ pub async fn fetch_models(cfg: &InferenceProfileConfig) -> Result<Vec<CatalogMod
         "chatgpt" | "claude-code" | "antigravity" | "gemini" | "openai" | "xai" | "grok"
     ) {
         for model in &mut models {
-            if cfg.provider == "claude-code" && model.efforts.is_some() && model.display_name.is_some() {
+            if cfg.provider == "claude-code" && model.display_name.is_some() {
                 continue;
             }
             let spec = crate::reasoning::spec(&cfg.provider, &model.id);
@@ -156,13 +156,13 @@ fn parse_claude_code_models(raw: &[Value]) -> Vec<CatalogModel> {
                 .get("supportedEffortLevels")
                 .and_then(Value::as_array)
                 .map(|l| l.iter().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>())
-                .filter(|l| !l.is_empty());
+                .unwrap_or_default();
             Some(CatalogModel {
                 id: id.to_string(),
                 display_name: Some(display_name),
                 context_window: None,
-                reasoning: Some(efforts.is_some() || m.get("supportsAdaptiveThinking").and_then(Value::as_bool) == Some(true)),
-                efforts,
+                reasoning: Some(!efforts.is_empty() || m.get("supportsAdaptiveThinking").and_then(Value::as_bool) == Some(true)),
+                efforts: Some(efforts),
                 supports_images: Some(true),
             })
         })
@@ -374,7 +374,7 @@ mod tests {
         assert_eq!(models[0].display_name.as_deref(), Some("Default (recommended) · Opus 5.5 · Best for everyday, complex tasks"));
         assert_eq!(models[1].display_name.as_deref(), Some("Opus 4.6"));
         assert_eq!(models[1].efforts.as_deref().unwrap(), ["low", "medium", "high", "max"]);
-        assert_eq!(models[2].efforts, None);
+        assert_eq!(models[2].efforts.as_deref(), Some(&[][..]));
         assert_eq!(models[2].reasoning, Some(false));
     }
 
