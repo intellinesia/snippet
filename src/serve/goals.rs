@@ -1,6 +1,7 @@
 //! GET /goals and GET /goals/{id}: goals with progress, blockers and the plan,
 //! for the app to render.
 
+use super::api_error;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -13,7 +14,7 @@ use crate::coordination::goals::{self, attention, progress};
 use crate::coordination::{Goal, GoalStatus, Task, TaskStatus};
 use crate::store::Store;
 
-use super::{unauthorized, Auth, Shared};
+use super::{Shared};
 
 pub fn router() -> Router<Shared> {
     Router::new().route("/goals", get(list)).route("/goals/{id}", get(detail))
@@ -21,7 +22,6 @@ pub fn router() -> Router<Shared> {
 
 #[derive(Deserialize)]
 struct ListQuery {
-    token: Option<String>,
     status: Option<String>,
 }
 
@@ -77,14 +77,11 @@ pub(super) fn detail_view(store: &Store, goal: &Goal) -> Value {
 }
 
 async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let status = match q.status.as_deref().map(str::trim) {
         None | Some("") | Some("all") => None,
         Some(s) => match GoalStatus::parse(s) {
             Some(parsed) => Some(parsed),
-            None => return (StatusCode::BAD_REQUEST, "status must be open, closed, cancelled or all").into_response(),
+            None => return api_error(StatusCode::BAD_REQUEST, "status must be open, closed, cancelled or all"),
         },
     };
     match d.store.list_goals(status) {
@@ -95,18 +92,15 @@ async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
                 .collect::<Vec<_>>(),
         )
         .into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 
-async fn detail(State(d): State<Shared>, Query(a): Query<Auth>, Path(id): Path<String>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn detail(State(d): State<Shared>, Path(id): Path<String>) -> Response {
     match d.store.get_goal(&id) {
         Ok(Some(goal)) => Json(detail_view(&d.store, &goal)).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "no such goal").into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+        Ok(None) => api_error(StatusCode::NOT_FOUND, "no such goal"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 

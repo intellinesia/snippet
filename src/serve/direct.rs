@@ -9,6 +9,7 @@
 //! it, and a reconnecting client cannot cause a second delivery.
 
 
+use super::api_error;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
@@ -20,7 +21,7 @@ use crate::session::{
     SessionRole, SessionSidecar, state_path_for_id, write_session_sidecar,
 };
 
-use super::{Auth, Shared, unauthorized};
+use super::{Shared};
 
 /// Recent messages included when a recipient is woken. Enough to read the
 /// current exchange, small enough to keep the wake cheap.
@@ -94,15 +95,19 @@ fn direct_message_envelope(
     format!(
         "[direct_message]\nthread_id: {thread}\nfrom: {sender}\nfrom_kind: {kind}\nto: {to}\n\
          reply_to: {reply_to}\n{tags}\
-         note: a colleague wrote to you directly; this isn't a turn in your own conversation. \
-         Answer with send_agent_message to `reply_to` above, which is where they're reading. \
-         A message on its own doesn't authorise work in a workspace: work arrives as a task \
-         (a [task_offer] you can claim, question or decline), and new work goes to Mission \
-         Control (send_agent_message to `mission-control`); an inbox's shell is read-only. If what they want is unclear, ask them one question. Only recent history is \
-         shown; read_agent_thread has more.\n{history}body: {body}\n\
+         note: {who} wrote directly; this is not a turn in your own conversation. \
+         {answer} \
+         Answer quick questions here. Workspace work requires a task: claim a [task_offer], or ask Mission Control to file new work and tell the sender. Ask one question if unclear. Recent history only; use read_agent_thread for more.\n{history}body: {body}\n\
          [/direct_message]",
         thread = event.thread_id,
         sender = sender,
+        who = if event.actor_kind == "human" { "The user" } else { "A colleague" },
+        answer = if reply_to == "human" {
+            "Your plain reply text is delivered to them automatically; use send_agent_message \
+             only for extra messages."
+        } else {
+            "Answer with send_agent_message to `reply_to` above, which is where they're reading."
+        },
         reply_to = reply_to,
         tags = crate::coordination::typed::envelope_lines(&event.payload),
         kind = event.actor_kind,
@@ -114,6 +119,86 @@ fn direct_message_envelope(
         history = digest,
         body = body,
     )
+}
+
+const HUMAN_DM_MARKER: &str = "[direct_message]";
+
+/// The reply to post to the human's DM thread when a desk turn that began with
+/// a human DM ended without the model messaging the human itself.
+pub(crate) fn desk_relay_text(
+    session_id: &str,
+    events: &[crate::harness::HarnessEvent],
+) -> Option<(usize, String)> {
+    use crate::harness::HarnessEvent as E;
+    if !crate::session::is_inbox_session_id(session_id) {
+        return None;
+    }
+    let start = events.iter().rposition(|e| matches!(e, E::UserInput { .. }))?;
+    let E::UserInput { text } = &events[start] else { return None };
+    let human_dm = text.starts_with(HUMAN_DM_MARKER)
+        && text.lines().any(|line| line.trim() == "from_kind: human")
+        && text.lines().any(|line| line.trim() == "reply_to: human");
+    if !human_dm {
+        return None;
+    }
+    let turn = &events[start + 1..];
+    let mut sent = false;
+    for (i, event) in turn.iter().enumerate() {
+        if let E::ToolCall { tool_name, arguments } = event
+            && tool_name == "send_agent_message"
+            && matches!(
+                arguments.get("recipient_agent_id").and_then(|v| v.as_str()).map(str::trim),
+                Some("human" | "local" | "human:local")
+            )
+        {
+            let failed = turn[i + 1..].iter().find_map(|e| match e {
+                E::ToolResult { tool_name, result } if tool_name == "send_agent_message" => {
+                    Some(result.get("error").is_some() || result.get("is_error") == Some(&json!(true)))
+                }
+                E::InvalidToolCall { tool_name, .. } if tool_name == "send_agent_message" => Some(true),
+                _ => None,
+            });
+            if failed == Some(false) {
+                sent = true;
+            }
+        }
+    }
+    if sent {
+        return None;
+    }
+    let text = turn.iter().rev().find_map(|e| match e {
+        E::AssistantText { text } if !text.trim().is_empty() => Some(text.trim().to_string()),
+        _ => None,
+    })?;
+    Some((start, text))
+}
+
+/// Post `text` to the human's DM thread as the desk's agent, as send_agent_message would.
+pub(crate) fn relay_desk_reply(
+    store: &crate::store::Store,
+    session_id: &str,
+    events: &[crate::harness::HarnessEvent],
+) {
+    let Some((start, text)) = desk_relay_text(session_id, events) else { return };
+    let Some(agent_id) = session_id.strip_prefix("inbox-") else { return };
+    let key = format!("desk-relay:{session_id}:{start}");
+    match store.send_direct_message_typed(
+        ("agent", agent_id),
+        ("human", crate::coordination::LOCAL_HUMAN_ID),
+        &text,
+        &key,
+        &chrono::Utc::now().to_rfc3339(),
+        Some(session_id),
+        None,
+        None,
+        crate::coordination::typed::payload_fields(None, crate::coordination::typed::Urgency::Normal, None),
+    ) {
+        Ok(saved) => crate::session::emit_device_event(json!({
+            "kind": "coordination_event",
+            "event": saved,
+        })),
+        Err(error) => eprintln!("relay desk reply for {session_id}: {error}"),
+    }
 }
 
 /// Create (or re-bind) an agent's durable inbox session.
@@ -139,7 +224,8 @@ pub(super) async fn ensure_agent_inbox(d: &Shared, agent_id: &str) -> Result<(),
          directory. Direct messages from the human and from peer agents arrive in this \
          inbox. Answer each one where it came from: the envelope's `reply_to` names that \n\
          session, and that is where the sender is reading — not this inbox. Your shell \n\
-         is read-only; when a message should become work, send it to `mission-control`.\n",
+         is read-only: answer and look things up yourself, and send anything that changes \n\
+         files, has side effects or takes long to `mission-control` as a task request.\n",
         name = agent.display_name,
     );
     home.ensure_layout(&identity)
@@ -455,19 +541,15 @@ pub(super) struct DirectSendReq {
 /// recipient is woken by the delivery loop, not by this request.
 pub(super) async fn direct_send_message(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Json(req): Json<DirectSendReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     if req.body.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "body is required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "body is required");
     }
     let from = (req.from_kind.trim(), req.from_id.trim());
     let to = (req.to_kind.trim(), req.to_id.trim());
     if from.1.is_empty() || to.1.is_empty() {
-        return (StatusCode::BAD_REQUEST, "from_id and to_id are required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "from_id and to_id are required");
     }
     // A caller may not send as just any identity. The local human is the only
     // human; an agent sender must be a real directory entry. This is what stops
@@ -475,30 +557,22 @@ pub(super) async fn direct_send_message(
     match from.0 {
         "human" => {
             if from.1 != crate::coordination::LOCAL_HUMAN_ID {
-                return (StatusCode::FORBIDDEN, "unknown human sender").into_response();
+                return api_error(StatusCode::FORBIDDEN, "unknown human sender");
             }
         }
         "agent" => match d.store.get_agent(from.1) {
             Ok(Some(_)) => {}
             Ok(None) => {
-                return (StatusCode::NOT_FOUND, "unknown sender agent").into_response();
+                return api_error(StatusCode::NOT_FOUND, "unknown sender agent");
             }
             Err(error) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("look up sender: {error}"),
-                )
-                    .into_response();
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("look up sender: {error}"));
             }
         },
-        _ => return (StatusCode::BAD_REQUEST, "from_kind must be human or agent").into_response(),
+        _ => return api_error(StatusCode::BAD_REQUEST, "from_kind must be human or agent"),
     }
     if to.0 != "agent" && to.0 != "human" && to.0 != "session" {
-        return (
-            StatusCode::BAD_REQUEST,
-            "to_kind must be agent, human, or session",
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "to_kind must be agent, human, or session");
     }
     // A human recipient is the local operator — the only human this device knows.
     // An agent replying to the person who messaged it is the same direct-message
@@ -506,7 +580,7 @@ pub(super) async fn direct_send_message(
     match to.0 {
         "human" => {
             if to.1 != crate::coordination::LOCAL_HUMAN_ID {
-                return (StatusCode::NOT_FOUND, "unknown human recipient").into_response();
+                return api_error(StatusCode::NOT_FOUND, "unknown human recipient");
             }
         }
         // A SESSION recipient puts the message back where the question was asked,
@@ -518,18 +592,14 @@ pub(super) async fn direct_send_message(
                 )
                 .is_none()
             {
-                return (StatusCode::NOT_FOUND, "unknown recipient session").into_response();
+                return api_error(StatusCode::NOT_FOUND, "unknown recipient session");
             }
         }
         _ => match d.store.get_agent(to.1) {
             Ok(Some(_)) => {}
-            Ok(None) => return (StatusCode::NOT_FOUND, "unknown recipient agent").into_response(),
+            Ok(None) => return api_error(StatusCode::NOT_FOUND, "unknown recipient agent"),
             Err(error) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("look up recipient: {error}"),
-                )
-                    .into_response();
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("look up recipient: {error}"));
             }
         },
     }
@@ -549,7 +619,7 @@ pub(super) async fn direct_send_message(
         .filter(|s| !s.is_empty());
     let prepared_body = match super::transcribe::prepare_message(&d, req.body.trim().to_string()).await {
         Ok(t) => t,
-        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+        Err(error) => return api_error(StatusCode::BAD_REQUEST, error),
     };
     match d.store.send_direct_message_from(
         from,
@@ -573,17 +643,12 @@ pub(super) async fn direct_send_message(
             }
             (StatusCode::ACCEPTED, Json(saved)).into_response()
         }
-        Err(error) => (
-            StatusCode::CONFLICT,
-            format!("send direct message: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::CONFLICT, format!("send direct message: {error}")),
     }
 }
 
 #[derive(Deserialize)]
 pub(super) struct DirectActorQuery {
-    token: Option<String>,
     actor_kind: String,
     actor_id: String,
 }
@@ -594,22 +659,14 @@ pub(super) async fn direct_list_threads(
     State(d): State<Shared>,
     Query(q): Query<DirectActorQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.list_direct_threads(&q.actor_kind, &q.actor_id) {
         Ok(threads) => Json(threads).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("list direct threads: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("list direct threads: {error}")),
     }
 }
 
 #[derive(Deserialize)]
 pub(super) struct DirectMessagesQuery {
-    token: Option<String>,
     actor_kind: String,
     actor_id: String,
     peer_kind: String,
@@ -630,9 +687,6 @@ pub(super) async fn direct_list_messages(
     State(d): State<Shared>,
     Query(q): Query<DirectMessagesQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let from = (q.actor_kind.as_str(), q.actor_id.as_str());
     let to = (q.peer_kind.as_str(), q.peer_id.as_str());
     let thread_id = crate::coordination::direct_thread_id(from, to);
@@ -645,11 +699,7 @@ pub(super) async fn direct_list_messages(
             "events": events,
         }))
         .into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("read direct messages: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read direct messages: {error}")),
     }
 }
 
@@ -664,12 +714,8 @@ pub(super) struct DirectReadReq {
 /// POST /coordination/direct/read — mark a conversation read for one side.
 pub(super) async fn direct_mark_read(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Json(req): Json<DirectReadReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let thread_id = crate::coordination::direct_thread_id(
         (req.actor_kind.as_str(), req.actor_id.as_str()),
         (req.peer_kind.as_str(), req.peer_id.as_str()),
@@ -682,16 +728,79 @@ pub(super) async fn direct_mark_read(
         &at,
     ) {
         Ok(()) => Json(json!({"thread_id": thread_id, "read_at": at})).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("mark read: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("mark read: {error}")),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::harness::HarnessEvent as E;
+
+    fn dm(reply_to: &str) -> E {
+        E::UserInput {
+            text: format!("[direct_message]\nthread_id: t\nfrom: human:local\nfrom_kind: human\nto: agent:a\nreply_to: {reply_to}\nbody: hi\n[/direct_message]"),
+        }
+    }
+    fn say(text: &str) -> E {
+        E::AssistantText { text: text.into() }
+    }
+    fn send(to: &str, ok: bool) -> Vec<E> {
+        vec![
+            E::ToolCall { tool_name: "send_agent_message".into(), arguments: serde_json::json!({"recipient_agent_id": to, "body": "x"}) },
+            E::ToolResult {
+                tool_name: "send_agent_message".into(),
+                result: if ok { serde_json::json!({"to": "human:local"}) } else { serde_json::json!({"error": "no"}) },
+            },
+        ]
+    }
+
+    #[test]
+    fn relays_plain_reply_to_human_dm() {
+        let events = vec![dm("human"), say("draft"), say("Yes, boss.")];
+        assert_eq!(super::desk_relay_text("inbox-x-scout", &events), Some((0, "Yes, boss.".into())));
+    }
+
+    #[test]
+    fn no_relay_when_tool_sent_to_human() {
+        for to in ["human", "local", "human:local"] {
+            let mut events = vec![dm("human")];
+            events.extend(send(to, true));
+            events.push(say("done"));
+            assert_eq!(super::desk_relay_text("inbox-a", &events), None, "{to}");
+        }
+    }
+
+    #[test]
+    fn relays_when_tool_send_failed_or_went_elsewhere() {
+        let mut events = vec![dm("human")];
+        events.extend(send("human", false));
+        events.push(say("answer"));
+        assert!(super::desk_relay_text("inbox-a", &events).is_some());
+        let mut events = vec![dm("human")];
+        events.extend(send("mission-control", true));
+        events.push(say("answer"));
+        assert!(super::desk_relay_text("inbox-a", &events).is_some());
+    }
+
+    #[test]
+    fn no_relay_outside_human_dm_desk_turns() {
+        let events = vec![dm("human"), say("x")];
+        assert_eq!(super::desk_relay_text("mission-control", &events), None);
+        assert_eq!(super::desk_relay_text("some-task-session", &events), None);
+        assert_eq!(super::desk_relay_text("inbox-a", &[dm("session:abc"), say("x")]), None);
+        let plain = vec![E::UserInput { text: "hello".into() }, say("x")];
+        assert_eq!(super::desk_relay_text("inbox-a", &plain), None);
+        assert_eq!(super::desk_relay_text("inbox-a", &[dm("human"), say("  ")]), None);
+    }
+
+    #[test]
+    fn only_latest_turn_counts() {
+        let mut events = vec![dm("human")];
+        events.extend(send("human", true));
+        events.push(E::UserInput { text: "other".into() });
+        events.push(say("x"));
+        assert_eq!(super::desk_relay_text("inbox-a", &events), None);
+    }
     use super::*;
     use crate::coordination::types::CoordinationEvent;
 
@@ -749,7 +858,8 @@ mod tests {
         assert!(envelope.contains("from: human:local"));
         assert!(envelope.contains("to: agent:a"));
         assert!(envelope.contains("send_agent_message"));
-        assert!(envelope.contains("doesn't authorise work"));
+        assert!(envelope.contains("Workspace work requires a task"));
+        assert!(envelope.contains("plain reply text is delivered to them automatically"));
         assert!(envelope.ends_with("body: please review this\n[/direct_message]"));
     }
 

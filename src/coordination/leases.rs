@@ -123,7 +123,6 @@ mod tests {
                 handle: id.into(),
                 kind: crate::coordination::types::AgentKind::Worker,
                 status: crate::coordination::types::AgentStatus::Active,
-                role: crate::coordination::types::AgentRole::Implementer,
                 capabilities: vec![],
             })
             .unwrap();

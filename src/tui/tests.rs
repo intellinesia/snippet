@@ -203,9 +203,9 @@ fn board_app() -> App {
     app.boards.seed(
         "agents",
         serde_json::json!([
-            {"id": "snippet", "display_name": "Snippet", "role": "coding", "status": "active", "kind": "general",
+            {"id": "snippet", "display_name": "Snippet", "status": "active", "kind": "general",
              "capabilities": ["code", "review"]},
-            {"id": "designer", "display_name": "Designer", "role": "ui", "status": "paused"},
+            {"id": "designer", "display_name": "Designer", "status": "paused"},
         ]),
     );
     app.boards.seed(

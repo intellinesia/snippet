@@ -403,33 +403,6 @@ mod tests {
     }
 
     #[test]
-    fn test_record_without_label_legacy_compatibility() {
-        let temp = tempfile::tempdir().unwrap();
-        let ws = temp.path();
-        let id = "legacy12";
-        // Simulate legacy record without label in json
-        let dir = bg_dir(ws);
-        std::fs::create_dir_all(&dir).unwrap();
-        let legacy_json = format!(r#"{{
-            "id": "{id}",
-            "command": "python3 -m http.server",
-            "pid": 88888,
-            "started_at": "2026-09-25T18:00:00Z",
-            "log": "/tmp/{id}.log"
-        }}"#);
-        std::fs::write(dir.join(format!("{id}.json")), legacy_json).unwrap();
-
-        let entries = list(ws);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, id);
-        assert_eq!(entries[0].label, None);
-
-        // render_live should render exited process using command
-        let rendered = render_live(ws).unwrap();
-        assert!(rendered.contains("- [legacy12] `python3 -m http.server` — exited."));
-    }
-
-    #[test]
     fn test_render_live_with_label() {
         let temp = tempfile::tempdir().unwrap();
         let ws = temp.path();

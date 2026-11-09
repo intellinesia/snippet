@@ -14,8 +14,7 @@ impl CodingHarness {
         seeded_system: String,
         initial_request: Option<String>,
     ) -> Result<HarnessState, ToolError> {
-        // Migrate old metadata in memory; the next persist omits the legacy
-        // `user_request` field and keeps the title as identity.
+        // Seed an empty title from the first request.
         normalize_state_title(&mut state);
         // Reflect the current run's folder (backfills pre-field states).
         state.workspace = self.context.workspace_root().display().to_string();
@@ -112,7 +111,6 @@ impl CodingHarness {
             updated_at: now.clone(),
             workspace: self.context.workspace_root().display().to_string(),
             title,
-            legacy_request: String::new(),
             goal: None,
             compacting: false,
             turn_started_at: if matches!(status, HarnessStatus::Running) {
@@ -308,6 +306,7 @@ impl CodingHarness {
                     .load(std::sync::atomic::Ordering::Acquire)
                     > state.events.len();
             let mut active = false;
+            let mut turn_text: Option<String> = None;
             if messages_rewritten {
                 on_busy(|| store.replace_conversation_messages(&id, &state.messages, &now)).await?;
             } else {
@@ -315,6 +314,12 @@ impl CodingHarness {
                     .written_messages
                     .load(std::sync::atomic::Ordering::Acquire);
                 if from < state.messages.len() {
+                    turn_text = state.messages[from..].iter().rev().find_map(|m| match m {
+                        HarnessMessage::Assistant { content, .. } if !content.trim().is_empty() => {
+                            Some(content.clone())
+                        }
+                        _ => None,
+                    });
                     active |= state.messages[from..].iter().any(|m| {
                         matches!(
                             m,
@@ -350,6 +355,12 @@ impl CodingHarness {
                 let ts = Utc::now().timestamp();
                 let _ = on_busy(|| store.set_session_last_active(&id, ts)).await;
             }
+            if let Some(text) = turn_text
+                && let Ok(Some(row)) = store.get_session_row(&id)
+                && let Some(agent_id) = row.agent_id.filter(|a| !a.is_empty())
+            {
+                let _ = store.note_agent_last_message(&agent_id, &text, &Utc::now().to_rfc3339(), "agent");
+            }
             Ok::<(), String>(())
         }
         .await;
@@ -365,6 +376,9 @@ impl CodingHarness {
                 // Park any work a dead session was doing. Done AFTER the write,
                 // so the parked state never contradicts what the store holds.
                 crate::session::park_failed_session_work(&id, &prev_status, state);
+                if prev_status == "running" && status != "running" {
+                    crate::serve::relay_desk_reply(&store, &id, &state.events);
+                }
                 crate::session::emit_status_transition(
                     &id,
                     &prev_status,

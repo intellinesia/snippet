@@ -481,13 +481,7 @@ fn build_responses_request(
                 let (cleaned, image) = crate::llm::split_inlined_image(content);
                 let output =
                     crate::llm::render_tool_result(&cleaned);
-                if tool_call_id.is_empty() {
-                    // Legacy state with no native call id — render as user text.
-                    input.push(message_item(
-                        "user",
-                        &format!("[tool_result]\ntool = \"{tool_name}\"\noutput = {output}\n[/tool_result]"),
-                    ));
-                } else if !seen_calls.contains(tool_call_id) {
+                if !seen_calls.contains(tool_call_id) {
                     // Orphaned result (call was compacted away) — send as plain text.
                     input.push(message_item(
                         "user",

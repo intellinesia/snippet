@@ -1,3 +1,4 @@
+use super::api_error;
 use super::*;
 use crate::harness::HarnessEvent;
 use crate::routing::{self, LimitHit, Route};
@@ -84,23 +85,19 @@ pub(crate) struct LimitReq {
 
 pub(crate) async fn resolve_limit(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<LimitReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let id = req.session.as_str();
     let current = profile_of(&d, id).await;
     let resets_at = routing::limited_until(&current).unwrap_or(0);
     match req.action.as_str() {
         "switch" => {
             let Some(to) = req.profile.filter(|p| !p.trim().is_empty()) else {
-                return (StatusCode::BAD_REQUEST, "profile required").into_response();
+                return api_error(StatusCode::BAD_REQUEST, "profile required");
             };
             match continue_on(&d, id, &current, &to, resets_at).await {
                 Ok(()) => Json(serde_json::json!({ "profile": to })).into_response(),
-                Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+                Err(e) => api_error(StatusCode::BAD_REQUEST, e),
             }
         }
         "wait" => {
@@ -124,6 +121,6 @@ pub(crate) async fn resolve_limit(
             });
             Json(serde_json::json!({ "resets_at": until })).into_response()
         }
-        _ => (StatusCode::BAD_REQUEST, "action must be switch or wait").into_response(),
+        _ => api_error(StatusCode::BAD_REQUEST, "action must be switch or wait"),
     }
 }

@@ -262,26 +262,6 @@ impl ToolContext {
         self.lane_origin.as_ref().map(|(session, lane)| (session.as_str(), lane.as_str()))
     }
 
-    /// Reject a write to `path` when the file on disk differs from what this
-    /// context last saw — i.e. it was changed underneath us (by another lane, an
-    /// external edit, or another process) since we read it.
-    pub fn check_write(&self, path: &Path) -> Result<(), ToolError> {
-        let stored = self.seen.lock().unwrap().get(path).copied();
-        if let Some(stored) = stored {
-            // Compare against the file's CURRENT on-disk bytes. A missing/unreadable
-            // file isn't "stale" — let the write itself surface any real error.
-            if let Ok(current) = std::fs::read(path)
-                && content_hash(&current) != stored {
-                    return Err(ToolError::msg(format!(
-                        "`{}` changed on disk since you last read it. Re-read it before writing \
-                         so your change is based on its current contents.",
-                        path.display()
-                    )));
-                }
-        }
-        Ok(())
-    }
-
     /// Record that this context has seen `path`'s current on-disk contents (read).
     pub fn mark_read(&self, path: &Path) {
         self.remember(path);

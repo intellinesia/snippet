@@ -89,6 +89,11 @@ pub struct InboxEntry {
     pub created_at: String,
 }
 
+/// The text a person reads, with any `[envelope]` stripped.
+pub(super) fn envelope_text(body: &str) -> String {
+    parse_envelope(body).3
+}
+
 /// Splits an envelope into its name, task, title and the text a person reads.
 fn parse_envelope(body: &str) -> (Option<String>, Option<String>, Option<String>, String) {
     let body = body.trim();
@@ -358,6 +363,15 @@ impl Store {
             created_at: created_at.to_string(),
         };
         let saved = self.append_event(&event)?;
+
+        let preview = match (sender.0, recipient.0) {
+            ("human", "agent") => Some((recipient.1, "user")),
+            ("agent", "human") => Some((sender.1, "agent")),
+            _ => None,
+        };
+        if let Some((agent, from)) = preview {
+            let _ = self.note_agent_last_message(agent, &envelope_text(body), created_at, from);
+        }
 
         // The sender has by definition already seen this message; the recipient
         // has not, so its `read_at` stays NULL until it reads the thread.
@@ -785,7 +799,7 @@ pub const LOCAL_HUMAN_ID: &str = "local";
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordination::types::{Agent, AgentKind, AgentRole, AgentStatus};
+    use crate::coordination::types::{Agent, AgentKind, AgentStatus};
 
     fn worker(id: &str) -> Agent {
         Agent {
@@ -794,7 +808,6 @@ mod tests {
             handle: id.into(),
             kind: AgentKind::Worker,
             status: AgentStatus::Active,
-            role: AgentRole::Implementer,
             capabilities: vec![],
         }
     }

@@ -1,6 +1,7 @@
+use super::api_error;
 use std::time::Duration;
 
-use axum::extract::{Json, Path as AxumPath, Query, State};
+use axum::extract::{Json, Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -10,7 +11,7 @@ use serde_json::json;
 use crate::agent_wakes::Setter;
 use crate::harness::LoopInput;
 use crate::keep_warm::{self, Decision, KeepWarmSpec, Outcome};
-use super::{mission_error, unauthorized, Auth, Shared};
+use super::{mission_error, Shared};
 
 const TICK: Duration = Duration::from_secs(60);
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(180);
@@ -19,7 +20,6 @@ pub fn router() -> Router<Shared> {
     Router::new()
         .route("/keep-warm", get(list_entries))
         .route("/keep-warm/{*owner}", get(get_entry).put(put_entry).delete(delete_entry))
-        .route("/agents/{agent_id}/keep-warm", get(get_entry).put(put_entry).delete(delete_entry))
 }
 
 fn now() -> i64 {
@@ -89,10 +89,7 @@ fn not_found(owner: &str) -> Response {
     (StatusCode::NOT_FOUND, Json(json!({"owner": owner, "error": "no keep-warm"}))).into_response()
 }
 
-async fn list_entries(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn list_entries(State(d): State<Shared>) -> Response {
     let spend = crate::store::Store::open_cached(crate::store::default_db_path())
         .ok()
         .and_then(|s| s.keep_warm_totals(now() - 7 * 86_400).ok())
@@ -108,10 +105,7 @@ async fn list_entries(State(d): State<Shared>, Query(a): Query<Auth>) -> Respons
     }
 }
 
-async fn get_entry(State(d): State<Shared>, AxumPath(owner): AxumPath<String>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn get_entry(State(d): State<Shared>, AxumPath(owner): AxumPath<String>,) -> Response {
     match keep_warm::get(&d.recurring_root, &owner) {
         Ok(Some(entry)) => Json(keep_warm::view(&entry)).into_response(),
         Ok(None) => not_found(&owner),
@@ -122,26 +116,19 @@ async fn get_entry(State(d): State<Shared>, AxumPath(owner): AxumPath<String>, Q
 async fn put_entry(
     State(d): State<Shared>,
     AxumPath(owner): AxumPath<String>,
-    Query(a): Query<Auth>,
     Json(spec): Json<KeepWarmSpec>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let kind = match crate::agent_wakes::resolve_owner(&d.store, &owner) {
         Ok(kind) => kind,
-        Err(error) => return (StatusCode::NOT_FOUND, error).into_response(),
+        Err(error) => return api_error(StatusCode::NOT_FOUND, error),
     };
     match keep_warm::set(&d.recurring_root, &owner, kind, spec, Setter::User, now()) {
         Ok(entry) => Json(keep_warm::view(&entry)).into_response(),
-        Err(error) => (StatusCode::BAD_REQUEST, error).into_response(),
+        Err(error) => api_error(StatusCode::BAD_REQUEST, error),
     }
 }
 
-async fn delete_entry(State(d): State<Shared>, AxumPath(owner): AxumPath<String>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn delete_entry(State(d): State<Shared>, AxumPath(owner): AxumPath<String>,) -> Response {
     match keep_warm::clear(&d.recurring_root, &owner, Setter::User) {
         Ok(true) => Json(json!({"owner": owner, "deleted": true})).into_response(),
         Ok(false) => not_found(&owner),

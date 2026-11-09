@@ -29,18 +29,18 @@ impl Tool for ManageProcessTool {
                     "action": {
                         "type": "string",
                         "enum": ["list", "kill", "log"],
-                        "description": "The management action to perform: 'list' (show all tracked background processes), 'kill' (terminate a running background process), or 'log' (view trailing log output)."
+                        "description": "Management action."
                     },
                     "id": {
                         "type": "string",
-                        "description": "Background process ID (as returned by `bash` with background:true or listed in [background_processes]). Required for 'kill' and 'log'."
+                        "description": "Required for kill and log; returned by bash or list."
                     },
                     "lines": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 1000,
                         "default": 50,
-                        "description": "Number of trailing log lines to retrieve (default 50, max 1000). Only used when action='log'."
+                        "description": "Trailing log lines (default 50)."
                     }
                 }),
                 &["action"],

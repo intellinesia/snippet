@@ -44,14 +44,13 @@ impl Store {
                 "INSERT INTO agents
                  (id, display_name, handle, kind, status, role, capabilities_json,
                   created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7, ?7)",
                 params![
                     agent.id,
                     agent.display_name,
                     agent.handle,
                     enum_text(&agent.kind),
                     enum_text(&agent.status),
-                    enum_text(&agent.role),
                     capabilities,
                     timestamp,
                 ],
@@ -65,7 +64,7 @@ impl Store {
     /// The daemon registers its built-in agents (Mission Control) on every boot,
     /// so this has to be idempotent — `create_agent` is a plain INSERT and would
     /// hit the primary key on the second start. The DESCRIPTIVE fields are
-    /// refreshed so a changed display name or role lands; `created_at` is
+    /// refreshed so a changed display name lands; `created_at` is
     /// preserved, because rewriting it would erase the row's history rather than
     /// update it. `status` is set only on insert: a boot or a rebuild must not
     /// resume an agent someone paused.
@@ -77,12 +76,11 @@ impl Store {
                 "INSERT INTO agents
                  (id, display_name, handle, kind, status, role, capabilities_json,
                   created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                 VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7, ?7)
                  ON CONFLICT(id) DO UPDATE SET
                      display_name = excluded.display_name,
                      handle = excluded.handle,
                      kind = excluded.kind,
-                     role = excluded.role,
                      capabilities_json = excluded.capabilities_json,
                      updated_at = excluded.updated_at",
                 params![
@@ -91,7 +89,6 @@ impl Store {
                     agent.handle,
                     enum_text(&agent.kind),
                     enum_text(&agent.status),
-                    enum_text(&agent.role),
                     capabilities,
                     timestamp,
                 ],
@@ -364,23 +361,21 @@ impl Store {
     pub fn list_agents(&self) -> Result<Vec<Agent>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, display_name, handle, kind, status, role, capabilities_json
+                "SELECT id, display_name, handle, kind, status, capabilities_json
                  FROM agents ORDER BY display_name",
             )?;
             let rows = stmt.query_map([], |row| {
                 let kind: String = row.get(3)?;
                 let status: String = row.get(4)?;
-                let role: String = row.get(5)?;
-                let capabilities: String = row.get(6)?;
+                let capabilities: String = row.get(5)?;
                 Ok(Agent {
                     id: row.get(0)?,
                     display_name: row.get(1)?,
                     handle: row.get(2)?,
                     kind: decode_enum(kind, 3)?,
                     status: decode_enum(status, 4)?,
-                    role: decode_enum(role, 5)?,
                     capabilities: serde_json::from_str(&capabilities).map_err(|e| {
-                        rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(e))
+                        rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(e))
                     })?,
                 })
             })?;
@@ -407,7 +402,7 @@ impl Store {
                 None => (None, None),
             };
             let mut stmt = conn.prepare(
-                "SELECT id, display_name, handle, kind, status, role, capabilities_json
+                "SELECT id, display_name, handle, kind, status, capabilities_json
                  FROM agents
                  WHERE ?1 IS NULL OR (display_name, id) > (?1, ?2)
                  ORDER BY display_name, id
@@ -416,17 +411,15 @@ impl Store {
             let rows = stmt.query_map(params![after_name, after_id, limit], |row| {
                 let kind: String = row.get(3)?;
                 let status: String = row.get(4)?;
-                let role: String = row.get(5)?;
-                let capabilities: String = row.get(6)?;
+                let capabilities: String = row.get(5)?;
                 Ok(Agent {
                     id: row.get(0)?,
                     display_name: row.get(1)?,
                     handle: row.get(2)?,
                     kind: decode_enum(kind, 3)?,
                     status: decode_enum(status, 4)?,
-                    role: decode_enum(role, 5)?,
                     capabilities: serde_json::from_str(&capabilities).map_err(|e| {
-                        rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(e))
+                        rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(e))
                     })?,
                 })
             })?;
@@ -438,7 +431,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordination::types::{AgentKind, AgentRole, AgentStatus};
+    use crate::coordination::types::{AgentKind, AgentStatus};
 
     #[test]
     fn agent_round_trip() {
@@ -449,7 +442,6 @@ mod tests {
             handle: "rust".into(),
             kind: AgentKind::Worker,
             status: AgentStatus::Active,
-            role: AgentRole::Implementer,
             capabilities: vec!["rust".into()],
         };
         db.create_agent(&agent).unwrap();
@@ -463,7 +455,6 @@ mod tests {
             handle: id.into(),
             kind: AgentKind::Worker,
             status: AgentStatus::Active,
-            role: AgentRole::Implementer,
             capabilities: vec![],
         }
     }
@@ -499,7 +490,6 @@ mod tests {
         let renamed = Agent {
             display_name: "Coordinator".into(),
             kind: AgentKind::MissionControl,
-            role: AgentRole::Coordinator,
             ..agent("mission-control", "Coordinator")
         };
         db.upsert_agent(&renamed).unwrap();

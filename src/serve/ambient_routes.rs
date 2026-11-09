@@ -1,3 +1,4 @@
+use super::api_error;
 use super::*;
 
 
@@ -17,14 +18,10 @@ pub(crate) struct LeaseReq {
 
 pub(crate) async fn lease(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<LeaseReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.device.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "device is required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "device is required");
     }
     if req.release {
         lease_release(&req.device);
@@ -171,10 +168,7 @@ fn settings_view(d: &Daemon) -> serde_json::Value {
     })
 }
 
-pub(crate) async fn get_settings(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn get_settings(State(d): State<Shared>) -> Response {
     d.reload_config().await;
     Json(settings_view(&d)).into_response()
 }
@@ -241,12 +235,8 @@ fn patched_ambient(mut ambient: crate::config::AmbientConfig, req: &SettingsReq)
 
 pub(crate) async fn set_settings(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<SettingsReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     d.reload_config().await;
     let result = {
         let mut c = d.config.lock().unwrap();
@@ -302,7 +292,7 @@ pub(crate) async fn set_settings(
             crate::tts::apply_config(&d.config.lock().unwrap());
             Json(settings_view(&d)).into_response()
         }
-        Err((code, e)) => (code, e).into_response(),
+        Err((code, e)) => api_error(code, e),
     }
 }
 
@@ -325,7 +315,6 @@ pub(crate) struct Segment {
 
 #[derive(Deserialize)]
 pub(crate) struct ListQuery {
-    token: Option<String>,
     from: Option<String>,
     to: Option<String>,
     q: Option<String>,
@@ -625,32 +614,6 @@ pub(super) fn recent_replies(device: &str) -> Vec<String> {
     out
 }
 
-#[derive(Deserialize)]
-pub(crate) struct ActivityReq {
-    device: String,
-    #[serde(default)]
-    seq: Option<i64>,
-    #[serde(default)]
-    skip: bool,
-}
-
-pub(crate) async fn activity(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
-    Json(req): Json<ActivityReq>,
-) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
-    if lease_holder().is_some_and(|(h, _)| h == req.device) {
-        match (req.skip, req.seq) {
-            (true, Some(seq)) if seq > 0 => super::ambient_router::submit(&d, &req.device, super::ambient_router::Msg::Skip(seq)),
-            _ => super::ambient_router::submit(&d, &req.device, super::ambient_router::Msg::Activity(req.seq)),
-        }
-    }
-    Json(serde_json::json!({"ok": true})).into_response()
-}
-
 pub(super) async fn record_heard(d: &Shared, device: &str, e: super::listener::Event) {
     let started_at = chrono::DateTime::from_timestamp_millis((e.started * 1000.0) as i64)
         .unwrap_or_else(chrono::Utc::now)
@@ -728,23 +691,17 @@ pub(crate) struct EnrollVoiceprintReq {
 #[derive(Deserialize)]
 pub(crate) struct DeleteVoiceprintQuery {
     #[serde(default)]
-    token: Option<String>,
-    #[serde(default)]
     id: Option<String>,
 }
 
 pub(crate) async fn enroll_voiceprint(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<EnrollVoiceprintReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     d.reload_config().await;
     let audio_bytes = if req.from_recent {
         let Ok(mut dir) = tokio::fs::read_dir(audio_dir()).await else {
-            return (StatusCode::BAD_REQUEST, "No recent ambient voice recordings found").into_response();
+            return api_error(StatusCode::BAD_REQUEST, "No recent ambient voice recordings found");
         };
         let mut latest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
         while let Ok(Some(entry)) = dir.next_entry().await {
@@ -754,32 +711,32 @@ pub(crate) async fn enroll_voiceprint(
                 }
         }
         let Some((_, path)) = latest else {
-            return (StatusCode::BAD_REQUEST, "No recent ambient voice recordings found").into_response();
+            return api_error(StatusCode::BAD_REQUEST, "No recent ambient voice recordings found");
         };
         match tokio::fs::read(&path).await {
             Ok(b) => b,
-            Err(e) => return (StatusCode::BAD_REQUEST, format!("Failed to read recording: {e}")).into_response(),
+            Err(e) => return api_error(StatusCode::BAD_REQUEST, format!("Failed to read recording: {e}")),
         }
     } else {
         use base64::Engine as _;
         match base64::engine::general_purpose::STANDARD.decode(req.audio_base64.trim()) {
             Ok(b) if !b.is_empty() => b,
-            _ => return (StatusCode::BAD_REQUEST, "audio_base64 is required").into_response(),
+            _ => return api_error(StatusCode::BAD_REQUEST, "audio_base64 is required"),
         }
     };
 
     let pcm = match crate::voiceprint::pcm_from_audio(&audio_bytes) {
         Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, e),
     };
     let (model, vec) = match crate::voiceprint::embed_enrolment(&pcm).await {
         Ok((v, _)) => (crate::voiceprint::NEURAL_MODEL.to_string(), v),
-        Err(e) if e.starts_with("Not enough") => return (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) if e.starts_with("Not enough") => return api_error(StatusCode::BAD_REQUEST, e),
         Err(e) => {
             eprintln!("[voiceprint] enrolling with legacy scorer: {e}");
             match crate::voiceprint::extract_from_pcm_or_wav(&pcm) {
                 Ok(v) => (String::new(), v),
-                Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+                Err(e) => return api_error(StatusCode::BAD_REQUEST, e),
             }
         }
     };
@@ -811,7 +768,7 @@ pub(crate) async fn enroll_voiceprint(
         crate::config::save_config(&c, &d.config_path)
     };
     if let Err(e) = save_res {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
     Json(settings_view(&d)).into_response()
 }
@@ -820,9 +777,6 @@ pub(crate) async fn delete_voiceprint(
     State(d): State<Shared>,
     Query(q): Query<DeleteVoiceprintQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     d.reload_config().await;
     let save_res = {
         let mut c = d.config.lock().unwrap();
@@ -841,7 +795,7 @@ pub(crate) async fn delete_voiceprint(
         crate::config::save_config(&c, &d.config_path)
     };
     if let Err(e) = save_res {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
     Json(settings_view(&d)).into_response()
 }
@@ -872,9 +826,6 @@ pub(crate) fn resume(d: Shared) {
 }
 
 pub(crate) async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let limit = q.limit.unwrap_or(100).clamp(1, 500) as i64;
     let search = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| {
         s.split_whitespace()
@@ -910,14 +861,11 @@ pub(crate) async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) ->
     });
     match rows {
         Ok(events) => Json(serde_json::json!({ "events": events })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")),
     }
 }
 
-pub(crate) async fn stats(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn stats(State(d): State<Shared>) -> Response {
     let since = (chrono::Utc::now() - chrono::Duration::hours(24)).timestamp();
     let rows = d.store.with_connection(|c| {
         let mut stmt = c.prepare(
@@ -946,32 +894,10 @@ pub(crate) async fn stats(State(d): State<Shared>, Query(a): Query<Auth>) -> Res
             }))
             .into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")),
     }
 }
 
-
-pub(crate) async fn end_conversation(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
-    crate::ambient::end_conversation();
-    Json(settings_view(&d)).into_response()
-}
-
-pub(crate) async fn turn_audio(
-    State(d): State<Shared>,
-    axum::extract::Path(id): axum::extract::Path<i64>,
-    Query(a): Query<Auth>,
-) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
-    match tokio::fs::read(crate::tts::audio_dir().join(format!("{id}.wav"))).await {
-        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "audio/wav")], bytes).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "no audio for this turn").into_response(),
-    }
-}
 
 fn has_key(k: &Option<String>) -> bool {
     k.as_deref().is_some_and(|k| !k.trim().is_empty())

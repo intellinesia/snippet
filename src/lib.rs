@@ -37,6 +37,7 @@ pub mod meta;
 pub mod mission_control;
 pub mod mission_autonomy;
 pub mod members;
+pub mod profiles;
 pub mod progress;
 pub mod mission_tools;
 pub mod goal_plan;

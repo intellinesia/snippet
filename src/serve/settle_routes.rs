@@ -1,6 +1,7 @@
 //! Settling sessions: the routes, the memory-saving settle itself, and the sweep that
 //! settles cold sessions and deletes long-settled ones. Thresholds live in `crate::settle`.
 
+use super::api_error;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -218,34 +219,25 @@ fn outcome_response(outcome: SettleOutcome) -> Response {
             Json(serde_json::json!({"ok": false, "error": reason})),
         )
             .into_response(),
-        SettleOutcome::Gone => (StatusCode::NOT_FOUND, "no such session").into_response(),
+        SettleOutcome::Gone => api_error(StatusCode::NOT_FOUND, "no such session"),
     }
 }
 
 // POST /session/settle {session}
 pub(crate) async fn settle_route(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<SettleReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     outcome_response(settle_session(&d, &req.session).await)
 }
 
 // POST /session/unsettle {session}
 pub(crate) async fn unsettle_route(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<SettleReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match unsettle_session(&req.session) {
         Some(s) => Json(serde_json::json!({"ok": true, "session": s})).into_response(),
-        None => (StatusCode::NOT_FOUND, "no such session").into_response(),
+        None => api_error(StatusCode::NOT_FOUND, "no such session"),
     }
 }
 
@@ -264,17 +256,40 @@ pub(crate) fn set_keep_awake(id: &str, on: bool) -> Option<serde_json::Value> {
 
 // POST /session/keep_awake {session, on}
 pub(crate) async fn keep_awake_route(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<KeepAwakeReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match set_keep_awake(&req.session, req.on) {
         Some(s) => Json(serde_json::json!({"ok": true, "session": s})).into_response(),
-        None => (StatusCode::NOT_FOUND, "no such session").into_response(),
+        None => api_error(StatusCode::NOT_FOUND, "no such session"),
     }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CacheQuery {
+    id: String,
+}
+
+// GET /session/cache?id= — whether the next turn would re-read the history uncached.
+pub(crate) async fn cache_route(
+    Query(q): Query<CacheQuery>,
+) -> Response {
+    let Some(store) = crate::session::store_for_sessions() else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "no store");
+    };
+    let Some(row) = store.get_session_row(&q.id).ok().flatten() else {
+        return api_error(StatusCode::NOT_FOUND, "no such session");
+    };
+    let (touched, context) = store.cache_touch(&row.id).unwrap_or((None, None));
+    let ttl = ttl_for(&profile_cache_ttls(), row.profile.as_deref());
+    let idle = touched.map(|t| idle_secs(now(), t));
+    let cold = idle.is_some_and(|i| i >= ttl) && context.unwrap_or(0) > 0;
+    Json(serde_json::json!({
+        "cold": cold,
+        "idle_secs": idle,
+        "cache_ttl_secs": ttl,
+        "resume_tokens": context,
+    }))
+    .into_response()
 }
 
 pub(crate) async fn settle_loop(d: Shared) {
@@ -287,6 +302,7 @@ pub(crate) async fn settle_loop(d: Shared) {
 /// One sweep: delete sessions settled over `DELETE_AFTER_SECS` ago (keeping their memory), then
 /// settle at most `MAX_SETTLES_PER_TICK` cold sessions, oldest first.
 pub(crate) async fn sweep_once(d: &Shared) -> (usize, usize) {
+    super::settle_stale_running(d).await;
     let Some(store) = crate::session::store_for_sessions() else {
         return (0, 0);
     };

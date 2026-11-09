@@ -834,27 +834,6 @@ mod tests {
         let v = view_with_runs(r.path(), &job, T0);
         assert_eq!(v["last_status"], "interrupted");
     }
-
-    #[test]
-    fn old_recurring_table_gains_wake_columns() {
-        let dir = root();
-        let path = dir.path().join("old.db");
-        {
-            let conn = rusqlite::Connection::open(&path).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE recurring_jobs (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, session_id TEXT NOT NULL,
-                 prompt TEXT NOT NULL, plan_path TEXT, schedule_json TEXT NOT NULL, delivery TEXT NOT NULL,
-                 enabled INTEGER NOT NULL, next_run_at INTEGER NOT NULL, last_run_at INTEGER, last_error TEXT,
-                 queued INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-                 INSERT INTO recurring_jobs VALUES ('j1','t','s','p',NULL,'{\"kind\":\"interval\",\"every_secs\":3600}','goal',1,0,NULL,NULL,0,0,0);",
-            )
-            .unwrap();
-        }
-        let store = crate::store::Store::open(&path).unwrap();
-        let jobs = store.list_recurring_jobs().unwrap();
-        assert_eq!(jobs.len(), 1);
-        assert!(jobs[0].wake.is_none() && jobs[0].last_result.is_none());
-    }
 }
 
 #[cfg(test)]

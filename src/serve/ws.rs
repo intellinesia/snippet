@@ -1,10 +1,5 @@
+use super::api_error;
 use super::*;
-
-#[derive(Deserialize)]
-pub(crate) struct ShellsQuery {
-    pub(crate) token: Option<String>,
-}
-
 
 // A shell belongs to the machine: switching or closing a session must not kill
 // it. `/attach` cannot serve this because it calls `ensure_live`, so a socket
@@ -16,11 +11,7 @@ pub(crate) struct ShellsQuery {
 pub(crate) async fn shells_ws(
     ws: WebSocketUpgrade,
     State(d): State<Shared>,
-    Query(q): Query<ShellsQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let terms = d.shells.clone();
     ws.on_upgrade(move |socket| handle_shells_ws(socket, terms))
 }
@@ -47,7 +38,9 @@ async fn handle_shells_ws(socket: WebSocket, terms: Arc<crate::term::SessionTerm
         }
 
     let push = tokio::spawn(async move {
-        loop {
+        let mut term_changes = push_terms.changes();
+        'push: loop {
+            term_changes.borrow_and_update();
             for (id, chunk, cols, rows, alive) in push_terms.poll_client(&term_client) {
                 if chunk.is_empty() && alive {
                     continue;
@@ -65,10 +58,10 @@ async fn handle_shells_ws(socket: WebSocket, terms: Arc<crate::term::SessionTerm
                 });
                 if let Ok(json) = serde_json::to_string(&frame)
                     && sender.send(Message::Text(json.into())).await.is_err() {
-                        break;
+                        break 'push;
                     }
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = tokio::time::timeout(PUSH_FALLBACK_TICK, term_changes.changed()).await;
         }
     });
 
@@ -93,9 +86,6 @@ pub(crate) async fn attach_ws(
     State(d): State<Shared>,
     Query(q): Query<AttachQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let on = |v: &Option<String>| v.as_deref().is_some_and(|v| v != "0" && v != "false");
     let compact = on(&q.compact);
     let stream_delta = on(&q.stream_delta);
@@ -103,7 +93,7 @@ pub(crate) async fn attach_ws(
         let Some(state_path) = state_path_for_id(&q.session)
             .filter(|path| crate::session::read_session_meta(path).is_some())
         else {
-            return (StatusCode::NOT_FOUND, "no such lane").into_response();
+            return api_error(StatusCode::NOT_FOUND, "no such lane");
         };
         let stream: crate::llm::StreamHandle =
             std::sync::Arc::new(std::sync::Mutex::new(crate::llm::StreamBuffer::default()));
@@ -125,7 +115,7 @@ pub(crate) async fn attach_ws(
                 handle_ws(socket, daemon, session, state_path, stream, terms, AttachOptions { compact, stream_delta, read_only: false })
             })
         }
-        None => (StatusCode::NOT_FOUND, "no such session").into_response(),
+        None => api_error(StatusCode::NOT_FOUND, "no such session"),
     }
 }
 
@@ -165,6 +155,16 @@ async fn handle_ws(
         let terms = push_terms;
         let mut history_rx = history_rx;
         let term_client = terms.as_ref().map(|t| t.subscribe());
+        let mut signals = AttachSignals {
+            session: crate::conversations::session_changes(),
+            stream: crate::llm::StreamBuffer::changes(&stream),
+            term: terms.as_ref().map(|t| t.changes()),
+            session_woke: false,
+        };
+        let mut check_state_next = true;
+        let mut pending_event: Option<usize> = None;
+        let mut pending_history: Option<(usize, Option<usize>)> = None;
+        let mut pinged = false;
         let mut last_state_fingerprint = None;
         let mut last_events: Vec<crate::harness::HarnessEvent> = Vec::new();
         let mut last_event_offset = 0usize;
@@ -177,34 +177,53 @@ async fn handle_ws(
         let mut attach_revision: u64 = 0;
         let mut term_seq: u64 = 0;
         let mut last_frame_sent = tokio::time::Instant::now();
-        let load_initial = |path: &Path| -> Option<(crate::harness::HarnessState, usize)> {
-            if let Some(mut meta) = crate::session::read_session_meta(path)
-                && let Some((events, win_start, _)) = crate::session::read_session_event_page(path, None, 200)
-            {
-                meta.events = events;
-                return Some((meta, win_start));
+        let load_initial = |path: &Path| {
+            let path = path.to_path_buf();
+            async move {
+                tokio::task::spawn_blocking(move || load_initial_state(&path))
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|(s, off)| (s, false, off))
             }
-            read_session_state_tail(path, 0).map(|(s, _)| (s, 0))
         };
-        loop {
+        'attach: loop {
+            let check_state = std::mem::take(&mut check_state_next) | signals.mark_seen();
             let queue_revision = daemon.queue_revision.load(Ordering::Acquire);
-            if let Some(fingerprint) = session_state_fingerprint(&daemon.store, &state_path)
+            let fingerprint = if check_state {
+                let store = daemon.store.clone();
+                let path = state_path.clone();
+                tokio::task::spawn_blocking(move || session_state_fingerprint(&store, &path))
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+            if let Some(fingerprint) = fingerprint
                 && (Some(fingerprint) != last_state_fingerprint
                     || queue_revision != last_queue_revision)
                 {
                     let resume = !last_events.is_empty();
                     let loaded = if resume {
-                        read_session_state_tail(&state_path, last_event_offset).and_then(|(state, _)| {
-                            let continuous = state.events.len() >= last_events.len()
-                                && state.events[..last_events.len()] == last_events[..];
-                            if continuous {
+                        let path = state_path.clone();
+                        let from = last_event_offset;
+                        let tail = tokio::task::spawn_blocking(move || read_session_state_tail(&path, from))
+                            .await
+                            .ok()
+                            .flatten();
+                        match tail {
+                            Some((state, _))
+                                if state.events.len() >= last_events.len()
+                                    && state.events[..last_events.len()] == last_events[..] =>
+                            {
                                 Some((state, true, last_event_offset))
-                            } else {
-                                load_initial(&state_path).map(|(s, off)| (s, false, off))
                             }
-                        })
+                            Some(_) => load_initial(&state_path).await,
+                            None => None,
+                        }
                     } else {
-                        load_initial(&state_path).map(|(s, off)| (s, false, off))
+                        load_initial(&state_path).await
                     };
                     if let Some((mut state, continuous, base_offset)) = loaded {
                         let hidden = {
@@ -236,6 +255,11 @@ async fn handle_ws(
                                 } else {
                                     o.remove("rate_limit");
                                 }
+                            }
+                            if compact
+                                && let Some(lanes) = v.get_mut("lanes").and_then(|l| l.as_array_mut())
+                            {
+                                trim_finished_lanes(lanes, &session);
                             }
                             let lanes_json = v
                                 .get("lanes")
@@ -347,12 +371,22 @@ async fn handle_ws(
                     });
                     if let Ok(json) = serde_json::to_string(&frame)
                         && sender.send(Message::Text(json.into())).await.is_err() {
-                            break;
+                            break 'attach;
                         }
                 }
             }
-            if let Ok(index) = event_rx.try_recv()
-                && let Some((state, _)) = read_session_state_tail(&state_path, index) {
+            let event_request = match pending_event.take().or_else(|| event_rx.try_recv().ok()) {
+                Some(index) => {
+                    let path = state_path.clone();
+                    tokio::task::spawn_blocking(move || read_session_state_tail(&path, index))
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|(state, _)| (index, state))
+                }
+                None => None,
+            };
+            if let Some((index, state)) = event_request {
                     let frame = serde_json::json!({
                         "wire": "event",
                         "index": index,
@@ -366,7 +400,7 @@ async fn handle_ws(
                         break;
                     }
                 }
-            if let Ok((before, limit)) = history_rx.try_recv() {
+            if let Some((before, limit)) = pending_history.take().or_else(|| history_rx.try_recv().ok()) {
                 let paged = match limit {
                     Some(size) => {
                         let path = state_path.clone();
@@ -379,11 +413,20 @@ async fn handle_ws(
                     }
                     None => None,
                 };
-                let paged = paged.or_else(|| {
-                    let (state, _) = read_session_state_tail(&state_path, 0)?;
-                    let (start, end, _) = session_event_page(&state.events, Some(before), limit);
-                    Some((state.events[start..end].to_vec(), start, end))
-                });
+                let paged = match paged {
+                    Some(paged) => Some(paged),
+                    None => {
+                        let path = state_path.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let (state, _) = read_session_state_tail(&path, 0)?;
+                            let (start, end, _) = session_event_page(&state.events, Some(before), limit);
+                            Some((state.events[start..end].to_vec(), start, end))
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                    }
+                };
                 if let Some((events, start, end)) = paged {
                     let has_older = start > 0;
                     let frame = serde_json::json!({
@@ -403,11 +446,10 @@ async fn handle_ws(
                     last_frame_sent = tokio::time::Instant::now();
                 }
             }
-            let mut pinged = false;
             while ping_rx.try_recv().is_ok() {
                 pinged = true;
             }
-            if pinged || last_frame_sent.elapsed() >= Duration::from_secs(5) {
+            if std::mem::take(&mut pinged) || last_frame_sent.elapsed() >= HEARTBEAT {
                 if sender
                     .send(Message::Text("{\"wire\":\"hb\"}".into()))
                     .await
@@ -417,7 +459,14 @@ async fn handle_ws(
                 }
                 last_frame_sent = tokio::time::Instant::now();
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            let deadline = (last_frame_sent + HEARTBEAT).min(tokio::time::Instant::now() + PUSH_FALLBACK_TICK);
+            tokio::select! {
+                _ = signals.changed() => {}
+                Some(index) = event_rx.recv() => pending_event = Some(index),
+                Some(request) = history_rx.recv() => pending_history = Some(request),
+                Some(()) = ping_rx.recv() => pinged = true,
+                _ = tokio::time::sleep_until(deadline) => check_state_next = true,
+            }
         }
     });
 
@@ -498,6 +547,83 @@ async fn handle_ws(
     push.abort();
 }
 
+const TRIMMED_SUMMARY_CHARS: usize = 600;
+
+/// Finished lanes keep their card fields; the full text is `GET /session/lane`.
+fn trim_finished_lanes(lanes: &mut [serde_json::Value], session: &str) {
+    for lane in lanes {
+        let Some(o) = lane.as_object_mut() else { continue };
+        if matches!(o.get("status").and_then(|s| s.as_str()), Some("running" | "paused")) {
+            continue;
+        }
+        let mut trimmed = false;
+        for key in ["handoff", "report", "activity_log"] {
+            trimmed |= o.remove(key).is_some();
+        }
+        if let Some(summary) = o.get("summary").and_then(|s| s.as_str())
+            && summary.chars().count() > TRIMMED_SUMMARY_CHARS
+        {
+            let short: String = summary.chars().take(TRIMMED_SUMMARY_CHARS).collect();
+            o.insert("summary".into(), serde_json::json!(format!("{short}…")));
+            trimmed = true;
+        }
+        if trimmed {
+            o.insert("trimmed".into(), serde_json::json!(true));
+            o.insert("session".into(), serde_json::json!(session));
+        }
+    }
+}
+
+const HEARTBEAT: Duration = Duration::from_secs(5);
+// Backstop for writers that bypass the change signals (e.g. another process).
+const PUSH_FALLBACK_TICK: Duration = Duration::from_secs(1);
+
+fn load_initial_state(path: &Path) -> Option<(crate::harness::HarnessState, usize)> {
+    if let Some(mut meta) = crate::session::read_session_meta(path)
+        && let Some((events, win_start, _)) = crate::session::read_session_event_page(path, None, 200)
+    {
+        meta.events = events;
+        return Some((meta, win_start));
+    }
+    read_session_state_tail(path, 0).map(|(s, _)| (s, 0))
+}
+
+/// What wakes an `/attach` push loop besides client requests and the fallback tick.
+struct AttachSignals {
+    session: tokio::sync::watch::Receiver<()>,
+    stream: Option<tokio::sync::watch::Receiver<()>>,
+    term: Option<tokio::sync::watch::Receiver<()>>,
+    // `changed()` marks the value seen, so remember a session wake for `mark_seen`.
+    session_woke: bool,
+}
+
+impl AttachSignals {
+    /// Marks every signal seen; true when the session store changed since the last call.
+    fn mark_seen(&mut self) -> bool {
+        let session = std::mem::take(&mut self.session_woke) | self.session.borrow_and_update().has_changed();
+        for rx in [self.stream.as_mut(), self.term.as_mut()].into_iter().flatten() {
+            rx.borrow_and_update();
+        }
+        session
+    }
+
+    async fn changed(&mut self) {
+        async fn wait(rx: Option<&mut tokio::sync::watch::Receiver<()>>) {
+            if let Some(rx) = rx
+                && rx.changed().await.is_ok()
+            {
+                return;
+            }
+            std::future::pending().await
+        }
+        tokio::select! {
+            _ = wait(Some(&mut self.session)) => self.session_woke = true,
+            _ = wait(self.stream.as_mut()) => {}
+            _ = wait(self.term.as_mut()) => {}
+        }
+    }
+}
+
 fn apply_term_client(terms: &crate::term::SessionTerms, val: &serde_json::Value) {
     use base64::Engine;
     let op = val.get("op").and_then(|v| v.as_str()).unwrap_or("");
@@ -550,49 +676,24 @@ fn apply_term_client(terms: &crate::term::SessionTerms, val: &serde_json::Value)
 // WS /events — device-wide firehose. Emits a compact event on status changes
 // (including running) so the session list can update live, even for chats the
 // app isn't painting. Durable notifications are emitted as separate full frames.
-pub(crate) async fn events_ws(
-    ws: WebSocketUpgrade,
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
-) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
-    ws.on_upgrade(move |socket| handle_events_ws(socket, d))
+pub(crate) async fn events_ws(ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(handle_events_ws)
 }
 
 
-async fn handle_events_ws(socket: WebSocket, daemon: Shared) {
+async fn handle_events_ws(socket: WebSocket) {
     let (mut sender, mut receiver) = socket.split();
     let mut rx = subscribe_device_events();
     let push = tokio::spawn(async move {
-        // Idle PTYs still need a pump so BEL / OSC fire when nobody is attached.
-        // 5s is plenty — the firehose itself is push, not this tick.
-        let mut harvest = tokio::time::interval(Duration::from_secs(5));
-        harvest.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tokio::select! {
-                ev = rx.recv() => {
-                    match ev {
-                        Ok(e) => {
-                            if sender
-                                .send(Message::Text(e.to_string().into()))
-                                .await
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                    }
-                }
-                _ = harvest.tick() => {
-                    let live = daemon.sessions.lock().await;
-                    for sess in live.values() {
-                        sess.terms.pump();
-                    }
-                }
+            let frame = match rx.recv().await {
+                Ok(e) => e.to_string(),
+                // A slow client missed frames: tell it to refetch rather than drift.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => r#"{"kind":"resync"}"#.to_string(),
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            };
+            if sender.send(Message::Text(frame.into())).await.is_err() {
+                return;
             }
         }
     });
@@ -604,4 +705,70 @@ async fn handle_events_ws(socket: WebSocket, daemon: Shared) {
     push.abort();
 }
 
+/// Idle PTYs still need a pump so BEL / OSC fire when nobody is attached.
+pub(crate) async fn terminal_pump_loop(daemon: Shared) {
+    let mut tick = tokio::time::interval(Duration::from_secs(5));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        for sess in daemon.sessions.lock().await.values() {
+            sess.terms.pump();
+        }
+    }
+}
 
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finished_lanes_are_trimmed_and_running_ones_kept_whole() {
+        let mut lanes = vec![
+            serde_json::json!({"id": "lane-1", "status": "completed", "report": "r", "handoff": "h", "summary": "x".repeat(700), "transcript": "t"}),
+            serde_json::json!({"id": "lane-2", "status": "running", "handoff": "h", "activity_log": [1]}),
+        ];
+        trim_finished_lanes(&mut lanes, "s1");
+        assert!(lanes[0].get("report").is_none() && lanes[0].get("handoff").is_none());
+        assert_eq!(lanes[0]["trimmed"], true);
+        assert_eq!(lanes[0]["session"], "s1");
+        assert_eq!(lanes[0]["transcript"], "t");
+        assert_eq!(lanes[0]["summary"].as_str().unwrap().chars().count(), TRIMMED_SUMMARY_CHARS + 1);
+        assert_eq!(lanes[1]["handoff"], "h");
+        assert!(lanes[1].get("trimmed").is_none());
+    }
+
+    fn signals_for(stream: &crate::llm::StreamHandle) -> (AttachSignals, tokio::sync::watch::Sender<()>) {
+        let (session_tx, session) = tokio::sync::watch::channel(());
+        let signals = AttachSignals { session, stream: crate::llm::StreamBuffer::changes(stream), term: None, session_woke: false };
+        (signals, session_tx)
+    }
+
+    #[tokio::test]
+    async fn stream_append_wakes_push_before_fallback_tick() {
+        let stream: crate::llm::StreamHandle = Arc::new(std::sync::Mutex::new(crate::llm::StreamBuffer::default()));
+        let (mut signals, _session_tx) = signals_for(&stream);
+        signals.mark_seen();
+        assert!(tokio::time::timeout(Duration::from_millis(50), signals.changed()).await.is_err());
+        let writer = stream.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            crate::llm::StreamBuffer::append(&writer, "hi");
+        });
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(PUSH_FALLBACK_TICK, signals.changed()).await.expect("append must wake the push");
+        assert!(started.elapsed() < PUSH_FALLBACK_TICK / 2);
+        assert!(!signals.mark_seen(), "a stream change must not force a store read");
+    }
+
+    #[tokio::test]
+    async fn signal_between_mark_and_wait_is_not_lost() {
+        let stream: crate::llm::StreamHandle = Arc::new(std::sync::Mutex::new(crate::llm::StreamBuffer::default()));
+        let (mut signals, session_tx) = signals_for(&stream);
+        signals.mark_seen();
+        session_tx.send_replace(());
+        tokio::time::timeout(Duration::from_millis(50), signals.changed()).await.expect("pending signal wakes at once");
+        assert!(signals.mark_seen(), "a session change must trigger a state check");
+    }
+}

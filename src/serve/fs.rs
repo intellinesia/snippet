@@ -1,3 +1,4 @@
+use super::api_error;
 use super::*;
 
 #[derive(Serialize)]
@@ -17,15 +18,11 @@ struct FsListing {
 
 #[derive(Deserialize)]
 pub(super) struct FsQuery {
-    token: Option<String>,
     path: Option<String>,
 }
 
 // GET /fs?path= — one directory level (lazy folder tree). Defaults to $HOME.
-pub(super) async fn browse_fs(State(d): State<Shared>, Query(q): Query<FsQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+pub(super) async fn browse_fs(Query(q): Query<FsQuery>) -> Response {
     let path = q
         .path
         .filter(|p| !p.is_empty())
@@ -71,15 +68,12 @@ struct FsFiles {
 const FS_FILES_CAP: usize = 20_000;
 
 // GET /fs/files?path= — every file under a workspace, honouring .gitignore.
-pub(super) async fn list_fs_files(State(d): State<Shared>, Query(q): Query<FsQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+pub(super) async fn list_fs_files(Query(q): Query<FsQuery>) -> Response {
     let Some(root) = q.path.filter(|p| !p.is_empty()).map(PathBuf::from) else {
-        return (StatusCode::BAD_REQUEST, "path required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "path required");
     };
     if !root.is_dir() {
-        return (StatusCode::NOT_FOUND, "not a directory").into_response();
+        return api_error(StatusCode::NOT_FOUND, "not a directory");
     }
     let walk_root = root.clone();
     let listed = tokio::task::spawn_blocking(move || {
@@ -115,7 +109,7 @@ pub(super) async fn list_fs_files(State(d): State<Shared>, Query(q): Query<FsQue
             truncated,
         })
         .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 
@@ -164,15 +158,10 @@ pub(super) struct FsDeleteReq {
 // POST /fs/write {path, content, prev_hash?} — atomic write (temp + rename) with
 // optimistic-concurrency conflict detection. Token-gated; UTF-8 text only.
 pub(super) async fn write_fs_file(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<FsWriteReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.path.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "path required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "path required");
     }
     let path = PathBuf::from(&req.path);
     if let Some(prev) = req.prev_hash.as_deref() {
@@ -196,7 +185,7 @@ pub(super) async fn write_fs_file(
                 )
                     .into_response();
             }
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         }
     }
     let parent = path
@@ -204,25 +193,17 @@ pub(super) async fn write_fs_file(
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
     if let Err(e) = std::fs::create_dir_all(&parent) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("create dir: {e}"),
-        )
-            .into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("create dir: {e}"));
     }
     let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     let tmp = parent.join(format!(".{fname}.snippet.tmp"));
     let bytes = req.content.into_bytes();
     if let Err(e) = std::fs::write(&tmp, &bytes) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("write temp: {e}"),
-        )
-            .into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("write temp: {e}"));
     }
     if let Err(e) = std::fs::rename(&tmp, &path) {
         let _ = std::fs::remove_file(&tmp);
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("rename: {e}")).into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("rename: {e}"));
     }
     Json(serde_json::json!({"ok": true, "hash": hash_bytes(&bytes), "size": bytes.len()}))
         .into_response()
@@ -230,15 +211,10 @@ pub(super) async fn write_fs_file(
 
 // POST /fs/mkdir {path} — create a new directory (token-gated).
 pub(super) async fn make_fs_dir(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<FsMkdirReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.path.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "path required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "path required");
     }
     let path = PathBuf::from(&req.path);
     if path.exists() {
@@ -249,26 +225,17 @@ pub(super) async fn make_fs_dir(
             .into_response();
     }
     if let Err(e) = std::fs::create_dir_all(&path) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("create dir: {e}"),
-        )
-            .into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("create dir: {e}"));
     }
     Json(serde_json::json!({"ok": true, "path": path.to_string_lossy()})).into_response()
 }
 
 // POST /fs/delete {path} — remove a file or directory (recursive). Token-gated.
 pub(super) async fn delete_fs_path(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<FsDeleteReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.path.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "path required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "path required");
     }
     let path = PathBuf::from(&req.path);
     let meta = match std::fs::symlink_metadata(&path) {
@@ -276,7 +243,7 @@ pub(super) async fn delete_fs_path(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Json(serde_json::json!({"ok": true, "already_gone": true})).into_response();
         }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     let res = if meta.is_dir() {
         std::fs::remove_dir_all(&path)
@@ -285,7 +252,7 @@ pub(super) async fn delete_fs_path(
     };
     match res {
         Ok(()) => Json(serde_json::json!({"ok": true})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("delete: {e}")).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("delete: {e}")),
     }
 }
 
@@ -294,25 +261,21 @@ pub(super) async fn delete_fs_path(
 // Content), so the app can stream/seek images, video, and audio — not just
 // download whole files. Token-gated.
 pub(super) async fn download_fs_file(
-    State(d): State<Shared>,
     Query(q): Query<FsQuery>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let Some(path) = q.path.filter(|p| !p.is_empty()).map(PathBuf::from) else {
-        return (StatusCode::BAD_REQUEST, "path required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "path required");
     };
     let meta = match std::fs::metadata(&path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return (StatusCode::NOT_FOUND, "not found").into_response();
+            return api_error(StatusCode::NOT_FOUND, "not found");
         }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     if meta.is_dir() {
-        return (StatusCode::BAD_REQUEST, "path is a directory").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "path is a directory");
     }
     let total = meta.len();
     let ctype = content_type_for(&path);
@@ -338,10 +301,10 @@ pub(super) async fn download_fs_file(
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
         let mut file = match tokio::fs::File::open(&path).await {
             Ok(f) => f,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         };
         if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
         }
         let stream = tokio_util::io::ReaderStream::new(file.take(len));
         let body = axum::body::Body::from_stream(stream);
@@ -357,7 +320,7 @@ pub(super) async fn download_fs_file(
             .body(body)
         {
             Ok(resp) => resp,
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         };
     }
 
@@ -367,10 +330,10 @@ pub(super) async fn download_fs_file(
         use tokio::io::AsyncSeekExt;
         let mut file = match tokio::fs::File::open(&path).await {
             Ok(f) => f,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         };
         if let Err(e) = file.seek(std::io::SeekFrom::Start(0)).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
         }
         let stream = tokio_util::io::ReaderStream::new(file);
         let body = axum::body::Body::from_stream(stream);
@@ -381,7 +344,7 @@ pub(super) async fn download_fs_file(
             .body(body)
         {
             Ok(resp) => resp,
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         }
     }
 }
@@ -447,12 +410,9 @@ fn parse_byte_range(raw: &str, total: u64) -> Option<(u64, u64)> {
 const MAX_FS_FILE_BYTES: usize = 512 * 1024;
 
 // GET /fs/file?path= — read one text file's contents (for the in-app file viewer).
-pub(super) async fn read_fs_file(State(d): State<Shared>, Query(q): Query<FsQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+pub(super) async fn read_fs_file(Query(q): Query<FsQuery>) -> Response {
     let Some(path) = q.path.filter(|p| !p.is_empty()).map(PathBuf::from) else {
-        return (StatusCode::BAD_REQUEST, "path required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "path required");
     };
     match std::fs::metadata(&path) {
         Ok(m) if m.is_file() => {
@@ -460,7 +420,7 @@ pub(super) async fn read_fs_file(State(d): State<Shared>, Query(q): Query<FsQuer
             let bytes = match std::fs::read(&path) {
                 Ok(b) => b,
                 Err(e) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+                    return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
                 }
             };
             let truncated = bytes.len() > MAX_FS_FILE_BYTES;
@@ -481,8 +441,8 @@ pub(super) async fn read_fs_file(State(d): State<Shared>, Query(q): Query<FsQuer
             })
             .into_response()
         }
-        Ok(_) => (StatusCode::BAD_REQUEST, "not a file").into_response(),
-        Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+        Ok(_) => api_error(StatusCode::BAD_REQUEST, "not a file"),
+        Err(e) => api_error(StatusCode::NOT_FOUND, e.to_string()),
     }
 }
 
@@ -501,31 +461,22 @@ pub(super) struct UploadReq {
 // user posts from the app) to a temp dir and return its absolute path, which the
 // agent can then view with `view_image` (or read).
 pub(super) async fn upload_fs_file(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<UploadReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     use base64::Engine;
     let bytes = match base64::engine::general_purpose::STANDARD.decode(req.data_base64.trim()) {
         Ok(b) => b,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("bad base64: {e}")).into_response(),
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, format!("bad base64: {e}")),
     };
     if bytes.is_empty() {
-        return (StatusCode::BAD_REQUEST, "empty upload").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "empty upload");
     }
     const MAX_UPLOAD_FILE_BYTES: usize = 1024 * 1024 * 1024;
     if bytes.len() > MAX_UPLOAD_FILE_BYTES {
-        return (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            format!(
+        return api_error(StatusCode::PAYLOAD_TOO_LARGE, format!(
                 "upload exceeds {} MB limit",
                 MAX_UPLOAD_FILE_BYTES / (1024 * 1024)
-            ),
-        )
-            .into_response();
+            ));
     }
     // Targeted upload into a directory under the original filename, or (default)
     // a temp dir with a generated name (for chat attachments).
@@ -537,11 +488,7 @@ pub(super) async fn upload_fs_file(
             .and_then(|n| n.to_str())
             .filter(|n| !n.is_empty());
         let Some(name) = name else {
-            return (
-                StatusCode::BAD_REQUEST,
-                "name required when uploading to a directory",
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, "name required when uploading to a directory");
         };
         let p = PathBuf::from(dir).join(name);
         if p.exists() {
@@ -552,7 +499,7 @@ pub(super) async fn upload_fs_file(
                 .into_response();
         }
         if let Err(e) = std::fs::create_dir_all(dir) {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
         }
         p
     } else {
@@ -565,12 +512,12 @@ pub(super) async fn upload_fs_file(
             .unwrap_or("png");
         let dir = std::env::temp_dir().join("snippet-uploads");
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
         }
         dir.join(format!("{}.{ext}", uuid::Uuid::new_v4().simple()))
     };
     if let Err(e) = std::fs::write(&path, &bytes) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
     }
     Json(serde_json::json!({"path": path.display().to_string(), "size": bytes.len()}))
         .into_response()

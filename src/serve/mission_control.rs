@@ -1,3 +1,4 @@
+use super::api_error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +21,7 @@ use crate::session::{
     write_session_sidecar, SessionRole, SessionSidecar,
 };
 use super::{
-    apply_profile, live_from_handle, record_dispatch_notice, unauthorized, Auth, Daemon,
+    apply_profile, live_from_handle, record_dispatch_notice, Daemon,
     LoopInput, Shared,
 };
 
@@ -41,7 +42,6 @@ pub fn router() -> Router<Shared> {
 
 #[derive(Deserialize)]
 struct MissionListQuery {
-    token: Option<String>,
     archived: Option<bool>,
     #[serde(default)]
     view: Option<String>,
@@ -180,7 +180,7 @@ fn mission_session_view(session: &ManagedSession, task_count: usize) -> serde_js
 }
 
 pub fn mission_error(error: String) -> Response {
-    (StatusCode::BAD_REQUEST, error).into_response()
+    api_error(StatusCode::BAD_REQUEST, error)
 }
 
 #[derive(Deserialize)]
@@ -192,22 +192,14 @@ struct AgentBuildReq {
 
 async fn build_agent_from_prompt(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<AgentBuildReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let prompt = req.prompt.trim();
     if prompt.len() < 12 {
-        return (
-            StatusCode::BAD_REQUEST,
-            "prompt must describe the desired agent",
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "prompt must describe the desired agent");
     }
     if !d.store.has_conversation(mission_control::SESSION_ID).unwrap_or(false) {
-        return (StatusCode::CONFLICT, "open Mission Control before building an agent").into_response();
+        return api_error(StatusCode::CONFLICT, "open Mission Control before building an agent");
     }
     let session_id = crate::mission_control::SESSION_ID;
     let task_id = uuid::Uuid::new_v4().to_string();
@@ -220,7 +212,7 @@ async fn build_agent_from_prompt(
         .map(|n| format!("\n\nThe user chose the nickname \"{n}\": pass it as `nickname` to register_agent."))
         .unwrap_or_default();
     let description = format!(
-        "Build a specialized agent from this user brief:\n\n{prompt}{nickname_note}\n\nResearch the role first (web_search / web_read when available): the domain's standards, the checks an expert runs, common failure modes. Choose a short kebab-case id and a display name, then write the identity: who the agent is, its mandate, how it works step by step, what it checks, and how it reports. Create the agent with register_agent, then report this task with report_mission_task: the agent id, a two-line identity summary, and the sources you used."
+        "Build a specialized agent from this user brief:\n\n{prompt}{nickname_note}\n\nResearch the domain first (web_search / web_read when available): the domain's standards, the checks an expert runs, common failure modes. Choose a short kebab-case id and a display name, then write the identity: who the agent is, its mandate, how it works step by step, what it checks, and how it reports. Create the agent with register_agent, then report this task with report_mission_task: the agent id, a two-line identity summary, and the sources you used."
     );
     let task = Task::dispatched_to(
         task_id,
@@ -250,13 +242,7 @@ async fn build_agent_from_prompt(
     }
 }
 
-async fn overview(
-    State(d): State<Shared>,
-    Query(q): Query<MissionListQuery>,
-) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn overview(State(d): State<Shared>) -> Response {
     let root = &d.mission_control_root;
     let Ok(tasks) = d.store.list_tasks(None, None) else {
         return mission_error("could not read Mission Control tasks".to_string());
@@ -313,9 +299,6 @@ async fn tasks(
     State(d): State<Shared>,
     Query(q): Query<MissionListQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let summary = q.view.as_deref() == Some("summary");
     match d.store.list_tasks(None, None) {
         Ok(tasks) => Json(
@@ -338,15 +321,11 @@ async fn tasks(
 
 async fn task(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match d.store.get_task(&id) {
         Ok(Some(task)) => Json(mission_task_view(&d.store, &task)).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "no such task").into_response(),
+        Ok(None) => api_error(StatusCode::NOT_FOUND, "no such task"),
         Err(error) => mission_error(error.to_string()),
     }
 }
@@ -779,7 +758,7 @@ fn task_offer_body(task: &Task) -> String {
         task.owned_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
     };
     format!(
-        "[task_offer]\ntask_id: {}\ntitle: {}\ntarget_session: {}\nhandoff: {:?}\nowned_paths: {owned}\nbriefing:\n{}\n[/task_offer]\nMission Control is offering you this task. It starts only when you claim it: review it, then claim it with claim_and_dispatch_task (task_id above), ask Mission Control first with send_agent_message if something is unclear, or decline it with decline_task and your reason.",
+        "[task_offer]\ntask_id: {}\ntitle: {}\ntarget_session: {}\nhandoff: {:?}\nowned_paths: {owned}\nbriefing:\n{}\n[/task_offer]\nOffer only: review, then claim with claim_and_dispatch_task, ask Mission Control if unclear, or decline with a reason.",
         task.id,
         task.title,
         task.session_id,
@@ -869,12 +848,8 @@ fn release_failed_claim(d: &Daemon, task: &Task, error: &str) -> Result<(), Stri
 
 async fn create_task(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<MissionTaskReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.title.trim().is_empty() || req.session_id.trim().is_empty() {
         return mission_error("title and session_id are required".to_string());
     }
@@ -932,13 +907,9 @@ async fn create_task(
 
 async fn update_task(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     AxumPath(id): AxumPath<String>,
     Json(req): Json<MissionTaskReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let root = &d.mission_control_root;
     let existing = match d.store.get_task(&id) {
         Ok(Some(task)) => task,
@@ -1025,12 +996,8 @@ async fn update_task(
 
 async fn archive_task(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match d.store.complete_task(
         &id,
         TaskStatus::Cancelled,
@@ -1049,9 +1016,6 @@ async fn sessions(
     State(d): State<Shared>,
     Query(q): Query<MissionListQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let root = &d.mission_control_root;
     let tasks = d.store.list_tasks(None, None).unwrap_or_default();
     match mission_control::list_sessions(root, false) {
@@ -1082,12 +1046,8 @@ async fn sessions(
 
 async fn create_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<MissionSessionReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let folder = PathBuf::from(&req.folder);
     if !folder.is_dir() {
         return mission_error("folder is not a directory".to_string());
@@ -1149,13 +1109,9 @@ async fn create_session(
 
 async fn update_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     AxumPath(id): AxumPath<String>,
     Json(req): Json<MissionSessionUpdate>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match mission_control::update_session(&d.mission_control_root, &id, |session| {
         if let Some(title) = req
             .title
@@ -1173,12 +1129,8 @@ async fn update_session(
 
 async fn archive_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match mission_control::archive_session(&d.mission_control_root, &id) {
         Ok(session) => Json(mission_session_view(&session, 0)).into_response(),
         Err(error) => mission_error(error),
@@ -1193,12 +1145,8 @@ struct MissionOpenReq {
 
 async fn open(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<MissionOpenReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match open_mission_control(&d, req.profile).await {
         Ok((id, home)) => Json(serde_json::json!({ "id": id, "folder": home })).into_response(),
         Err(error) => mission_error(error),
@@ -1263,7 +1211,6 @@ pub fn register_builtin_agents(d: &Shared) {
         handle: "mission-control".into(),
         kind: crate::coordination::types::AgentKind::MissionControl,
         status: crate::coordination::types::AgentStatus::Active,
-        role: crate::coordination::types::AgentRole::Coordinator,
         capabilities: vec![
             "orchestration".into(),
             "agent-directory".into(),
@@ -1276,7 +1223,6 @@ pub fn register_builtin_agents(d: &Shared) {
         handle: "snippet".into(),
         kind: crate::coordination::types::AgentKind::Worker,
         status: crate::coordination::types::AgentStatus::Active,
-        role: crate::coordination::types::AgentRole::Implementer,
         capabilities: vec![
             "coding".into(),
             "bash".into(),
@@ -1418,7 +1364,7 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
                 digest.push(text);
             } else {
                 daemon
-                    .deliver(mission_control::SESSION_ID, LoopInput::UserMessage(text))
+                    .deliver_wake(mission_control::SESSION_ID, LoopInput::UserMessage(text))
                     .await;
             }
             delivered_any = true;
@@ -1485,20 +1431,14 @@ struct AutonomyReq {
     utc_offset_minutes: Option<i32>,
 }
 
-async fn autonomy(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn autonomy() -> Response {
     Json(autonomy_view()).into_response()
 }
 
-async fn update_autonomy(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<AutonomyReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn update_autonomy(Json(req): Json<AutonomyReq>) -> Response {
     for clock in [&req.quiet_start, &req.quiet_end].into_iter().flatten() {
         if !clock.is_empty() && !crate::mission_autonomy::valid_clock(clock) {
-            return (StatusCode::BAD_REQUEST, format!("quiet hours must be HH:MM, got `{clock}`")).into_response();
+            return api_error(StatusCode::BAD_REQUEST, format!("quiet hours must be HH:MM, got `{clock}`"));
         }
     }
     let result = crate::mission_autonomy::update(|state| {
@@ -1533,21 +1473,14 @@ struct MissionSettingsReq {
     notification_policy: String,
 }
 
-async fn settings(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn settings(State(d): State<Shared>) -> Response {
     Json(mission_control::load_settings(&d.mission_control_root)).into_response()
 }
 
 async fn update_settings(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<MissionSettingsReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match mission_control::set_notification_policy(
         &d.mission_control_root,
         &req.notification_policy,

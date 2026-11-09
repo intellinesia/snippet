@@ -72,10 +72,6 @@ pub fn cut_view(text: &str) -> Option<(String, &'static str)> {
     Some((heard, note))
 }
 
-pub fn has_interruption() -> bool {
-    STREAM_INTERRUPTED.lock().unwrap().is_some() || crate::tts_stream::is_reconciling()
-}
-
 pub fn take_interruption() -> Option<Interruption> {
     STREAM_INTERRUPTED.lock().unwrap().take().filter(|(at, _)| at.elapsed() < INTERRUPTION_FRESH).map(|(_, cut)| cut)
 }

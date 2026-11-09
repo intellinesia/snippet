@@ -485,18 +485,6 @@ mod tests {
     }
 
     #[test]
-    fn an_older_database_gains_goal_id_without_losing_tasks() {
-        let db = Store::open_in_memory().unwrap();
-        db.create_task(&task("old", None, TaskStatus::Todo)).unwrap();
-        db.with_connection(|c| {
-            c.execute_batch("DROP INDEX tasks_goal; ALTER TABLE tasks DROP COLUMN goal_id;")?;
-            crate::coordination::schema::ensure(c)
-        })
-        .unwrap();
-        assert_eq!(db.get_task("old").unwrap().unwrap().goal_id, None);
-    }
-
-    #[test]
     fn attention_flags_stalled_and_ready_goals_only() {
         let mut g = goal();
         let t = |id: &str, st| task(id, Some("g1"), st);

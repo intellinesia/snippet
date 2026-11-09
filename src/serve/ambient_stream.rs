@@ -6,7 +6,7 @@ use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 
-use super::{unauthorized, Shared};
+use super::{Shared};
 use crate::tts_stream::PhoneFrame;
 
 const MAX_SEGMENT_PCM: usize = 16_000 * 2 * 120;
@@ -14,15 +14,11 @@ const MAX_OPEN: usize = 4;
 
 #[derive(Deserialize)]
 pub(crate) struct StreamQuery {
-    token: Option<String>,
     #[serde(default)]
     device: String,
 }
 
 pub(crate) async fn stream(ws: WebSocketUpgrade, State(d): State<Shared>, Query(q): Query<StreamQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let device = q.device.trim().to_string();
     ws.max_message_size(1 << 20)
         .on_upgrade(move |socket| run(socket, d, device))

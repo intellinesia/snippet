@@ -305,7 +305,7 @@ impl CodingHarness {
                                 Err(error) => (tool_error(error), MetaControl::Continue),
                             };
                         }
-                        return match lanes.follow_up(lane_id, &brief.description) {
+                        return match lanes.follow_up(lane_id, &brief.description, brief.profile.clone()) {
                             Ok(title) => {
                                 state.events.push(HarnessEvent::LaneSpawned {
                                     id: lane_id.to_string(),

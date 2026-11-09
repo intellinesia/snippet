@@ -13,7 +13,7 @@ use crate::store::{Store, StoreError};
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 
 fn canonical_task_session(id: &str) -> String {
-    crate::conversations::canonical_session_id(id).0
+    crate::conversations::canonical_session_id(id)
 }
 
 /// The ledger rendered for an envelope, with the path of the task's shared

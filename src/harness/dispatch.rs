@@ -1,6 +1,6 @@
 use super::*;
 
-fn tool_activity_text(name: &str, args: &Value) -> String {
+pub(super) fn tool_activity_text(name: &str, args: &Value) -> String {
     let arg = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
     let base = |p: &str| p.trim_end_matches('/').rsplit('/').next().unwrap_or(p).to_string();
     let detail = match name {
@@ -26,6 +26,17 @@ fn tool_activity_text(name: &str, args: &Value) -> String {
         "skill" => arg("name").map(|n| format!("Loading skill {n}")),
         "delegate_task" => arg("title").map(|t| format!("Delegating: {t}")),
         "update_plan" | "terminate_loop" => None,
+        "Bash" => arg("description").or(arg("command")).map(str::to_string),
+        "Read" => arg("file_path").map(|p| format!("Reading {}", base(p))),
+        "Edit" | "MultiEdit" | "Write" => arg("file_path").map(|p| format!("Editing {}", base(p))),
+        "Grep" => arg("pattern").map(|q| format!("Searching: {q}")),
+        "Glob" => arg("pattern").map(|q| format!("Finding {q}")),
+        "WebSearch" => arg("query").map(|q| format!("Searching: {q}")),
+        "WebFetch" => arg("url").map(|u| {
+            let host = u.split("://").nth(1).unwrap_or(u).split('/').next().unwrap_or(u);
+            format!("Reading {host}")
+        }),
+        "Task" => arg("description").map(|t| format!("Delegating: {t}")),
         _ => arg("label").map(str::to_string),
     };
     if let Some(d) = detail {
@@ -36,7 +47,7 @@ fn tool_activity_text(name: &str, args: &Value) -> String {
         return d;
     }
     match name {
-        "bash" => "Running command".into(),
+        "bash" | "Bash" => "Running command".into(),
         "change_files" => "Editing files".into(),
         "view_image" => "Viewing image".into(),
         "web_search" => "Searching the web".into(),
@@ -366,6 +377,18 @@ impl CodingHarness {
                 });
             }
             // Missing summary: the error result nudges a retry next turn.
+            let _ = self.persist(state, lanes).await;
+            return None;
+        }
+
+        if conversation_mode
+            && self.config.hidden_meta.contains(&tool_name.as_str())
+            && meta::is_meta_tool(&tool_name)
+        {
+            let result = tool_error(format!(
+                "`{tool_name}` is not available on a desk; use the tools you were given, and send anything that needs a person or a workspace to Mission Control."
+            ));
+            answer_call(state, &tool_name, &call_id, result);
             let _ = self.persist(state, lanes).await;
             return None;
         }

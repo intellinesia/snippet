@@ -1,3 +1,4 @@
+use super::api_error;
 use super::*;
 
 pub(crate) fn session_event_page(
@@ -15,8 +16,9 @@ pub(crate) fn session_event_page(
 
 fn turn_page_start(events: &[crate::harness::HarnessEvent]) -> usize {
     const MAX_EVENTS: usize = 160;
-    const MIN_EVENTS: usize = 40;
-    const TURNS: usize = 3;
+    // Wakes count as turns, so a few quiet wakes must not empty the opening view.
+    const MIN_EVENTS: usize = 120;
+    const TURNS: usize = 8;
     let len = events.len();
     let floor = len.saturating_sub(MAX_EVENTS);
     let mut seen = 0;
@@ -136,12 +138,8 @@ pub(crate) struct RewindReq {
 // notifies a live loop when present so in-memory state matches.
 pub(crate) async fn rewind_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<RewindReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let (sp, workspace) = match load_session_workspace(&req.session) {
         Ok(v) => v,
         Err(resp) => return resp,
@@ -150,27 +148,19 @@ pub(crate) async fn rewind_session(
 
     // Load current state (store or file — authoritative for history indices).
     let Some(mut state) = read_session_state(&sp) else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to read session state",
-        )
-            .into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, "failed to read session state");
     };
 
     let label = match state.apply_checkpoint_rewind(&checkpoint_id) {
         Ok(label) => label,
-        Err(_) => return (StatusCode::NOT_FOUND, "checkpoint not found").into_response(),
+        Err(_) => return api_error(StatusCode::NOT_FOUND, "checkpoint not found"),
     };
 
     // Persist truncated history first so any client re-read sees the cut.
     // `write_session_state` targets whichever store holds the session, so a
     // rewind does not silently write a file a DB session will never read.
     if let Err(error) = crate::session::write_session_state(&sp, &state) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to write state: {error}"),
-        )
-            .into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("failed to write state: {error}"));
     }
     // Keep a live loop in sync (it may overwrite disk on its next persist otherwise).
     {
@@ -197,8 +187,8 @@ pub(crate) async fn rewind_session(
             "message_end": state.messages.len(),
         }))
         .into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(Err(e)) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 
@@ -211,19 +201,14 @@ pub(crate) struct ExecReq {
 // POST /session/exec {session, command} — run a shell command in the session's
 // workspace and return its output. Token-gated; runs as the daemon user.
 pub(crate) async fn exec_in_session(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<ExecReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let (_sp, dir) = match load_session_workspace(&req.session) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
     if req.command.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "empty command").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "empty command");
     }
     let fut = tokio::process::Command::new("sh")
         .arg("-c")
@@ -236,7 +221,7 @@ pub(crate) async fn exec_in_session(
         .output();
     let out = match tokio::time::timeout(Duration::from_secs(60), fut).await {
         Ok(Ok(o)) => o,
-        Ok(Err(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(Err(e)) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         Err(_) => {
             return Json(serde_json::json!({
                 "exit_code": -1, "stdout": "", "stderr": "timed out after 60s", "truncated": false,
@@ -264,15 +249,10 @@ pub(crate) struct BgReq {
     tail: Option<usize>,
 }
 
-// POST /bg {session} — snapshot of the session's background processes.
+// GET /bg?session — snapshot of the session's background processes.
 pub(crate) async fn bg_list(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
-    Json(req): Json<BgReq>,
+    Query(req): Query<BgReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -282,19 +262,14 @@ pub(crate) async fn bg_list(
 
 // POST /bg/kill {session, id} — terminate one background process.
 pub(crate) async fn bg_kill(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<BgReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
     };
     let Some(id) = req.id.as_deref() else {
-        return (StatusCode::BAD_REQUEST, "id required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "id required");
     };
     match crate::bg::kill_by_id(&dir, id) {
         Ok(_) => Json(serde_json::json!({"ok": true})).into_response(),
@@ -302,21 +277,16 @@ pub(crate) async fn bg_kill(
     }
 }
 
-// POST /bg/log {session, id, tail?} — tail a background process's log.
+// GET /bg/log?session&id&tail? — tail a background process's log.
 pub(crate) async fn bg_log(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
-    Json(req): Json<BgReq>,
+    Query(req): Query<BgReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
     };
     let Some(id) = req.id.as_deref() else {
-        return (StatusCode::BAD_REQUEST, "id required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "id required");
     };
     let text = std::fs::read_to_string(crate::bg::log_path(&dir, id)).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
@@ -357,7 +327,7 @@ pub(crate) fn resolve_session_dir(session: &str) -> Result<PathBuf, Response> {
     if dir.is_dir() {
         return Ok(dir);
     }
-    Err((StatusCode::NOT_FOUND, "no such session or directory").into_response())
+    Err(api_error(StatusCode::NOT_FOUND, "no such session or directory"))
 }
 
 /// Lossy-decode bytes and clip to `max` chars, returning (text, was_truncated).
@@ -379,14 +349,10 @@ pub(crate) struct DeleteReq {
 // session's conversation file.
 pub(crate) async fn delete_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<DeleteReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if !purge_session(&d, &req.session, false).await {
-        return (StatusCode::NOT_FOUND, "no such session").into_response();
+        return api_error(StatusCode::NOT_FOUND, "no such session");
     }
     Json(serde_json::json!({"deleted": true})).into_response()
 }
@@ -435,14 +401,10 @@ pub(crate) struct InterruptReq {
 
 pub(crate) async fn interrupt_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<InterruptReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let Some(sp) = state_path_for_id(&req.session) else {
-        return (StatusCode::NOT_FOUND, "no such session").into_response();
+        return api_error(StatusCode::NOT_FOUND, "no such session");
     };
     let live = d
         .sessions
@@ -492,14 +454,10 @@ pub(crate) struct RenameReq {
 // state file is edited directly (without reviving the loop).
 pub(crate) async fn rename_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<RenameReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let Some(sp) = state_path_for_id(&req.session) else {
-        return (StatusCode::NOT_FOUND, "no such session").into_response();
+        return api_error(StatusCode::NOT_FOUND, "no such session");
     };
     {
         let sessions = d.sessions.lock().await;
@@ -511,7 +469,7 @@ pub(crate) async fn rename_session(
     }
     match crate::session::set_session_title(&sp, &req.title) {
         Ok(()) => Json(serde_json::json!({"renamed": true})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -531,14 +489,10 @@ pub(crate) struct ForkReq {
 // shared (not snapshotted); only conversation history is forked.
 pub(crate) async fn fork_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<ForkReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let Some(sp) = state_path_for_id(&req.session) else {
-        return (StatusCode::NOT_FOUND, "no such session").into_response();
+        return api_error(StatusCode::NOT_FOUND, "no such session");
     };
 
     // Prefer the live session's own path when it is running, so the fork sees a
@@ -557,11 +511,7 @@ pub(crate) async fn fork_session(
         match read_session_state(&path) {
             Some(state) => state,
             None => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "session state unreadable",
-                )
-                    .into_response();
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, "session state unreadable");
             }
         }
     };
@@ -572,7 +522,7 @@ pub(crate) async fn fork_session(
         req.event_index,
     ) {
         Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, e),
     };
 
     match crate::session::write_forked_conversation(&sp, &state, point) {
@@ -591,13 +541,12 @@ pub(crate) async fn fork_session(
             }))
             .into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
 #[derive(Deserialize)]
 pub(crate) struct AttachQuery {
-    pub(crate) token: Option<String>,
     pub(crate) session: String,
     #[serde(default)]
     pub(crate) compact: Option<String>,
@@ -613,13 +562,8 @@ pub(crate) struct CheckpointStatsReq {
 }
 
 pub(crate) async fn checkpoint_stats(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<CheckpointStatsReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -638,4 +582,28 @@ pub(crate) async fn checkpoint_stats(
     .await
     .unwrap_or_default();
     Json(serde_json::Value::Object(stats)).into_response()
+}
+
+#[derive(Deserialize)]
+pub(crate) struct LaneQuery {
+    session: String,
+    id: String,
+}
+
+/// GET /session/lane — one lane in full; attach snapshots carry finished lanes trimmed.
+pub(crate) async fn lane_detail(Query(q): Query<LaneQuery>) -> Response {
+    let session = q.session.clone();
+    let state = tokio::task::spawn_blocking(move || {
+        crate::session::state_path_for_id(&session).and_then(|p| crate::session::read_session_state(&p))
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(state) = state else {
+        return api_error(StatusCode::NOT_FOUND, "no such session");
+    };
+    match state.lanes.into_iter().find(|l| l.id == q.id) {
+        Some(lane) => Json(lane).into_response(),
+        None => api_error(StatusCode::NOT_FOUND, "no such lane"),
+    }
 }

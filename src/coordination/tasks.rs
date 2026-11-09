@@ -738,25 +738,6 @@ impl Store {
         })
     }
 
-    /// Tasks whose title or description contains `query`, case-insensitively.
-    pub fn find_tasks(
-        &self,
-        session_id: Option<&str>,
-        query: &str,
-    ) -> Result<Vec<Task>, StoreError> {
-        let needle = format!("%{}%", query.to_lowercase());
-        self.with_connection(|conn| {
-            let mut stmt = conn.prepare(&format!(
-                "SELECT {TASK_COLUMNS} FROM tasks
-                 WHERE (?1 IS NULL OR session_id = ?1)
-                   AND (lower(title) LIKE ?2 OR lower(description) LIKE ?2)
-                 ORDER BY priority DESC, created_at, id"
-            ))?;
-            let rows = stmt.query_map(params![session_id, needle], task_from_row)?;
-            rows.collect()
-        })
-    }
-
     /// Read-modify-write one task in a single transaction, stamping `updated_at`.
     ///
     /// This is the ONE mutation path. The dispatcher, the REST handlers and the
@@ -1157,6 +1138,32 @@ impl Store {
         })
     }
 
+    /// Tasks most recently updated first, paged by offset.
+    pub fn list_tasks_recent(
+        &self,
+        filter: &TaskFilter<'_>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<Task>, StoreError> {
+        let status = filter.status.as_ref().map(status_text);
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks
+                 WHERE (?1 IS NULL OR status = ?1)
+                   AND (?2 IS NULL OR EXISTS (
+                        SELECT 1 FROM task_agents ta
+                        WHERE ta.task_id = tasks.id
+                          AND ta.agent_id = ?2
+                          AND ta.removed_at IS NULL))
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT ?3 OFFSET ?4"
+            ))?;
+            let rows =
+                stmt.query_map(params![status, filter.agent_id, limit, offset], task_from_row)?;
+            rows.collect()
+        })
+    }
+
     /// Task counts per agent and status. Open work counts whatever its age;
     /// finished work counts only when it changed at or after `finished_since`.
     pub fn agent_task_counts(
@@ -1428,22 +1435,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_task_agent_status(
-        &self,
-        task_id: &str,
-        agent_id: &str,
-        status: &str,
-    ) -> Result<bool, StoreError> {
-        self.with_connection(|conn| {
-            let count = conn.execute(
-                "UPDATE task_agents SET status = ?3
-                 WHERE task_id = ?1 AND agent_id = ?2 AND removed_at IS NULL",
-                params![task_id, agent_id, status],
-            )?;
-            Ok(count > 0)
-        })
-    }
-
     /// Transfer the active work session lease on a task from one agent to another.
     /// Exactly one agent is "active" on a session at a time; others are "waiting".
     pub fn transfer_task_session_lease(
@@ -1635,17 +1626,6 @@ impl Store {
                 "UPDATE tasks SET last_progress_at = ?2
                  WHERE session_id = ?1 AND reporting_session = ?1 AND status = 'in_progress'",
                 params![session_id, now],
-            )?;
-            Ok(())
-        })
-    }
-
-    /// Record activity in a task's room, by the thread that is its room.
-    pub fn touch_thread_progress(&self, thread_id: &str, now: &str) -> Result<(), StoreError> {
-        self.with_connection(|conn| {
-            conn.execute(
-                "UPDATE tasks SET last_progress_at = ?2 WHERE thread_id = ?1 AND status = 'in_progress'",
-                params![thread_id, now],
             )?;
             Ok(())
         })
@@ -1865,7 +1845,6 @@ mod tests {
             handle: "ada".into(),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: crate::coordination::types::AgentRole::Implementer,
             capabilities: vec![],
         })
         .unwrap();
@@ -2003,7 +1982,6 @@ mod tests {
             handle: id.into(),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: crate::coordination::types::AgentRole::Implementer,
             capabilities: vec![],
         })
         .unwrap();
@@ -2147,6 +2125,29 @@ mod tests {
     }
 
     #[test]
+    fn recent_pages_newest_update_first() {
+        let db = db();
+        for (id, updated) in [
+            ("t1", "2026-01-01T00:00:03Z"),
+            ("t2", "2026-01-01T00:00:01Z"),
+            ("t3", "2026-01-01T00:00:02Z"),
+        ] {
+            let mut t = task(id);
+            t.updated_at = updated.into();
+            db.create_task(&t).unwrap();
+        }
+        let ids = |offset| -> Vec<String> {
+            db.list_tasks_recent(&TaskFilter::default(), offset, 2)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.id)
+                .collect()
+        };
+        assert_eq!(ids(0), ["t1", "t3"]);
+        assert_eq!(ids(2), ["t2"]);
+    }
+
+    #[test]
     fn dependency_cycles_are_refused() {
         let db = db();
         for id in ["a", "b", "c"] {
@@ -2176,7 +2177,6 @@ mod tests {
             handle: "ada".into(),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: crate::coordination::types::AgentRole::Implementer,
             capabilities: vec![],
         })
         .unwrap();
@@ -2241,7 +2241,6 @@ mod tests {
             handle: "agent1".into(),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: crate::coordination::types::AgentRole::Implementer,
             capabilities: vec![],
         })
         .unwrap();
@@ -2251,7 +2250,6 @@ mod tests {
             handle: "agent2".into(),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: crate::coordination::types::AgentRole::Reviewer,
             capabilities: vec![],
         })
         .unwrap();

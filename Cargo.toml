@@ -1,6 +1,6 @@
 [package]
 name = "snippet"
-version = "1.0.0-alpha.30"
+version = "1.0.0-alpha.31"
 edition = "2024"
 description = "A Rust TUI coding agent with a headless, remote-controllable serve daemon."
 license = "AGPL-3.0-or-later"
@@ -43,6 +43,7 @@ ignore = "0.4"
 libc = "0.2.189"
 vt100 = "0.15.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "compression-br"] }
 
 # Linux loads Microsoft's onnxruntime .so at runtime (fetched on first use) so the binary gains no libstdc++ dependency.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -54,3 +55,4 @@ ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "
 
 [dev-dependencies]
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

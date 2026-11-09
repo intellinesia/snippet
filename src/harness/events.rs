@@ -420,6 +420,7 @@ impl CodingHarness {
         )
         .with_records(state.lanes.clone())
         .with_parent(self.context.clone())
+        .with_parent_profile(self.config.profile.clone())
     }
 
     /// A running lane wrote to this agent mid-work.
@@ -536,6 +537,10 @@ impl CodingHarness {
                     state.events.push(HarnessEvent::Steer { text });
                     self.bump_activity();
                 }
+                false
+            }
+            LoopInput::ContinueLean => {
+                self.continue_lean(state);
                 false
             }
             LoopInput::Compact => {
@@ -762,7 +767,7 @@ impl CodingHarness {
         let appended = crate::vault::Vault::load().scrub_str(event.appended.trim_end());
         state.messages.push(HarnessMessage::User {
             content: format!(
-                "[file_watch]\nsubject = \"{}\"\npath = \"{}\"\nappended:{skipped_note}\n{}\n[orchestration] Act on this if it needs action; stay quiet and end the turn if it doesn't. Remove the watch (monitor action:\"remove\") once it has served its purpose.\n[follow_up_id = \"{}\"]  # internal handle for monitor remove; to the user, call this work by its subject\n[/file_watch]",
+                "[file_watch]\nsubject = \"{}\"\npath = \"{}\"\nappended:{skipped_note}\n{}\n[orchestration] Act if needed; otherwise end quietly. Remove this watch when done.\n[follow_up_id = \"{}\"]  # internal handle for monitor remove; to the user, call this work by its subject\n[/file_watch]",
                 event.label, event.path, appended, event.id
             ),
         });
@@ -934,15 +939,6 @@ mod turn_changes_tests {
         harness.emit_turn_changes(&mut state, &mut vars).await;
         assert_eq!(state.events.len(), before);
         let _ = std::fs::remove_dir_all(crate::checkpoint::shadow_dir(dir.path()));
-    }
-
-    #[test]
-    fn model_request_builders_do_not_read_events() {
-        let step = include_str!("step.rs");
-        let body = &step[step.find("async fn build_request").unwrap()..];
-        let body = &body[..body.find("\n    }\n").unwrap_or(body.len())];
-        assert!(!body.contains("TurnChanges"));
-        assert!(!body.contains("state.events.iter"), "request is built from state.messages");
     }
 
     #[test]

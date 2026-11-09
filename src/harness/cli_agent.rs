@@ -1650,6 +1650,19 @@ impl CodingHarness {
                         LoopInput::Compact => {
                             compact_wanted = true;
                         }
+                        LoopInput::ContinueLean => {
+                            if let Some(text) = self.continue_lean(&mut state) {
+                                if let Some(mut p) = process.take() {
+                                    let _ = p.child.start_kill();
+                                }
+                                generation += 1;
+                                session.restart();
+                                session.mark_synced(&state.messages, state.compactions, 0);
+                                after_compaction = Some(text);
+                                last_task_note.clear();
+                            }
+                            self.persist(&mut state, &lanes).await?;
+                        }
                         LoopInput::SpawnLane(spec) => {
                             self.spawn_requested_lane(&mut state, &mut lanes, spec);
                             self.persist(&mut state, &lanes).await?;
@@ -1688,6 +1701,7 @@ impl CodingHarness {
                                 let meta = event.get("compact_metadata");
                                 let tokens = |key: &str| meta.and_then(|m| m.get(key)).and_then(Value::as_u64).unwrap_or(0);
                                 let trigger = meta.and_then(|m| m.get("trigger")).and_then(Value::as_str).unwrap_or("auto");
+                                self.archive_cli_compaction(&mut state);
                                 state.compactions += 1;
                                 state.reflected_events = Some(state.events.len());
                                 state.last_prompt_tokens = tokens("post_tokens");
@@ -1701,6 +1715,7 @@ impl CodingHarness {
                                 });
                                 last_task_note.clear();
                                 self.persist(&mut state, &lanes).await?;
+                                session.mark_synced(&state.messages, state.compactions, tokens("post_tokens"));
                             }
                             let final_before = state.final_text.clone();
                             let (changed, finished) = match kind {
@@ -1783,6 +1798,7 @@ impl CodingHarness {
                                         generation += 1;
                                         session.id = None;
                                         session.started = false;
+                                        self.archive_cli_compaction(&mut state);
                                         session.mark_synced(&state.messages, state.compactions + 1, 0);
                                         after_compaction = Some(match summary {
                                             Some(summary) => format!("This conversation continues from an earlier one that was compacted. Summary of it:\n{summary}"),
@@ -2239,6 +2255,7 @@ impl CodingHarness {
                         }
                         let announce = mcp || done.is_some_and(|d| d == "DONE" || d == "ERROR");
                         if announce && !quiet && parse.agy_tools.insert(index) {
+                            self.lane_progress("tool_call", super::dispatch::tool_activity_text(&name, &arguments));
                             state.events.push(HarnessEvent::ToolCall { tool_name: name.clone(), arguments });
                             changed = true;
                         }
@@ -2382,6 +2399,7 @@ impl CodingHarness {
                                 }
                                 state.messages.push(HarnessMessage::Assistant { content: text.clone(), tool_calls: Vec::new() });
                                 state.events.push(HarnessEvent::AssistantText { text });
+                                self.lane_progress("model", super::step::MODEL_ACTIVITY_TEXT);
                                 changed = true;
                             }
                         }
@@ -2395,6 +2413,7 @@ impl CodingHarness {
                                 tool_names.insert(id.to_string(), name.clone());
                             }
                             if !QUIET_TOOLS.contains(&name.as_str()) {
+                                self.lane_progress("tool_call", super::dispatch::tool_activity_text(&name, &arguments));
                                 state.events.push(HarnessEvent::ToolCall { tool_name: name, arguments });
                                 changed = true;
                             }
@@ -2530,5 +2549,26 @@ mod goal_tests {
         assert!(!cli_stall_watched(&running, true, true));
         let idle = HarnessState { status: HarnessStatus::Idle, ..Default::default() };
         assert!(!cli_stall_watched(&idle, true, false));
+    }
+}
+
+#[cfg(test)]
+mod lane_progress_tests {
+    use super::*;
+
+    #[test]
+    fn claude_tool_use_publishes_lane_progress() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<crate::lanes::LaneProgress>();
+        let config = HarnessConfig { progress_tx: Some(tx), progress_id: Some("lane-1".into()), ..HarnessConfig::default() };
+        let harness = CodingHarness::new(config, ToolRegistry::new(), ToolContext::new(std::env::temp_dir()).expect("ctx"));
+        let mut state = HarnessState::default();
+        let mut parse = CliParse::default();
+        let event = serde_json::json!({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Looking."},
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git log", "description": "Check lane progress"}}
+        ]}});
+        harness.apply_cli_event(&mut state, &event, None, &mut parse);
+        let got: Vec<(String, String)> = std::iter::from_fn(|| rx.try_recv().ok()).map(|p| (p.kind, p.text)).collect();
+        assert_eq!(got, vec![("model".into(), "Thinking".into()), ("tool_call".into(), "Check lane progress".into())]);
     }
 }

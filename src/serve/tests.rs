@@ -1,6 +1,5 @@
 use super::*;
     
-    use tempfile::tempdir;
 
     fn test_daemon() -> Daemon {
         Daemon {
@@ -42,37 +41,6 @@ use super::*;
         );
     }
 
-    /// A nonce sidecar is ignored: the store is the only record now.
-    ///
-    /// Retirement guard. The fallback used to read a session's `.nonces.json`
-    /// and treat anything in it as already-sent. If that read ever came back,
-    /// a stale file would silently suppress a legitimate request — the failure
-    /// would look like "my message vanished", with nothing in the logs.
-    #[test]
-    fn a_legacy_nonces_file_is_ignored() {
-        let dir = tempdir().expect("temporary directory");
-        let session_id = "ws-2-def456";
-        let session_dir = dir.path().join(session_id);
-        std::fs::create_dir_all(&session_dir).unwrap();
-        std::fs::write(
-            session_dir.join("state.nonces.json"),
-            r#"["already-sent"]"#,
-        )
-        .unwrap();
-
-        let mut daemon = test_daemon();
-        daemon.store = crate::store::Store::open_in_memory().unwrap();
-
-        assert!(
-            daemon.accept_nonce(session_id, "already-sent"),
-            "a nonce present only in a legacy file must be ACCEPTED — the file is retired"
-        );
-        assert!(
-            !daemon.accept_nonce(session_id, "already-sent"),
-            "but the store still rejects a genuine replay within the same run"
-        );
-    }
-
     #[test]
     fn nonce_is_rejected_after_daemon_state_is_recreated() {
         let mut first = test_daemon();
@@ -98,12 +66,6 @@ use super::*;
         Arc::new(daemon)
     }
 
-    fn with_token() -> Auth {
-        Auth {
-            token: Some("test-token".into()),
-        }
-    }
-
     fn create_agent_req(id: &str) -> AgentReq {
         AgentReq {
             id: id.into(),
@@ -111,16 +73,14 @@ use super::*;
             handle: format!("handle-{id}"),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: crate::coordination::types::AgentRole::Researcher,
             capabilities: vec!["web_search".into()],
             profile: None,
             nickname: None,
         }
     }
 
-    fn agents_query(token: Option<&str>) -> AgentsQuery {
+    fn agents_query() -> AgentsQuery {
         AgentsQuery {
-            token: token.map(str::to_string),
             after_name: None,
             after_id: None,
             limit: default_agent_page_limit(),
@@ -128,10 +88,27 @@ use super::*;
     }
 
     #[tokio::test]
-    async fn agents_route_rejects_an_unauthenticated_request() {
+    async fn every_route_but_the_open_ones_needs_the_token() {
+        use tower::ServiceExt;
         let d = authed_daemon();
-        let response = list_agents(State(d), Query(agents_query(None))).await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let app = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .route("/agents", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(d.clone(), require_token))
+            .with_state(d);
+        let status = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(axum::http::Request::get(uri).body(axum::body::Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+        assert_eq!(status("/health").await, StatusCode::OK);
+        assert_eq!(status("/agents").await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status("/agents?token=wrong").await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status("/agents?token=test-token").await, StatusCode::OK);
     }
 
     #[tokio::test]
@@ -139,7 +116,7 @@ use super::*;
         let d = authed_daemon();
         let mut req = create_agent_req("researcher");
         req.handle = "  ".into();
-        let response = create_agent(State(d), Query(with_token()), Json(req)).await;
+        let response = create_agent(State(d), Json(req)).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -148,7 +125,6 @@ use super::*;
         let d = authed_daemon();
         let created = create_agent(
             State(d.clone()),
-            Query(with_token()),
             Json(create_agent_req("researcher")),
         )
         .await;
@@ -157,13 +133,12 @@ use super::*;
         // A duplicate id is a conflict, not a silent overwrite.
         let duplicate = create_agent(
             State(d.clone()),
-            Query(with_token()),
             Json(create_agent_req("researcher")),
         )
         .await;
         assert_eq!(duplicate.status(), StatusCode::CONFLICT);
 
-        let listed = list_agents(State(d), Query(agents_query(Some("test-token")))).await;
+        let listed = list_agents(State(d), Query(agents_query())).await;
         assert_eq!(listed.status(), StatusCode::OK);
     }
 
@@ -172,7 +147,6 @@ use super::*;
         let d = authed_daemon();
         let response = coordination::post_message(
             State(d),
-            Query(with_token()),
             axum::extract::Path("t1".to_string()),
             Json(coordination::CoordinationMessageReq {
                 to: Vec::new(),
@@ -368,7 +342,6 @@ use super::*;
 
         coordination::post_message(
             State(d.clone()),
-            Query(with_token()),
             axum::extract::Path("live".to_string()),
             Json(coordination::CoordinationMessageReq {
                 to: Vec::new(),
@@ -392,7 +365,6 @@ use super::*;
         for body in ["first", "second"] {
             let posted = coordination::post_message(
                 State(d.clone()),
-                Query(with_token()),
                 axum::extract::Path("t1".to_string()),
                 Json(coordination::CoordinationMessageReq {
                     to: Vec::new(),
@@ -722,7 +694,6 @@ use super::*;
                 handle: "reviewer".into(),
                 kind: crate::coordination::types::AgentKind::Worker,
                 status: crate::coordination::types::AgentStatus::Paused,
-                role: crate::coordination::types::AgentRole::Reviewer,
                 capabilities: vec![],
             })
             .unwrap();

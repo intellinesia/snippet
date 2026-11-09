@@ -698,7 +698,7 @@ pub(crate) fn board_lines(app: &App, tab: PaneTab, width: usize) -> Vec<Line<'st
             } else {
                 for (i, a) in agents.iter().enumerate() {
                     let name = if s(a, "display_name").is_empty() { s(a, "id") } else { s(a, "display_name") };
-                    lines.push(row(&name, &s(a, "role"), &s(a, "status"), width, focused && i == app.shell.pane_index));
+                    lines.push(row(&name, &s(a, "kind"), &s(a, "status"), width, focused && i == app.shell.pane_index));
                 }
             }
         }
@@ -920,7 +920,7 @@ fn agent_detail(app: &App, a: &Value, width: usize) -> Vec<Line<'static>> {
             Span::styled(name, Style::default().fg(text()).add_modifier(Modifier::BOLD)),
             Span::styled(format!("  {}", s(a, "status")), Style::default().fg(status_color(&s(a, "status")))),
         ]),
-        faint_line(&[s(a, "role"), s(a, "kind"), id.clone()].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")),
+        faint_line(&[s(a, "kind"), id.clone()].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")),
     ];
     let caps: Vec<String> = a
         .get("capabilities")

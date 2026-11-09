@@ -1,3 +1,4 @@
+use super::api_error;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -10,7 +11,7 @@ use crate::coordination::types::CoordinationEvent;
 use crate::mission_control;
 use crate::serve::task_summary;
 
-use super::{Auth, LoopInput, Shared, unauthorized, direct};
+use super::{LoopInput, Shared, direct};
 
 pub const COORDINATION_THREAD: &str = "system";
 
@@ -77,7 +78,6 @@ pub fn router() -> Router<Shared> {
 
 #[derive(Deserialize)]
 pub struct CoordinationTasksQuery {
-    pub token: Option<String>,
     #[serde(default)]
     pub after_priority: Option<i64>,
     #[serde(default)]
@@ -92,6 +92,11 @@ pub struct CoordinationTasksQuery {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub view: Option<String>,
+    /// `recent`: most recently updated first, paged by `offset`.
+    #[serde(default)]
+    pub order: Option<String>,
+    #[serde(default)]
+    pub offset: u32,
 }
 
 fn default_limit() -> u32 {
@@ -165,7 +170,6 @@ pub struct CoordinationTransferLeaseReq {
 
 #[derive(Deserialize)]
 pub struct CoordinationEventsQuery {
-    pub token: Option<String>,
     #[serde(default)]
     pub after_sequence: u64,
     #[serde(default = "default_limit")]
@@ -185,24 +189,17 @@ async fn list_tasks(
     State(d): State<Shared>,
     Query(q): Query<CoordinationTasksQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let after = match (q.after_priority, q.after_created.as_deref(), q.after_id.as_deref()) {
         (Some(priority), Some(created), Some(id)) => Some((priority, created, id)),
         (None, None, None) => None,
         _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                "after_priority, after_created and after_id must be provided together",
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, "after_priority, after_created and after_id must be provided together");
         }
     };
     let status = match q.status.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(raw) => match parse_task_status(raw) {
             Ok(status) => Some(status),
-            Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
+            Err(message) => return api_error(StatusCode::BAD_REQUEST, message),
         },
         None => None,
     };
@@ -211,7 +208,13 @@ async fn list_tasks(
         agent_id: q.agent_id.as_deref().filter(|s| !s.trim().is_empty()),
     };
     let summary = q.view.as_deref() == Some("summary");
-    match d.store.list_tasks_page(&filter, after, q.limit.clamp(1, 500)) {
+    let limit = q.limit.clamp(1, 500);
+    let page = if q.order.as_deref() == Some("recent") {
+        d.store.list_tasks_recent(&filter, q.offset, limit)
+    } else {
+        d.store.list_tasks_page(&filter, after, limit)
+    };
+    match page {
         Ok(tasks) if summary => Json(
             tasks
                 .iter()
@@ -220,38 +223,26 @@ async fn list_tasks(
         )
         .into_response(),
         Ok(tasks) => Json(tasks.iter().map(|task| task_with_sub_status(&d.store, task)).collect::<Vec<_>>()).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("list tasks: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("list tasks: {error}")),
     }
 }
 
 async fn create_task(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Json(req): Json<CoordinationTaskReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let title = req.title.trim();
     if title.is_empty() {
-        return (StatusCode::BAD_REQUEST, "title is required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "title is required");
     }
     if crate::session::is_inbox_session_id(req.session_id.trim()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            "session_id names an agent's inbox; route to a work session instead",
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "session_id names an agent's inbox; route to a work session instead");
     }
     let Some(target_path) = crate::session::state_path_for_id(req.session_id.trim()) else {
-        return (StatusCode::BAD_REQUEST, "session_id must name a real session").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "session_id must name a real session");
     };
     let Some(state) = crate::session::read_session_meta(&target_path) else {
-        return (StatusCode::BAD_REQUEST, "session_id must name a real session").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "session_id must name a real session");
     };
     let session_id = crate::session::session_id_for_state_path(&target_path);
     if mission_control::get_session(&d.mission_control_root, &session_id).is_err()
@@ -261,11 +252,7 @@ async fn create_task(
             state.title.as_deref().unwrap_or("Managed session"),
             std::path::Path::new(&state.workspace),
         ) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("register managed session: {error}"),
-            )
-                .into_response();
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("register managed session: {error}"));
         }
     let now = chrono::Utc::now().to_rfc3339();
     let id = req
@@ -286,11 +273,7 @@ async fn create_task(
     }
     match d.store.create_task(&task) {
         Ok(()) => (StatusCode::CREATED, Json(task)).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("create task: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("create task: {error}")),
     }
 }
 
@@ -309,32 +292,20 @@ pub(super) fn task_with_sub_status(store: &crate::store::Store, task: &Task) -> 
 
 async fn get_task(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.get_task(&task_id) {
         Ok(Some(task)) => Json(task_with_sub_status(&d.store, &task)).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "no such task").into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("get task: {error}"),
-        )
-            .into_response(),
+        Ok(None) => api_error(StatusCode::NOT_FOUND, "no such task"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("get task: {error}")),
     }
 }
 
 async fn update_task(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
     Json(req): Json<CoordinationTaskPatch>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let now = chrono::Utc::now().to_rfc3339();
     let title = req.title.as_deref().map(str::trim).filter(|v| !v.is_empty());
     let description = req.description.as_deref().map(str::trim);
@@ -342,29 +313,21 @@ async fn update_task(
     match d.store.update_task_full(&task_id, title, description, plan, req.priority, &now) {
         Ok(true) => match d.store.get_task(&task_id) {
             Ok(Some(task)) => Json(task).into_response(),
-            _ => (StatusCode::INTERNAL_SERVER_ERROR, "task vanished").into_response(),
+            _ => api_error(StatusCode::INTERNAL_SERVER_ERROR, "task vanished"),
         },
-        Ok(false) => (StatusCode::NOT_FOUND, "no such task").into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("update task: {error}"),
-        )
-            .into_response(),
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such task"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("update task: {error}")),
     }
 }
 
 async fn set_task_status(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
     Json(req): Json<CoordinationTaskStatusReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let status = match parse_task_status(req.status.trim()) {
         Ok(status) => status,
-        Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
+        Err(message) => return api_error(StatusCode::BAD_REQUEST, message),
     };
     let now = chrono::Utc::now().to_rfc3339();
     let note = format!("Marked {status} on the board.");
@@ -393,50 +356,34 @@ pub(super) fn store_error(error: crate::store::StoreError) -> Response {
 
 async fn task_links(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.task_links(&task_id) {
         Ok(links) => {
             let blockers = d.store.blockers_of(&task_id).unwrap_or_default();
             Json(serde_json::json!({ "links": links, "blocked_by": blockers })).into_response()
         }
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("task links: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task links: {error}")),
     }
 }
 
 async fn link_tasks(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
     Json(req): Json<CoordinationTaskLinkReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let to_task_id = req.to_task_id.trim();
     if to_task_id.is_empty() {
-        return (StatusCode::BAD_REQUEST, "to_task_id is required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "to_task_id is required");
     }
     if to_task_id == task_id {
-        return (StatusCode::BAD_REQUEST, "a task cannot link to itself").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "a task cannot link to itself");
     }
     let kind = match req.kind.as_deref().unwrap_or("blocks") {
         "blocks" => TaskLinkKind::Blocks,
         "relates_to" => TaskLinkKind::RelatesTo,
         other => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("unknown link kind: {other}"),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, format!("unknown link kind: {other}"));
         }
     };
     let now = chrono::Utc::now().to_rfc3339();
@@ -454,12 +401,8 @@ async fn link_tasks(
 
 async fn unlink_tasks(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path((task_id, other_id)): Path<(String, String)>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let mut removed = false;
     for (from, to) in [
         (task_id.as_str(), other_id.as_str()),
@@ -470,11 +413,7 @@ async fn unlink_tasks(
                 Ok(true) => removed = true,
                 Ok(false) => {}
                 Err(error) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("unlink tasks: {error}"),
-                    )
-                        .into_response();
+                    return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("unlink tasks: {error}"));
                 }
             }
         }
@@ -482,49 +421,32 @@ async fn unlink_tasks(
     if removed {
         StatusCode::NO_CONTENT.into_response()
     } else {
-        (StatusCode::NOT_FOUND, "no such link").into_response()
+        api_error(StatusCode::NOT_FOUND, "no such link")
     }
 }
 
 async fn task_agents(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.list_task_agents(&task_id) {
         Ok(agents) => Json(agents).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("task agents: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task agents: {error}")),
     }
 }
 
 async fn task_turns(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.list_turns(&task_id) {
         Ok(turns) => Json(turns).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("task turns: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task turns: {error}")),
     }
 }
 
 #[derive(Deserialize)]
 struct TaskLogQuery {
-    token: Option<String>,
     #[serde(default)]
     before: Option<i64>,
     #[serde(default)]
@@ -536,27 +458,20 @@ async fn task_log(
     Query(q): Query<TaskLogQuery>,
     Path(task_id): Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.task_log(&task_id, q.before, q.limit.unwrap_or(50).clamp(1, 200)) {
         Ok(rows) => Json(rows).into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task log: {error}")).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task log: {error}")),
     }
 }
 
 async fn add_task_agent(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
     Json(req): Json<CoordinationTaskAgentReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let agent_id = req.agent_id.trim();
     if agent_id.is_empty() {
-        return (StatusCode::BAD_REQUEST, "agent_id is required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "agent_id is required");
     }
     let now = chrono::Utc::now().to_rfc3339();
     match d.store.add_task_agent_full(
@@ -569,45 +484,29 @@ async fn add_task_agent(
         &now,
     ) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("add task agent: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("add task agent: {error}")),
     }
 }
 
 async fn remove_task_agent(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path((task_id, agent_id)): Path<(String, String)>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.remove_task_agent(&task_id, &agent_id, &chrono::Utc::now().to_rfc3339()) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "agent is not on this task").into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("remove task agent: {error}"),
-        )
-            .into_response(),
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "agent is not on this task"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("remove task agent: {error}")),
     }
 }
 
 async fn transfer_task_lease(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path((task_id, agent_id)): Path<(String, String)>,
     Json(req): Json<CoordinationTransferLeaseReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let to_agent = req.to_agent_id.trim();
     if to_agent.is_empty() {
-        return (StatusCode::BAD_REQUEST, "to_agent_id is required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "to_agent_id is required");
     }
     let now = chrono::Utc::now().to_rfc3339();
     let live_task = d.store.get_task(&task_id).ok().flatten().filter(|task| {
@@ -671,11 +570,7 @@ async fn transfer_task_lease(
             }
             StatusCode::NO_CONTENT.into_response()
         }
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("transfer task lease: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("transfer task lease: {error}")),
     }
 }
 
@@ -684,31 +579,20 @@ async fn thread_events(
     Query(q): Query<CoordinationEventsQuery>,
     Path(thread_id): Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.events_for_thread(&thread_id, q.after_sequence, q.limit.clamp(1, 500)) {
         Ok(events) => Json(events).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("thread events: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("thread events: {error}")),
     }
 }
 
 pub(super) async fn post_message(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(thread_id): Path<String>,
     Json(req): Json<CoordinationMessageReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let body = req.body.trim();
     if body.is_empty() {
-        return (StatusCode::BAD_REQUEST, "body is required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "body is required");
     }
     let now = chrono::Utc::now().to_rfc3339();
     let mut payload = serde_json::json!({
@@ -718,20 +602,20 @@ pub(super) async fn post_message(
     let to: Vec<&str> = req.to.iter().map(|a| a.trim()).filter(|a| !a.is_empty()).collect();
     if !to.is_empty() {
         let Ok(Some(task)) = d.store.get_task_by_thread(&thread_id) else {
-            return (StatusCode::BAD_REQUEST, "only a task's room can address its members").into_response();
+            return api_error(StatusCode::BAD_REQUEST, "only a task's room can address its members");
         };
         let roster = d.store.list_task_agents(&task.id).unwrap_or_default();
         if let Some(stranger) = to.iter().find(|a| {
             **a != crate::mission_control::SESSION_ID
                 && !roster.iter().any(|m| m.agent_id == **a && m.removed_at.is_none())
         }) {
-            return (StatusCode::BAD_REQUEST, format!("{stranger} isn't on this task")).into_response();
+            return api_error(StatusCode::BAD_REQUEST, format!("{stranger} isn't on this task"));
         }
         if crate::members::task_workspace(&d.store, &task).is_some() {
             crate::members::seat_holder(&d.store, &task);
             for agent in to.iter().filter(|a| **a != crate::mission_control::SESSION_ID) {
                 if let Err(error) = crate::members::seat(&d.store, &task, agent, &now) {
-                    return (StatusCode::CONFLICT, error).into_response();
+                    return api_error(StatusCode::CONFLICT, error);
                 }
             }
         }
@@ -766,11 +650,7 @@ pub(super) async fn post_message(
             queue_coordination_wake(&d.store, saved.clone());
             Json(saved).into_response()
         }
-        Err(error) => (
-            StatusCode::CONFLICT,
-            format!("post coordination message: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::CONFLICT, format!("post coordination message: {error}")),
     }
 }
 

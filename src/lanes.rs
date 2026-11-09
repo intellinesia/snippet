@@ -82,7 +82,7 @@ pub struct LaneRecord {
     /// Investigation lane: file-mutation tools removed. Sticky across follow-ups.
     #[serde(default)]
     pub read_only: bool,
-    /// Specialized agent identity or role name (e.g. 'reviewer', 'researcher').
+    /// Specialized agent identity (e.g. 'rust-pr-reviewer').
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     /// Inference profile name chosen for this lane (omitted when using active model).
@@ -328,6 +328,7 @@ pub struct LaneManager {
     exa_api_key: Option<String>,
     handles: Vec<(String, tokio::task::JoinHandle<()>)>,
     parent: Option<ToolContext>,
+    parent_profile: Option<String>,
     mailboxes: HashMap<String, Arc<LaneMailbox>>,
 }
 
@@ -361,8 +362,15 @@ impl LaneManager {
             exa_api_key,
             handles: Vec::new(),
             parent: None,
+            parent_profile: None,
             mailboxes: HashMap::new(),
         }
+    }
+
+    /// Profile the parent session runs on; a lane without its own profile uses it.
+    pub fn with_parent_profile(mut self, profile: Option<String>) -> Self {
+        self.parent_profile = profile;
+        self
     }
 
     pub fn with_parent(mut self, parent: ToolContext) -> Self {
@@ -584,7 +592,7 @@ impl LaneManager {
     /// resumed from disk, so the lane keeps everything it learned (the analog of
     /// messaging an existing agent instead of spawning a fresh one). Returns the
     /// lane's title.
-    pub fn follow_up(&mut self, lane_id: &str, brief: &str) -> Result<String, String> {
+    pub fn follow_up(&mut self, lane_id: &str, brief: &str, profile: Option<String>) -> Result<String, String> {
         if self.factory.is_none() {
             return Err(
                 "delegate_task is unavailable in this run (no model factory; interactive mode only)."
@@ -620,6 +628,9 @@ impl LaneManager {
         record.summary = None;
         record.report = None;
         record.error = None;
+        if profile.is_some() {
+            record.profile = profile;
+        }
         let (title, read_only, agent, profile) = (
             record.title.clone(),
             record.read_only,
@@ -690,6 +701,7 @@ impl LaneManager {
         let exa_api_key = self.exa_api_key.clone();
         let approval = self.approval_tx.clone().map(|tx| LaneApprovalRoute { lane: title.clone(), tx });
         let link = self.link_for(id, agent.as_deref());
+        let parent_profile = self.parent_profile.clone();
 
         let handle = tokio::spawn(async move {
             let _live = LiveLane::register(link.origin_session.as_deref(), &lane_id, &link.mailbox);
@@ -708,6 +720,7 @@ impl LaneManager {
                     read_only,
                     agent,
                     profile,
+                    parent_profile,
                     progress_tx,
                     approval,
                     link,
@@ -967,6 +980,57 @@ fn is_safe_lane_file_id(id: &str) -> bool {
     !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
 }
 
+pub(crate) fn lane_tool_registry(
+    exa_api_key: Option<String>,
+    agent: Option<&str>,
+    message_parent: MessageParent,
+    read_only: bool,
+) -> crate::tools::ToolRegistry {
+    let mut tools = coding_tools(exa_api_key)
+        .with_custom_dir(crate::agent_tools::tools_dir(agent.unwrap_or("snippet")));
+    tools.insert(message_parent);
+    tools.insert(crate::coordination_tools::SendAgentMessage);
+    tools.insert(crate::coordination_tools::ReadCoordinationBoard);
+    tools.insert(crate::review_tools::SubmitReview);
+    tools.insert(crate::profiles::ListProfiles);
+    tools.remove(crate::progress::TOOL_NAME);
+    tools.remove("pass_turn");
+    if read_only {
+        // Investigation lane: strip the file-mutation tools so a fan-out of
+        // readers can't collide with the main agent's (or each other's) edits.
+        // The shell remains for inspection; the brief tells the lane its role.
+        tools.remove("change_files");
+    }
+    tools
+}
+
+/// Profiles a lane tries in order: a pinned profile then the parent's; unpinned,
+/// the parent's (`None` when unknown: the factory default), then the routing chain.
+fn lane_route(
+    explicit: Option<&str>,
+    parent: Option<&str>,
+    chain: &[String],
+    limited: impl Fn(&str) -> bool,
+) -> Vec<Option<String>> {
+    if let Some(name) = explicit {
+        let mut route = vec![Some(name.to_string())];
+        route.extend(parent.filter(|p| *p != name && !limited(p)).map(|p| Some(p.to_string())));
+        return route;
+    }
+    let mut route = Vec::new();
+    match parent {
+        Some(name) if limited(name) => {}
+        Some(name) => route.push(Some(name.to_string())),
+        None => route.push(None),
+    }
+    for name in chain {
+        if Some(name.as_str()) != parent && !limited(name) {
+            route.push(Some(name.clone()));
+        }
+    }
+    route
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_lane(
     factory: ModelFactory,
@@ -979,29 +1043,41 @@ async fn run_lane(
     read_only: bool,
     agent: Option<String>,
     profile: Option<String>,
+    parent_profile: Option<String>,
     progress_tx: mpsc::UnboundedSender<LaneProgress>,
     approval: Option<LaneApprovalRoute>,
     link: LaneLink,
 ) -> Result<(String, String), String> {
     let route = match profile {
-        Some(_) => Vec::new(),
-        None => crate::config::SnippetConfig::load(&crate::config::default_config_path())
-            .await
-            .map(|c| crate::routing::candidates(&c, crate::routing::Route::Lanes))
-            .unwrap_or_default(),
+        Some(name) => vec![Some(name)],
+        None => {
+            let chain = crate::config::SnippetConfig::load(&crate::config::default_config_path())
+                .await
+                .map(|c| crate::routing::configured(&c, crate::routing::Route::Lanes))
+                .unwrap_or_default();
+            lane_route(None, parent_profile.as_deref(), &chain, |n| crate::routing::limited_until(n).is_some())
+        }
     };
-    if route.is_empty() {
+    if route.len() <= 1 {
         return run_lane_once(
-            factory, workspace_root, state_path, brief, owner, exa_api_key, resume, read_only, agent, profile,
-            progress_tx, approval, link,
+            factory,
+            workspace_root,
+            state_path,
+            brief,
+            owner,
+            exa_api_key,
+            resume,
+            read_only,
+            agent,
+            route.into_iter().next().flatten(),
+            progress_tx,
+            approval,
+            link,
         )
         .await;
     }
     let (mut brief, mut resume, mut last) = (brief, resume, None);
     for name in route {
-        if crate::routing::limited_until(&name).is_some() {
-            continue;
-        }
         let result = run_lane_once(
             factory.clone(),
             workspace_root.clone(),
@@ -1012,7 +1088,7 @@ async fn run_lane(
             resume,
             read_only,
             agent.clone(),
-            Some(name.clone()),
+            name.clone(),
             progress_tx.clone(),
             approval.clone(),
             link.clone(),
@@ -1020,9 +1096,12 @@ async fn run_lane(
         .await;
         match result {
             Err(message) if crate::routing::is_limit_error(&message) => {
-                crate::routing::mark_limited(&name, crate::routing::reset_from(None));
+                let on = name.as_deref().unwrap_or("the previous model");
+                if let Some(name) = &name {
+                    crate::routing::mark_limited(name, crate::routing::reset_from(None));
+                }
                 brief = format!(
-                    "{brief}\n\n[routing] An earlier attempt at this on {name} stopped partway when that model hit its usage limit. Check the workspace for changes it already made before continuing."
+                    "{brief}\n\n[routing] An earlier attempt at this on {on} stopped partway when that model hit its usage limit. Check the workspace for changes it already made before continuing."
                 );
                 resume = false;
                 last = Some(message);
@@ -1088,24 +1167,16 @@ async fn run_lane_once(
             return Err(message);
         }
     };
-    let mut tools = coding_tools(exa_api_key.clone())
-        .with_custom_dir(crate::agent_tools::tools_dir(agent.as_deref().unwrap_or("snippet")));
-    tools.insert(MessageParent {
-        lane_id: owner.clone(),
-        progress_tx: progress_tx.clone(),
-        mailbox: link.mailbox.clone(),
-    });
-    tools.insert(crate::coordination_tools::SendAgentMessage);
-    tools.insert(crate::coordination_tools::ReadCoordinationBoard);
-    tools.insert(crate::review_tools::SubmitReview);
-    tools.remove(crate::progress::TOOL_NAME);
-    tools.remove("pass_turn");
-    if read_only {
-        // Investigation lane: strip the file-mutation tools so a fan-out of
-        // readers can't collide with the main agent's (or each other's) edits.
-        // The shell remains for inspection — the brief tells the lane its role.
-        tools.remove("change_files");
-    }
+    let tools = lane_tool_registry(
+        exa_api_key.clone(),
+        agent.as_deref(),
+        MessageParent {
+            lane_id: owner.clone(),
+            progress_tx: progress_tx.clone(),
+            mailbox: link.mailbox.clone(),
+        },
+        read_only,
+    );
     let identity = agent.as_deref().map(|agent_name| {
         let body = crate::coordination::AgentHome::new(
             crate::coordination::agents_root(&crate::config::snippet_home().join("mission-control")),
@@ -1334,6 +1405,54 @@ fn summarize_lane_outcome(outcome: &crate::harness::HarnessOutcome) -> String {
 
 #[cfg(test)]
 mod tests {
+    fn tool_bytes(defs: &[crate::llm::NativeToolDefinition]) -> Vec<(String, usize)> {
+        let mut sizes: Vec<(String, usize)> = defs
+            .iter()
+            .map(|d| (d.name.clone(), d.name.len() + d.description.len() + d.input_schema.to_string().len()))
+            .collect();
+        sizes.sort_by(|a, b| b.1.cmp(&a.1));
+        sizes
+    }
+
+    /// Bytes every request re-sends for tool definitions, per role. Bounds sit just
+    /// above today's sizes; lower them as descriptions get tighter.
+    #[test]
+    fn tool_definition_budget_per_role() {
+        let key = Some("k".to_string());
+        let (progress_tx, _rx) = mpsc::unbounded_channel();
+        let parent = MessageParent { lane_id: "lane-1".into(), progress_tx, mailbox: Arc::new(LaneMailbox::default()) };
+        let with_meta = |mut defs: Vec<crate::llm::NativeToolDefinition>, lanes: bool| {
+            defs.extend(crate::meta::conversation_meta_definitions_for(false, lanes));
+            defs
+        };
+        let roles = [
+            ("work", with_meta(crate::session::work_tool_registry(key.clone(), None).definitions(), true), 27_850),
+            ("mission_control", with_meta(crate::session::mission_control_tool_registry(key.clone()).definitions(), true), 55_750),
+            ("desk", crate::session::coordination_tool_registry(key.clone()).definitions(), 13_200),
+            ("lane", lane_tool_registry(key.clone(), None, parent, false).definitions(), 9_500),
+        ];
+        for (role, defs, cap) in roles {
+            let sizes = tool_bytes(&defs);
+            let total: usize = sizes.iter().map(|s| s.1).sum();
+            let top: Vec<String> = sizes.iter().take(15).map(|(n, b)| format!("{n} {b}")).collect();
+            println!("{role}: {} tools, {total} bytes; largest: {}", sizes.len(), top.join(", "));
+            assert!(total <= cap, "{role} tool definitions are {total} bytes, over {cap}");
+        }
+    }
+
+    #[test]
+    fn lane_route_order() {
+        let chain = vec!["top".to_string(), "mid".to_string(), "low".to_string()];
+        let none = |_: &str| false;
+        assert_eq!(lane_route(Some("pin"), Some("mid"), &chain, none), vec![Some("pin".into()), Some("mid".into())]);
+        assert_eq!(lane_route(Some("pin"), Some("pin"), &chain, none), vec![Some("pin".to_string())]);
+        let route = lane_route(None, Some("mid"), &chain, none);
+        assert_eq!(route, vec![Some("mid".into()), Some("top".into()), Some("low".into())]);
+        let route = lane_route(None, Some("mid"), &chain, |n| n == "mid" || n == "low");
+        assert_eq!(route, vec![Some("top".to_string())]);
+        assert_eq!(lane_route(None, None, &chain[..1], none), vec![None, Some("top".to_string())]);
+    }
+
     use super::*;
 
     fn test_record() -> LaneRecord {

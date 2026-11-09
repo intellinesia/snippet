@@ -1,6 +1,6 @@
 use super::*;
 
-const MODEL_ACTIVITY_TEXT: &str = "Thinking";
+pub(super) const MODEL_ACTIVITY_TEXT: &str = "Thinking";
 
 #[cfg(test)]
 #[test]

@@ -52,6 +52,7 @@ pub(crate) use config_routes::*;
 mod coordination;
 pub use coordination::{COORDINATION_THREAD, queue_coordination_wake};
 mod direct;
+pub(crate) use direct::relay_desk_reply;
 mod autonomy;
 mod fs;
 mod git;
@@ -102,6 +103,10 @@ pub(crate) struct LiveSession {
     terms: Arc<SessionTerms>,
 }
 
+pub(crate) fn is_agent_desk(id: &str) -> bool {
+    id.starts_with("inbox-") && crate::session::is_inbox_session_id(id)
+}
+
 pub(crate) fn live_from_handle(handle: crate::session::SessionHandle, profile: Option<String>) -> LiveSession {
     let cwd = {
         let from_state = read_session_meta(&handle.state_path)
@@ -137,16 +142,16 @@ pub(crate) fn apply_profile(cfg: &mut SnippetConfig, profile: &Option<String>) {
 /// the persisted state. Returns the error Response to send on any failure.
 fn load_session_workspace(session: &str) -> Result<(PathBuf, PathBuf), Response> {
     let Some(sp) = state_path_for_id(session) else {
-        return Err((StatusCode::NOT_FOUND, "no such session").into_response());
+        return Err(api_error(StatusCode::NOT_FOUND, "no such session"));
     };
     // Store-or-file: a session ported to the database has no state file, so
     // reading the file directly would 404 every migrated session.
     let Some(state) = read_session_meta(&sp) else {
-        return Err((StatusCode::NOT_FOUND, "session state unreadable").into_response());
+        return Err(api_error(StatusCode::NOT_FOUND, "session state unreadable"));
     };
     let folder = PathBuf::from(&state.workspace);
     if state.workspace.is_empty() || !folder.is_dir() {
-        return Err((StatusCode::BAD_REQUEST, "session workspace missing").into_response());
+        return Err(api_error(StatusCode::BAD_REQUEST, "session workspace missing"));
     }
     Ok((sp, folder))
 }
@@ -459,8 +464,49 @@ impl Daemon {
                     .filter(|t| t.session_id == id)
                     .find_map(|t| self.task_profile(&t))
             })
-            .or_else(|| read_session_profile(sp))
+            // A desk runs on its agent's profile and keeps no pin of its own.
+            .or_else(|| (!is_agent_desk(id)).then(|| read_session_profile(sp)).flatten())
             .or_else(|| self.routed_profile(id))
+    }
+
+    /// Moves a live desk onto its agent's current profile once any turn in
+    /// flight has finished.
+    pub(crate) fn follow_agent_profile(self: &Arc<Self>, agent_id: &str) {
+        let desk = format!("inbox-{agent_id}");
+        let d = self.clone();
+        tokio::spawn(async move {
+            for _ in 0..1800 {
+                let current = match d.sessions.lock().await.get(&desk) {
+                    Some(live) => live.profile.clone(),
+                    None => return,
+                };
+                let Some(target) = d.routed_profile(&desk) else { return };
+                if current.as_deref() == Some(target.as_str()) {
+                    return;
+                }
+                if !recurring::session_busy_for_recurring(&desk) {
+                    match d.run_session_on_profile(&desk, &target, false).await {
+                        Ok(()) => config_routes::notify_models(Some(&desk)),
+                        Err(error) => eprintln!("[agents] desk `{desk}` stayed on its model: {error}"),
+                    }
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+    }
+
+    /// The profile a live desk is running on right now, by agent id.
+    pub(crate) async fn desk_profiles(&self) -> HashMap<String, String> {
+        self.sessions
+            .lock()
+            .await
+            .iter()
+            .filter_map(|(id, live)| {
+                let agent = id.strip_prefix("inbox-")?;
+                Some((agent.to_string(), live.profile.clone()?))
+            })
+            .collect()
     }
 
     /// The profile an agent is configured to work on, when it names one the
@@ -636,6 +682,7 @@ impl Daemon {
         if !entries.contains(&item.id) {
             entries.push(item.id.clone());
             self.queue_revision.fetch_add(1, Ordering::Release);
+            crate::conversations::signal_session_change();
         }
     }
 
@@ -658,6 +705,14 @@ impl Daemon {
                 "{text}\n\n[Audio transcription unavailable: {error}. The original audio attachment remains available.]"
             ),
         }
+    }
+
+    /// A wake with nobody there to choose: once the cache has lapsed, continue lean.
+    pub(crate) async fn deliver_wake(&self, id: &str, input: LoopInput) {
+        if matches!(input, LoopInput::UserMessage(_)) && cache_lapsed(id) {
+            Box::pin(self.deliver(id, LoopInput::ContinueLean)).await;
+        }
+        Box::pin(self.deliver(id, input)).await;
     }
 
     pub(crate) async fn deliver(&self, id: &str, input: LoopInput) {
@@ -773,6 +828,18 @@ pub fn resolve_tunnel(
     }
 }
 
+fn compression() -> tower_http::compression::CompressionLayer<impl tower_http::compression::Predicate> {
+    use tower_http::compression::predicate::{NotForContentType, Predicate, SizeAbove};
+    tower_http::compression::CompressionLayer::new().compress_when(
+        SizeAbove::new(1024)
+            .and(NotForContentType::IMAGES)
+            .and(NotForContentType::SSE)
+            .and(NotForContentType::const_new("audio/"))
+            .and(NotForContentType::const_new("video/"))
+            .and(NotForContentType::const_new("application/zip")),
+    )
+}
+
 /// Run the daemon's HTTP/WS server on `127.0.0.1:port`, bring up the tunnel, and
 /// print a scannable QR + connection string. The token is the app-layer auth gate.
 pub async fn run_serve(
@@ -882,6 +949,10 @@ pub async fn run_serve(
         let d = daemon.clone();
         tokio::spawn(async move { settle_routes::settle_loop(d).await });
     }
+    {
+        let d = daemon.clone();
+        tokio::spawn(async move { ws::terminal_pump_loop(d).await });
+    }
     if let Some(rx) = crate::routing::subscribe() {
         let d = daemon.clone();
         tokio::spawn(async move { routing_routes::routing_loop(d, rx).await });
@@ -913,7 +984,6 @@ pub async fn run_serve(
         .route("/coordination/direct/read", post(direct::direct_mark_read))
         .route("/sessions", get(list_sessions).post(open_session))
         .route("/sessions/counts", get(session_counts))
-        .route("/sessions/members", get(session_members_by_query))
         .route("/usage", get(usage_summary))
         .route("/notifications", get(notification_replay))
         .merge(recurring::router())
@@ -955,9 +1025,6 @@ pub async fn run_serve(
         .route("/ambient/stream", get(ambient_stream::stream))
         .route("/ambient/stats", get(ambient_routes::stats))
         .route("/ambient/lease", post(ambient_routes::lease))
-        .route("/ambient/turns/{id}/audio", get(ambient_routes::turn_audio))
-        .route("/ambient/activity", post(ambient_routes::activity))
-        .route("/ambient/conversation/end", post(ambient_routes::end_conversation))
         .route("/ambient/recording", get(recording_routes::get).post(recording_routes::set))
         .route("/ambient/recordings/delete", post(recording_routes::delete))
         .route("/ambient/call", get(call_track::status))
@@ -992,27 +1059,31 @@ pub async fn run_serve(
         .route("/session/delete", post(delete_session))
         .route("/session/settle", post(settle_routes::settle_route))
         .route("/session/keep_awake", post(settle_routes::keep_awake_route))
+        .route("/session/cache", get(settle_routes::cache_route))
         .route("/session/unsettle", post(settle_routes::unsettle_route))
         .route("/session/interrupt", post(session_routes::interrupt_session))
         .route("/session/rename", post(rename_session))
         .route("/git/worktrees", get(git_worktrees))
-        .route("/git/status", post(git_status))
-        .route("/git/diff", post(git_diff))
-        .route("/git/log", post(git_log))
-        .route("/git/branches", post(git_branches))
+        .route("/git/status", get(git_status))
+        .route("/git/diff", get(git_diff))
+        .route("/git/log", get(git_log))
+        .route("/git/branches", get(git_branches))
         .route("/git/stage", post(git_stage))
         .route("/git/unstage", post(git_unstage))
         .route("/git/commit", post(git_commit))
         .route("/git/checkout", post(git_checkout))
         .route("/git/push", post(git_push))
         .route("/git/pull", post(git_pull))
-        .route("/bg", post(bg_list))
+        .route("/bg", get(bg_list))
         .route("/bg/kill", post(bg_kill))
-        .route("/bg/log", post(bg_log))
+        .route("/bg/log", get(bg_log))
         .route("/git/stash", post(git_stash))
         .route("/git/discard", post(git_discard))
         .route("/session/checkpoint-stats", post(checkpoint_stats))
+        .route("/session/lane", get(session_routes::lane_detail))
         .route("/git/init", post(git_init))
+        .layer(axum::middleware::from_fn_with_state(daemon.clone(), require_token))
+        .layer(compression())
         .with_state(daemon);
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
@@ -1062,17 +1133,71 @@ pub async fn run_serve(
 }
 
 fn unauthorized() -> Response {
-    (StatusCode::UNAUTHORIZED, "unauthorized").into_response()
+    api_error(StatusCode::UNAUTHORIZED, "unauthorized")
 }
 
-#[derive(Deserialize, Clone)]
-pub(crate) struct Auth {
-    pub(crate) token: Option<String>,
+/// The one error shape every route returns: `{"error": "..."}` with a real status.
+pub(crate) fn api_error(status: StatusCode, message: impl std::fmt::Display) -> Response {
+    (status, Json(serde_json::json!({ "error": message.to_string() }))).into_response()
+}
+
+#[derive(Deserialize)]
+struct TokenQuery {
+    token: Option<String>,
+}
+
+/// Every route needs the daemon token except `/health`, the MCP bridge (its token
+/// is in the path) and signed artifact links (`/a/{exp}/{sig}`, checked by their handler).
+async fn require_token(
+    State(d): State<Shared>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path();
+    let open = path == "/health" || path.starts_with("/a/");
+    let token = Query::<TokenQuery>::try_from_uri(request.uri()).ok().and_then(|q| q.0.token);
+    if open || d.authed(&token) {
+        next.run(request).await
+    } else {
+        unauthorized()
+    }
+}
+
+const STALE_RUNNING_SECS: i64 = 600;
+
+/// Marks idle the runs a killed worker left "running": no loop and no activity for ten minutes.
+pub(crate) async fn settle_stale_running(d: &Shared) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let live: std::collections::HashSet<String> = d
+        .sessions
+        .lock()
+        .await
+        .iter()
+        .filter(|(_, l)| !l.join.is_finished())
+        .map(|(id, _)| id.clone())
+        .collect();
+    let _ = tokio::task::spawn_blocking(move || {
+        for s in list_device_sessions() {
+            if s.status != "running" || now - s.last_active <= STALE_RUNNING_SECS || live.contains(&s.id) {
+                continue;
+            }
+            if let Some(sp) = state_path_for_id(&s.id)
+                && let Some(mut st) = crate::session::read_session_state(&sp)
+                && st.status == crate::harness::HarnessStatus::Running
+            {
+                st.status = crate::harness::HarnessStatus::Idle;
+                let _ = crate::session::write_session_state(&sp, &st);
+            }
+        }
+    })
+    .await;
 }
 
 #[derive(Deserialize)]
 struct ListQuery {
-    token: Option<String>,
     #[serde(default)]
     folder: Option<String>,
     #[serde(default)]
@@ -1082,9 +1207,6 @@ struct ListQuery {
 // GET /sessions[?folder=] — device sessions (optionally scoped to one folder),
 // each with a `running` flag.
 async fn list_sessions(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let mut sessions = list_device_sessions();
     // A folder's sessions include those in worktrees made from it.
     if let Some(folder) = q.folder.as_deref().filter(|f| !f.is_empty()) {
@@ -1106,12 +1228,7 @@ async fn list_sessions(State(d): State<Shared>, Query(q): Query<ListQuery>) -> R
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
-            if s.status == "running" && !alive && now - s.last_active > 600 {
-                if let Some(sp) = state_path_for_id(&s.id)
-                    && let Some(mut st) = crate::session::read_session_state(&sp) {
-                        st.status = crate::harness::HarnessStatus::Idle;
-                        let _ = crate::session::write_session_state(&sp, &st);
-                    }
+            if s.status == "running" && !alive && now - s.last_active > STALE_RUNNING_SECS {
                 s.status = "idle".to_string();
             }
             let running = s.status == "running";
@@ -1132,18 +1249,14 @@ async fn list_sessions(State(d): State<Shared>, Query(q): Query<ListQuery>) -> R
 
 #[derive(Deserialize)]
 struct UsageQuery {
-    token: Option<String>,
     #[serde(default)]
     since: Option<i64>,
 }
 
 async fn usage_summary(State(d): State<Shared>, Query(q): Query<UsageQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let totals = match d.store.usage_totals(q.since) {
         Ok(rows) => rows,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     let sessions: HashMap<String, u64> = d
         .store
@@ -1214,10 +1327,7 @@ async fn usage_summary(State(d): State<Shared>, Query(q): Query<UsageQuery>) -> 
 
 // GET /sessions/counts — {folder: count} across all sessions (cheap, from
 // sidecars), for the app's per-folder session badges without downloading the list.
-async fn session_counts(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn session_counts() -> Response {
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for s in list_device_sessions() {
         if s.parent_session_id.is_some() {
@@ -1228,29 +1338,6 @@ async fn session_counts(State(d): State<Shared>, Query(a): Query<Auth>) -> Respo
         }
     }
     Json(counts).into_response()
-}
-
-#[derive(Deserialize)]
-struct SessionMembersQuery {
-    token: Option<String>,
-    #[serde(default)]
-    session_id: Option<String>,
-}
-
-async fn session_members_by_query(
-    State(d): State<Shared>,
-    Query(q): Query<SessionMembersQuery>,
-) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
-    let Some(session_id) = q.session_id else {
-        return (StatusCode::BAD_REQUEST, "missing session_id parameter").into_response();
-    };
-    match d.store.session_members(&session_id) {
-        Ok(members) => Json(members).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
 }
 
 #[derive(Deserialize)]
@@ -1277,15 +1364,11 @@ fn default_true() -> bool {
 // POST /sessions {folder, resume?} — open a folder, start/resume its session.
 async fn open_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<OpenReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let folder = PathBuf::from(&req.folder);
     if !folder.is_dir() {
-        return (StatusCode::BAD_REQUEST, "not a directory").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "not a directory");
     }
     let folder = crate::session::session_workspace(&folder, req.workspace);
     let base_state = {
@@ -1301,16 +1384,14 @@ async fn open_session(
     } else {
         (base_state.clone(), req.resume)
     };
-    // Canonical (filename stripped) so this matches `session_id_for_state_path`
-    // and any row migrated from the old path-shaped ids.
+    // Canonical (filename stripped) so this matches `session_id_for_state_path`.
     let id = crate::conversations::canonical_session_id(
         &sp
             .strip_prefix(workspaces_root())
             .unwrap_or(&sp)
             .display()
             .to_string(),
-    )
-    .0;
+    );
     // Effective model: a persisted per-conversation override is AUTHORITATIVE on
     // resume — the app re-sends a profile on plain navigation (foregrounding,
     // reopening the chat), and honoring it silently reverted the model the user
@@ -1390,10 +1471,7 @@ struct ConfigView {
 }
 
 // GET /config — profiles with keys redacted (has_key only), active profile, theme.
-async fn get_config(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn get_config(State(d): State<Shared>) -> Response {
     d.reload_config().await; // reflect profiles the TUI added/removed
     let c = d.config.lock().unwrap();
     let active = c.active_setup.clone();
@@ -1434,6 +1512,20 @@ async fn get_config(State(d): State<Shared>, Query(a): Query<Auth>) -> Response 
     .into_response()
 }
 
+
+fn cache_lapsed(id: &str) -> bool {
+    let Some(store) = crate::session::store_for_sessions() else {
+        return false;
+    };
+    let Some(row) = store.get_session_row(id).ok().flatten() else {
+        return false;
+    };
+    let Ok((Some(touched), Some(context))) = store.cache_touch(&row.id) else {
+        return false;
+    };
+    let ttl = crate::settle::ttl_for(&crate::settle::profile_cache_ttls(), row.profile.as_deref());
+    context > 0 && crate::settle::idle_secs(chrono::Utc::now().timestamp(), touched) >= ttl
+}
 
 #[cfg(test)]
 mod tests;

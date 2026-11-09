@@ -58,7 +58,7 @@ pub fn add_mission_control_tools(registry: &mut ToolRegistry) {
     registry.insert(ListSessions);
     registry.insert(InspectSession);
     registry.insert(ListMissionTasks);
-    registry.insert(ListProfiles);
+    registry.insert(crate::profiles::ListProfiles);
     registry.insert(CreateMissionSession);
     registry.insert(CreateMissionTask);
     registry.insert(DeliverToSession);
@@ -440,7 +440,7 @@ impl Tool for RecordingPolicyTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "recording_policy".into(),
-            description: "Tune the voice classifier and conversation recording policy for both short-term and long-term rules. `set_rule` creates or replaces by label a rule telling the classifier what speech to include (`note`/`include` to capture as context notes, `auto` to also auto-record conversations), ask about (`ask`), or ignore (`never`/`ignore` to suppress both classifier context notes and call recording unless a wake word is spoken). Pass `minutes` (e.g. 60) or `until` (RFC 3339 or `YYYY-MM-DD HH:MM`) for a short-term rule that expires automatically, or omit both for a long-term standing rule. Match by `keywords` (exact phrases), `about` (natural-language description passed to the classifier, e.g. 'rehearsing YC founder video pitch takes'), `weekdays` (0 is Sunday) and `from_hhmm`..`to_hhmm`. `address` (alias `for_assistant`) tells the classifier the matching speech is meant for you, and `meeting` that it is people talking to each other. `expect` and `block` set a time window of at most 12 hours, and `snooze` pauses all recording and context notes for 1 to 720 minutes; both end what is being recorded now. `start` records the conversation happening now, including what was just said, and overrides an earlier refusal; use it whenever the user asks you to record, and `expect` only for a later time. `stop` ends the current recording and saves it. `get` shows `active_call`. Every entry except ask requires a `basis`.".into(),
+            description: "Manage voice capture rules. Use `set_rule` with `note`/`include` for context notes, `auto` to also record, `ask` to query, or `never`/`ignore` to suppress both unless a wake word is spoken. Match `keywords`, `about`, `weekdays` (0=Sunday) and `from_hhmm`/`to_hhmm`; `address`/`for_assistant` targets speech to you, `meeting` marks others talking. `minutes` or `until` makes a rule temporary; otherwise it is standing. `expect` and `block` set windows up to 12 hours; `snooze` pauses recording and notes for 1–720 minutes. Both end active recording. `start` records now, including recent speech, and overrides refusal; use it when the user asks to record. `expect` is for later. `stop` saves the recording; `get` shows active_call. Every action except `ask` requires a `basis`.".into(),
             input_schema: schema(json!({
                 "action": {"type": "string", "enum": ["get", "start", "stop", "expect", "block", "snooze", "set_rule", "remove_rule", "remove_window"]},
                 "from": {"type": "string", "description": "expect, block"},
@@ -1074,52 +1074,6 @@ impl Tool for ViewTaskBoard {
     }
 }
 
-/// The inference profiles a dispatch can name, and which one is the default.
-///
-/// Mission Control has to pick a model when it routes work, and it cannot invent
-/// a profile name: a name the config does not define is silently ignored at
-/// session start, so the task would run on the wrong model with nothing reported.
-/// This is how it learns the real names.
-pub struct ListProfiles;
-#[async_trait]
-impl Tool for ListProfiles {
-    fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition {
-            name: "list_profiles".into(),
-            description: "The inference profiles a task may name with create_mission_task(profile=…), with the active default. Names are exact and an unknown one is rejected, so pick from this list. Leave profile out normally: the assigned agent's own profile (see list_coordination_agents), or else the target session's model, applies.".into(),
-            input_schema: schema(json!({}), &[]),
-        }
-    }
-    async fn execute(&self, _ctx: &ToolContext, _arguments: Value) -> Result<ToolResult, ToolError> {
-        let config = crate::config::SnippetConfig::load(crate::config::default_config_path())
-            .await
-            .map_err(|e| ToolError::msg(format!("read config: {e}")))?;
-        let active = config.active_setup.clone();
-        let profiles: Vec<Value> = config
-            .setups
-            .as_ref()
-            .map(|setups| {
-                setups
-                    .iter()
-                    .map(|(name, cfg)| {
-                        json!({
-                            "name": name,
-                            "model": cfg.model,
-                            "provider": cfg.provider,
-                            "default": active.as_deref() == Some(name.as_str()),
-                            "has_key": !cfg.api_key.trim().is_empty(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(ToolResult::success(json!({
-            "default": active,
-            "profiles": profiles,
-        })))
-    }
-}
-
 fn session_folder_outside_mission_control(raw: &str, title: &str) -> Result<(PathBuf, bool), String> {
     let expanded = match raw.strip_prefix("~/") {
         Some(rest) => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(rest),
@@ -1301,7 +1255,7 @@ pub struct CreateMissionTask;
 #[async_trait]
 impl Tool for CreateMissionTask {
     fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition { name: "create_mission_task".into(), description: "Create one task routed to an existing session: the project work a user asked for, or the work an agent asked you for. For a plan of dependent steps, file every step now and link each to the ones it waits on with blocked_by. Agent builds, worker reports and notifications aren't tasks. The description is the worker's whole briefing, and it sets the scope: what to do and what's out. Use handoff_mode 'resume' when the target already has the context and 'fresh' otherwise; pass agent_id to offer it to the specialist whose job it is (omit it only when no specialist covers the work) and crew to seat reviewers or advisors on it from the start.".into(), input_schema: schema(json!({"title":{"type":"string"}, "description":{"type":"string"}, "session":{"type":"string","description":"session id, or a title fragment or workspace path, optionally with `latest`"}, "supersedes":{"type":"string","description":"optional; id of the cancelled task this one replaces"}, "handoff_mode":{"type":"string","enum":["resume","fresh"]}, "owned_paths":{"type":"array","items":{"type":"string"}}, "agent_id":{"type":"string","description":"optional; the specialist that will do the work, from list_coordination_agents. Without one the session's own agent or the general coding agent takes it. Recorded on the task so completion reports to that agent's own board."}, "crew":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"role":{"type":"string","description":"reviewer (default), advisor or tester"}},"required":["agent_id"]},"description":"optional; agents seated on the task beside the worker, who bring them in from the task room (a reviewer of the diff, a visual QA pass, an advisor). Each one is waiting until called."}, "profile":{"type":"string","description":"optional; an inference profile named exactly as list_profiles returns it. It moves the target session onto that model, restarting it and losing its prompt cache, so it's an override for rescuing a rate-limited session; the assigned agent's own profile already applies when this is omitted. Work that simply needs another model belongs in an agent or session already on it (list_sessions shows each session's profile; create_mission_session opens one)."}, "reply_to":{"type":"string","description":"optional; when the work was asked for in a message, that message's reply_to (session:<id> or agent:<id>). The outcome is sent back there when the task finishes."}, "blocked_by":{"type":"array","items":{"type":"string"},"description":"optional; ids of tasks that must finish first. The task waits and starts by itself once all of them are done, so a whole plan can be filed at once."}, "read_only":{"type":"boolean","description":"investigation that changes nothing"}, "verify_mode":{"type":"string","enum":["self","reviewer","mission_control","user"],"description":"who confirms it is done; choose it per task. self skips review; reviewer has an agent review it read-only, on that agent's own profile (the one named in `reviewer`, otherwise the agent doing the work); mission_control and user keep the verdict with you. Omitted: reviewer (self when read_only)."}, "reviewer":{"type":"string","description":"optional; any agent id to review this work, on its own profile. Omitted, the agent doing the work reviews it in a fresh lane."}, "revises_task_id":{"type":"string","description":"optional; the finished task this one revises"}, "audience":{"type":"string","description":"content work: who it is for"}, "definition_of_good":{"type":"string","description":"content work: what good looks like (length, tone, quality bar)"}, "goal":{"type":"string","description":"optional; id of the open goal this task serves"}, "expected_minutes":{"type":"integer","description":"optional; how long the work should take. The task is flagged stalled after twice this without progress (minimum 20 min). Defaults by verify_mode."}}), &["title","description","session"]) }
+        NativeToolDefinition { name: "create_mission_task".into(), description: "Create a task for project work requested by the user or an agent. File dependent steps together and link prerequisites with `blocked_by`. The description is the worker's full brief and scope. Choose `resume` if the target has context, otherwise `fresh`. Use `agent_id` for a matching specialist; use `crew` to seat reviewers or advisors before work starts.".into(), input_schema: schema(json!({"title":{"type":"string"}, "description":{"type":"string"}, "session":{"type":"string","description":"Session id, title fragment or workspace path; `latest` selects the most recent match."}, "supersedes":{"type":"string","description":"optional; id of the cancelled task this one replaces"}, "handoff_mode":{"type":"string","enum":["resume","fresh"]}, "owned_paths":{"type":"array","items":{"type":"string"}}, "agent_id":{"type":"string","description":"Specialist agent id from list_coordination_agents."}, "crew":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"role":{"type":"string","description":"reviewer (default), advisor or tester"}},"required":["agent_id"]},"description":"Agents seated beside the worker; they wait until called."}, "profile":{"type":"string","description":"Profile from list_profiles. Overrides the session model and restarts it, losing its prompt cache; use only to rescue a rate-limited session."}, "reply_to":{"type":"string","description":"Exact `reply_to` value from the request message, such as `session:<id>` or `agent:<id>`."}, "blocked_by":{"type":"array","items":{"type":"string"},"description":"Task ids that must finish first."}, "read_only":{"type":"boolean","description":"investigation that changes nothing"}, "verify_mode":{"type":"string","enum":["self","reviewer","mission_control","user"],"description":"Who confirms completion. `self` skips review; `reviewer` uses a read-only agent; `mission_control` or `user` leaves the verdict with you. Defaults to reviewer (self when read_only)."}, "reviewer":{"type":"string","description":"Agent id for the reviewer; defaults to the worker in a fresh lane."}, "revises_task_id":{"type":"string","description":"optional; the finished task this one revises"}, "audience":{"type":"string","description":"Intended audience for content work."}, "definition_of_good":{"type":"string","description":"Quality bar for content work."}, "goal":{"type":"string","description":"Open goal id this task serves."}, "expected_minutes":{"type":"integer","description":"Expected duration in minutes; flagged stalled after twice this (minimum 20). Defaults by verify_mode."}}), &["title","description","session"]) }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let mut args: CreateTaskArgs =
@@ -1634,7 +1588,7 @@ async fn create_task(
                 crate::session::wake_settled(&session_id);
                 note.push_str(" The target session was settled; it has been woken because it is being addressed.");
             }
-            if crate::settle::cache_state(idle) == "cold" {
+            if crate::settle::cache_state(idle, crate::settle::ttl_for(&crate::settle::profile_cache_ttls(), row.profile.as_deref())) == "cold" {
                 note.push_str(&format!(
                     " Advisory: the target session was idle {} min, so its prompt cache is cold and the next turn re-reads its whole history at full price; a fresh session (create_mission_session, handoff_mode fresh) pointed at this one's saved memory may be cheaper.",
                     idle / 60
@@ -1686,7 +1640,7 @@ impl Tool for DeliverToSession {
             description: "Send a brief straight into an existing session: it starts a turn there now, with no offer step, and that session is bound to report the task. Pass task_id to hand over a queued task; otherwise a task is filed for the brief. With no verify_mode the session checks its own work, so pass one when judgement matters.".into(),
             input_schema: schema(
                 json!({
-                    "session": {"type": "string", "description": "session id, or a title fragment or workspace path, optionally with `latest`"},
+                    "session": {"type": "string", "description": "Session id, title fragment or workspace path; `latest` selects the most recent match."},
                     "brief": {"type": "string", "description": "the self-contained ask"},
                     "task_id": {"type": "string"},
                     "title": {"type": "string", "description": "optional; board title for a new task"},
@@ -1861,7 +1815,7 @@ fn bind_direct_delivery(
 
 fn direct_brief_envelope(task: &Task, brief: &str, workspace: &str, ledger: &str) -> String {
     format!(
-        "[mission_control_task]\ntask_id: {}\ntitle: {}\nrequested_by: agent mission-control (delivered directly)\nworkspace: {workspace}\nscope:\n{brief}\n{ledger}\n\nThis is yours now: deliver it end to end, verified, in this session. If the scope looks wrong or unclear, say so to Mission Control (send_agent_message to mission-control) before you build. When it's done, blocked or failed, report with report_mission_task (task_id {}): what was done, files changed, how it was verified, anything left open.\n[/mission_control_task]",
+        "[mission_control_task]\ntask_id: {}\ntitle: {}\nrequested_by: agent mission-control (delivered directly)\nworkspace: {workspace}\nscope:\n{brief}\n{ledger}\n\nThis is yours now. If the scope is wrong or unclear, tell Mission Control before building. Report done, blocked or failed with report_mission_task (task_id {}).\n[/mission_control_task]",
         task.id, task.title, task.id
     )
 }
@@ -1962,10 +1916,16 @@ fn specialist_directory(store: &Store) -> String {
                 && a.kind == crate::coordination::types::AgentKind::Worker
                 && a.id != crate::coordination::SNIPPET_AGENT_ID
         })
-        .map(|a| format!("{} ({})", a.id, format!("{:?}", a.role).to_lowercase()))
+        .map(|a| {
+            if a.capabilities.is_empty() {
+                a.id
+            } else {
+                format!("{} ({})", a.id, a.capabilities.join(", "))
+            }
+        })
         .collect();
     format!(
-        "No specialist or crew is on this task. Specialists available: {}. Seat one if the work needs a review, QA or research role; if no agent covers a role it needs, ask the user whether to create one.",
+        "No specialist or crew is on this task. Specialists available: {}. Seat one if the work needs a review, QA or research role; if no agent covers what it needs, ask the user whether to create one.",
         if list.is_empty() { "none".to_string() } else { list.join(", ") }
     )
 }
@@ -2292,7 +2252,7 @@ impl Tool for InviteTaskAgent {
             .get_task(task_id)
             .map_err(|e| ToolError::msg(format!("lookup task: {e}")))?
             .ok_or_else(|| ToolError::msg(format!("task `{task_id}` not found")))?;
-        let canonical = |id: &str| crate::conversations::canonical_session_id(id).0;
+        let canonical = |id: &str| crate::conversations::canonical_session_id(id);
         let caller = canonical(caller);
         let seated = store.member_by_session(&caller).ok().flatten().is_some_and(|m| m.task_id == task.id);
         let works_it = seated || match task.reporting_session.as_deref() {
@@ -2842,7 +2802,6 @@ impl Tool for SessionState {
 struct RegisterAgentArgs {
     id: String,
     display_name: String,
-    role: crate::coordination::types::AgentRole,
     #[serde(default)]
     capabilities: Vec<String>,
     identity: String,
@@ -2859,18 +2818,17 @@ impl Tool for RegisterAgent {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "register_agent".into(),
-            description: "Create or rebuild a specialized agent: writes its identity.md into its agent home (~/.snippet/agents/<id>/) and registers it in the directory so it can be messaged, assigned and dispatched. The identity is the agent's whole persona and expertise, applied on top of the standard coding runtime in every session it works in. An agent is a lasting skill (a Rust expert, a motion designer), never one task or project. Call it once per build, after researching the role; calling it again with the same id replaces the identity.".into(),
+            description: "Create or rebuild a specialized agent: writes its identity.md into its agent home (~/.snippet/agents/<id>/) and registers it in the directory so it can be messaged, assigned and dispatched. The identity is the agent's whole persona and expertise, applied on top of the standard coding runtime in every session it works in. An agent is a lasting skill (a Rust expert, a motion designer), never one task or project. Call it once per build, after researching the domain; calling it again with the same id replaces the identity.".into(),
             input_schema: schema(
                 json!({
                     "id": {"type": "string", "description": "kebab-case agent id, e.g. rust-pr-reviewer"},
                     "display_name": {"type": "string"},
-                    "role": {"type": "string", "enum": ["implementer", "reviewer", "tester", "researcher", "release"]},
                     "capabilities": {"type": "array", "items": {"type": "string"}, "description": "short tags, e.g. rust, code-review"},
                     "identity": {"type": "string", "description": "identity.md in markdown: who the agent is, its mandate, how it works, what it checks, how it reports"},
                     "profile": {"type": "string", "description": "optional; the inference profile this agent always works on, named exactly as list_profiles returns it. Cheaper profiles for routine work, stronger ones for hard reasoning. Omit to leave the agent's profile unchanged."},
                     "nickname": {"type": "string", "description": "optional; a short name shown instead of the display name. Pass the nickname the user asked for, if any."}
                 }),
-                &["id", "display_name", "role", "identity"],
+                &["id", "display_name", "identity"],
             ),
         }
     }
@@ -2904,7 +2862,6 @@ impl Tool for RegisterAgent {
             handle: args.id.replace('-', "_"),
             kind: crate::coordination::types::AgentKind::Worker,
             status: crate::coordination::types::AgentStatus::Active,
-            role: args.role,
             capabilities: args.capabilities,
         };
         db(ctx)?
@@ -3081,7 +3038,7 @@ impl Tool for ReportMissionTask {
             _ => return Err(ToolError::msg("status must be done, blocked, or failed")),
         };
         let store = db(ctx)?;
-        let canonical = |id: &str| crate::conversations::canonical_session_id(id).0;
+        let canonical = |id: &str| crate::conversations::canonical_session_id(id);
         let caller_canonical = canonical(caller);
         let is_mc = caller_canonical == crate::mission_control::SESSION_ID
             || ctx.agent_id() == Some(crate::mission_control::SESSION_ID);
@@ -3335,7 +3292,7 @@ mod tests {
         };
         assert!(inspect_event_row(&event).is_none());
     }
-    use crate::coordination::types::{Agent, AgentKind, AgentRole, AgentStatus};
+    use crate::coordination::types::{Agent, AgentKind, AgentStatus};
 
     fn worker(id: &str) -> Agent {
         Agent {
@@ -3344,7 +3301,6 @@ mod tests {
             handle: id.into(),
             kind: AgentKind::Worker,
             status: AgentStatus::Active,
-            role: AgentRole::Implementer,
             capabilities: vec![],
         }
     }
@@ -3562,7 +3518,6 @@ mod tests {
                 profile: None,
                 role: "standard".into(),
                 agent_id: None,
-                legacy_id: None,
                 kind: "conversation".into(),
                 settled_at: None,
                 keep_awake: false,

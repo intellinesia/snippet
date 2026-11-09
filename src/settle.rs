@@ -25,8 +25,59 @@ pub fn idle_secs(now: i64, last_active: i64) -> i64 {
     (now - last_active).max(0)
 }
 
-pub fn cache_state(idle: i64) -> &'static str {
-    if idle < COLD_AFTER_SECS { "warm" } else { "cold" }
+pub fn cache_state(idle: i64, ttl: i64) -> &'static str {
+    if idle < ttl { "warm" } else { "cold" }
+}
+
+/// How long a provider keeps an idle prompt cache, as far as it is known.
+/// Sources (Nov 2026): Claude Code asks for a 1 h TTL on subscriptions; OpenAI keeps
+/// GPT-5-series prefixes 24 h by default; our Gemini caches are created with 30 min.
+pub fn cache_ttl_secs(provider: &str, one_hour: bool) -> i64 {
+    match provider {
+        "anthropic" | "anthropic-compatible" if one_hour => 3600,
+        "claude-code" => 3600,
+        "openai" | "chatgpt" => 86_400,
+        "gemini" => 1800,
+        "xai" | "grok" | "openrouter" | "openai-compatible" => 3600,
+        _ => 300,
+    }
+}
+
+/// A profile's own `cache_ttl` such as "5m", "1h" or "24h".
+pub fn parse_ttl(text: &str) -> Option<i64> {
+    let t = text.trim();
+    let (n, unit) = t.split_at(t.find(|c: char| !c.is_ascii_digit())?);
+    let n: i64 = n.parse().ok()?;
+    match unit {
+        "s" => Some(n),
+        "m" => n.checked_mul(60),
+        "h" => n.checked_mul(3600),
+        _ => None,
+    }
+}
+
+/// Cache lifetime per profile name, with `""` for sessions on the default profile.
+pub fn profile_cache_ttls() -> std::collections::HashMap<String, i64> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(raw) = std::fs::read_to_string(crate::config::default_config_path()) else {
+        return out;
+    };
+    let Ok(config) = toml::from_str::<crate::config::SnippetConfig>(&raw) else {
+        return out;
+    };
+    for (name, p) in config.setups.iter().flatten() {
+        let one_hour = p.cache_prompt && p.cache_ttl.as_deref().map(str::trim) == Some("1h");
+        let ttl = p.cache_ttl.as_deref().and_then(parse_ttl).unwrap_or_else(|| cache_ttl_secs(&p.provider, one_hour));
+        out.insert(name.clone(), ttl);
+    }
+    if let Some(default) = config.active_setup.as_ref().and_then(|n| out.get(n).copied()) {
+        out.insert(String::new(), default);
+    }
+    out
+}
+
+pub fn ttl_for(ttls: &std::collections::HashMap<String, i64>, profile: Option<&str>) -> i64 {
+    ttls.get(profile.unwrap_or("")).or_else(|| ttls.get("")).copied().unwrap_or(COLD_AFTER_SECS)
 }
 
 /// What decides whether a session may be settled.
@@ -112,9 +163,16 @@ mod tests {
 
     #[test]
     fn cache_flag_boundary() {
-        assert_eq!(cache_state(0), "warm");
-        assert_eq!(cache_state(COLD_AFTER_SECS - 1), "warm");
-        assert_eq!(cache_state(COLD_AFTER_SECS), "cold");
+        assert_eq!(cache_state(0, 300), "warm");
+        assert_eq!(cache_state(300, 300), "cold");
+        assert_eq!(cache_ttl_secs("anthropic", true), 3600);
+        assert_eq!(cache_ttl_secs("claude-code", false), 3600);
+        assert_eq!(parse_ttl("24h"), Some(86_400));
+        assert_eq!(parse_ttl("5m"), Some(300));
+        assert_eq!(parse_ttl("1h "), Some(3600));
+        assert_eq!(parse_ttl("soon"), None);
+        assert_eq!(cache_state(COLD_AFTER_SECS - 1, COLD_AFTER_SECS), "warm");
+        assert_eq!(cache_state(COLD_AFTER_SECS, COLD_AFTER_SECS), "cold");
         assert_eq!(idle_secs(10, 50), 0);
         assert_eq!(idle_secs(100, 40), 60);
     }
@@ -168,7 +226,6 @@ mod tests {
             profile: None,
             role: "standard".into(),
             agent_id: None,
-            legacy_id: None,
             kind: "conversation".into(),
             settled_at: None,
             keep_awake: false,
@@ -213,22 +270,18 @@ mod tests {
     }
 
     #[test]
-    fn migration_adds_settled_at_to_an_existing_database() {
+    fn settle_and_keep_awake_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("old.db");
-        {
-            let conn = rusqlite::Connection::open(&path).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE sessions (id TEXT PRIMARY KEY, workspace_key TEXT NOT NULL, workspace TEXT NOT NULL,
-                  title TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-                  state_json TEXT NOT NULL DEFAULT '{}', last_active INTEGER, profile TEXT,
-                  role TEXT NOT NULL DEFAULT 'standard', agent_id TEXT);
-                 INSERT INTO sessions (id, workspace_key, workspace, status, created_at, updated_at)
-                  VALUES ('legacy', 'k', '/w', 'idle', 'a', 'b');",
+        let path = dir.path().join("fresh.db");
+        let db = Store::open(&path).unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions (id, workspace_key, workspace, status, created_at, updated_at)
+                 VALUES ('legacy', 'k', '/w', 'idle', 'a', 'b')",
+                [],
             )
             .unwrap();
-        }
-        let db = Store::open(&path).unwrap();
         let row = db.get_session_row("legacy").unwrap().unwrap();
         assert_eq!(row.settled_at, None);
         assert!(db.set_session_settled("legacy", Some(5)).unwrap());

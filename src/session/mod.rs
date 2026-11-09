@@ -103,9 +103,8 @@ pub fn start_inbox_session(
 
 pub(crate) fn minimal_inbox_identity(agent_id: &str) -> String {
     format!(
-        "You are `{agent_id}`'s inbox. Answer messages and look things up with the read-only shell. \
-         Work that changes files goes to Mission Control: send_agent_message to `mission-control` \
-         with what needs doing and where."
+        "You are `{agent_id}`'s inbox. Answer messages and look things up (read-only shell, web) yourself; \
+         anything that changes files, has side effects or takes long goes to Mission Control as a task request."
     )
 }
 
@@ -291,7 +290,6 @@ struct RuntimeInputs {
     exa_api_key: Option<String>,
     base_model: InferenceProfileConfig,
     setups: Option<std::collections::BTreeMap<String, InferenceProfileConfig>>,
-    delegate: Option<InferenceProfileConfig>,
 }
 
 /// A researched, versioned identity overlaid on the snippet runtime.
@@ -315,26 +313,7 @@ impl AgentRuntime {
             // could address it back.
             .with_agent_id(crate::mission_control::SESSION_ID);
 
-        let mut tools = ToolRegistry::new();
-        tools.insert(crate::builtins::BashTool);
-        tools.insert(crate::builtins::ViewImageTool);
-        // Mission Control may research current docs and issues while routing work.
-        if let Some(key) = i.exa_api_key.clone().filter(|k| !k.trim().is_empty()) {
-            tools.insert(crate::builtins::WebSearchTool { api_key: key.clone() });
-            tools.insert(crate::builtins::WebReadTool { api_key: key });
-        }
-        crate::mission_tools::add_mission_control_tools(&mut tools);
-        crate::coordination_tools::add_coordination_tools(&mut tools);
-        for name in [
-            "message_mission_control",
-            "claim_and_dispatch_task",
-            "pass_turn",
-            "post_coordination_message",
-            "record_coordination_note",
-            "read_agent_inbox",
-        ] {
-            tools.remove(name);
-        }
+        let tools = mission_control_tool_registry(i.exa_api_key.clone());
 
         Ok(Self {
             factory: None,
@@ -367,19 +346,7 @@ impl AgentRuntime {
         if let Some(dir) = custom_dir.as_ref() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let mut tools = coding_tools(i.exa_api_key.clone()).with_custom_dir(custom_dir.clone());
-        crate::mission_tools::add_worker_report_tool(&mut tools);
-        crate::coordination_tools::add_coordination_tools(&mut tools);
-        for name in [
-            "message_mission_control",
-            "read_agent_inbox",
-            "claim_and_dispatch_task",
-            "post_coordination_message",
-        ] {
-            tools.remove(name);
-        }
-        tools.insert(crate::progress::ReportProgress);
-        tools.insert(crate::review_tools::SubmitReview);
+        let tools = work_tool_registry(i.exa_api_key.clone(), custom_dir.clone());
 
         let prompt_ctx = i.prompt_ctx;
         let custom_section = custom_dir.as_deref().map(crate::agent_tools::prompt_section);
@@ -400,7 +367,6 @@ impl AgentRuntime {
 
         let base_model = i.base_model;
         let setups = i.setups;
-        let delegate = i.delegate.unwrap_or_else(|| base_model.clone());
         let parent_session_id = i.durable_id;
         Ok(Self {
             factory: Some(Arc::new(move |profile: Option<&str>, lane_id: Option<String>| {
@@ -419,7 +385,7 @@ impl AgentRuntime {
                         ));
                     }
                 }
-                Ok(delegate.build_model_for_session(session_id))
+                Ok(base_model.build_model_for_session(session_id))
             })),
             context,
             tools,
@@ -433,10 +399,10 @@ impl AgentRuntime {
     /// An agent's coordination session: it answers direct messages and dispatches
     /// work, and does not touch a workspace.
     ///
-    /// The tool set is the point of this runtime. It deliberately has NO bash and
-    /// no file tools, because a session that receives messages must never turn one
-    /// into an unrequested edit to someone's repository — that is the boundary a
-    /// conversation is supposed to respect. It also has no lease or handoff tools:
+    /// The tool set is the point of this runtime. Its shell is read-only and it
+    /// has no file tools, because a session that receives messages must never turn
+    /// one into an unrequested edit to someone's repository — that is the boundary
+    /// a conversation is supposed to respect. It also has no lease or handoff tools:
     /// those exist for a session HOLDING a work turn, and a coordinator never does,
     /// so carrying them would be dead weight that invites misuse.
     ///
@@ -455,11 +421,10 @@ impl AgentRuntime {
         // and write attributable.
         .with_agent_id(agent_id.to_string());
 
-        let tools = coordination_tool_registry();
+        let tools = coordination_tool_registry(i.exa_api_key.clone());
 
-        // The environment layer states this session has bash and full filesystem
-        // access. It does not, so the flag both selects the coordination layer and
-        // keeps that claim out of the prompt.
+        // The environment layer claims a full shell and filesystem; the flag keeps
+        // that out of the prompt.
         let mut prompt_ctx = i.prompt_ctx;
         prompt_ctx.coordination = true;
 
@@ -510,14 +475,62 @@ impl AgentRuntime {
     }
 }
 
-/// An inbox's tools: messaging, its board, read-only views and a read-only
-/// shell. Nothing that writes files, delegates or reports a task.
-pub(crate) fn coordination_tool_registry() -> ToolRegistry {
+/// Mission Control's tools: routing and coordination, no file editing.
+pub(crate) fn mission_control_tool_registry(exa_api_key: Option<String>) -> ToolRegistry {
+    let mut tools = ToolRegistry::new();
+    tools.insert(crate::builtins::BashTool);
+    tools.insert(crate::builtins::ViewImageTool);
+    // Mission Control may research current docs and issues while routing work.
+    if let Some(key) = exa_api_key.filter(|k| !k.trim().is_empty()) {
+        tools.insert(crate::builtins::WebSearchTool { api_key: key.clone() });
+        tools.insert(crate::builtins::WebReadTool { api_key: key });
+    }
+    crate::mission_tools::add_mission_control_tools(&mut tools);
+    crate::coordination_tools::add_coordination_tools(&mut tools);
+    for name in [
+        "message_mission_control",
+        "claim_and_dispatch_task",
+        "pass_turn",
+        "post_coordination_message",
+        "record_coordination_note",
+        "read_agent_inbox",
+    ] {
+        tools.remove(name);
+    }
+    tools
+}
+
+/// A work session's tools: coding tools plus report, coordination and review.
+pub(crate) fn work_tool_registry(exa_api_key: Option<String>, custom_dir: Option<PathBuf>) -> ToolRegistry {
+    let mut tools = coding_tools(exa_api_key).with_custom_dir(custom_dir);
+    crate::mission_tools::add_worker_report_tool(&mut tools);
+    crate::coordination_tools::add_coordination_tools(&mut tools);
+    for name in [
+        "message_mission_control",
+        "read_agent_inbox",
+        "claim_and_dispatch_task",
+        "post_coordination_message",
+    ] {
+        tools.remove(name);
+    }
+    tools.insert(crate::progress::ReportProgress);
+    tools.insert(crate::review_tools::SubmitReview);
+    tools.insert(crate::profiles::ListProfiles);
+    tools
+}
+
+/// An inbox's tools: messaging, its board, read-only views, a read-only shell
+/// and web lookups. Nothing that writes files, delegates or reports a task.
+pub(crate) fn coordination_tool_registry(exa_api_key: Option<String>) -> ToolRegistry {
     let mut tools = ToolRegistry::new();
     crate::coordination_tools::add_coordination_tools(&mut tools);
     crate::mission_tools::add_coordination_session_tools(&mut tools);
     tools.insert(crate::coordination_tools::DeclineTask);
     tools.insert(crate::builtins::read_only_shell::ReadOnlyBashTool);
+    if let Some(key) = exa_api_key.filter(|k| !k.trim().is_empty()) {
+        tools.insert(crate::builtins::WebSearchTool { api_key: key.clone() });
+        tools.insert(crate::builtins::WebReadTool { api_key: key });
+    }
     for name in [
         "message_mission_control",
         "pass_turn",
@@ -544,10 +557,6 @@ fn start_session_with_role(
     crate::harness::ensure_snippet_gitignored(&workspace);
     let model_config = config.model.clone();
     let setups = config.setups.clone();
-    let delegate = config
-        .delegate_setup
-        .as_deref()
-        .and_then(|name| config.setups.as_ref()?.get(name).cloned());
     let exa_api_key = config.exa_api_key.clone();
     let manual_approval = config.manual_approval;
     let context_limit = crate::agent_context::limit_for(
@@ -562,6 +571,7 @@ fn start_session_with_role(
     let compact_at_pct = model_config.compact_at_pct;
     let memory_enabled = config.memory_enabled;
     let memory_reflect = config.memory_reflect;
+    let profile = config.active_setup.clone();
     let sp = state_path.clone();
     let stream_out = stream.clone();
 
@@ -592,7 +602,6 @@ fn start_session_with_role(
                         exa_api_key: exa_api_key.clone(),
                 base_model: model_config,
                 setups,
-                delegate,
             },
         )
         .map_err(|e| e.to_string())?;
@@ -609,6 +618,7 @@ fn start_session_with_role(
                 memory_enabled: memory_enabled && runtime.memory,
                 memory_reflect,
                 allow_lane_control: runtime.allow_lane_control,
+                profile,
                 hidden_meta: runtime.hidden_meta,
                 ..HarnessConfig::default()
             },
@@ -676,7 +686,6 @@ pub async fn reflect_stored_session(config: &SnippetConfig, state_path: &Path) -
             exa_api_key: None,
             base_model: model_config,
             setups: None,
-            delegate: None,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -755,6 +764,8 @@ pub struct SessionInfo {
     pub idle_secs: i64,
     /// `warm` while the provider prompt cache is assumed alive, else `cold`.
     pub cache: &'static str,
+    /// How long this session's prompt cache lasts idle, in seconds.
+    pub cache_ttl_secs: i64,
     /// The task this session is working on or seated in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
@@ -896,7 +907,7 @@ pub fn session_task_contexts(store: &crate::store::Store) -> SessionTaskContexts
         Err(_) => return contexts,
     };
     for (task_id, session_id, task_status, agent_id, role, member_status, work_session_id) in records {
-        let parent_canon = crate::conversations::canonical_session_id(&session_id).0;
+        let parent_canon = crate::conversations::canonical_session_id(&session_id);
         if parent_canon.is_empty() || is_inbox_session_id(&parent_canon) || is_lane_session_id(&parent_canon) {
             continue;
         }
@@ -911,7 +922,7 @@ pub fn session_task_contexts(store: &crate::store::Store) -> SessionTaskContexts
             let status_str = member_status.unwrap_or_else(|| "waiting".to_string());
             let is_holder = status_str == "active";
 
-            let work_canon = work_session_id.as_deref().map(|ws| crate::conversations::canonical_session_id(ws).0);
+            let work_canon = work_session_id.as_deref().map(|ws| crate::conversations::canonical_session_id(ws));
 
             if !is_terminal {
                 if is_holder {
@@ -960,6 +971,7 @@ pub fn all_device_sessions() -> Vec<SessionInfo> {
     let store = store_for_sessions();
     let contexts = store.as_ref().map(session_task_contexts).unwrap_or_default();
     let now = now_unix_secs();
+    let ttls = crate::settle::profile_cache_ttls();
     let mut out: Vec<SessionInfo> = store
         .as_ref()
         .and_then(|store| store.list_all_sessions().ok())
@@ -1006,7 +1018,11 @@ pub fn all_device_sessions() -> Vec<SessionInfo> {
                 total_changes: row.total_changes.as_deref().and_then(|j| serde_json::from_str(j).ok()),
                 running_since: None,
                 idle_secs: crate::settle::idle_secs(now, row.last_active.unwrap_or(0)),
-                cache: crate::settle::cache_state(crate::settle::idle_secs(now, row.last_active.unwrap_or(0))),
+                cache: crate::settle::cache_state(
+                    crate::settle::idle_secs(now, row.last_active.unwrap_or(0)),
+                    crate::settle::ttl_for(&ttls, row.profile.as_deref()),
+                ),
+                cache_ttl_secs: crate::settle::ttl_for(&ttls, row.profile.as_deref()),
                 task_id,
                 parent_session_id,
                 members,
@@ -1220,7 +1236,7 @@ pub fn session_id_for_state_path(state_path: &Path) -> String {
         .unwrap_or(state_path)
         .display()
         .to_string();
-    crate::conversations::canonical_session_id(&relative).0
+    crate::conversations::canonical_session_id(&relative)
 }
 
 /// Read a session's state from the store.
@@ -1718,18 +1734,15 @@ pub fn create_blank_session_in(
     } else {
         base
     };
-    // The path is only an ID now — nothing is written to it. Canonicalised, so a
-    // session created today has the same id shape as one migrated from the old
-    // path-shaped ids; otherwise `session_id_for_state_path` (which strips the
-    // filename) would not match what this function stored.
+    // The path is only an ID now; nothing is written to it. Canonicalised to match
+    // `session_id_for_state_path`.
     let id = crate::conversations::canonical_session_id(
         &dest
             .strip_prefix(workspaces_root())
             .unwrap_or(&dest)
             .display()
             .to_string(),
-    )
-    .0;
+    );
     // Uniqueness is the STORE's question: a folder's default session is taken if a
     // row exists, whether or not any file was ever written for it.
     if !new_conversation && store.has_conversation(&id).unwrap_or(false) {
@@ -1786,6 +1799,7 @@ pub fn create_blank_session_in(
         running_since: None,
         idle_secs: 0,
         cache: "warm",
+        cache_ttl_secs: crate::settle::COLD_AFTER_SECS,
         task_id: None,
         parent_session_id: None,
         members: None,

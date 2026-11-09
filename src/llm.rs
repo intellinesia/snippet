@@ -167,11 +167,35 @@ pub struct StreamBuffer {
     /// separate from the answer. Best-effort: empty for models that don't emit it.
     pub thinking: String,
     pub tool_tap: Option<ToolArgTap>,
+    pub changed: StreamSignal,
 }
 
 pub type StreamHandle = Arc<Mutex<StreamBuffer>>;
 
+/// Wakes `/attach` pushers when the buffer changes.
+pub struct StreamSignal(tokio::sync::watch::Sender<()>);
+
+impl Default for StreamSignal {
+    fn default() -> Self {
+        Self(tokio::sync::watch::channel(()).0)
+    }
+}
+
+impl StreamSignal {
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<()> {
+        self.0.subscribe()
+    }
+
+    pub fn signal(&self) {
+        self.0.send_replace(());
+    }
+}
+
 impl StreamBuffer {
+    pub fn changes(handle: &StreamHandle) -> Option<tokio::sync::watch::Receiver<()>> {
+        handle.lock().ok().map(|buf| buf.changed.subscribe())
+    }
+
     pub fn set_tool_tap(&mut self, tap: ToolArgTap) {
         self.tool_tap = Some(tap);
     }
@@ -191,12 +215,14 @@ impl StreamBuffer {
     pub fn append(handle: &StreamHandle, delta: &str) {
         if let Ok(mut buf) = handle.lock() {
             buf.text.push_str(delta);
+            buf.changed.signal();
         }
     }
 
     pub fn append_thinking(handle: &StreamHandle, delta: &str) {
         if let Ok(mut buf) = handle.lock() {
             buf.thinking.push_str(delta);
+            buf.changed.signal();
         }
     }
 
@@ -206,16 +232,10 @@ impl StreamBuffer {
             buf.text.clear();
             buf.text_visible = false;
             buf.thinking.clear();
+            buf.changed.signal();
             if let Some(tap) = &buf.tool_tap {
                 let _ = tap.send(ToolArgEvent::Reset);
             }
-        }
-    }
-
-    /// Mark the current response text as a user-visible final answer.
-    pub fn set_text_visible(handle: &StreamHandle, visible: bool) {
-        if let Ok(mut buf) = handle.lock() {
-            buf.text_visible = visible;
         }
     }
 
@@ -235,39 +255,6 @@ impl StreamBuffer {
             .lock()
             .map(|buf| buf.thinking.clone())
             .unwrap_or_default()
-    }
-
-    pub fn snapshot_thinking_tail(handle: &StreamHandle, max_chars: usize) -> String {
-        handle
-            .lock()
-            .map(|buf| thinking_tail(&buf.thinking, max_chars))
-            .unwrap_or_default()
-    }
-}
-
-fn thinking_tail(text: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    let Some((start, _)) = text.char_indices().rev().nth(max_chars - 1) else {
-        return text.to_string();
-    };
-    format!("…\n\n{}", &text[start..])
-}
-
-#[cfg(test)]
-mod stream_buffer_tests {
-    use super::thinking_tail;
-
-    #[test]
-    fn thinking_tail_is_bounded_and_unicode_safe() {
-        let text = format!("{}tail", "🙂".repeat(12_000));
-        let tail = thinking_tail(&text, 12_000);
-        assert!(tail.starts_with("…\n\n"));
-        assert_eq!(tail.chars().count(), 12_003);
-        assert!(tail.ends_with("tail"));
-        assert_eq!(thinking_tail("short", 12_000), "short");
-        assert_eq!(thinking_tail("short", 0), "");
     }
 }
 

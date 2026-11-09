@@ -23,9 +23,11 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             completion_tokens INTEGER NOT NULL,
             cache_read_tokens INTEGER NOT NULL,
             cache_creation_tokens INTEGER NOT NULL,
-            total_tokens INTEGER NOT NULL
+            total_tokens INTEGER NOT NULL,
+            purpose TEXT NOT NULL DEFAULT 'turn'
         );
         CREATE INDEX IF NOT EXISTS idx_usage_ledger_at ON usage_ledger(at);
+        CREATE INDEX IF NOT EXISTS idx_usage_ledger_session ON usage_ledger(session_id, at);
         CREATE TABLE IF NOT EXISTS usage_rollup (
             bucket INTEGER NOT NULL,
             provider TEXT NOT NULL,
@@ -44,14 +46,6 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             session_id TEXT NOT NULL,
             PRIMARY KEY (bucket, provider, session_id)
         );",
-    )?;
-    if conn.prepare("SELECT purpose FROM usage_ledger LIMIT 0").is_err() {
-        conn.execute_batch(
-            "ALTER TABLE usage_ledger ADD COLUMN purpose TEXT NOT NULL DEFAULT 'turn';",
-        )?;
-    }
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_usage_ledger_session ON usage_ledger(session_id, at);",
     )?;
     Ok(())
 }
@@ -250,6 +244,33 @@ impl Store {
         })
     }
 
+    /// The latest model call that touched this session's cache (a turn or a keep-warm
+    /// ping) and the context size of its last turn, which a full resume re-reads.
+    pub fn cache_touch(&self, session_id: &str) -> Result<(Option<i64>, Option<u64>), StoreError> {
+        self.with_connection(|conn| {
+            let at = conn.query_row(
+                "SELECT MAX(at) FROM usage_ledger WHERE session_id = ?1 AND purpose IN (?2, ?3)",
+                params![session_id, PURPOSE_TURN, PURPOSE_KEEP_WARM],
+                |row| row.get::<_, Option<i64>>(0),
+            )?;
+            let context = conn
+                .query_row(
+                    "SELECT provider, prompt_tokens, cache_read_tokens, cache_creation_tokens FROM usage_ledger
+                     WHERE session_id = ?1 AND purpose = ?2 ORDER BY at DESC, id DESC LIMIT 1",
+                    params![session_id, PURPOSE_TURN],
+                    |row| {
+                        let provider: String = row.get(0)?;
+                        let (p, r, c): (i64, i64, i64) = (row.get(1)?, row.get(2)?, row.get(3)?);
+                        // Anthropic reports cached input apart from prompt tokens; others include it.
+                        let separate = provider.starts_with("anthropic") || provider == "claude-code";
+                        Ok((if separate { p + r + c } else { p }).max(0) as u64)
+                    },
+                )
+                .ok();
+            Ok((at, context))
+        })
+    }
+
     /// Keep-warm calls and their tokens since `since`, per session.
     pub fn keep_warm_totals(&self, since: i64) -> Result<Vec<serde_json::Value>, StoreError> {
         self.with_connection(|conn| {
@@ -398,21 +419,4 @@ mod tests {
         assert_eq!(spend[0]["cache_read_tokens"], 49_000);
     }
 
-    #[test]
-    fn an_old_ledger_gains_the_purpose_column() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE usage_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
-             session_id TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
-             prompt_tokens INTEGER NOT NULL, completion_tokens INTEGER NOT NULL,
-             cache_read_tokens INTEGER NOT NULL, cache_creation_tokens INTEGER NOT NULL,
-             total_tokens INTEGER NOT NULL);
-             INSERT INTO usage_ledger VALUES (1, 10, 's', 'p', 'm', 1, 1, 0, 0, 2);",
-        )
-        .unwrap();
-        ensure_schema(&conn).unwrap();
-        ensure_schema(&conn).unwrap();
-        let purpose: String = conn.query_row("SELECT purpose FROM usage_ledger", [], |r| r.get(0)).unwrap();
-        assert_eq!(purpose, PURPOSE_TURN);
-    }
 }

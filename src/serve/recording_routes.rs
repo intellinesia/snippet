@@ -1,3 +1,4 @@
+use super::api_error;
 use super::*;
 
 use serde_json::{Value, json};
@@ -51,19 +52,13 @@ pub(crate) fn apply(policy: &mut RecordingPolicy, req: &RecordingReq, now_ms: i6
     Ok(())
 }
 
-pub(crate) async fn get(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn get(State(d): State<Shared>) -> Response {
     d.reload_config().await;
     let policy = d.config.lock().unwrap().recording.clone();
     Json(view(&policy, crate::recording_policy::now_ms(), &crate::recordings::dir())).into_response()
 }
 
-pub(crate) async fn set(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<RecordingReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn set(State(d): State<Shared>, Json(req): Json<RecordingReq>) -> Response {
     d.reload_config().await;
     let now = crate::recording_policy::now_ms();
     let saved = {
@@ -81,22 +76,19 @@ pub(crate) async fn set(State(d): State<Shared>, Query(a): Query<Auth>, Json(req
     };
     match saved {
         Ok(policy) => Json(view(&policy, now, &crate::recordings::dir())).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response(),
+        Err(e) => api_error(StatusCode::BAD_REQUEST, e),
     }
 }
 
-pub(crate) async fn delete(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<DeleteReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn delete(State(d): State<Shared>, Json(req): Json<DeleteReq>) -> Response {
     let redact = match req.mode.as_str() {
         "delete" | "" => false,
         "redact" => true,
-        _ => return (StatusCode::BAD_REQUEST, Json(json!({"error": "mode must be delete or redact"}))).into_response(),
+        _ => return api_error(StatusCode::BAD_REQUEST, "mode must be delete or redact"),
     };
     match call_track::delete_recording(&d.store, &crate::recordings::dir(), &req.id, redact) {
         Ok(_) => Json(json!({"ok": true})).into_response(),
-        Err(e) => (StatusCode::NOT_FOUND, Json(json!({"error": e}))).into_response(),
+        Err(e) => api_error(StatusCode::NOT_FOUND, e),
     }
 }
 

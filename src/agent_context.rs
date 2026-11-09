@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn store_round_trips_a_ceiling_for_known_agents_only() {
-        use crate::coordination::types::{Agent, AgentKind, AgentRole, AgentStatus};
+        use crate::coordination::types::{Agent, AgentKind, AgentStatus};
         let store = crate::store::Store::open_in_memory().unwrap();
         assert!(!store.set_agent_context_limit("ghost", Some(64_000)).unwrap());
         store
@@ -146,7 +146,6 @@ mod tests {
                 handle: "researcher".into(),
                 kind: AgentKind::Worker,
                 status: AgentStatus::Active,
-                role: AgentRole::Implementer,
                 capabilities: vec![],
             })
             .unwrap();

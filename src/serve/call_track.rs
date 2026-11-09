@@ -943,19 +943,12 @@ pub(crate) fn status_json(call: Option<&Call>) -> Value {
     }
 }
 
-pub(crate) async fn status(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
-    let fx = book().tick(now_ms());
-    apply(&d, fx).await;
+pub(crate) async fn status(State(d): State<Shared>) -> Response {
+    ensure_ticker(&d);
     Json(status_json(book().active())).into_response()
 }
 
-async fn answer(d: Shared, token: Option<String>, id: String, act: fn(&mut CallBook, &str, i64, &mut Vec<Effect>) -> Result<&'static str, Refusal>) -> Response {
-    if !d.authed(&token) {
-        return unauthorized();
-    }
+async fn answer(d: Shared, id: String, act: fn(&mut CallBook, &str, i64, &mut Vec<Effect>) -> Result<&'static str, Refusal>) -> Response {
     let mut fx = Vec::new();
     let result = act(&mut book(), &id, now_ms(), &mut fx);
     ensure_ticker(&d);
@@ -971,16 +964,16 @@ async fn answer(d: Shared, token: Option<String>, id: String, act: fn(&mut CallB
     }
 }
 
-pub(crate) async fn track(State(d): State<Shared>, axum::extract::Path(id): axum::extract::Path<String>, Query(a): Query<Auth>) -> Response {
-    answer(d, a.token, id, CallBook::track).await
+pub(crate) async fn track(State(d): State<Shared>, axum::extract::Path(id): axum::extract::Path<String>) -> Response {
+    answer(d, id, CallBook::track).await
 }
 
-pub(crate) async fn ignore(State(d): State<Shared>, axum::extract::Path(id): axum::extract::Path<String>, Query(a): Query<Auth>) -> Response {
-    answer(d, a.token, id, CallBook::ignore).await
+pub(crate) async fn ignore(State(d): State<Shared>, axum::extract::Path(id): axum::extract::Path<String>) -> Response {
+    answer(d, id, CallBook::ignore).await
 }
 
-pub(crate) async fn stop(State(d): State<Shared>, axum::extract::Path(id): axum::extract::Path<String>, Query(a): Query<Auth>) -> Response {
-    answer(d, a.token, id, CallBook::stop).await
+pub(crate) async fn stop(State(d): State<Shared>, axum::extract::Path(id): axum::extract::Path<String>) -> Response {
+    answer(d, id, CallBook::stop).await
 }
 
 #[cfg(test)]

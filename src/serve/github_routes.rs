@@ -3,10 +3,11 @@
 //! workspace, so "logged in to gh" is the only requirement and private repos
 //! and GitHub Enterprise work the same way.
 
+use super::api_error;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -16,7 +17,7 @@ use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 
 use super::session_routes::resolve_session_dir;
-use super::{unauthorized, Auth, Shared};
+use super::{Shared};
 
 const GH_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -68,26 +69,18 @@ async fn gh_json(dir: &Path, args: &[&str]) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| format!("gh returned unreadable JSON: {e}"))
 }
 
-fn fail(status: StatusCode, message: impl Into<String>) -> Response {
-    (status, Json(json!({ "error": message.into() }))).into_response()
-}
-
 fn session_dir(session: &str) -> Result<PathBuf, Response> {
     resolve_session_dir(session)
 }
 
 #[derive(Deserialize)]
 struct SessionQuery {
-    token: Option<String>,
     session: String,
 }
 
 /// Whether PR review is available for this session: gh installed and logged
 /// in, and the workspace is a GitHub repository.
-async fn status(State(d): State<Shared>, Query(q): Query<SessionQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn status(Query(q): Query<SessionQuery>) -> Response {
     let dir = match session_dir(&q.session) {
         Ok(dir) => dir,
         Err(_) => return Json(json!({ "available": false, "reason": "no workspace" })).into_response(),
@@ -135,7 +128,6 @@ const LIST_PAGE_MAX: u32 = 100;
 
 #[derive(Deserialize)]
 struct ListQuery {
-    token: Option<String>,
     session: String,
     /// open (default), mine, review, closed
     filter: Option<String>,
@@ -143,10 +135,7 @@ struct ListQuery {
     limit: Option<u32>,
 }
 
-async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn list(Query(q): Query<ListQuery>) -> Response {
     let dir = match session_dir(&q.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -164,7 +153,7 @@ async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
     let pointer = if let Some(clause) = search {
         let repo = match gh(&dir, &["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], None).await {
             Ok(repo) => repo,
-            Err(e) => return fail(StatusCode::BAD_GATEWAY, e),
+            Err(e) => return api_error(StatusCode::BAD_GATEWAY, e),
         };
         search_field = format!("q=repo:{} is:pr is:open {clause} sort:created-desc", repo.trim());
         query = format!("query=query($q:String!,$first:Int!,$after:String){{search(query:$q,type:ISSUE,first:$first,after:$after){{pageInfo{{hasNextPage endCursor}}nodes{{...on PullRequest{{{PR_ROW_FIELDS}}}}}}}}}");
@@ -183,10 +172,10 @@ async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
     args.extend(["-f", query.as_str()]);
     let page = match gh_json(&dir, &args).await {
         Ok(page) => page,
-        Err(e) => return fail(StatusCode::BAD_GATEWAY, e),
+        Err(e) => return api_error(StatusCode::BAD_GATEWAY, e),
     };
     let Some(page) = page.pointer(pointer) else {
-        return fail(StatusCode::BAD_GATEWAY, "gh returned no pull requests");
+        return api_error(StatusCode::BAD_GATEWAY, "gh returned no pull requests");
     };
     let prs: Vec<Value> = page
         .get("nodes")
@@ -227,15 +216,11 @@ const DETAIL_FIELDS: &str = "number,title,body,author,state,isDraft,headRefName,
 
 #[derive(Deserialize)]
 struct PrQuery {
-    token: Option<String>,
     session: String,
     number: u64,
 }
 
-async fn detail(State(d): State<Shared>, Query(q): Query<PrQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn detail(Query(q): Query<PrQuery>) -> Response {
     let dir = match session_dir(&q.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -259,7 +244,7 @@ async fn detail(State(d): State<Shared>, Query(q): Query<PrQuery>) -> Response {
     let (view, threads) = tokio::join!(gh_json(&dir, &view_args), gh_json(&dir, &threads_args));
     let mut pr = match view {
         Ok(pr) => pr,
-        Err(e) => return fail(StatusCode::BAD_GATEWAY, e),
+        Err(e) => return api_error(StatusCode::BAD_GATEWAY, e),
     };
     let threads: Vec<Value> = threads
         .ok()
@@ -301,10 +286,7 @@ async fn detail(State(d): State<Shared>, Query(q): Query<PrQuery>) -> Response {
     Json(pr).into_response()
 }
 
-async fn diff(State(d): State<Shared>, Query(q): Query<PrQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn diff(Query(q): Query<PrQuery>) -> Response {
     let dir = match session_dir(&q.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -316,7 +298,7 @@ async fn diff(State(d): State<Shared>, Query(q): Query<PrQuery>) -> Response {
     };
     match text {
         Ok(text) => Json(json!({ "diff": text })).into_response(),
-        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
 
@@ -363,16 +345,13 @@ struct ReviewReq {
     comments: Vec<InlineComment>,
 }
 
-async fn review(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<ReviewReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn review(Json(req): Json<ReviewReq>) -> Response {
     let event = req.event.to_ascii_uppercase();
     if !matches!(event.as_str(), "APPROVE" | "REQUEST_CHANGES" | "COMMENT") {
-        return fail(StatusCode::BAD_REQUEST, "event must be APPROVE, REQUEST_CHANGES or COMMENT");
+        return api_error(StatusCode::BAD_REQUEST, "event must be APPROVE, REQUEST_CHANGES or COMMENT");
     }
     if event != "APPROVE" && req.body.trim().is_empty() && req.comments.is_empty() {
-        return fail(StatusCode::BAD_REQUEST, "a comment or request for changes needs a summary or an inline comment");
+        return api_error(StatusCode::BAD_REQUEST, "a comment or request for changes needs a summary or an inline comment");
     }
     let dir = match session_dir(&req.session) {
         Ok(dir) => dir,
@@ -404,7 +383,7 @@ async fn review(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<
             let reply: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
             Json(json!({ "submitted": true, "url": reply.get("html_url") })).into_response()
         }
-        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
 
@@ -415,12 +394,9 @@ struct CommentReq {
     body: String,
 }
 
-async fn comment(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<CommentReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn comment(Json(req): Json<CommentReq>) -> Response {
     if req.body.trim().is_empty() {
-        return fail(StatusCode::BAD_REQUEST, "the comment is empty");
+        return api_error(StatusCode::BAD_REQUEST, "the comment is empty");
     }
     let dir = match session_dir(&req.session) {
         Ok(dir) => dir,
@@ -428,7 +404,7 @@ async fn comment(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json
     };
     match gh(&dir, &["pr", "comment", &req.number.to_string(), "--body-file", "-"], Some(&req.body)).await {
         Ok(text) => Json(json!({ "posted": true, "url": text.trim() })).into_response(),
-        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
 
@@ -443,10 +419,7 @@ struct CreateReq {
     draft: bool,
 }
 
-async fn create(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<CreateReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn create(Json(req): Json<CreateReq>) -> Response {
     let dir = match session_dir(&req.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -458,8 +431,8 @@ async fn create(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<
         .await;
     match push {
         Ok(o) if o.status.success() => {}
-        Ok(o) => return fail(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&o.stderr).trim().to_string()),
-        Err(e) => return fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Ok(o) => return api_error(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&o.stderr).trim().to_string()),
+        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
     let title = req.title.as_deref().map(str::trim).filter(|t| !t.is_empty());
     let mut args: Vec<&str> = vec!["pr", "create"];
@@ -475,7 +448,7 @@ async fn create(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<
     let body = req.body.clone().unwrap_or_default();
     match gh(&dir, &args, title.map(|_| body.as_str())).await {
         Ok(text) => Json(json!({ "created": true, "url": text.trim().lines().last().unwrap_or("") })).into_response(),
-        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
 
@@ -508,10 +481,7 @@ struct MergeReq {
     branch: Option<String>,
 }
 
-async fn merge(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<MergeReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn merge(Json(req): Json<MergeReq>) -> Response {
     let dir = match session_dir(&req.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -520,7 +490,7 @@ async fn merge(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<M
     if req.disable_auto {
         return match gh(&dir, &["pr", "merge", &number, "--disable-auto"], None).await {
             Ok(_) => Json(json!({ "auto": false })).into_response(),
-            Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+            Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
         };
     }
     let flag = match req.method.as_deref().unwrap_or("merge") {
@@ -545,7 +515,7 @@ async fn merge(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<M
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     if let Err(e) = gh(&dir, &refs, None).await {
-        return fail(StatusCode::BAD_GATEWAY, e);
+        return api_error(StatusCode::BAD_GATEWAY, e);
     }
     if req.auto {
         return Json(json!({ "auto": true })).into_response();
@@ -568,10 +538,7 @@ struct StateReq {
     action: String,
 }
 
-async fn pr_state(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<StateReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn pr_state(Json(req): Json<StateReq>) -> Response {
     let dir = match session_dir(&req.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -584,11 +551,11 @@ async fn pr_state(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Jso
         "reopen" => vec!["pr", "reopen", &number],
         "update" => vec!["pr", "update-branch", &number],
         "update_rebase" => vec!["pr", "update-branch", &number, "--rebase"],
-        _ => return fail(StatusCode::BAD_REQUEST, "unknown action"),
+        _ => return api_error(StatusCode::BAD_REQUEST, "unknown action"),
     };
     match gh(&dir, &args, None).await {
         Ok(_) => Json(json!({ "done": true })).into_response(),
-        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
 
@@ -602,12 +569,9 @@ struct ReplyReq {
     body: String,
 }
 
-async fn reply(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<ReplyReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn reply(Json(req): Json<ReplyReq>) -> Response {
     if req.body.trim().is_empty() {
-        return fail(StatusCode::BAD_REQUEST, "the reply is empty");
+        return api_error(StatusCode::BAD_REQUEST, "the reply is empty");
     }
     let dir = match session_dir(&req.session) {
         Ok(dir) => dir,
@@ -617,7 +581,7 @@ async fn reply(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<R
     let payload = json!({ "body": req.body }).to_string();
     match gh(&dir, &["api", "-X", "POST", &path, "--input", "-"], Some(&payload)).await {
         Ok(_) => Json(json!({ "posted": true })).into_response(),
-        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
 
@@ -628,10 +592,7 @@ struct ThreadReq {
     resolved: bool,
 }
 
-async fn resolve_thread(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<ThreadReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn resolve_thread(Json(req): Json<ThreadReq>) -> Response {
     let dir = match session_dir(&req.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -644,23 +605,19 @@ async fn resolve_thread(State(d): State<Shared>, Query(a): Query<Auth>, Json(req
     let id_field = format!("id={}", req.thread_id);
     match gh(&dir, &["api", "graphql", "-F", &id_field, "-f", &format!("query={mutation}")], None).await {
         Ok(_) => Json(json!({ "resolved": req.resolved })).into_response(),
-        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
 
 #[derive(Deserialize)]
 struct CommitQuery {
-    token: Option<String>,
     session: String,
     sha: String,
 }
 
-async fn commit_diff(State(d): State<Shared>, Query(q): Query<CommitQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn commit_diff(Query(q): Query<CommitQuery>) -> Response {
     if q.sha.is_empty() || !q.sha.chars().all(|c| c.is_ascii_hexdigit()) {
-        return fail(StatusCode::BAD_REQUEST, "bad commit id");
+        return api_error(StatusCode::BAD_REQUEST, "bad commit id");
     }
     let dir = match session_dir(&q.session) {
         Ok(dir) => dir,
@@ -669,6 +626,6 @@ async fn commit_diff(State(d): State<Shared>, Query(q): Query<CommitQuery>) -> R
     let path = format!("repos/{{owner}}/{{repo}}/commits/{}", q.sha);
     match gh(&dir, &["api", "-H", "Accept: application/vnd.github.diff", &path], None).await {
         Ok(text) => Json(json!({ "diff": text })).into_response(),
-        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
