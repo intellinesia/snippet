@@ -50,8 +50,8 @@ pub fn parse_ttl(text: &str) -> Option<i64> {
     let n: i64 = n.parse().ok()?;
     match unit {
         "s" => Some(n),
-        "m" => Some(n * 60),
-        "h" => Some(n * 3600),
+        "m" => n.checked_mul(60),
+        "h" => n.checked_mul(3600),
         _ => None,
     }
 }

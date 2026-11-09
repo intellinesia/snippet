@@ -18,6 +18,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     let fut = tokio::process::Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -53,7 +54,7 @@ pub(super) struct GitReq {
     session: String,
 }
 
-// POST /git/status {session} — branch, upstream, ahead/behind, and changed files.
+// GET /git/status?session — branch, upstream, ahead/behind, and changed files.
 pub(super) async fn git_status(
     Query(req): Query<GitReq>,
 ) -> Response {
@@ -163,7 +164,7 @@ pub(super) struct GitDiffReq {
     untracked: bool,
 }
 
-// POST /git/diff {session, file?, staged?, untracked?} — unified diff (clipped).
+// GET /git/diff?session&file?&staged?&untracked? — unified diff (clipped).
 pub(super) async fn git_diff(
     Query(req): Query<GitDiffReq>,
 ) -> Response {
@@ -215,7 +216,7 @@ pub(super) struct GitLogReq {
     limit: Option<u32>,
 }
 
-// POST /git/log {session, limit?} — recent commits as structured records.
+// GET /git/log?session&limit? — recent commits as structured records.
 pub(super) async fn git_log(
     Query(req): Query<GitLogReq>,
 ) -> Response {
@@ -248,7 +249,7 @@ pub(super) async fn git_log(
     }
 }
 
-// POST /git/branches {session} — local + remote-tracking branches + current.
+// GET /git/branches?session — local + remote-tracking branches + current.
 pub(super) async fn git_branches(
     Query(req): Query<GitReq>,
 ) -> Response {

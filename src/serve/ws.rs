@@ -39,7 +39,7 @@ async fn handle_shells_ws(socket: WebSocket, terms: Arc<crate::term::SessionTerm
 
     let push = tokio::spawn(async move {
         let mut term_changes = push_terms.changes();
-        loop {
+        'push: loop {
             term_changes.borrow_and_update();
             for (id, chunk, cols, rows, alive) in push_terms.poll_client(&term_client) {
                 if chunk.is_empty() && alive {
@@ -58,7 +58,7 @@ async fn handle_shells_ws(socket: WebSocket, terms: Arc<crate::term::SessionTerm
                 });
                 if let Ok(json) = serde_json::to_string(&frame)
                     && sender.send(Message::Text(json.into())).await.is_err() {
-                        break;
+                        break 'push;
                     }
             }
             let _ = tokio::time::timeout(PUSH_FALLBACK_TICK, term_changes.changed()).await;
@@ -187,7 +187,7 @@ async fn handle_ws(
                     .map(|(s, off)| (s, false, off))
             }
         };
-        loop {
+        'attach: loop {
             let check_state = std::mem::take(&mut check_state_next) | signals.mark_seen();
             let queue_revision = daemon.queue_revision.load(Ordering::Acquire);
             let fingerprint = if check_state {
@@ -371,7 +371,7 @@ async fn handle_ws(
                     });
                     if let Ok(json) = serde_json::to_string(&frame)
                         && sender.send(Message::Text(json.into())).await.is_err() {
-                            break;
+                            break 'attach;
                         }
                 }
             }
@@ -553,7 +553,7 @@ const TRIMMED_SUMMARY_CHARS: usize = 600;
 fn trim_finished_lanes(lanes: &mut [serde_json::Value], session: &str) {
     for lane in lanes {
         let Some(o) = lane.as_object_mut() else { continue };
-        if o.get("status").and_then(|s| s.as_str()) == Some("running") {
+        if matches!(o.get("status").and_then(|s| s.as_str()), Some("running" | "paused")) {
             continue;
         }
         let mut trimmed = false;

@@ -169,12 +169,60 @@ fn configure(connection: &Connection) -> Result<(), rusqlite::Error> {
 /// Order matters only in that `agents` must exist before anything referencing it;
 /// the domains are otherwise independent.
 fn migrate(connection: &Connection) -> Result<(), rusqlite::Error> {
+    add_missing_columns(connection)?;
+    create_schema(connection)
+}
+
+fn create_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
     crate::coordination::schema::ensure(connection)?;
     crate::conversations::ensure_schema(connection)?;
     crate::app_schema::ensure(connection)?;
     crate::history_archive::ensure_schema(connection)?;
     crate::usage_ledger::ensure_schema(connection)?;
     Ok(())
+}
+
+/// Each table has one CREATE; a database from an older release gets the columns
+/// added since, taken from a fresh copy of the schema, before any index needs them.
+fn add_missing_columns(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let fresh = Connection::open_in_memory()?;
+    create_schema(&fresh)?;
+    let tables: Vec<String> = fresh
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE TABLE%'")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    for table in tables {
+        let have = table_columns(connection, &table)?;
+        if have.is_empty() {
+            continue;
+        }
+        let mut want = fresh.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
+        let want: Vec<(String, String, bool, Option<String>)> = want
+            .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?
+            .collect::<Result<_, _>>()?;
+        for (name, ty, not_null, default) in want {
+            if have.iter().any(|c| c.eq_ignore_ascii_case(&name)) {
+                continue;
+            }
+            let base = format!("ALTER TABLE \"{table}\" ADD COLUMN \"{name}\" {ty}");
+            let full = match (&default, not_null) {
+                (Some(d), true) => format!("{base} NOT NULL DEFAULT {d}"),
+                (Some(d), false) => format!("{base} DEFAULT {d}"),
+                (None, _) => base.clone(),
+            };
+            if connection.execute(&full, []).is_err() {
+                connection.execute(&base, [])?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn table_columns(connection: &Connection, table: &str) -> Result<Vec<String>, rusqlite::Error> {
+    connection
+        .prepare(&format!("PRAGMA table_info(\"{table}\")"))?
+        .query_map([], |row| row.get(1))?
+        .collect()
 }
 
 #[cfg(test)]
@@ -189,6 +237,33 @@ mod tests {
         let second = Store::open_cached(&path).unwrap();
 
         assert!(Arc::ptr_eq(&first.connection, &second.connection));
+    }
+
+    #[test]
+    fn an_older_database_gains_new_columns() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("snippet.db");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL);
+                 INSERT INTO tasks (id, title) VALUES ('old', 'kept');
+                 CREATE TABLE agent_board (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL);",
+            )
+            .unwrap();
+        }
+        let db = Store::open(&path).unwrap();
+        db.with_connection(|c| {
+            let tasks = table_columns(c, "tasks")?;
+            assert!(tasks.iter().any(|n| n == "goal_id"));
+            assert!(tasks.iter().any(|n| n == "work_plan_json"));
+            assert!(table_columns(c, "agent_board")?.iter().any(|n| n == "folder"));
+            let title: String =
+                c.query_row("SELECT title FROM tasks WHERE id = 'old'", [], |r| r.get(0))?;
+            assert_eq!(title, "kept");
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

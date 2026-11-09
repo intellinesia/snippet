@@ -525,6 +525,7 @@ fn apply_wire_frame(
                 buf.text = text;
                 buf.thinking = thinking;
                 buf.text_visible = visible;
+                buf.changed.signal();
             }
         }
         "snapshot" => {
@@ -689,7 +690,7 @@ mod tests {
 pub fn error_detail(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
-        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).or_else(|| v.as_str()).map(str::to_string))
         .unwrap_or_else(|| body.trim().to_string())
 }
 

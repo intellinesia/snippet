@@ -82,16 +82,23 @@ impl CodingHarness {
         if state.messages.len() <= keep + 1 {
             return None;
         }
-        let older: Vec<HarnessMessage> = state.messages.drain(keep..).collect();
-        let pointers = match (self.context.store(), self.context.durable_session_id()) {
-            (Ok(store), Some(session_id)) => {
-                let now = chrono::Utc::now().to_rfc3339();
-                crate::history_archive::archive_messages(&store, session_id, &older, &now)
-                    .map(|turns| crate::history_archive::render_micro_pointers("", &turns))
-                    .unwrap_or_default()
-            }
-            _ => String::new(),
+        let (Ok(store), Some(session_id)) = (self.context.store(), self.context.durable_session_id()) else {
+            return None;
         };
+        let now = chrono::Utc::now().to_rfc3339();
+        // Drop the turns only once they are safely archived.
+        let turns = match crate::history_archive::archive_messages(&store, session_id, &state.messages[keep..], &now) {
+            Ok(turns) => turns,
+            Err(err) => {
+                state.events.push(HarnessEvent::SystemDecision {
+                    step: "archive_failed".into(),
+                    reasoning: format!("Kept the full history: archiving failed ({err})."),
+                });
+                return None;
+            }
+        };
+        let pointers = crate::history_archive::render_micro_pointers("", &turns);
+        let older: Vec<HarnessMessage> = state.messages.drain(keep..).collect();
         state.history_rewritten = true;
         Some((older, pointers))
     }

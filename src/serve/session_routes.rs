@@ -249,7 +249,7 @@ pub(crate) struct BgReq {
     tail: Option<usize>,
 }
 
-// POST /bg {session} — snapshot of the session's background processes.
+// GET /bg?session — snapshot of the session's background processes.
 pub(crate) async fn bg_list(
     Query(req): Query<BgReq>,
 ) -> Response {
@@ -277,7 +277,7 @@ pub(crate) async fn bg_kill(
     }
 }
 
-// POST /bg/log {session, id, tail?} — tail a background process's log.
+// GET /bg/log?session&id&tail? — tail a background process's log.
 pub(crate) async fn bg_log(
     Query(req): Query<BgReq>,
 ) -> Response {
@@ -592,9 +592,14 @@ pub(crate) struct LaneQuery {
 
 /// GET /session/lane — one lane in full; attach snapshots carry finished lanes trimmed.
 pub(crate) async fn lane_detail(Query(q): Query<LaneQuery>) -> Response {
-    let Some(state) = crate::session::state_path_for_id(&q.session)
-        .and_then(|p| crate::session::read_session_state(&p))
-    else {
+    let session = q.session.clone();
+    let state = tokio::task::spawn_blocking(move || {
+        crate::session::state_path_for_id(&session).and_then(|p| crate::session::read_session_state(&p))
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(state) = state else {
         return api_error(StatusCode::NOT_FOUND, "no such session");
     };
     match state.lanes.into_iter().find(|l| l.id == q.id) {

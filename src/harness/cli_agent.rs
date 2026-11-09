@@ -1703,7 +1703,6 @@ impl CodingHarness {
                                 let trigger = meta.and_then(|m| m.get("trigger")).and_then(Value::as_str).unwrap_or("auto");
                                 self.archive_cli_compaction(&mut state);
                                 state.compactions += 1;
-                                session.mark_synced(&state.messages, state.compactions, tokens("post_tokens"));
                                 state.reflected_events = Some(state.events.len());
                                 state.last_prompt_tokens = tokens("post_tokens");
                                 state.events.push(HarnessEvent::SystemDecision {
@@ -1716,6 +1715,7 @@ impl CodingHarness {
                                 });
                                 last_task_note.clear();
                                 self.persist(&mut state, &lanes).await?;
+                                session.mark_synced(&state.messages, state.compactions, tokens("post_tokens"));
                             }
                             let final_before = state.final_text.clone();
                             let (changed, finished) = match kind {

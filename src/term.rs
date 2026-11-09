@@ -98,6 +98,22 @@ pub struct SessionTerms {
     changed: tokio::sync::watch::Sender<()>,
     watching: Mutex<bool>,
     waker: Option<Arc<Waker>>,
+    pump_lock: Mutex<()>,
+}
+
+type TermFrame = (String, Vec<u8>, u16, u16, bool);
+
+/// A client that stops reading loses its oldest output rather than growing the daemon.
+const MAILBOX_BYTES: usize = 2 << 20;
+
+fn cap_mailbox(mailbox: &mut Vec<TermFrame>) {
+    let mut total: usize = mailbox.iter().map(|f| f.1.len()).sum();
+    let mut drop = 0;
+    while total > MAILBOX_BYTES && drop + 1 < mailbox.len() {
+        total -= mailbox[drop].1.len();
+        drop += 1;
+    }
+    mailbox.drain(..drop);
 }
 
 /// Self-pipe that makes the watcher re-read its fd set after a spawn.
@@ -109,13 +125,23 @@ struct Waker {
 impl Waker {
     fn new() -> Option<Self> {
         let mut fds = [0; 2];
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        // SAFETY: fds is a valid two-element buffer for pipe/pipe2.
+        #[cfg(target_os = "linux")]
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
             return None;
         }
-        for fd in fds {
-            set_nonblocking(fd);
-            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        #[cfg(not(target_os = "linux"))]
+        {
+            if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+                return None;
+            }
+            for fd in fds {
+                set_nonblocking(fd);
+                // SAFETY: fd was just returned by pipe and is owned here.
+                unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+            }
         }
+        // SAFETY: both fds are fresh and owned by nothing else.
         unsafe {
             Some(Self {
                 rx: std::fs::File::from_raw_fd(fds[0]),
@@ -145,6 +171,9 @@ impl Drop for TermClient {
         if let Ok(mut g) = self.terms.fanout.lock() {
             g.clients.remove(&self.id);
         }
+        if let Some(waker) = &self.terms.waker {
+            waker.wake();
+        }
     }
 }
 
@@ -160,6 +189,7 @@ impl SessionTerms {
             changed: tokio::sync::watch::channel(()).0,
             watching: Mutex::new(false),
             waker: Waker::new().map(Arc::new),
+            pump_lock: Mutex::new(()),
         })
     }
 
@@ -261,6 +291,9 @@ impl SessionTerms {
             && let Some(t) = g.remove(id) {
                 t.kill();
             }
+        if let Some(waker) = &self.waker {
+            waker.wake();
+        }
     }
 
     /// Drain the PTY once and copy the same bytes to every subscriber.
@@ -268,6 +301,8 @@ impl SessionTerms {
     /// fill its kernel buffer and block. Idle shells are the reason this is
     /// driven by the tick rather than only by a client poll.
     pub fn pump(&self) {
+        // Read and fan-out stay together so concurrent pumps cannot reorder chunks.
+        let _pumping = self.pump_lock.lock();
         let panes: Vec<(String, Arc<SessionTerm>)> = {
             let g = match self.terms.lock() {
                 Ok(g) => g,
@@ -305,6 +340,7 @@ impl SessionTerms {
             } else {
                 for mailbox in g.clients.values_mut() {
                     mailbox.extend(frames.iter().cloned());
+                    cap_mailbox(mailbox);
                 }
             }
         }

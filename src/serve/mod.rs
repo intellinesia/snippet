@@ -1154,7 +1154,7 @@ async fn require_token(
     next: axum::middleware::Next,
 ) -> Response {
     let path = request.uri().path();
-    let open = path == "/health" || path.starts_with("/mcp/") || path.starts_with("/a/");
+    let open = path == "/health" || path.starts_with("/a/");
     let token = Query::<TokenQuery>::try_from_uri(request.uri()).ok().and_then(|q| q.0.token);
     if open || d.authed(&token) {
         next.run(request).await
@@ -1171,26 +1171,29 @@ pub(crate) async fn settle_stale_running(d: &Shared) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let stale: Vec<String> = {
-        let live = d.sessions.lock().await;
-        list_device_sessions()
-            .into_iter()
-            .filter(|s| {
-                s.status == "running"
-                    && now - s.last_active > STALE_RUNNING_SECS
-                    && !live.get(&s.id).is_some_and(|l| !l.join.is_finished())
-            })
-            .map(|s| s.id)
-            .collect()
-    };
-    for id in stale {
-        if let Some(sp) = state_path_for_id(&id)
-            && let Some(mut st) = crate::session::read_session_state(&sp)
-        {
-            st.status = crate::harness::HarnessStatus::Idle;
-            let _ = crate::session::write_session_state(&sp, &st);
+    let live: std::collections::HashSet<String> = d
+        .sessions
+        .lock()
+        .await
+        .iter()
+        .filter(|(_, l)| !l.join.is_finished())
+        .map(|(id, _)| id.clone())
+        .collect();
+    let _ = tokio::task::spawn_blocking(move || {
+        for s in list_device_sessions() {
+            if s.status != "running" || now - s.last_active <= STALE_RUNNING_SECS || live.contains(&s.id) {
+                continue;
+            }
+            if let Some(sp) = state_path_for_id(&s.id)
+                && let Some(mut st) = crate::session::read_session_state(&sp)
+                && st.status == crate::harness::HarnessStatus::Running
+            {
+                st.status = crate::harness::HarnessStatus::Idle;
+                let _ = crate::session::write_session_state(&sp, &st);
+            }
         }
-    }
+    })
+    .await;
 }
 
 #[derive(Deserialize)]
