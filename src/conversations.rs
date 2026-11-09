@@ -18,6 +18,29 @@ use crate::harness::HarnessEvent;
 use crate::llm::HarnessMessage;
 use crate::store::{Store, StoreError};
 
+static SESSION_CHANGES: std::sync::OnceLock<tokio::sync::watch::Sender<()>> = std::sync::OnceLock::new();
+
+fn session_changes_tx() -> &'static tokio::sync::watch::Sender<()> {
+    SESSION_CHANGES.get_or_init(|| tokio::sync::watch::channel(()).0)
+}
+
+/// Wakes `/attach` pushers when a write could change `conversation_fingerprint`.
+pub fn session_changes() -> tokio::sync::watch::Receiver<()> {
+    session_changes_tx().subscribe()
+}
+
+pub fn signal_session_change() {
+    session_changes_tx().send_replace(());
+}
+
+struct SessionChangeSignal;
+
+impl Drop for SessionChangeSignal {
+    fn drop(&mut self) {
+        signal_session_change();
+    }
+}
+
 /// Schema for durable conversations.
 ///
 /// The DDL lives with the data it describes. [`crate::store`] owns the
@@ -207,6 +230,7 @@ impl Store {
         messages: &[HarnessMessage],
         tags_json: &str,
     ) -> Result<(), StoreError> {
+        let _signal = SessionChangeSignal;
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             tx.execute(
@@ -249,6 +273,7 @@ impl Store {
         messages: &[HarnessMessage],
         now: &str,
     ) -> Result<Vec<i64>, StoreError> {
+        let _signal = SessionChangeSignal;
         if messages.is_empty() {
             return Ok(Vec::new());
         }
@@ -286,6 +311,7 @@ impl Store {
         messages: &[HarnessMessage],
         now: &str,
     ) -> Result<(), StoreError> {
+        let _signal = SessionChangeSignal;
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             tx.execute(
@@ -425,6 +451,7 @@ impl Store {
 
     /// Delete a session and its transcript.
     pub fn delete_conversation(&self, id: &str) -> Result<bool, StoreError> {
+        let _signal = SessionChangeSignal;
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             tx.execute(
@@ -590,6 +617,7 @@ impl Store {
         state: &crate::harness::HarnessState,
         extras: &SessionExtras,
     ) -> Result<(), StoreError> {
+        let _signal = SessionChangeSignal;
         let scalar = crate::harness::scalar_json(state).map_err(StoreError::ScalarEncode)?;
         let status = crate::session::status_str(state.status);
         let role = extras
@@ -673,6 +701,7 @@ impl Store {
         created_at: &str,
         now: &str,
     ) -> Result<(), StoreError> {
+        let _signal = SessionChangeSignal;
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT INTO sessions (id, workspace_key, workspace, title, status,
@@ -848,6 +877,7 @@ impl Store {
         messages: &[HarnessMessage],
         now: &str,
     ) -> Result<(), StoreError> {
+        let _signal = SessionChangeSignal;
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             tx.execute(
@@ -869,6 +899,7 @@ impl Store {
         events: &[HarnessEvent],
         now: &str,
     ) -> Result<(), StoreError> {
+        let _signal = SessionChangeSignal;
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             tx.execute(
@@ -924,6 +955,7 @@ impl Store {
         events: &[HarnessEvent],
         now: &str,
     ) -> Result<(), StoreError> {
+        let _signal = SessionChangeSignal;
         if events.is_empty() {
             return Ok(());
         }

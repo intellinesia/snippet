@@ -6,7 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 const SCROLLBACK_CAP: usize = 256 * 1024;
 const MAX_TERMS: usize = 8;
@@ -94,6 +94,44 @@ pub struct SessionTerms {
     /// The next `subscribe` takes these so a harvest for notifications
     /// cannot steal bytes from a later attach.
     pending: Mutex<Vec<(String, Vec<u8>, u16, u16, bool)>>,
+    me: Weak<SessionTerms>,
+    changed: tokio::sync::watch::Sender<()>,
+    watching: Mutex<bool>,
+    waker: Option<Arc<Waker>>,
+}
+
+/// Self-pipe that makes the watcher re-read its fd set after a spawn.
+struct Waker {
+    rx: std::fs::File,
+    tx: std::fs::File,
+}
+
+impl Waker {
+    fn new() -> Option<Self> {
+        let mut fds = [0; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        for fd in fds {
+            set_nonblocking(fd);
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        }
+        unsafe {
+            Some(Self {
+                rx: std::fs::File::from_raw_fd(fds[0]),
+                tx: std::fs::File::from_raw_fd(fds[1]),
+            })
+        }
+    }
+
+    fn wake(&self) {
+        let _ = (&self.tx).write(&[1]);
+    }
+
+    fn drain(&self) {
+        let mut buf = [0u8; 64];
+        while matches!((&self.rx).read(&mut buf), Ok(n) if n > 0) {}
+    }
 }
 
 /// Token for one /attach subscriber. Drop unregisters the mailbox.
@@ -112,24 +150,37 @@ impl Drop for TermClient {
 
 impl SessionTerms {
     pub fn new(cwd: PathBuf) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|me| Self {
             cwd,
             next_id: Mutex::new(1),
             terms: Mutex::new(HashMap::new()),
             fanout: Mutex::new(Fanout::new()),
             pending: Mutex::new(Vec::new()),
+            me: me.clone(),
+            changed: tokio::sync::watch::channel(()).0,
+            watching: Mutex::new(false),
+            waker: Waker::new().map(Arc::new),
         })
     }
 
+    /// Bumped whenever `pump` hands new frames to the mailboxes.
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changed.subscribe()
+    }
+
     pub fn subscribe(self: &Arc<Self>) -> TermClient {
-        let mut g = self.fanout.lock().expect("fanout");
-        let id = g.next_client;
-        g.next_client = g.next_client.wrapping_add(1).max(1);
-        let mailbox = match self.pending.lock() {
-            Ok(mut p) => std::mem::take(&mut *p),
-            Err(_) => Vec::new(),
+        let id = {
+            let mut g = self.fanout.lock().expect("fanout");
+            let id = g.next_client;
+            g.next_client = g.next_client.wrapping_add(1).max(1);
+            let mailbox = match self.pending.lock() {
+                Ok(mut p) => std::mem::take(&mut *p),
+                Err(_) => Vec::new(),
+            };
+            g.clients.insert(id, mailbox);
+            id
         };
-        g.clients.insert(id, mailbox);
+        self.ensure_watcher();
         TermClient {
             id,
             terms: Arc::clone(self),
@@ -137,16 +188,44 @@ impl SessionTerms {
     }
 
     pub fn get_or_create(&self, id: &str) -> Option<Arc<SessionTerm>> {
-        let mut g = self.terms.lock().ok()?;
-        if let Some(t) = g.get(id) {
-            return Some(t.clone());
-        }
-        if g.len() >= MAX_TERMS {
-            return None;
-        }
-        let t = SessionTerm::new(self.cwd.clone());
-        g.insert(id.to_string(), t.clone());
+        let t = {
+            let mut g = self.terms.lock().ok()?;
+            if let Some(t) = g.get(id) {
+                return Some(t.clone());
+            }
+            if g.len() >= MAX_TERMS {
+                return None;
+            }
+            let t = SessionTerm::with_waker(self.cwd.clone(), self.waker.clone());
+            g.insert(id.to_string(), t.clone());
+            t
+        };
+        self.ensure_watcher();
         Some(t)
+    }
+
+    fn should_watch(&self) -> bool {
+        let panes = self.terms.lock().map(|g| !g.is_empty()).unwrap_or(false);
+        panes && self.fanout.lock().map(|g| !g.clients.is_empty()).unwrap_or(false)
+    }
+
+    /// Runs a pty watcher thread while panes and subscribers both exist, so
+    /// output reaches `/attach` as it arrives instead of on a poll.
+    fn ensure_watcher(&self) {
+        let Some(waker) = self.waker.clone() else {
+            return;
+        };
+        let Ok(mut watching) = self.watching.lock() else {
+            return;
+        };
+        if *watching || !self.should_watch() {
+            return;
+        }
+        let me = self.me.clone();
+        *watching = std::thread::Builder::new()
+            .name("pty-watch".into())
+            .spawn(move || watch_ptys(me, waker))
+            .is_ok();
     }
 
     /// Ids of the live shells, with their alive state.
@@ -213,6 +292,7 @@ impl SessionTerms {
         if frames.is_empty() {
             return;
         }
+        let _signal = TermChangeSignal(&self.changed);
         if let Ok(mut g) = self.fanout.lock() {
             if g.clients.is_empty() {
                 if let Ok(mut pending) = self.pending.lock() {
@@ -263,8 +343,65 @@ impl SessionTerms {
 
 }
 
+struct TermChangeSignal<'a>(&'a tokio::sync::watch::Sender<()>);
+
+impl Drop for TermChangeSignal<'_> {
+    fn drop(&mut self) {
+        self.0.send_replace(());
+    }
+}
+
+fn watch_ptys(me: Weak<SessionTerms>, waker: Arc<Waker>) {
+    loop {
+        let fds: Vec<std::os::fd::OwnedFd> = {
+            let Some(terms) = me.upgrade() else {
+                return;
+            };
+            {
+                let Ok(mut watching) = terms.watching.lock() else {
+                    return;
+                };
+                if !terms.should_watch() {
+                    *watching = false;
+                    return;
+                }
+            }
+            let panes: Vec<Arc<SessionTerm>> = match terms.terms.lock() {
+                Ok(g) => g.values().cloned().collect(),
+                Err(_) => return,
+            };
+            panes.iter().filter_map(|t| t.dup_master()).collect()
+        };
+        let mut pfds: Vec<libc::pollfd> = std::iter::once(waker.rx.as_raw_fd())
+            .chain(fds.iter().map(|fd| fd.as_raw_fd()))
+            .map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 })
+            .collect();
+        // The timeout only bounds how long a closed pane or departed client keeps the thread.
+        let r = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, 1000) };
+        if r < 0 {
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            continue;
+        }
+        if pfds[0].revents != 0 {
+            waker.drain();
+        }
+        if pfds[1..].iter().any(|p| p.revents != 0)
+            && let Some(terms) = me.upgrade()
+        {
+            terms.pump();
+        }
+        // A hung-up pane polls ready until pump notices; don't spin on it.
+        if pfds[1..].iter().any(|p| p.revents & libc::POLLIN == 0 && p.revents != 0) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
 pub struct SessionTerm {
     inner: Mutex<Inner>,
+    waker: Option<Arc<Waker>>,
 }
 
 struct Inner {
@@ -280,7 +417,12 @@ struct Inner {
 
 impl SessionTerm {
     pub fn new(cwd: PathBuf) -> Arc<Self> {
+        Self::with_waker(cwd, None)
+    }
+
+    fn with_waker(cwd: PathBuf, waker: Option<Arc<Waker>>) -> Arc<Self> {
         Arc::new(Self {
+            waker,
             inner: Mutex::new(Inner {
                 child_pid: None,
                 master: None,
@@ -292,6 +434,15 @@ impl SessionTerm {
                 dsr: DsrScan::default(),
             }),
         })
+    }
+
+    fn dup_master(&self) -> Option<std::os::fd::OwnedFd> {
+        let g = self.inner.lock().ok()?;
+        if !g.alive {
+            return None;
+        }
+        let fd = unsafe { libc::fcntl(g.master.as_ref()?.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+        (fd >= 0).then(|| unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
     }
 
     pub fn is_alive(&self) -> bool {
@@ -316,6 +467,11 @@ impl SessionTerm {
             g.alive = false;
         }
         let r = spawn_locked(&mut g, cols, rows);
+        if r.is_ok()
+            && let Some(waker) = &self.waker
+        {
+            waker.wake();
+        }
         r
     }
 
@@ -867,6 +1023,23 @@ mod tests {
             !t4.contains("PANE0"),
             "pane 4 must not show pane 0 output:\n{t4}"
         );
+    }
+
+    #[test]
+    fn pty_output_signals_subscribers_without_polling() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let terms = SessionTerms::new(dir.path().to_path_buf());
+        let client = terms.subscribe();
+        let mut changes = terms.changes();
+        changes.borrow_and_update();
+        let pane = terms.get_or_create("0").expect("pane");
+        pane.ensure(80, 24).expect("spawn");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let woke = rt.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(3), changes.changed()).await });
+        let got: usize = terms.poll_client(&client).iter().map(|f| f.1.len()).sum();
+        pane.kill();
+        assert!(woke.is_ok(), "watcher thread must signal pty output");
+        assert!(got > 0, "signalled output must be in the mailbox");
     }
 
     #[test]

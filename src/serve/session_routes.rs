@@ -583,3 +583,22 @@ pub(crate) async fn checkpoint_stats(
     .unwrap_or_default();
     Json(serde_json::Value::Object(stats)).into_response()
 }
+
+#[derive(Deserialize)]
+pub(crate) struct LaneQuery {
+    session: String,
+    id: String,
+}
+
+/// GET /session/lane — one lane in full; attach snapshots carry finished lanes trimmed.
+pub(crate) async fn lane_detail(Query(q): Query<LaneQuery>) -> Response {
+    let Some(state) = crate::session::state_path_for_id(&q.session)
+        .and_then(|p| crate::session::read_session_state(&p))
+    else {
+        return api_error(StatusCode::NOT_FOUND, "no such session");
+    };
+    match state.lanes.into_iter().find(|l| l.id == q.id) {
+        Some(lane) => Json(lane).into_response(),
+        None => api_error(StatusCode::NOT_FOUND, "no such lane"),
+    }
+}

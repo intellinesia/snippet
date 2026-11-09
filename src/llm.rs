@@ -167,11 +167,35 @@ pub struct StreamBuffer {
     /// separate from the answer. Best-effort: empty for models that don't emit it.
     pub thinking: String,
     pub tool_tap: Option<ToolArgTap>,
+    pub changed: StreamSignal,
 }
 
 pub type StreamHandle = Arc<Mutex<StreamBuffer>>;
 
+/// Wakes `/attach` pushers when the buffer changes.
+pub struct StreamSignal(tokio::sync::watch::Sender<()>);
+
+impl Default for StreamSignal {
+    fn default() -> Self {
+        Self(tokio::sync::watch::channel(()).0)
+    }
+}
+
+impl StreamSignal {
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<()> {
+        self.0.subscribe()
+    }
+
+    pub fn signal(&self) {
+        self.0.send_replace(());
+    }
+}
+
 impl StreamBuffer {
+    pub fn changes(handle: &StreamHandle) -> Option<tokio::sync::watch::Receiver<()>> {
+        handle.lock().ok().map(|buf| buf.changed.subscribe())
+    }
+
     pub fn set_tool_tap(&mut self, tap: ToolArgTap) {
         self.tool_tap = Some(tap);
     }
@@ -191,12 +215,14 @@ impl StreamBuffer {
     pub fn append(handle: &StreamHandle, delta: &str) {
         if let Ok(mut buf) = handle.lock() {
             buf.text.push_str(delta);
+            buf.changed.signal();
         }
     }
 
     pub fn append_thinking(handle: &StreamHandle, delta: &str) {
         if let Ok(mut buf) = handle.lock() {
             buf.thinking.push_str(delta);
+            buf.changed.signal();
         }
     }
 
@@ -206,6 +232,7 @@ impl StreamBuffer {
             buf.text.clear();
             buf.text_visible = false;
             buf.thinking.clear();
+            buf.changed.signal();
             if let Some(tap) = &buf.tool_tap {
                 let _ = tap.send(ToolArgEvent::Reset);
             }

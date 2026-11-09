@@ -1080,6 +1080,7 @@ pub async fn run_serve(
         .route("/git/stash", post(git_stash))
         .route("/git/discard", post(git_discard))
         .route("/session/checkpoint-stats", post(checkpoint_stats))
+        .route("/session/lane", get(session_routes::lane_detail))
         .route("/git/init", post(git_init))
         .layer(axum::middleware::from_fn_with_state(daemon.clone(), require_token))
         .layer(compression())
