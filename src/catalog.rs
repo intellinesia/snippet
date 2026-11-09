@@ -122,22 +122,47 @@ async fn fetch_provider_models(cfg: &InferenceProfileConfig) -> Result<Vec<Catal
 
 type CachedModels = (std::time::Instant, Option<String>, Vec<CatalogModel>);
 static CLAUDE_CODE_MODELS: std::sync::Mutex<Option<CachedModels>> = std::sync::Mutex::new(None);
+static CLAUDE_CODE_FETCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn cached_claude_code_models(account: &Option<String>) -> Option<Result<Vec<CatalogModel>, String>> {
+    let guard = CLAUDE_CODE_MODELS.lock().unwrap();
+    let (at, acct, models) = guard.as_ref()?;
+    if acct != account {
+        return None;
+    }
+    // An empty entry is a failed lookup, kept briefly so the fallback answers at once.
+    let ttl = if models.is_empty() { 60 } else { 600 };
+    (at.elapsed() < std::time::Duration::from_secs(ttl)).then(|| {
+        if models.is_empty() {
+            Err("Claude Code model lookup failed recently".to_string())
+        } else {
+            Ok(models.clone())
+        }
+    })
+}
 
 async fn claude_code_live_catalog() -> Result<Vec<CatalogModel>, String> {
     let account = crate::accounts::active("claude-code");
-    if let Some((at, acct, models)) = CLAUDE_CODE_MODELS.lock().unwrap().as_ref()
-        && at.elapsed() < std::time::Duration::from_secs(600)
-        && *acct == account
-    {
-        return Ok(models.clone());
+    if let Some(hit) = cached_claude_code_models(&account) {
+        return hit;
     }
-    let (account, raw) = crate::harness::claude_supported_models().await?;
-    let models = parse_claude_code_models(&raw);
-    if models.is_empty() {
-        return Err("Claude Code listed no models".into());
+    let _one_fetch = CLAUDE_CODE_FETCH.lock().await;
+    if let Some(hit) = cached_claude_code_models(&account) {
+        return hit;
     }
+    let fetched = crate::harness::claude_supported_models()
+        .await
+        .map(|(_, raw)| parse_claude_code_models(&raw));
+    let models = match &fetched {
+        Ok(m) => m.clone(),
+        Err(_) => Vec::new(),
+    };
     *CLAUDE_CODE_MODELS.lock().unwrap() = Some((std::time::Instant::now(), account, models.clone()));
-    Ok(models)
+    match fetched {
+        Err(e) => Err(e),
+        Ok(_) if models.is_empty() => Err("Claude Code listed no models".into()),
+        Ok(_) => Ok(models),
+    }
 }
 
 fn parse_claude_code_models(raw: &[Value]) -> Vec<CatalogModel> {

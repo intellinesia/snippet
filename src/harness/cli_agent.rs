@@ -539,7 +539,7 @@ pub(crate) async fn claude_supported_models() -> Result<(Option<String>, Vec<Val
         }
         Err("Claude Code exited without listing its models".to_string())
     };
-    let models = tokio::time::timeout(std::time::Duration::from_secs(20), read)
+    let models = tokio::time::timeout(std::time::Duration::from_secs(8), read)
         .await
         .map_err(|_| "Claude Code took too long to list its models".to_string())??;
     let _ = child.kill().await;
