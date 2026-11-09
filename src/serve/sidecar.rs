@@ -278,7 +278,7 @@ pub async fn open_session(
         .map_err(|e| format!("open session: {e}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = error_detail(&resp.text().await.unwrap_or_default());
         return Err(format!("open session {status}: {body}"));
     }
     let body: serde_json::Value = resp
@@ -358,7 +358,7 @@ pub async fn list_sessions(
         .map_err(|e| format!("list sessions: {e}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = error_detail(&resp.text().await.unwrap_or_default());
         return Err(format!("list sessions {status}: {body}"));
     }
     resp.json::<Vec<SessionRow>>()
@@ -415,7 +415,7 @@ async fn post_session_op(
         .map_err(|e| format!("{path}: {e}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = error_detail(&resp.text().await.unwrap_or_default());
         return Err(format!("{path} {status}: {text}"));
     }
     Ok(())
@@ -444,7 +444,7 @@ pub async fn set_session_model(
         .map_err(|e| format!("model switch: {e}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = error_detail(&resp.text().await.unwrap_or_default());
         return Err(format!("model switch {status}: {body}"));
     }
     Ok(())
@@ -473,7 +473,7 @@ pub async fn rewind_session(
         .map_err(|e| format!("rewind: {e}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = error_detail(&resp.text().await.unwrap_or_default());
         return Err(format!("rewind {status}: {body}"));
     }
     Ok(())
@@ -685,6 +685,14 @@ mod tests {
 /// A JSON request to the daemon's API, for the TUI's panels (agents, tasks,
 /// jobs, usage, vault). `method` is GET, POST, PUT or DELETE; the token rides
 /// in the query like every other call here.
+/// The message from a daemon error body `{"error": ...}`, or the trimmed body.
+pub fn error_detail(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+        .unwrap_or_else(|| body.trim().to_string())
+}
+
 pub async fn api_json(
     info: &DaemonInfo,
     method: reqwest::Method,
@@ -707,7 +715,7 @@ pub async fn api_json(
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(format!("{path} {status}: {text}"));
+        return Err(format!("{path} {status}: {}", error_detail(&text)));
     }
     if text.trim().is_empty() {
         return Ok(serde_json::Value::Null);

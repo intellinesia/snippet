@@ -357,18 +357,7 @@ async fn daemon_http(
     let value = serde_json::from_str::<serde_json::Value>(&text)
         .unwrap_or_else(|_| serde_json::json!({ "error": text }));
     if !status.is_success() {
-        // An error body is a bare string, not an object, so it is read directly
-        // before falling back to an `error` field.
-        let detail = value
-            .as_str()
-            .map(str::to_string)
-            .or_else(|| {
-                value
-                    .get("error")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            })
-            .unwrap_or(text);
+        let detail = snippet::serve::sidecar::error_detail(&text);
         return Err(format!("daemon returned {status}: {detail}").into());
     }
     Ok(value)
