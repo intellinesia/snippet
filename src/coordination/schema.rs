@@ -102,8 +102,7 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              delivered_at TEXT
          );
 
-         -- The task board. A task is the unit of work a human creates; Mission
-         -- Control decomposes it into assignments, and each task owns one board
+         -- The task board. A task is the unit of work; each task owns one board
          -- thread (its message room) so the agents on that task can talk without
          -- a global room every participant has to read.
          CREATE TABLE IF NOT EXISTS tasks (
@@ -267,9 +266,8 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
          -- Per-agent coordination memory. Each agent records what it dispatched,
          -- what came back, and what it learned, so recall ("have I done this
          -- before, and how did it go") is a query rather than a re-read of every
-         -- transcript. This is MEMORY, not status: a dispatch's authoritative
-         -- state lives in `assignments`, and mirroring it here would create a
-         -- second source of truth that drifts.
+         -- transcript. This is MEMORY, not status: a task's authoritative state
+         -- lives in `tasks`.
          CREATE TABLE IF NOT EXISTS agent_board (
              id INTEGER PRIMARY KEY AUTOINCREMENT,
              agent_id TEXT NOT NULL,
