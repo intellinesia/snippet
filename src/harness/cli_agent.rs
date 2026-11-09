@@ -1701,7 +1701,9 @@ impl CodingHarness {
                                 let meta = event.get("compact_metadata");
                                 let tokens = |key: &str| meta.and_then(|m| m.get(key)).and_then(Value::as_u64).unwrap_or(0);
                                 let trigger = meta.and_then(|m| m.get("trigger")).and_then(Value::as_str).unwrap_or("auto");
+                                self.archive_cli_compaction(&mut state);
                                 state.compactions += 1;
+                                session.mark_synced(&state.messages, state.compactions, tokens("post_tokens"));
                                 state.reflected_events = Some(state.events.len());
                                 state.last_prompt_tokens = tokens("post_tokens");
                                 state.events.push(HarnessEvent::SystemDecision {
@@ -1796,6 +1798,7 @@ impl CodingHarness {
                                         generation += 1;
                                         session.id = None;
                                         session.started = false;
+                                        self.archive_cli_compaction(&mut state);
                                         session.mark_synced(&state.messages, state.compactions + 1, 0);
                                         after_compaction = Some(match summary {
                                             Some(summary) => format!("This conversation continues from an earlier one that was compacted. Summary of it:\n{summary}"),

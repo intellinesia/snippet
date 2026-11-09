@@ -72,9 +72,8 @@ pub(super) fn handover(
 }
 
 impl CodingHarness {
-    /// Archive everything after the system prompt and continue from a handover.
-    /// Returns the handover, or `None` when there was nothing to fold.
-    pub(super) fn continue_lean(&self, state: &mut HarnessState) -> Option<String> {
+    /// Moves the non-system history into the searchable archive; returns it and its pointers.
+    fn archive_history(&self, state: &mut HarnessState) -> Option<(Vec<HarnessMessage>, String)> {
         let keep = state
             .messages
             .iter()
@@ -93,10 +92,32 @@ impl CodingHarness {
             }
             _ => String::new(),
         };
+        state.history_rewritten = true;
+        Some((older, pointers))
+    }
+
+    /// A CLI compacted its own context: archive what it dropped so history search still finds it.
+    pub(super) fn archive_cli_compaction(&self, state: &mut HarnessState) {
+        let Some((older, pointers)) = self.archive_history(state) else {
+            return;
+        };
+        let mut content = format!(
+            "[compacted] {} earlier messages are archived: bring back what you need with `snippet history search <words>` and `snippet history show --from <id> --to <id>`.",
+            older.len()
+        );
+        if !pointers.trim().is_empty() {
+            content.push_str(&format!("\n\n{}", pointers.trim()));
+        }
+        state.messages.push(HarnessMessage::Summary { kind: "cli_compaction".into(), content });
+    }
+
+    /// Archive everything after the system prompt and continue from a handover.
+    /// Returns the handover, or `None` when there was nothing to fold.
+    pub(super) fn continue_lean(&self, state: &mut HarnessState) -> Option<String> {
+        let (older, pointers) = self.archive_history(state)?;
         let branch = crate::session_stats::git_branch(&self.context.current_dir());
         let text = handover(&older, state, branch.as_deref(), &pointers);
         state.messages.push(HarnessMessage::Summary { kind: "lean_handover".into(), content: text.clone() });
-        state.history_rewritten = true;
         state.last_prompt_tokens = 0;
         state.events.push(HarnessEvent::SystemDecision {
             step: "continued_lean".into(),
