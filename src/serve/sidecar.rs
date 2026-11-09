@@ -366,30 +366,6 @@ pub async fn list_sessions(
         .map_err(|e| format!("list sessions body: {e}"))
 }
 
-/// GET /sessions/members?session_id= — fetch members of a session.
-pub async fn session_members(
-    info: &DaemonInfo,
-    session_id: &str,
-) -> Result<Vec<crate::session::SessionMember>, String> {
-    let url = format!("{}/sessions/members", info.api_url.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let resp = client
-        .get(&url)
-        .query(&[("token", info.token.clone()), ("session_id", session_id.to_string())])
-        .send()
-        .await
-        .map_err(|e| format!("session members: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("session members failed: {}", resp.status()));
-    }
-    resp.json::<Vec<crate::session::SessionMember>>()
-        .await
-        .map_err(|e| format!("parse session members: {e}"))
-}
-
 /// POST /session/delete — remove a conversation from wherever it lives.
 ///
 /// Goes through the daemon rather than deleting files, so the store row, its

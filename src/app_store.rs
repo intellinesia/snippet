@@ -116,18 +116,6 @@ impl Store {
         })
     }
 
-    pub fn managed_session_exists(&self, id: &str) -> Result<bool, StoreError> {
-        self.with_connection(|conn| {
-            conn
-                .query_row(
-                    "SELECT 1 FROM managed_sessions WHERE id = ?1",
-                    params![id],
-                    |_| Ok(()),
-                )
-                .optional_present()
-        })
-    }
-
     // ---- control settings -------------------------------------------------
 
     pub fn load_control_settings(&self) -> Result<ControlSettings, StoreError> {
@@ -506,22 +494,6 @@ impl Store {
         })
     }
 
-}
-
-/// `Option` from a presence query, so a caller reads "exists" without an error
-/// path for the ordinary absent case.
-trait OptionalPresent {
-    fn optional_present(self) -> Result<bool, rusqlite::Error>;
-}
-
-impl OptionalPresent for Result<(), rusqlite::Error> {
-    fn optional_present(self) -> Result<bool, rusqlite::Error> {
-        match self {
-            Ok(()) => Ok(true),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
-            Err(e) => Err(e),
-        }
-    }
 }
 
 const JOB_COLUMNS: &str = "id, title, session_id, prompt, plan_path, schedule_json, delivery, \

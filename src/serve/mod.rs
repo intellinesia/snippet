@@ -967,7 +967,6 @@ pub async fn run_serve(
         .route("/coordination/direct/read", post(direct::direct_mark_read))
         .route("/sessions", get(list_sessions).post(open_session))
         .route("/sessions/counts", get(session_counts))
-        .route("/sessions/members", get(session_members_by_query))
         .route("/usage", get(usage_summary))
         .route("/notifications", get(notification_replay))
         .merge(recurring::router())
@@ -1009,9 +1008,6 @@ pub async fn run_serve(
         .route("/ambient/stream", get(ambient_stream::stream))
         .route("/ambient/stats", get(ambient_routes::stats))
         .route("/ambient/lease", post(ambient_routes::lease))
-        .route("/ambient/turns/{id}/audio", get(ambient_routes::turn_audio))
-        .route("/ambient/activity", post(ambient_routes::activity))
-        .route("/ambient/conversation/end", post(ambient_routes::end_conversation))
         .route("/ambient/recording", get(recording_routes::get).post(recording_routes::set))
         .route("/ambient/recordings/delete", post(recording_routes::delete))
         .route("/ambient/call", get(call_track::status))
@@ -1283,29 +1279,6 @@ async fn session_counts(State(d): State<Shared>, Query(a): Query<Auth>) -> Respo
         }
     }
     Json(counts).into_response()
-}
-
-#[derive(Deserialize)]
-struct SessionMembersQuery {
-    token: Option<String>,
-    #[serde(default)]
-    session_id: Option<String>,
-}
-
-async fn session_members_by_query(
-    State(d): State<Shared>,
-    Query(q): Query<SessionMembersQuery>,
-) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
-    let Some(session_id) = q.session_id else {
-        return (StatusCode::BAD_REQUEST, "missing session_id parameter").into_response();
-    };
-    match d.store.session_members(&session_id) {
-        Ok(members) => Json(members).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
 }
 
 #[derive(Deserialize)]

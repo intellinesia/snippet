@@ -738,25 +738,6 @@ impl Store {
         })
     }
 
-    /// Tasks whose title or description contains `query`, case-insensitively.
-    pub fn find_tasks(
-        &self,
-        session_id: Option<&str>,
-        query: &str,
-    ) -> Result<Vec<Task>, StoreError> {
-        let needle = format!("%{}%", query.to_lowercase());
-        self.with_connection(|conn| {
-            let mut stmt = conn.prepare(&format!(
-                "SELECT {TASK_COLUMNS} FROM tasks
-                 WHERE (?1 IS NULL OR session_id = ?1)
-                   AND (lower(title) LIKE ?2 OR lower(description) LIKE ?2)
-                 ORDER BY priority DESC, created_at, id"
-            ))?;
-            let rows = stmt.query_map(params![session_id, needle], task_from_row)?;
-            rows.collect()
-        })
-    }
-
     /// Read-modify-write one task in a single transaction, stamping `updated_at`.
     ///
     /// This is the ONE mutation path. The dispatcher, the REST handlers and the
@@ -1454,22 +1435,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_task_agent_status(
-        &self,
-        task_id: &str,
-        agent_id: &str,
-        status: &str,
-    ) -> Result<bool, StoreError> {
-        self.with_connection(|conn| {
-            let count = conn.execute(
-                "UPDATE task_agents SET status = ?3
-                 WHERE task_id = ?1 AND agent_id = ?2 AND removed_at IS NULL",
-                params![task_id, agent_id, status],
-            )?;
-            Ok(count > 0)
-        })
-    }
-
     /// Transfer the active work session lease on a task from one agent to another.
     /// Exactly one agent is "active" on a session at a time; others are "waiting".
     pub fn transfer_task_session_lease(
@@ -1661,17 +1626,6 @@ impl Store {
                 "UPDATE tasks SET last_progress_at = ?2
                  WHERE session_id = ?1 AND reporting_session = ?1 AND status = 'in_progress'",
                 params![session_id, now],
-            )?;
-            Ok(())
-        })
-    }
-
-    /// Record activity in a task's room, by the thread that is its room.
-    pub fn touch_thread_progress(&self, thread_id: &str, now: &str) -> Result<(), StoreError> {
-        self.with_connection(|conn| {
-            conn.execute(
-                "UPDATE tasks SET last_progress_at = ?2 WHERE thread_id = ?1 AND status = 'in_progress'",
-                params![thread_id, now],
             )?;
             Ok(())
         })

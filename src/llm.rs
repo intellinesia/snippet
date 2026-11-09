@@ -212,13 +212,6 @@ impl StreamBuffer {
         }
     }
 
-    /// Mark the current response text as a user-visible final answer.
-    pub fn set_text_visible(handle: &StreamHandle, visible: bool) {
-        if let Ok(mut buf) = handle.lock() {
-            buf.text_visible = visible;
-        }
-    }
-
     pub fn snapshot(handle: &StreamHandle) -> String {
         handle
             .lock()
@@ -235,39 +228,6 @@ impl StreamBuffer {
             .lock()
             .map(|buf| buf.thinking.clone())
             .unwrap_or_default()
-    }
-
-    pub fn snapshot_thinking_tail(handle: &StreamHandle, max_chars: usize) -> String {
-        handle
-            .lock()
-            .map(|buf| thinking_tail(&buf.thinking, max_chars))
-            .unwrap_or_default()
-    }
-}
-
-fn thinking_tail(text: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    let Some((start, _)) = text.char_indices().rev().nth(max_chars - 1) else {
-        return text.to_string();
-    };
-    format!("…\n\n{}", &text[start..])
-}
-
-#[cfg(test)]
-mod stream_buffer_tests {
-    use super::thinking_tail;
-
-    #[test]
-    fn thinking_tail_is_bounded_and_unicode_safe() {
-        let text = format!("{}tail", "🙂".repeat(12_000));
-        let tail = thinking_tail(&text, 12_000);
-        assert!(tail.starts_with("…\n\n"));
-        assert_eq!(tail.chars().count(), 12_003);
-        assert!(tail.ends_with("tail"));
-        assert_eq!(thinking_tail("short", 12_000), "short");
-        assert_eq!(thinking_tail("short", 0), "");
     }
 }
 

@@ -625,32 +625,6 @@ pub(super) fn recent_replies(device: &str) -> Vec<String> {
     out
 }
 
-#[derive(Deserialize)]
-pub(crate) struct ActivityReq {
-    device: String,
-    #[serde(default)]
-    seq: Option<i64>,
-    #[serde(default)]
-    skip: bool,
-}
-
-pub(crate) async fn activity(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
-    Json(req): Json<ActivityReq>,
-) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
-    if lease_holder().is_some_and(|(h, _)| h == req.device) {
-        match (req.skip, req.seq) {
-            (true, Some(seq)) if seq > 0 => super::ambient_router::submit(&d, &req.device, super::ambient_router::Msg::Skip(seq)),
-            _ => super::ambient_router::submit(&d, &req.device, super::ambient_router::Msg::Activity(req.seq)),
-        }
-    }
-    Json(serde_json::json!({"ok": true})).into_response()
-}
-
 pub(super) async fn record_heard(d: &Shared, device: &str, e: super::listener::Event) {
     let started_at = chrono::DateTime::from_timestamp_millis((e.started * 1000.0) as i64)
         .unwrap_or_else(chrono::Utc::now)
@@ -950,28 +924,6 @@ pub(crate) async fn stats(State(d): State<Shared>, Query(a): Query<Auth>) -> Res
     }
 }
 
-
-pub(crate) async fn end_conversation(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
-    crate::ambient::end_conversation();
-    Json(settings_view(&d)).into_response()
-}
-
-pub(crate) async fn turn_audio(
-    State(d): State<Shared>,
-    axum::extract::Path(id): axum::extract::Path<i64>,
-    Query(a): Query<Auth>,
-) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
-    match tokio::fs::read(crate::tts::audio_dir().join(format!("{id}.wav"))).await {
-        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "audio/wav")], bytes).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "no audio for this turn").into_response(),
-    }
-}
 
 fn has_key(k: &Option<String>) -> bool {
     k.as_deref().is_some_and(|k| !k.trim().is_empty())

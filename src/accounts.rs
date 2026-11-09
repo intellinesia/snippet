@@ -268,12 +268,6 @@ pub fn set_label(provider: &str, id: &str, label: &str) {
     });
 }
 
-pub fn clear_limit(provider: &str, id: &str) {
-    edit(provider, |pool| {
-        pool.limited.remove(id);
-    });
-}
-
 pub fn reset_hint(body: &str) -> Option<i64> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     let error = value.get("error").unwrap_or(&value);

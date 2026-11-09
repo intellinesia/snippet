@@ -102,14 +102,6 @@ pub fn note_spoke() {
     SPOKE_GEN.store(GENERATION.load(Ordering::Relaxed), Ordering::Relaxed);
 }
 
-pub fn spoke_since(generation: u64) -> bool {
-    SPOKE_GEN.load(Ordering::Relaxed) >= generation
-}
-
-pub fn cancel_all_speech(reason: &str) {
-    crate::speech::cancel_all(reason);
-}
-
 pub fn hold(secs: u64) {
     if let Some(c) = CONVERSATION.lock().unwrap().as_mut() {
         c.hold_until = Some(Instant::now() + Duration::from_secs(secs));
