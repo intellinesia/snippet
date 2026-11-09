@@ -250,6 +250,8 @@ pub struct ServeSettings {
     pub no_tunnel: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailscale_port: Option<u16>,
 }
 
 /// XDG-style config dir, shared by the CLI and the auto-start service so both
@@ -314,6 +316,7 @@ fn service_args(config_path: &std::path::Path) -> Vec<String> {
 /// serve flags are written to serve.toml (read at runtime); the service itself
 /// just runs `snippet serve --supervised`. launchd on macOS, systemd `--user` on
 /// Linux. Re-running updates serve.toml in place — there is only ever one service.
+#[allow(clippy::too_many_arguments)]
 pub fn install_service(
     host: &str,
     port: u16,
@@ -321,9 +324,13 @@ pub fn install_service(
     no_tunnel: bool,
     public_url: Option<&str>,
     tunnel: Option<&str>,
+    tailscale_port: Option<u16>,
     config_path: &std::path::Path,
 ) -> Result<(), String> {
-    super::resolve_tunnel(tunnel, false, None)?;
+    let saved = ServeSettings::load();
+    let tunnel_kind = tunnel.map(str::to_string).or(saved.tunnel);
+    let tailscale_port = tailscale_port.or(saved.tailscale_port);
+    super::resolve_tunnel(tunnel_kind.as_deref(), false, None, tailscale_port)?;
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     // Persist the settings the supervised daemon will read on boot.
     ServeSettings {
@@ -331,7 +338,8 @@ pub fn install_service(
         port: Some(port),
         public_url: public_url.map(str::to_string),
         no_tunnel,
-        tunnel: tunnel.map(str::to_string).or(ServeSettings::load().tunnel),
+        tunnel: tunnel_kind,
+        tailscale_port,
     }
     .save()?;
     if let Some(t) = token {
@@ -683,6 +691,7 @@ fn install_service_quiet(config_path: &std::path::Path) -> Result<(), String> {
         public_url: settings.public_url.clone(),
         no_tunnel: settings.no_tunnel,
         tunnel: settings.tunnel.clone(),
+        tailscale_port: settings.tailscale_port,
     }
     .save()?;
     let args = service_args(config_path);
