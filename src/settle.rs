@@ -271,22 +271,18 @@ mod tests {
     }
 
     #[test]
-    fn migration_adds_settled_at_to_an_existing_database() {
+    fn settle_and_keep_awake_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("old.db");
-        {
-            let conn = rusqlite::Connection::open(&path).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE sessions (id TEXT PRIMARY KEY, workspace_key TEXT NOT NULL, workspace TEXT NOT NULL,
-                  title TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-                  state_json TEXT NOT NULL DEFAULT '{}', last_active INTEGER, profile TEXT,
-                  role TEXT NOT NULL DEFAULT 'standard', agent_id TEXT);
-                 INSERT INTO sessions (id, workspace_key, workspace, status, created_at, updated_at)
-                  VALUES ('legacy', 'k', '/w', 'idle', 'a', 'b');",
+        let path = dir.path().join("fresh.db");
+        let db = Store::open(&path).unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions (id, workspace_key, workspace, status, created_at, updated_at)
+                 VALUES ('legacy', 'k', '/w', 'idle', 'a', 'b')",
+                [],
             )
             .unwrap();
-        }
-        let db = Store::open(&path).unwrap();
         let row = db.get_session_row("legacy").unwrap().unwrap();
         assert_eq!(row.settled_at, None);
         assert!(db.set_session_settled("legacy", Some(5)).unwrap());

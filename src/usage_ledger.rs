@@ -23,9 +23,11 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             completion_tokens INTEGER NOT NULL,
             cache_read_tokens INTEGER NOT NULL,
             cache_creation_tokens INTEGER NOT NULL,
-            total_tokens INTEGER NOT NULL
+            total_tokens INTEGER NOT NULL,
+            purpose TEXT NOT NULL DEFAULT 'turn'
         );
         CREATE INDEX IF NOT EXISTS idx_usage_ledger_at ON usage_ledger(at);
+        CREATE INDEX IF NOT EXISTS idx_usage_ledger_session ON usage_ledger(session_id, at);
         CREATE TABLE IF NOT EXISTS usage_rollup (
             bucket INTEGER NOT NULL,
             provider TEXT NOT NULL,
@@ -44,14 +46,6 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             session_id TEXT NOT NULL,
             PRIMARY KEY (bucket, provider, session_id)
         );",
-    )?;
-    if conn.prepare("SELECT purpose FROM usage_ledger LIMIT 0").is_err() {
-        conn.execute_batch(
-            "ALTER TABLE usage_ledger ADD COLUMN purpose TEXT NOT NULL DEFAULT 'turn';",
-        )?;
-    }
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_usage_ledger_session ON usage_ledger(session_id, at);",
     )?;
     Ok(())
 }
@@ -425,21 +419,4 @@ mod tests {
         assert_eq!(spend[0]["cache_read_tokens"], 49_000);
     }
 
-    #[test]
-    fn an_old_ledger_gains_the_purpose_column() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE usage_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
-             session_id TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
-             prompt_tokens INTEGER NOT NULL, completion_tokens INTEGER NOT NULL,
-             cache_read_tokens INTEGER NOT NULL, cache_creation_tokens INTEGER NOT NULL,
-             total_tokens INTEGER NOT NULL);
-             INSERT INTO usage_ledger VALUES (1, 10, 's', 'p', 'm', 1, 1, 0, 0, 2);",
-        )
-        .unwrap();
-        ensure_schema(&conn).unwrap();
-        ensure_schema(&conn).unwrap();
-        let purpose: String = conn.query_row("SELECT purpose FROM usage_ledger", [], |r| r.get(0)).unwrap();
-        assert_eq!(purpose, PURPOSE_TURN);
-    }
 }

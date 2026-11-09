@@ -6,8 +6,7 @@
 //! fact about its subsystem, and centralising the SQL there made the store look
 //! like it was the coordination plane's private database.
 //!
-//! Additive only: every statement is `IF NOT EXISTS`, so calling this against an
-//! existing database is a no-op for tables that already exist.
+//! Every statement is `IF NOT EXISTS`, so opening an existing database is a no-op.
 
 use rusqlite::Connection;
 
@@ -280,81 +279,15 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              summary TEXT NOT NULL,
              -- Links a dispatch to its later report.
              correlation_id TEXT,
-             created_at TEXT NOT NULL
+             created_at TEXT NOT NULL,
+             folder TEXT
          );
          CREATE INDEX IF NOT EXISTS agent_board_agent_created
              ON agent_board(agent_id, created_at DESC);
          CREATE INDEX IF NOT EXISTS agent_board_agent_workspace
              ON agent_board(agent_id, workspace);
+         CREATE INDEX IF NOT EXISTS tasks_goal ON tasks(goal_id);
+         CREATE INDEX IF NOT EXISTS task_agents_session ON task_agents(work_session_id);
 "#,
-    )?;
-    add_missing_columns(connection)?;
-    let board_columns: Vec<String> = {
-        let mut stmt = connection.prepare("PRAGMA table_info(agent_board)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        rows.collect::<Result<_, _>>()?
-    };
-    if !board_columns.iter().any(|column| column == "folder") {
-        connection.execute("ALTER TABLE agent_board ADD COLUMN folder TEXT", [])?;
-    }
-    let delivery_columns: Vec<String> = {
-        let mut stmt = connection.prepare("PRAGMA table_info(message_deliveries)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        rows.collect::<Result<_, _>>()?
-    };
-    if !delivery_columns.iter().any(|column| column == "retry_at") {
-        connection.execute("ALTER TABLE message_deliveries ADD COLUMN retry_at TEXT", [])?;
-    }
-    Ok(())
-}
-
-/// Add columns that a database created by an earlier build will not have.
-///
-/// `CREATE TABLE IF NOT EXISTS` is a no-op on a table that already exists, so a
-/// new column in the DDL reaches fresh databases only. Without this, the first
-/// write naming `tasks.profile` fails on every existing install.
-fn add_missing_columns(connection: &Connection) -> Result<(), rusqlite::Error> {
-    let existing: Vec<String> = {
-        let mut stmt = connection.prepare("PRAGMA table_info(tasks)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        rows.collect::<Result<_, _>>()?
-    };
-    if !existing.iter().any(|column| column == "profile") {
-        connection.execute("ALTER TABLE tasks ADD COLUMN profile TEXT", [])?;
-    }
-    if !existing.iter().any(|column| column == "plan") {
-        connection.execute("ALTER TABLE tasks ADD COLUMN plan TEXT NOT NULL DEFAULT ''", [])?;
-    }
-    if !existing.iter().any(|column| column == "work_plan_json") {
-        connection.execute("ALTER TABLE tasks ADD COLUMN work_plan_json TEXT NOT NULL DEFAULT '[]'", [])?;
-    }
-    if !existing.iter().any(|column| column == "superseded_by") {
-        connection.execute("ALTER TABLE tasks ADD COLUMN superseded_by TEXT", [])?;
-    }
-    if !existing.iter().any(|column| column == "goal_id") {
-        connection.execute("ALTER TABLE tasks ADD COLUMN goal_id TEXT", [])?;
-    }
-    if !existing.iter().any(|column| column == "last_progress_at") {
-        connection.execute("ALTER TABLE tasks ADD COLUMN last_progress_at TEXT", [])?;
-    }
-    if !existing.iter().any(|column| column == "expected_minutes") {
-        connection.execute("ALTER TABLE tasks ADD COLUMN expected_minutes INTEGER", [])?;
-    }
-    connection.execute("CREATE INDEX IF NOT EXISTS tasks_goal ON tasks(goal_id)", [])?;
-    connection.execute("CREATE INDEX IF NOT EXISTS task_agents_session ON task_agents(work_session_id)", [])?;
-    let task_agent_columns: Vec<String> = {
-        let mut stmt = connection.prepare("PRAGMA table_info(task_agents)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        rows.collect::<Result<_, _>>()?
-    };
-    for (name, declaration) in [
-        ("work_session_id", "TEXT"),
-        ("scope", "TEXT NOT NULL DEFAULT ''"),
-        ("status", "TEXT NOT NULL DEFAULT 'pending'"),
-    ] {
-        if !task_agent_columns.iter().any(|column| column == name) {
-            connection.execute(&format!("ALTER TABLE task_agents ADD COLUMN {name} {declaration}"), [])?;
-        }
-    }
-    Ok(())
+    )
 }

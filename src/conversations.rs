@@ -25,7 +25,7 @@ use crate::store::{Store, StoreError};
 /// is what stops the store from reading like the coordination plane's private
 /// database, which is exactly how the naming drifted.
 ///
-/// Additive only — every statement is `IF NOT EXISTS`.
+/// Every statement is `IF NOT EXISTS`.
 pub fn ensure_schema(connection: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     connection.execute_batch(
         r#"CREATE TABLE IF NOT EXISTS sessions (
@@ -67,8 +67,11 @@ pub fn ensure_schema(connection: &rusqlite::Connection) -> Result<(), rusqlite::
              -- JSON {files, added, removed} of the last turn that changed files, or NULL.
              last_changes TEXT,
              -- JSON {files, added, removed} summed over every turn since the session began.
-             total_changes TEXT
+             total_changes TEXT,
+             -- Fresh token while the session is stopped idle; cleared by user input.
+             stop_identity TEXT
          );
+         CREATE UNIQUE INDEX IF NOT EXISTS sessions_legacy_id ON sessions(legacy_id);
          CREATE INDEX IF NOT EXISTS sessions_workspace
              ON sessions(workspace_key, updated_at DESC);
 
@@ -102,7 +105,6 @@ pub fn ensure_schema(connection: &rusqlite::Connection) -> Result<(), rusqlite::
              PRIMARY KEY (session_id, nonce)
          );"#,
     )?;
-    ensure_session_id_columns(connection)?;
     connection.execute_batch(
         r#"CREATE TRIGGER IF NOT EXISTS session_stop_insert AFTER INSERT ON sessions
              WHEN NEW.status = 'idle'
@@ -116,51 +118,6 @@ pub fn ensure_schema(connection: &rusqlite::Connection) -> Result<(), rusqlite::
              BEGIN UPDATE sessions SET stop_identity = NULL WHERE id = NEW.session_id; END;"#,
     )?;
     rewrite_legacy_session_ids(connection)?;
-    Ok(())
-}
-
-/// Add `legacy_id` / `kind` to a database created before ids were opaque.
-///
-/// `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so
-/// the columns have to be added explicitly — otherwise a real database would
-/// keep the old shape and every insert would fail on the missing column.
-fn ensure_session_id_columns(connection: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
-    let existing: Vec<String> = {
-        let mut stmt = connection.prepare("PRAGMA table_info(sessions)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        rows.collect::<Result<_, _>>()?
-    };
-    if !existing.iter().any(|c| c == "stop_identity") {
-        connection.execute("ALTER TABLE sessions ADD COLUMN stop_identity TEXT", [])?;
-    }
-    if !existing.iter().any(|c| c == "legacy_id") {
-        connection.execute("ALTER TABLE sessions ADD COLUMN legacy_id TEXT", [])?;
-    }
-    if !existing.iter().any(|c| c == "settled_at") {
-        connection.execute("ALTER TABLE sessions ADD COLUMN settled_at INTEGER", [])?;
-    }
-    if !existing.iter().any(|c| c == "total_changes") {
-        connection.execute("ALTER TABLE sessions ADD COLUMN total_changes TEXT", [])?;
-    }
-    if !existing.iter().any(|c| c == "last_changes") {
-        connection.execute("ALTER TABLE sessions ADD COLUMN last_changes TEXT", [])?;
-    }
-    if !existing.iter().any(|c| c == "keep_awake") {
-        connection.execute(
-            "ALTER TABLE sessions ADD COLUMN keep_awake INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
-    }
-    if !existing.iter().any(|c| c == "kind") {
-        connection.execute(
-            "ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'conversation'",
-            [],
-        )?;
-    }
-    connection.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS sessions_legacy_id ON sessions(legacy_id)",
-        [],
-    )?;
     Ok(())
 }
 

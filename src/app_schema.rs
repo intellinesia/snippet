@@ -9,8 +9,7 @@
 //! that module describes the agent control plane, this one the app's own
 //! bookkeeping. `store::migrate` runs both.
 //!
-//! Additive only: every statement is `IF NOT EXISTS`, so calling this against an
-//! existing database is a no-op for tables that already exist.
+//! Every statement is `IF NOT EXISTS`, so opening an existing database is a no-op.
 
 use rusqlite::Connection;
 
@@ -57,7 +56,9 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              last_error TEXT,
              queued INTEGER NOT NULL,
              created_at INTEGER NOT NULL,
-             updated_at INTEGER NOT NULL
+             updated_at INTEGER NOT NULL,
+             wake_json TEXT,
+             last_result TEXT
          );
 
          -- Durable notification feed, shared by `/notifications` and its replay alias.
@@ -93,7 +94,23 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              status TEXT NOT NULL,
              text TEXT NOT NULL DEFAULT '',
              error TEXT,
-             created_at INTEGER NOT NULL
+             created_at INTEGER NOT NULL,
+             verdict TEXT,
+             addressed REAL,
+             judge TEXT,
+             intent TEXT,
+             kept INTEGER NOT NULL DEFAULT 1,
+             seq INTEGER,
+             continued INTEGER NOT NULL DEFAULT 0,
+             during_playback INTEGER NOT NULL DEFAULT 0,
+             media INTEGER NOT NULL DEFAULT 0,
+             routed INTEGER NOT NULL DEFAULT 1,
+             delivered INTEGER NOT NULL DEFAULT 0,
+             turn_key TEXT,
+             user_voice REAL,
+             other_party REAL,
+             played REAL,
+             speaker TEXT
          );
          CREATE INDEX IF NOT EXISTS ambient_events_started
              ON ambient_events(started_at);
@@ -110,7 +127,12 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              text TEXT NOT NULL,
              device TEXT NOT NULL DEFAULT '',
              created_at INTEGER NOT NULL,
-             played_at INTEGER
+             played_at INTEGER,
+             status TEXT NOT NULL DEFAULT 'played',
+             heard_text TEXT,
+             chunk_count INTEGER NOT NULL DEFAULT 0,
+             ended INTEGER NOT NULL DEFAULT 0,
+             played_through INTEGER NOT NULL DEFAULT -1
          );
          CREATE INDEX IF NOT EXISTS ambient_turns_device
              ON ambient_turns(device, id);
@@ -140,56 +162,7 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              text TEXT NOT NULL,
              PRIMARY KEY (turn_id, seq)
          );
-"#,
-    )?;
-    let have: Vec<String> = {
-        let mut stmt = connection.prepare("PRAGMA table_info(ambient_events)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        rows.collect::<Result<_, _>>()?
-    };
-    for (name, ddl) in [
-        ("verdict", "ALTER TABLE ambient_events ADD COLUMN verdict TEXT"),
-        ("addressed", "ALTER TABLE ambient_events ADD COLUMN addressed REAL"),
-        ("judge", "ALTER TABLE ambient_events ADD COLUMN judge TEXT"),
-        ("intent", "ALTER TABLE ambient_events ADD COLUMN intent TEXT"),
-        ("kept", "ALTER TABLE ambient_events ADD COLUMN kept INTEGER NOT NULL DEFAULT 1"),
-        ("seq", "ALTER TABLE ambient_events ADD COLUMN seq INTEGER"),
-        ("continued", "ALTER TABLE ambient_events ADD COLUMN continued INTEGER NOT NULL DEFAULT 0"),
-        ("during_playback", "ALTER TABLE ambient_events ADD COLUMN during_playback INTEGER NOT NULL DEFAULT 0"),
-        ("media", "ALTER TABLE ambient_events ADD COLUMN media INTEGER NOT NULL DEFAULT 0"),
-        ("routed", "ALTER TABLE ambient_events ADD COLUMN routed INTEGER NOT NULL DEFAULT 1"),
-        ("delivered", "ALTER TABLE ambient_events ADD COLUMN delivered INTEGER NOT NULL DEFAULT 0"),
-        ("turn_key", "ALTER TABLE ambient_events ADD COLUMN turn_key TEXT"),
-        ("user_voice", "ALTER TABLE ambient_events ADD COLUMN user_voice REAL"),
-        ("other_party", "ALTER TABLE ambient_events ADD COLUMN other_party REAL"),
-        ("played", "ALTER TABLE ambient_events ADD COLUMN played REAL"),
-        ("speaker", "ALTER TABLE ambient_events ADD COLUMN speaker TEXT"),
-    ] {
-        if !have.iter().any(|c| c == name) {
-            connection.execute(ddl, [])?;
-        }
-    }
-    connection.execute("DROP TABLE IF EXISTS speakers", [])?;
-    for column in ["speakers", "speaker_summary"] {
-        if have.iter().any(|c| c == column) {
-            connection.execute(&format!("ALTER TABLE ambient_events DROP COLUMN {column}"), [])?;
-        }
-    }
-    let have_jobs: Vec<String> = {
-        let mut stmt = connection.prepare("PRAGMA table_info(recurring_jobs)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        rows.collect::<Result<_, _>>()?
-    };
-    for (name, ddl) in [
-        ("wake_json", "ALTER TABLE recurring_jobs ADD COLUMN wake_json TEXT"),
-        ("last_result", "ALTER TABLE recurring_jobs ADD COLUMN last_result TEXT"),
-    ] {
-        if !have_jobs.iter().any(|c| c == name) {
-            connection.execute(ddl, [])?;
-        }
-    }
-    connection.execute_batch(
-        "CREATE TABLE IF NOT EXISTS recurring_runs (
+         CREATE TABLE IF NOT EXISTS recurring_runs (
              id INTEGER PRIMARY KEY AUTOINCREMENT,
              job_id TEXT NOT NULL,
              owner TEXT,
@@ -206,34 +179,7 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              owner TEXT PRIMARY KEY NOT NULL,
              entry_json TEXT NOT NULL,
              updated_at INTEGER NOT NULL
-         );",
-    )?;
-    let have_turns: Vec<String> = {
-        let mut stmt = connection.prepare("PRAGMA table_info(ambient_turns)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        rows.collect::<Result<_, _>>()?
-    };
-    for (name, ddl) in [
-        ("status", "ALTER TABLE ambient_turns ADD COLUMN status TEXT NOT NULL DEFAULT 'played'"),
-        ("heard_text", "ALTER TABLE ambient_turns ADD COLUMN heard_text TEXT"),
-        ("chunk_count", "ALTER TABLE ambient_turns ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0"),
-        ("ended", "ALTER TABLE ambient_turns ADD COLUMN ended INTEGER NOT NULL DEFAULT 0"),
-        ("played_through", "ALTER TABLE ambient_turns ADD COLUMN played_through INTEGER NOT NULL DEFAULT -1"),
-    ] {
-        if !have_turns.iter().any(|c| c == name) {
-            connection.execute(ddl, [])?;
-        }
-    }
-    let legacy: bool = connection.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mission_duty')",
-        [],
-        |row| row.get(0),
-    )?;
-    if legacy {
-        connection.execute_batch(
-            "INSERT OR IGNORE INTO mission_autonomy (id, state_json) SELECT id, state_json FROM mission_duty;
-             DROP TABLE mission_duty;",
-        )?;
-    }
-    Ok(())
+         );
+"#,
+    )
 }
