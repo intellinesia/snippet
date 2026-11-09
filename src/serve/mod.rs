@@ -794,11 +794,11 @@ impl Daemon {
 /// How the daemon is reached from outside the box.
 pub enum Tunnel {
     /// Use whatever is already set up: Tailscale, then cloudflared, else local only.
-    Auto,
+    Auto { ts_port: u16 },
     /// A cloudflared quick tunnel (random public HTTPS URL, no account).
     Cloudflare,
     /// `tailscale serve` (tailnet only) or `tailscale funnel` (public).
-    Tailscale { funnel: bool },
+    Tailscale { funnel: bool, port: u16 },
     /// Bring-your-own: just advertise this public URL.
     Url(String),
     /// Local only (no public URL).
@@ -811,6 +811,7 @@ pub fn resolve_tunnel(
     kind: Option<&str>,
     no_tunnel: bool,
     public_url: Option<String>,
+    tailscale_port: Option<u16>,
 ) -> Result<Tunnel, String> {
     if no_tunnel {
         return Ok(Tunnel::None);
@@ -818,11 +819,27 @@ pub fn resolve_tunnel(
     if let Some(u) = public_url {
         return Ok(Tunnel::Url(u));
     }
-    match kind.map(|k| k.trim().to_ascii_lowercase()).as_deref() {
-        None | Some("") | Some("auto") => Ok(Tunnel::Auto),
+    let port = tailscale_port.unwrap_or(tunnel::DEFAULT_TAILSCALE_PORT);
+    let kind = kind.map(|k| k.trim().to_ascii_lowercase());
+    let uses_tailscale = matches!(
+        kind.as_deref(),
+        None | Some("" | "auto" | "tailscale" | "ts" | "funnel" | "tailscale-funnel")
+    );
+    if port == 0 && uses_tailscale {
+        return Err("--tailscale-port must be between 1 and 65535".into());
+    }
+    match kind.as_deref() {
+        None | Some("") | Some("auto") => Ok(Tunnel::Auto { ts_port: port }),
         Some("cloudflare" | "cloudflared" | "cf") => Ok(Tunnel::Cloudflare),
-        Some("tailscale" | "ts") => Ok(Tunnel::Tailscale { funnel: false }),
-        Some("funnel" | "tailscale-funnel") => Ok(Tunnel::Tailscale { funnel: true }),
+        Some("tailscale" | "ts") => Ok(Tunnel::Tailscale { funnel: false, port }),
+        Some("funnel" | "tailscale-funnel") => {
+            if !tunnel::FUNNEL_PORTS.contains(&port) {
+                return Err(format!(
+                    "Tailscale Funnel only serves on ports 443, 8443 and 10000, not {port}"
+                ));
+            }
+            Ok(Tunnel::Tailscale { funnel: true, port })
+        }
         Some("none" | "local") => Ok(Tunnel::None),
         Some(other) => Err(format!("unknown tunnel `{other}` (use one of: {TUNNEL_KINDS})")),
     }

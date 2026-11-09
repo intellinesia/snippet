@@ -44,6 +44,11 @@ enum Command {
         /// Snippet never installs these; set one up yourself.
         #[arg(long)]
         tunnel: Option<String>,
+        /// HTTPS port Snippet claims on this machine's Tailscale name (default 8443).
+        /// Other services can use the remaining ports, or other paths on this one.
+        /// Funnel only allows 443, 8443 or 10000.
+        #[arg(long)]
+        tailscale_port: Option<u16>,
         /// Bind address. Use 0.0.0.0 to expose on the box's public IP for a fixed,
         /// tunnel-less URL (pair with --public-url http://<ip>:<port>). Default localhost.
         #[arg(long, default_value = "127.0.0.1")]
@@ -676,6 +681,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             no_tunnel,
             public_url,
             tunnel,
+            tailscale_port,
             host,
             stop,
             status,
@@ -705,6 +711,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     no_tunnel,
                     public_url.as_deref(),
                     tunnel.as_deref(),
+                    tailscale_port,
                     &config_path,
                 )
                 .map_err(Into::into);
@@ -722,6 +729,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tunnel.or(s.tunnel).as_deref(),
                 no_tunnel,
                 public_url.clone(),
+                tailscale_port.or(s.tailscale_port),
             )?;
             serve::write_own_pidfile();
             let supervised = true; // treat all foreground as supervised
