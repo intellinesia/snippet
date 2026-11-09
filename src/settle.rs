@@ -35,7 +35,7 @@ pub fn cache_state(idle: i64, ttl: i64) -> &'static str {
 pub fn cache_ttl_secs(provider: &str, one_hour: bool) -> i64 {
     match provider {
         "anthropic" | "anthropic-compatible" if one_hour => 3600,
-        "claude-code" => 3600,
+        "claude-code" | "antigravity" => 3600,
         "openai" | "chatgpt" => 86_400,
         "gemini" => 1800,
         "xai" | "grok" | "openrouter" | "openai-compatible" => 3600,
@@ -167,6 +167,7 @@ mod tests {
         assert_eq!(cache_state(300, 300), "cold");
         assert_eq!(cache_ttl_secs("anthropic", true), 3600);
         assert_eq!(cache_ttl_secs("claude-code", false), 3600);
+        assert_eq!(cache_ttl_secs("antigravity", false), 3600);
         assert_eq!(parse_ttl("24h"), Some(86_400));
         assert_eq!(parse_ttl("5m"), Some(300));
         assert_eq!(parse_ttl("1h "), Some(3600));

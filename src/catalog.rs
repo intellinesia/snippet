@@ -59,6 +59,9 @@ pub async fn fetch_models(cfg: &InferenceProfileConfig) -> Result<Vec<CatalogMod
         "chatgpt" | "claude-code" | "antigravity" | "gemini" | "openai" | "xai" | "grok"
     ) {
         for model in &mut models {
+            if cfg.provider == "claude-code" && model.display_name.is_some() {
+                continue;
+            }
             let spec = crate::reasoning::spec(&cfg.provider, &model.id);
             model.reasoning = Some(spec.control != crate::reasoning::Control::None);
             model.efforts = Some(spec.options.iter().map(|o| o.to_string()).collect());
@@ -100,7 +103,7 @@ async fn fetch_provider_models(cfg: &InferenceProfileConfig) -> Result<Vec<Catal
         // Codex subscription backend has no models endpoint — offer the
         // known slugs so the editor picker is not empty.
         "chatgpt" => Ok(chatgpt_catalog()),
-        "claude-code" => Ok(claude_code_catalog()),
+        "claude-code" => Ok(claude_code_live_catalog().await.unwrap_or_else(|_| claude_code_catalog())),
         "antigravity" => Ok(crate::antigravity::models()
             .await?
             .into_iter()
@@ -115,6 +118,80 @@ async fn fetch_provider_models(cfg: &InferenceProfileConfig) -> Result<Vec<Catal
             .collect()),
         other => Err(format!("no model catalog for provider `{other}`")),
     }
+}
+
+type CachedModels = (std::time::Instant, Option<String>, Vec<CatalogModel>);
+static CLAUDE_CODE_MODELS: std::sync::Mutex<Option<CachedModels>> = std::sync::Mutex::new(None);
+static CLAUDE_CODE_FETCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn cached_claude_code_models(account: &Option<String>) -> Option<Result<Vec<CatalogModel>, String>> {
+    let guard = CLAUDE_CODE_MODELS.lock().unwrap();
+    let (at, acct, models) = guard.as_ref()?;
+    if acct != account {
+        return None;
+    }
+    // An empty entry is a failed lookup, kept briefly so the fallback answers at once.
+    let ttl = if models.is_empty() { 60 } else { 600 };
+    (at.elapsed() < std::time::Duration::from_secs(ttl)).then(|| {
+        if models.is_empty() {
+            Err("Claude Code model lookup failed recently".to_string())
+        } else {
+            Ok(models.clone())
+        }
+    })
+}
+
+async fn claude_code_live_catalog() -> Result<Vec<CatalogModel>, String> {
+    let account = crate::accounts::active("claude-code");
+    if let Some(hit) = cached_claude_code_models(&account) {
+        return hit;
+    }
+    let _one_fetch = CLAUDE_CODE_FETCH.lock().await;
+    if let Some(hit) = cached_claude_code_models(&account) {
+        return hit;
+    }
+    let fetched = crate::harness::claude_supported_models()
+        .await
+        .map(|(_, raw)| parse_claude_code_models(&raw));
+    let models = match &fetched {
+        Ok(m) => m.clone(),
+        Err(_) => Vec::new(),
+    };
+    *CLAUDE_CODE_MODELS.lock().unwrap() = Some((std::time::Instant::now(), account, models.clone()));
+    match fetched {
+        Err(e) => Err(e),
+        Ok(_) if models.is_empty() => Err("Claude Code listed no models".into()),
+        Ok(_) => Ok(models),
+    }
+}
+
+fn parse_claude_code_models(raw: &[Value]) -> Vec<CatalogModel> {
+    raw.iter()
+        .filter_map(|m| {
+            let id = m.get("value").and_then(Value::as_str)?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let name = m.get("displayName").and_then(Value::as_str).unwrap_or(id);
+            let display_name = match m.get("description").and_then(Value::as_str) {
+                Some(d) if !d.is_empty() => format!("{name} · {d}"),
+                _ => name.to_string(),
+            };
+            let efforts = m
+                .get("supportedEffortLevels")
+                .and_then(Value::as_array)
+                .map(|l| l.iter().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>())
+                .unwrap_or_default();
+            Some(CatalogModel {
+                id: id.to_string(),
+                display_name: Some(display_name),
+                context_window: None,
+                reasoning: Some(!efforts.is_empty() || m.get("supportsAdaptiveThinking").and_then(Value::as_bool) == Some(true)),
+                efforts: Some(efforts),
+                supports_images: Some(true),
+            })
+        })
+        .collect()
 }
 
 fn claude_code_catalog() -> Vec<CatalogModel> {
@@ -300,4 +377,36 @@ async fn fetch_gemini(cfg: &InferenceProfileConfig) -> Result<Vec<CatalogModel>,
             })
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_code_models_keep_cli_names_and_effort_levels() {
+        let raw: Vec<Value> = serde_json::from_str(
+            r#"[
+              {"value":"default","displayName":"Default (recommended)","description":"Opus 5.5 · Best for everyday, complex tasks","supportedEffortLevels":["low","medium","high","xhigh","max"]},
+              {"value":"claude-opus-4-6","displayName":"Opus 4.6","description":"","supportedEffortLevels":["low","medium","high","max"]},
+              {"value":"claude-haiku-4-5-20251001","displayName":"Haiku 4.5"},
+              {"value":"  ","displayName":"blank"}
+            ]"#,
+        )
+        .unwrap();
+        let models = parse_claude_code_models(&raw);
+        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["default", "claude-opus-4-6", "claude-haiku-4-5-20251001"]);
+        assert_eq!(models[0].display_name.as_deref(), Some("Default (recommended) · Opus 5.5 · Best for everyday, complex tasks"));
+        assert_eq!(models[1].display_name.as_deref(), Some("Opus 4.6"));
+        assert_eq!(models[1].efforts.as_deref().unwrap(), ["low", "medium", "high", "max"]);
+        assert_eq!(models[2].efforts.as_deref(), Some(&[][..]));
+        assert_eq!(models[2].reasoning, Some(false));
+    }
+
+    #[tokio::test]
+    #[ignore = "spawns the local Claude Code CLI"]
+    async fn claude_code_live_catalog_lists_models() {
+        let models = claude_code_live_catalog().await.unwrap();
+        assert!(models.iter().any(|m| m.id == "opus"), "{models:?}");
+    }
 }
