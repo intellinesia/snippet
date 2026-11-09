@@ -827,6 +827,18 @@ pub fn resolve_tunnel(
     }
 }
 
+fn compression() -> tower_http::compression::CompressionLayer<impl tower_http::compression::Predicate> {
+    use tower_http::compression::predicate::{NotForContentType, Predicate, SizeAbove};
+    tower_http::compression::CompressionLayer::new().compress_when(
+        SizeAbove::new(1024)
+            .and(NotForContentType::IMAGES)
+            .and(NotForContentType::SSE)
+            .and(NotForContentType::const_new("audio/"))
+            .and(NotForContentType::const_new("video/"))
+            .and(NotForContentType::const_new("application/zip")),
+    )
+}
+
 /// Run the daemon's HTTP/WS server on `127.0.0.1:port`, bring up the tunnel, and
 /// print a scannable QR + connection string. The token is the app-layer auth gate.
 pub async fn run_serve(
@@ -1064,6 +1076,7 @@ pub async fn run_serve(
         .route("/git/discard", post(git_discard))
         .route("/session/checkpoint-stats", post(checkpoint_stats))
         .route("/git/init", post(git_init))
+        .layer(compression())
         .with_state(daemon);
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
