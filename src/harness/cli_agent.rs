@@ -500,6 +500,52 @@ struct CliProcess {
     account: Option<String>,
 }
 
+/// The CLI's own `/model` list, read from its `initialize` control response; no model call is made.
+pub(crate) async fn claude_supported_models() -> Result<(Option<String>, Vec<Value>), String> {
+    let bin = claude_binary().ok_or("Claude Code isn't installed or isn't on PATH")?;
+    let account = crate::accounts::active("claude-code");
+    let mut cmd = Command::new(bin);
+    cmd.current_dir(std::env::temp_dir())
+        .arg("-p")
+        .args(["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])
+        .args(["--setting-sources", ""])
+        .env("CLAUDE_CODE_ENTRYPOINT", "snippet")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    if let Some(token) = account.as_deref().and_then(claude_account_token) {
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("couldn't start Claude Code: {e}"))?;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let read = async {
+        stdin
+            .write_all(b"{\"type\":\"control_request\",\"request_id\":\"snippet-models\",\"request\":{\"subtype\":\"initialize\"}}\n")
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut lines = BufReader::new(stdout).lines();
+        while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            if v.get("type").and_then(Value::as_str) != Some("control_response") {
+                continue;
+            }
+            let r = &v["response"];
+            if r.get("subtype").and_then(Value::as_str) == Some("error") {
+                return Err(r.get("error").and_then(Value::as_str).unwrap_or("initialize failed").to_string());
+            }
+            return Ok(r["response"]["models"].as_array().cloned().unwrap_or_default());
+        }
+        Err("Claude Code exited without listing its models".to_string())
+    };
+    let models = tokio::time::timeout(std::time::Duration::from_secs(20), read)
+        .await
+        .map_err(|_| "Claude Code took too long to list its models".to_string())??;
+    let _ = child.kill().await;
+    Ok((account, models))
+}
+
 fn claude_account_token(id: &str) -> Option<String> {
     if id == crate::accounts::MAIN {
         return None;
