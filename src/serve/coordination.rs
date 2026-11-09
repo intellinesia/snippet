@@ -92,6 +92,11 @@ pub struct CoordinationTasksQuery {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub view: Option<String>,
+    /// `recent`: most recently updated first, paged by `offset`.
+    #[serde(default)]
+    pub order: Option<String>,
+    #[serde(default)]
+    pub offset: u32,
 }
 
 fn default_limit() -> u32 {
@@ -211,7 +216,13 @@ async fn list_tasks(
         agent_id: q.agent_id.as_deref().filter(|s| !s.trim().is_empty()),
     };
     let summary = q.view.as_deref() == Some("summary");
-    match d.store.list_tasks_page(&filter, after, q.limit.clamp(1, 500)) {
+    let limit = q.limit.clamp(1, 500);
+    let page = if q.order.as_deref() == Some("recent") {
+        d.store.list_tasks_recent(&filter, q.offset, limit)
+    } else {
+        d.store.list_tasks_page(&filter, after, limit)
+    };
+    match page {
         Ok(tasks) if summary => Json(
             tasks
                 .iter()
