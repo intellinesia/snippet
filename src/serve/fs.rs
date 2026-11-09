@@ -17,15 +17,11 @@ struct FsListing {
 
 #[derive(Deserialize)]
 pub(super) struct FsQuery {
-    token: Option<String>,
     path: Option<String>,
 }
 
 // GET /fs?path= — one directory level (lazy folder tree). Defaults to $HOME.
-pub(super) async fn browse_fs(State(d): State<Shared>, Query(q): Query<FsQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+pub(super) async fn browse_fs(Query(q): Query<FsQuery>) -> Response {
     let path = q
         .path
         .filter(|p| !p.is_empty())
@@ -71,10 +67,7 @@ struct FsFiles {
 const FS_FILES_CAP: usize = 20_000;
 
 // GET /fs/files?path= — every file under a workspace, honouring .gitignore.
-pub(super) async fn list_fs_files(State(d): State<Shared>, Query(q): Query<FsQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+pub(super) async fn list_fs_files(Query(q): Query<FsQuery>) -> Response {
     let Some(root) = q.path.filter(|p| !p.is_empty()).map(PathBuf::from) else {
         return (StatusCode::BAD_REQUEST, "path required").into_response();
     };
@@ -164,13 +157,9 @@ pub(super) struct FsDeleteReq {
 // POST /fs/write {path, content, prev_hash?} — atomic write (temp + rename) with
 // optimistic-concurrency conflict detection. Token-gated; UTF-8 text only.
 pub(super) async fn write_fs_file(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<FsWriteReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.path.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "path required").into_response();
     }
@@ -230,13 +219,9 @@ pub(super) async fn write_fs_file(
 
 // POST /fs/mkdir {path} — create a new directory (token-gated).
 pub(super) async fn make_fs_dir(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<FsMkdirReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.path.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "path required").into_response();
     }
@@ -260,13 +245,9 @@ pub(super) async fn make_fs_dir(
 
 // POST /fs/delete {path} — remove a file or directory (recursive). Token-gated.
 pub(super) async fn delete_fs_path(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<FsDeleteReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.path.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "path required").into_response();
     }
@@ -294,13 +275,10 @@ pub(super) async fn delete_fs_path(
 // Content), so the app can stream/seek images, video, and audio — not just
 // download whole files. Token-gated.
 pub(super) async fn download_fs_file(
-    State(d): State<Shared>,
+    
     Query(q): Query<FsQuery>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let Some(path) = q.path.filter(|p| !p.is_empty()).map(PathBuf::from) else {
         return (StatusCode::BAD_REQUEST, "path required").into_response();
     };
@@ -447,10 +425,7 @@ fn parse_byte_range(raw: &str, total: u64) -> Option<(u64, u64)> {
 const MAX_FS_FILE_BYTES: usize = 512 * 1024;
 
 // GET /fs/file?path= — read one text file's contents (for the in-app file viewer).
-pub(super) async fn read_fs_file(State(d): State<Shared>, Query(q): Query<FsQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+pub(super) async fn read_fs_file(Query(q): Query<FsQuery>) -> Response {
     let Some(path) = q.path.filter(|p| !p.is_empty()).map(PathBuf::from) else {
         return (StatusCode::BAD_REQUEST, "path required").into_response();
     };
@@ -501,13 +476,9 @@ pub(super) struct UploadReq {
 // user posts from the app) to a temp dir and return its absolute path, which the
 // agent can then view with `view_image` (or read).
 pub(super) async fn upload_fs_file(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<UploadReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     use base64::Engine;
     let bytes = match base64::engine::general_purpose::STANDARD.decode(req.data_base64.trim()) {
         Ok(b) => b,

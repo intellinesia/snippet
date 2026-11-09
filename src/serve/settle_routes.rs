@@ -225,24 +225,16 @@ fn outcome_response(outcome: SettleOutcome) -> Response {
 // POST /session/settle {session}
 pub(crate) async fn settle_route(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<SettleReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     outcome_response(settle_session(&d, &req.session).await)
 }
 
 // POST /session/unsettle {session}
 pub(crate) async fn unsettle_route(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<SettleReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match unsettle_session(&req.session) {
         Some(s) => Json(serde_json::json!({"ok": true, "session": s})).into_response(),
         None => (StatusCode::NOT_FOUND, "no such session").into_response(),
@@ -264,13 +256,9 @@ pub(crate) fn set_keep_awake(id: &str, on: bool) -> Option<serde_json::Value> {
 
 // POST /session/keep_awake {session, on}
 pub(crate) async fn keep_awake_route(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<KeepAwakeReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match set_keep_awake(&req.session, req.on) {
         Some(s) => Json(serde_json::json!({"ok": true, "session": s})).into_response(),
         None => (StatusCode::NOT_FOUND, "no such session").into_response(),
@@ -284,13 +272,9 @@ pub(crate) struct CacheQuery {
 
 // GET /session/cache?id= — whether the next turn would re-read the history uncached.
 pub(crate) async fn cache_route(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Query(q): Query<CacheQuery>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let Some(store) = crate::session::store_for_sessions() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "no store").into_response();
     };

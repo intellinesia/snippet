@@ -137,12 +137,8 @@ pub(crate) struct RewindReq {
 // notifies a live loop when present so in-memory state matches.
 pub(crate) async fn rewind_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<RewindReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let (sp, workspace) = match load_session_workspace(&req.session) {
         Ok(v) => v,
         Err(resp) => return resp,
@@ -212,13 +208,9 @@ pub(crate) struct ExecReq {
 // POST /session/exec {session, command} — run a shell command in the session's
 // workspace and return its output. Token-gated; runs as the daemon user.
 pub(crate) async fn exec_in_session(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<ExecReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let (_sp, dir) = match load_session_workspace(&req.session) {
         Ok(v) => v,
         Err(resp) => return resp,
@@ -267,13 +259,9 @@ pub(crate) struct BgReq {
 
 // POST /bg {session} — snapshot of the session's background processes.
 pub(crate) async fn bg_list(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<BgReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -283,13 +271,9 @@ pub(crate) async fn bg_list(
 
 // POST /bg/kill {session, id} — terminate one background process.
 pub(crate) async fn bg_kill(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<BgReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -305,13 +289,9 @@ pub(crate) async fn bg_kill(
 
 // POST /bg/log {session, id, tail?} — tail a background process's log.
 pub(crate) async fn bg_log(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<BgReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -380,12 +360,8 @@ pub(crate) struct DeleteReq {
 // session's conversation file.
 pub(crate) async fn delete_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<DeleteReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if !purge_session(&d, &req.session, false).await {
         return (StatusCode::NOT_FOUND, "no such session").into_response();
     }
@@ -436,12 +412,8 @@ pub(crate) struct InterruptReq {
 
 pub(crate) async fn interrupt_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<InterruptReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let Some(sp) = state_path_for_id(&req.session) else {
         return (StatusCode::NOT_FOUND, "no such session").into_response();
     };
@@ -493,12 +465,8 @@ pub(crate) struct RenameReq {
 // state file is edited directly (without reviving the loop).
 pub(crate) async fn rename_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<RenameReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let Some(sp) = state_path_for_id(&req.session) else {
         return (StatusCode::NOT_FOUND, "no such session").into_response();
     };
@@ -532,12 +500,8 @@ pub(crate) struct ForkReq {
 // shared (not snapshotted); only conversation history is forked.
 pub(crate) async fn fork_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<ForkReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let Some(sp) = state_path_for_id(&req.session) else {
         return (StatusCode::NOT_FOUND, "no such session").into_response();
     };
@@ -598,7 +562,6 @@ pub(crate) async fn fork_session(
 
 #[derive(Deserialize)]
 pub(crate) struct AttachQuery {
-    pub(crate) token: Option<String>,
     pub(crate) session: String,
     #[serde(default)]
     pub(crate) compact: Option<String>,
@@ -614,13 +577,9 @@ pub(crate) struct CheckpointStatsReq {
 }
 
 pub(crate) async fn checkpoint_stats(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<CheckpointStatsReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(dir) => dir,
         Err(r) => return r,

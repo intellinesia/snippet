@@ -1,11 +1,5 @@
 use super::*;
 
-#[derive(Deserialize)]
-pub(crate) struct ShellsQuery {
-    pub(crate) token: Option<String>,
-}
-
-
 // A shell belongs to the machine: switching or closing a session must not kill
 // it. `/attach` cannot serve this because it calls `ensure_live`, so a socket
 // with no live session gets a 404. This route carries the same `wire: term`
@@ -16,11 +10,7 @@ pub(crate) struct ShellsQuery {
 pub(crate) async fn shells_ws(
     ws: WebSocketUpgrade,
     State(d): State<Shared>,
-    Query(q): Query<ShellsQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let terms = d.shells.clone();
     ws.on_upgrade(move |socket| handle_shells_ws(socket, terms))
 }
@@ -93,9 +83,6 @@ pub(crate) async fn attach_ws(
     State(d): State<Shared>,
     Query(q): Query<AttachQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let on = |v: &Option<String>| v.as_deref().is_some_and(|v| v != "0" && v != "false");
     let compact = on(&q.compact);
     let stream_delta = on(&q.stream_delta);
@@ -552,12 +539,8 @@ fn apply_term_client(terms: &crate::term::SessionTerms, val: &serde_json::Value)
 // app isn't painting. Durable notifications are emitted as separate full frames.
 pub(crate) async fn events_ws(
     ws: WebSocketUpgrade,
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    State(d): State<Shared>
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     ws.on_upgrade(move |socket| handle_events_ws(socket, d))
 }
 

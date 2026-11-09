@@ -10,7 +10,7 @@ use crate::coordination::types::CoordinationEvent;
 use crate::mission_control;
 use crate::serve::task_summary;
 
-use super::{Auth, LoopInput, Shared, unauthorized, direct};
+use super::{LoopInput, Shared, direct};
 
 pub const COORDINATION_THREAD: &str = "system";
 
@@ -77,7 +77,6 @@ pub fn router() -> Router<Shared> {
 
 #[derive(Deserialize)]
 pub struct CoordinationTasksQuery {
-    pub token: Option<String>,
     #[serde(default)]
     pub after_priority: Option<i64>,
     #[serde(default)]
@@ -170,7 +169,6 @@ pub struct CoordinationTransferLeaseReq {
 
 #[derive(Deserialize)]
 pub struct CoordinationEventsQuery {
-    pub token: Option<String>,
     #[serde(default)]
     pub after_sequence: u64,
     #[serde(default = "default_limit")]
@@ -190,9 +188,6 @@ async fn list_tasks(
     State(d): State<Shared>,
     Query(q): Query<CoordinationTasksQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let after = match (q.after_priority, q.after_created.as_deref(), q.after_id.as_deref()) {
         (Some(priority), Some(created), Some(id)) => Some((priority, created, id)),
         (None, None, None) => None,
@@ -241,12 +236,8 @@ async fn list_tasks(
 
 async fn create_task(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Json(req): Json<CoordinationTaskReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let title = req.title.trim();
     if title.is_empty() {
         return (StatusCode::BAD_REQUEST, "title is required").into_response();
@@ -320,12 +311,8 @@ pub(super) fn task_with_sub_status(store: &crate::store::Store, task: &Task) -> 
 
 async fn get_task(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.get_task(&task_id) {
         Ok(Some(task)) => Json(task_with_sub_status(&d.store, &task)).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "no such task").into_response(),
@@ -339,13 +326,9 @@ async fn get_task(
 
 async fn update_task(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
     Json(req): Json<CoordinationTaskPatch>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let now = chrono::Utc::now().to_rfc3339();
     let title = req.title.as_deref().map(str::trim).filter(|v| !v.is_empty());
     let description = req.description.as_deref().map(str::trim);
@@ -366,13 +349,9 @@ async fn update_task(
 
 async fn set_task_status(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
     Json(req): Json<CoordinationTaskStatusReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let status = match parse_task_status(req.status.trim()) {
         Ok(status) => status,
         Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
@@ -404,12 +383,8 @@ pub(super) fn store_error(error: crate::store::StoreError) -> Response {
 
 async fn task_links(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.task_links(&task_id) {
         Ok(links) => {
             let blockers = d.store.blockers_of(&task_id).unwrap_or_default();
@@ -425,13 +400,9 @@ async fn task_links(
 
 async fn link_tasks(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
     Json(req): Json<CoordinationTaskLinkReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let to_task_id = req.to_task_id.trim();
     if to_task_id.is_empty() {
         return (StatusCode::BAD_REQUEST, "to_task_id is required").into_response();
@@ -465,12 +436,8 @@ async fn link_tasks(
 
 async fn unlink_tasks(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path((task_id, other_id)): Path<(String, String)>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let mut removed = false;
     for (from, to) in [
         (task_id.as_str(), other_id.as_str()),
@@ -499,12 +466,8 @@ async fn unlink_tasks(
 
 async fn task_agents(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.list_task_agents(&task_id) {
         Ok(agents) => Json(agents).into_response(),
         Err(error) => (
@@ -517,12 +480,8 @@ async fn task_agents(
 
 async fn task_turns(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.list_turns(&task_id) {
         Ok(turns) => Json(turns).into_response(),
         Err(error) => (
@@ -535,7 +494,6 @@ async fn task_turns(
 
 #[derive(Deserialize)]
 struct TaskLogQuery {
-    token: Option<String>,
     #[serde(default)]
     before: Option<i64>,
     #[serde(default)]
@@ -547,9 +505,6 @@ async fn task_log(
     Query(q): Query<TaskLogQuery>,
     Path(task_id): Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.task_log(&task_id, q.before, q.limit.unwrap_or(50).clamp(1, 200)) {
         Ok(rows) => Json(rows).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task log: {error}")).into_response(),
@@ -558,13 +513,9 @@ async fn task_log(
 
 async fn add_task_agent(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(task_id): Path<String>,
     Json(req): Json<CoordinationTaskAgentReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let agent_id = req.agent_id.trim();
     if agent_id.is_empty() {
         return (StatusCode::BAD_REQUEST, "agent_id is required").into_response();
@@ -590,12 +541,8 @@ async fn add_task_agent(
 
 async fn remove_task_agent(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path((task_id, agent_id)): Path<(String, String)>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.remove_task_agent(&task_id, &agent_id, &chrono::Utc::now().to_rfc3339()) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, "agent is not on this task").into_response(),
@@ -609,13 +556,9 @@ async fn remove_task_agent(
 
 async fn transfer_task_lease(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path((task_id, agent_id)): Path<(String, String)>,
     Json(req): Json<CoordinationTransferLeaseReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let to_agent = req.to_agent_id.trim();
     if to_agent.is_empty() {
         return (StatusCode::BAD_REQUEST, "to_agent_id is required").into_response();
@@ -695,9 +638,6 @@ async fn thread_events(
     Query(q): Query<CoordinationEventsQuery>,
     Path(thread_id): Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.events_for_thread(&thread_id, q.after_sequence, q.limit.clamp(1, 500)) {
         Ok(events) => Json(events).into_response(),
         Err(error) => (
@@ -710,13 +650,9 @@ async fn thread_events(
 
 pub(super) async fn post_message(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Path(thread_id): Path<String>,
     Json(req): Json<CoordinationMessageReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let body = req.body.trim();
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, "body is required").into_response();

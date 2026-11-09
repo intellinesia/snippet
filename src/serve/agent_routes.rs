@@ -6,7 +6,6 @@ pub(crate) fn default_agent_page_limit() -> u32 {
 
 #[derive(Deserialize)]
 pub(crate) struct AgentsQuery {
-    pub(crate) token: Option<String>,
     #[serde(default)]
     pub(crate) after_name: Option<String>,
     #[serde(default)]
@@ -17,9 +16,6 @@ pub(crate) struct AgentsQuery {
 
 
 pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let after = match (q.after_name.as_deref(), q.after_id.as_deref()) {
         (Some(name), Some(id)) => Some((name, id)),
         // A lone cursor half is a caller error, not a silent full listing.
@@ -106,7 +102,6 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
 
 #[derive(Deserialize)]
 pub(crate) struct AgentBoardQuery {
-    token: Option<String>,
     /// Only rows about this folder.
     #[serde(default)]
     workspace: Option<String>,
@@ -142,9 +137,6 @@ pub(crate) async fn agent_board(
     Query(q): Query<AgentBoardQuery>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let kind = match q.kind.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
         None => None,
         Some(raw) => match crate::coordination::BoardEntryKind::parse(raw) {
@@ -197,7 +189,6 @@ pub(crate) async fn agent_board(
 
 #[derive(Deserialize)]
 pub(crate) struct AgentInboxQuery {
-    token: Option<String>,
     #[serde(default)]
     contains: Option<String>,
     /// `offer`, `message` or `room`.
@@ -216,9 +207,6 @@ pub(crate) async fn agent_inbox(
     Query(q): Query<AgentInboxQuery>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let kind = match q.kind.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
         None => None,
         Some(raw) => match crate::coordination::InboxKind::parse(raw) {
@@ -390,12 +378,8 @@ fn default_agent_status() -> crate::coordination::types::AgentStatus {
 
 pub(crate) async fn create_agent(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Json(req): Json<AgentReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     if req.id.trim().is_empty() || req.handle.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "id and handle are required").into_response();
     }
@@ -479,13 +463,9 @@ pub(crate) struct AgentStatusReq {
 /// paused agent keeps its current lease but takes no new work or wake-ups.
 pub(crate) async fn set_agent_status(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
     Json(req): Json<AgentStatusReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.set_agent_status(&agent_id, &req.status) {
         Ok(true) => match d.store.get_agent(&agent_id) {
             Ok(Some(agent)) => Json(agent).into_response(),
@@ -506,13 +486,9 @@ pub(crate) struct AgentColorReq {
 /// go back to the default.
 pub(crate) async fn set_agent_color(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
     Json(req): Json<AgentColorReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let color = req.color.map(|c| c.trim().to_ascii_uppercase()).filter(|c| !c.is_empty());
     if let Some(c) = &color {
         let hex = c.strip_prefix('#').unwrap_or("");
@@ -539,13 +515,9 @@ pub(crate) const AGENT_SHAPES: [&str; 7] = ["mochi", "bunny", "cat", "bear", "gh
 /// go back to the default.
 pub(crate) async fn set_agent_shape(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
     Json(req): Json<AgentShapeReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let shape = req.shape.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
     if let Some(s) = &shape
         && !AGENT_SHAPES.contains(&s.as_str()) {
@@ -571,13 +543,9 @@ pub(crate) struct AgentNicknameReq {
 /// POST /agents/{id}/nickname — a short name shown instead of the display name, or null to clear it.
 pub(crate) async fn set_agent_nickname(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
     Json(req): Json<AgentNicknameReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let nickname = req.nickname.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
     if nickname.as_deref().is_some_and(|n| n.chars().count() > 40) {
         return (StatusCode::BAD_REQUEST, "nickname is at most 40 characters").into_response();
@@ -599,13 +567,9 @@ pub(crate) struct AgentProfileReq {
 /// every session it takes, or null to fall back to the session's own model.
 pub(crate) async fn set_agent_profile(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
     Json(req): Json<AgentProfileReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let profile = req.profile.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
     if let Some(name) = profile.as_deref() {
         d.reload_config().await;
@@ -633,13 +597,9 @@ pub(crate) struct AgentContextReq {
 /// clamped to the model's window at session start; null or 0 clears it.
 pub(crate) async fn set_agent_context(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
     Json(req): Json<AgentContextReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let tokens = match crate::agent_context::validate(req.max_context_tokens) {
         Ok(tokens) => tokens,
         Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
@@ -657,12 +617,8 @@ pub(crate) async fn set_agent_context(
 /// and an agent still on an unfinished task is refused with those tasks named.
 pub(crate) async fn delete_agent(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     use crate::coordination::AgentRemoval;
     match d.store.delete_agent(&agent_id) {
         Ok(AgentRemoval::Removed) => {
@@ -696,7 +652,6 @@ pub(crate) async fn delete_agent(
 
 #[derive(Deserialize)]
 pub(crate) struct NotificationReplayQuery {
-    pub(crate) token: Option<String>,
     #[serde(default)]
     pub(crate) since: u64,
     pub(crate) since_created_at: Option<i64>,
@@ -708,12 +663,9 @@ pub(crate) struct NotificationReplayQuery {
 fn notification_limit() -> usize { 100 }
 
 pub(crate) async fn notification_replay(
-    State(d): State<Shared>,
+    
     Query(q): Query<NotificationReplayQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     if q.since > i64::MAX as u64 || q.limit == 0 || q.limit > 500 {
         return (StatusCode::BAD_REQUEST, "since must fit signed 64-bit; limit must be 1..500").into_response();
     }

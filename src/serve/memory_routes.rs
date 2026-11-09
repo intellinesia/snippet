@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use axum::extract::{Json, Query, State};
+use axum::extract::{Json, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -22,7 +22,7 @@ use serde::Deserialize;
 use crate::harness::{CodingHarness, HarnessConfig};
 use crate::memory::{MemoryRepo, ScopeKind, CONSOLIDATE_PREFIX};
 use crate::session::{read_session_meta, state_path_for_id, status_str};
-use super::{unauthorized, Auth, Shared};
+use super::{Shared};
 
 const TICK: Duration = Duration::from_secs(300);
 const DAILY: i64 = 20 * 3600;
@@ -56,10 +56,7 @@ struct EntryReq {
     entry: Option<String>,
 }
 
-async fn edit_entry(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<EntryReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn edit_entry(Json(req): Json<EntryReq>) -> Response {
     let Some(repo) = MemoryRepo::from_key(&req.key) else {
         return (StatusCode::NOT_FOUND, "no such memory").into_response();
     };
@@ -80,7 +77,6 @@ async fn edit_entry(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): J
 
 #[derive(Deserialize)]
 struct KeyQuery {
-    token: Option<String>,
     key: String,
     #[serde(default)]
     path: Option<String>,
@@ -92,10 +88,7 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-async fn list_scopes(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn list_scopes() -> Response {
     let running = RUNNING.lock().unwrap().clone();
     let scopes: Vec<_> = MemoryRepo::all()
         .into_iter()
@@ -129,10 +122,7 @@ fn repo_for(key: &str) -> Result<MemoryRepo, Response> {
     }
 }
 
-async fn read_file(State(d): State<Shared>, Query(q): Query<KeyQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn read_file(Query(q): Query<KeyQuery>) -> Response {
     let repo = match repo_for(&q.key) {
         Ok(repo) => repo,
         Err(response) => return response,
@@ -150,10 +140,7 @@ async fn read_file(State(d): State<Shared>, Query(q): Query<KeyQuery>) -> Respon
     }
 }
 
-async fn history(State(d): State<Shared>, Query(q): Query<KeyQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn history(Query(q): Query<KeyQuery>) -> Response {
     match repo_for(&q.key) {
         Ok(repo) => Json(repo.history(q.limit.unwrap_or(50).clamp(1, 500))).into_response(),
         Err(response) => response,

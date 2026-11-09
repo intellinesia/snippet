@@ -1076,6 +1076,7 @@ pub async fn run_serve(
         .route("/git/discard", post(git_discard))
         .route("/session/checkpoint-stats", post(checkpoint_stats))
         .route("/git/init", post(git_init))
+        .layer(axum::middleware::from_fn_with_state(daemon.clone(), require_token))
         .layer(compression())
         .with_state(daemon);
     let addr: SocketAddr = format!("{host}:{port}")
@@ -1129,14 +1130,30 @@ fn unauthorized() -> Response {
     (StatusCode::UNAUTHORIZED, "unauthorized").into_response()
 }
 
-#[derive(Deserialize, Clone)]
-pub(crate) struct Auth {
-    pub(crate) token: Option<String>,
+#[derive(Deserialize)]
+struct TokenQuery {
+    token: Option<String>,
+}
+
+/// Every route needs the daemon token except `/health`, the MCP bridge (its token
+/// is in the path) and signed artifact links (`/a/{exp}/{sig}`, checked by their handler).
+async fn require_token(
+    State(d): State<Shared>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path();
+    let open = path == "/health" || path.starts_with("/mcp/") || path.starts_with("/a/");
+    let token = Query::<TokenQuery>::try_from_uri(request.uri()).ok().and_then(|q| q.0.token);
+    if open || d.authed(&token) {
+        next.run(request).await
+    } else {
+        unauthorized()
+    }
 }
 
 #[derive(Deserialize)]
 struct ListQuery {
-    token: Option<String>,
     #[serde(default)]
     folder: Option<String>,
     #[serde(default)]
@@ -1146,9 +1163,6 @@ struct ListQuery {
 // GET /sessions[?folder=] — device sessions (optionally scoped to one folder),
 // each with a `running` flag.
 async fn list_sessions(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let mut sessions = list_device_sessions();
     // A folder's sessions include those in worktrees made from it.
     if let Some(folder) = q.folder.as_deref().filter(|f| !f.is_empty()) {
@@ -1196,15 +1210,11 @@ async fn list_sessions(State(d): State<Shared>, Query(q): Query<ListQuery>) -> R
 
 #[derive(Deserialize)]
 struct UsageQuery {
-    token: Option<String>,
     #[serde(default)]
     since: Option<i64>,
 }
 
 async fn usage_summary(State(d): State<Shared>, Query(q): Query<UsageQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let totals = match d.store.usage_totals(q.since) {
         Ok(rows) => rows,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1278,10 +1288,7 @@ async fn usage_summary(State(d): State<Shared>, Query(q): Query<UsageQuery>) -> 
 
 // GET /sessions/counts — {folder: count} across all sessions (cheap, from
 // sidecars), for the app's per-folder session badges without downloading the list.
-async fn session_counts(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn session_counts() -> Response {
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for s in list_device_sessions() {
         if s.parent_session_id.is_some() {
@@ -1318,12 +1325,8 @@ fn default_true() -> bool {
 // POST /sessions {folder, resume?} — open a folder, start/resume its session.
 async fn open_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<OpenReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let folder = PathBuf::from(&req.folder);
     if !folder.is_dir() {
         return (StatusCode::BAD_REQUEST, "not a directory").into_response();
@@ -1429,10 +1432,7 @@ struct ConfigView {
 }
 
 // GET /config — profiles with keys redacted (has_key only), active profile, theme.
-async fn get_config(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn get_config(State(d): State<Shared>) -> Response {
     d.reload_config().await; // reflect profiles the TUI added/removed
     let c = d.config.lock().unwrap();
     let active = c.active_setup.clone();

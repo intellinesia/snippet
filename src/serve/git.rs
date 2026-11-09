@@ -54,13 +54,9 @@ pub(super) struct GitReq {
 
 // POST /git/status {session} — branch, upstream, ahead/behind, and changed files.
 pub(super) async fn git_status(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<GitReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -169,13 +165,9 @@ pub(super) struct GitDiffReq {
 
 // POST /git/diff {session, file?, staged?, untracked?} — unified diff (clipped).
 pub(super) async fn git_diff(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<GitDiffReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -226,13 +218,9 @@ pub(super) struct GitLogReq {
 
 // POST /git/log {session, limit?} — recent commits as structured records.
 pub(super) async fn git_log(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<GitLogReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -264,13 +252,9 @@ pub(super) async fn git_log(
 
 // POST /git/branches {session} — local + remote-tracking branches + current.
 pub(super) async fn git_branches(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<GitReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -332,12 +316,8 @@ pub(super) struct GitStageReq {
 // POST /git/stage {session, paths?, all?} — `git add`.
 pub(super) async fn git_stage(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<GitStageReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -372,12 +352,8 @@ pub(super) struct GitUnstageReq {
 // POST /git/unstage {session, paths?} — `git restore --staged` (all if none given).
 pub(super) async fn git_unstage(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<GitUnstageReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -406,12 +382,8 @@ pub(super) struct GitCommitReq {
 // POST /git/commit {session, message, amend?} — commit the staged index.
 pub(super) async fn git_commit(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<GitCommitReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.message.trim().is_empty() && !req.amend {
         return (StatusCode::BAD_REQUEST, "empty commit message").into_response();
     }
@@ -441,12 +413,8 @@ pub(super) struct GitCheckoutReq {
 // POST /git/checkout {session, target, create?} — switch (or create) a branch.
 pub(super) async fn git_checkout(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<GitCheckoutReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.target.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "empty target").into_response();
     }
@@ -469,12 +437,8 @@ pub(super) async fn git_checkout(
 // POST /git/push {session} — push the current branch (uses the box's git creds).
 pub(super) async fn git_push(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<GitReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -489,12 +453,8 @@ pub(super) async fn git_push(
 // POST /git/pull {session} — fast-forward-only pull (surfaces non-ff for the user).
 pub(super) async fn git_pull(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<GitReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -516,12 +476,8 @@ pub(super) struct GitStashReq {
 // POST /git/stash {session, op?} — op = push (default) | pop | list | drop.
 pub(super) async fn git_stash(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<GitStashReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -554,12 +510,8 @@ pub(super) struct GitSessionReq {
 // POST /git/discard {session} — drop every uncommitted change, tracked and untracked.
 pub(super) async fn git_discard(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<GitSessionReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -578,7 +530,6 @@ pub(super) async fn git_discard(
 
 #[derive(Deserialize)]
 pub(super) struct WorktreesQuery {
-    token: Option<String>,
     folder: String,
 }
 
@@ -587,12 +538,9 @@ pub(super) struct WorktreesQuery {
 /// worktree", "this folder", or an existing worktree. `repo` is null outside a
 /// git repository.
 pub(super) async fn git_worktrees(
-    State(d): State<Shared>,
+    
     Query(q): Query<WorktreesQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let folder = std::path::PathBuf::from(&q.folder);
     if !folder.is_dir() {
         return (StatusCode::BAD_REQUEST, "not a directory").into_response();
@@ -613,12 +561,8 @@ pub(super) async fn git_worktrees(
 // `.snippet/` out of it like every session start does.
 pub(super) async fn git_init(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<GitReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,

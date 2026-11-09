@@ -29,21 +29,14 @@ fn listing() -> serde_json::Value {
     serde_json::Value::Object(out)
 }
 
-pub(crate) async fn list_accounts(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn list_accounts() -> Response {
     Json(listing()).into_response()
 }
 
 pub(crate) async fn add_account(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<AccountReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if let Err(r) = pooled(&req.provider) {
         return r;
     }
@@ -102,13 +95,9 @@ pub(crate) async fn add_account(
 }
 
 pub(crate) async fn remove_account(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<AccountReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if let Err(r) = pooled(&req.provider) {
         return r;
     }
@@ -122,13 +111,9 @@ pub(crate) async fn remove_account(
 }
 
 pub(crate) async fn update_account(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<AccountReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if let Err(r) = pooled(&req.provider) {
         return r;
     }

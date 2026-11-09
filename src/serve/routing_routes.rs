@@ -84,12 +84,8 @@ pub(crate) struct LimitReq {
 
 pub(crate) async fn resolve_limit(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<LimitReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let id = req.session.as_str();
     let current = profile_of(&d, id).await;
     let resets_at = routing::limited_until(&current).unwrap_or(0);

@@ -30,12 +30,8 @@ pub(crate) struct ProfileReq {
 // An omitted/blank api_key keeps any existing key (so editing doesn't wipe it).
 pub(crate) async fn put_profile(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<ProfileReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.provider.trim().is_empty() || req.model.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "provider and model are required").into_response();
     }
@@ -122,12 +118,8 @@ pub(crate) struct ActiveReq {
 // POST /config/active — set the global active profile (default for new sessions).
 pub(crate) async fn set_active(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<ActiveReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     d.reload_config().await; // don't clobber TUI-side profile edits
     let result = {
         let mut c = d.config.lock().unwrap();
@@ -155,10 +147,7 @@ pub(crate) struct VaultSetReq {
 // POST /xai/login — begin the xAI device-code flow and poll for approval in the
 // background (saving the token on success). Returns the code + URL for the app to
 // show; the app then polls /xai/status until signed_in flips true.
-pub(crate) async fn xai_login(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn xai_login() -> Response {
     match crate::xai_auth::begin_device_code_login().await {
         Ok(device) => {
             let poll = device.clone();
@@ -179,18 +168,12 @@ pub(crate) async fn xai_login(State(d): State<Shared>, Query(a): Query<Auth>) ->
 }
 
 // GET /xai/status — whether an xAI subscription token is stored.
-pub(crate) async fn xai_status(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn xai_status() -> Response {
     Json(serde_json::json!({ "signed_in": crate::xai_auth::is_signed_in() })).into_response()
 }
 
 // POST /xai/logout — drop the stored xAI token.
-pub(crate) async fn xai_logout(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn xai_logout() -> Response {
     match crate::xai_auth::logout_blocking() {
         Ok(()) => Json(serde_json::json!({ "signed_in": false })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -199,10 +182,7 @@ pub(crate) async fn xai_logout(State(d): State<Shared>, Query(a): Query<Auth>) -
 
 // POST /chatgpt/login — begin the ChatGPT device-code flow; poll + save in the
 // background. Returns the code + URL for the app to show.
-pub(crate) async fn chatgpt_login(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn chatgpt_login() -> Response {
     match crate::chatgpt_auth::begin_device_code_login().await {
         Ok(device) => {
             let user_code = device.user_code.clone();
@@ -223,40 +203,29 @@ pub(crate) async fn chatgpt_login(State(d): State<Shared>, Query(a): Query<Auth>
 }
 
 // GET /chatgpt/status — whether a ChatGPT subscription token is stored.
-pub(crate) async fn chatgpt_status(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn chatgpt_status() -> Response {
     Json(serde_json::json!({ "signed_in": crate::chatgpt_auth::is_signed_in() })).into_response()
 }
 
 #[derive(serde::Deserialize)]
 pub(crate) struct ReasoningQuery {
-    token: Option<String>,
     provider: String,
     #[serde(default)]
     model: String,
 }
 
 // GET /reasoning — the reasoning controls a provider + model really has.
-pub(crate) async fn reasoning_spec(State(d): State<Shared>, Query(q): Query<ReasoningQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+pub(crate) async fn reasoning_spec(Query(q): Query<ReasoningQuery>) -> Response {
     Json(crate::reasoning::spec(&q.provider, &q.model)).into_response()
 }
 
 #[derive(serde::Deserialize)]
 pub(crate) struct CliAgentQuery {
-    token: Option<String>,
     provider: String,
 }
 
 // GET /cli-agent/status — whether a CLI-backed provider is installed and signed in here.
-pub(crate) async fn cli_agent_status(State(d): State<Shared>, Query(q): Query<CliAgentQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+pub(crate) async fn cli_agent_status(Query(q): Query<CliAgentQuery>) -> Response {
     if !matches!(q.provider.as_str(), "claude-code" | "antigravity") {
         return (StatusCode::BAD_REQUEST, "not a CLI-backed provider").into_response();
     }
@@ -264,32 +233,22 @@ pub(crate) async fn cli_agent_status(State(d): State<Shared>, Query(q): Query<Cl
 }
 
 // POST /chatgpt/logout — drop the stored ChatGPT token.
-pub(crate) async fn chatgpt_logout(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn chatgpt_logout() -> Response {
     match crate::chatgpt_auth::logout_blocking() {
         Ok(()) => Json(serde_json::json!({ "signed_in": false })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
-pub(crate) async fn vault_list(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn vault_list() -> Response {
     Json(serde_json::json!({ "names": crate::vault::Vault::load().names() })).into_response()
 }
 
 // PUT /vault — store a secret (from the app's vault screen; TLS/tunnel carries it).
 pub(crate) async fn vault_set(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<VaultSetReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let mut vault = crate::vault::Vault::load();
     match vault.set(&req.name, &req.value) {
         Ok(()) => Json(serde_json::json!({ "stored": req.name })).into_response(),
@@ -300,14 +259,10 @@ pub(crate) async fn vault_set(
 #[derive(Deserialize)]
 pub(crate) struct VaultNameQ {
     name: String,
-    token: Option<String>,
 }
 
 // DELETE /vault?name= — remove a secret.
-pub(crate) async fn vault_delete(State(d): State<Shared>, Query(q): Query<VaultNameQ>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+pub(crate) async fn vault_delete(Query(q): Query<VaultNameQ>) -> Response {
     let mut vault = crate::vault::Vault::load();
     match vault.remove(&q.name) {
         Ok(true) => Json(serde_json::json!({ "removed": q.name })).into_response(),
@@ -337,12 +292,8 @@ pub(crate) struct ProviderModelsReq {
 // support on OpenRouter, context windows where available).
 pub(crate) async fn provider_models(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<ProviderModelsReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     d.reload_config().await;
     let mut cfg = {
         let c = d.config.lock().unwrap();
@@ -385,12 +336,8 @@ pub(crate) struct RoutingReq {
 
 pub(crate) async fn set_routing(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<RoutingReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let Some(route) = crate::routing::Route::parse(&req.route) else {
         return (StatusCode::BAD_REQUEST, "unknown route").into_response();
     };
@@ -428,12 +375,8 @@ pub(crate) struct KeepTaskProfileReq {
 
 pub(crate) async fn set_keep_task_profile(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<KeepTaskProfileReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     d.reload_config().await;
     let result = {
         let mut c = d.config.lock().unwrap();
@@ -454,12 +397,8 @@ pub(crate) struct ManualApprovalReq {
 // POST /config/manual_approval — the global approval mode, applied to every live session.
 pub(crate) async fn set_manual_approval(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<ManualApprovalReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     d.reload_config().await;
     let result = {
         let mut c = d.config.lock().unwrap();
@@ -480,15 +419,11 @@ pub(crate) async fn set_manual_approval(
 
 #[derive(Deserialize)]
 pub(crate) struct DeleteProfileQuery {
-    token: Option<String>,
     name: String,
 }
 
 // DELETE /config/profile?name= — remove a profile (active falls back to first left).
 pub(crate) async fn delete_profile(State(d): State<Shared>, Query(q): Query<DeleteProfileQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     d.reload_config().await; // start from current disk state so we don't resurrect TUI-deleted profiles
     let result = {
         let mut c = d.config.lock().unwrap();
@@ -515,12 +450,8 @@ pub(crate) struct SessionModelReq {
 // choice so it survives a daemon restart.
 pub(crate) async fn set_session_model(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<SessionModelReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if super::is_agent_desk(&req.session) {
         return (
             StatusCode::BAD_REQUEST,
@@ -581,12 +512,8 @@ pub(crate) struct VoiceReq {
 
 pub(crate) async fn set_voice(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<VoiceReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     d.reload_config().await;
     let result = {
         let mut c = d.config.lock().unwrap();
@@ -627,12 +554,8 @@ pub(crate) struct WebSearchReq {
 
 pub(crate) async fn set_web_search(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<WebSearchReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     d.reload_config().await;
     let result = {
         let mut c = d.config.lock().unwrap();

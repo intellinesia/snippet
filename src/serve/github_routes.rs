@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 
 use super::session_routes::resolve_session_dir;
-use super::{unauthorized, Auth, Shared};
+use super::{Shared};
 
 const GH_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -78,16 +78,12 @@ fn session_dir(session: &str) -> Result<PathBuf, Response> {
 
 #[derive(Deserialize)]
 struct SessionQuery {
-    token: Option<String>,
     session: String,
 }
 
 /// Whether PR review is available for this session: gh installed and logged
 /// in, and the workspace is a GitHub repository.
-async fn status(State(d): State<Shared>, Query(q): Query<SessionQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn status(Query(q): Query<SessionQuery>) -> Response {
     let dir = match session_dir(&q.session) {
         Ok(dir) => dir,
         Err(_) => return Json(json!({ "available": false, "reason": "no workspace" })).into_response(),
@@ -135,7 +131,6 @@ const LIST_PAGE_MAX: u32 = 100;
 
 #[derive(Deserialize)]
 struct ListQuery {
-    token: Option<String>,
     session: String,
     /// open (default), mine, review, closed
     filter: Option<String>,
@@ -143,10 +138,7 @@ struct ListQuery {
     limit: Option<u32>,
 }
 
-async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn list(Query(q): Query<ListQuery>) -> Response {
     let dir = match session_dir(&q.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -227,15 +219,11 @@ const DETAIL_FIELDS: &str = "number,title,body,author,state,isDraft,headRefName,
 
 #[derive(Deserialize)]
 struct PrQuery {
-    token: Option<String>,
     session: String,
     number: u64,
 }
 
-async fn detail(State(d): State<Shared>, Query(q): Query<PrQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn detail(Query(q): Query<PrQuery>) -> Response {
     let dir = match session_dir(&q.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -301,10 +289,7 @@ async fn detail(State(d): State<Shared>, Query(q): Query<PrQuery>) -> Response {
     Json(pr).into_response()
 }
 
-async fn diff(State(d): State<Shared>, Query(q): Query<PrQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn diff(Query(q): Query<PrQuery>) -> Response {
     let dir = match session_dir(&q.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -363,10 +348,7 @@ struct ReviewReq {
     comments: Vec<InlineComment>,
 }
 
-async fn review(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<ReviewReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn review(Json(req): Json<ReviewReq>) -> Response {
     let event = req.event.to_ascii_uppercase();
     if !matches!(event.as_str(), "APPROVE" | "REQUEST_CHANGES" | "COMMENT") {
         return fail(StatusCode::BAD_REQUEST, "event must be APPROVE, REQUEST_CHANGES or COMMENT");
@@ -415,10 +397,7 @@ struct CommentReq {
     body: String,
 }
 
-async fn comment(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<CommentReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn comment(Json(req): Json<CommentReq>) -> Response {
     if req.body.trim().is_empty() {
         return fail(StatusCode::BAD_REQUEST, "the comment is empty");
     }
@@ -443,10 +422,7 @@ struct CreateReq {
     draft: bool,
 }
 
-async fn create(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<CreateReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn create(Json(req): Json<CreateReq>) -> Response {
     let dir = match session_dir(&req.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -508,10 +484,7 @@ struct MergeReq {
     branch: Option<String>,
 }
 
-async fn merge(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<MergeReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn merge(Json(req): Json<MergeReq>) -> Response {
     let dir = match session_dir(&req.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -568,10 +541,7 @@ struct StateReq {
     action: String,
 }
 
-async fn pr_state(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<StateReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn pr_state(Json(req): Json<StateReq>) -> Response {
     let dir = match session_dir(&req.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -602,10 +572,7 @@ struct ReplyReq {
     body: String,
 }
 
-async fn reply(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<ReplyReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn reply(Json(req): Json<ReplyReq>) -> Response {
     if req.body.trim().is_empty() {
         return fail(StatusCode::BAD_REQUEST, "the reply is empty");
     }
@@ -628,10 +595,7 @@ struct ThreadReq {
     resolved: bool,
 }
 
-async fn resolve_thread(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<ThreadReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn resolve_thread(Json(req): Json<ThreadReq>) -> Response {
     let dir = match session_dir(&req.session) {
         Ok(dir) => dir,
         Err(r) => return r,
@@ -650,15 +614,11 @@ async fn resolve_thread(State(d): State<Shared>, Query(a): Query<Auth>, Json(req
 
 #[derive(Deserialize)]
 struct CommitQuery {
-    token: Option<String>,
     session: String,
     sha: String,
 }
 
-async fn commit_diff(State(d): State<Shared>, Query(q): Query<CommitQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn commit_diff(Query(q): Query<CommitQuery>) -> Response {
     if q.sha.is_empty() || !q.sha.chars().all(|c| c.is_ascii_hexdigit()) {
         return fail(StatusCode::BAD_REQUEST, "bad commit id");
     }

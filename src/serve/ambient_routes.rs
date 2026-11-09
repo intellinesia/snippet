@@ -17,12 +17,8 @@ pub(crate) struct LeaseReq {
 
 pub(crate) async fn lease(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<LeaseReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.device.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "device is required").into_response();
     }
@@ -171,10 +167,7 @@ fn settings_view(d: &Daemon) -> serde_json::Value {
     })
 }
 
-pub(crate) async fn get_settings(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn get_settings(State(d): State<Shared>) -> Response {
     d.reload_config().await;
     Json(settings_view(&d)).into_response()
 }
@@ -241,12 +234,8 @@ fn patched_ambient(mut ambient: crate::config::AmbientConfig, req: &SettingsReq)
 
 pub(crate) async fn set_settings(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<SettingsReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     d.reload_config().await;
     let result = {
         let mut c = d.config.lock().unwrap();
@@ -325,7 +314,6 @@ pub(crate) struct Segment {
 
 #[derive(Deserialize)]
 pub(crate) struct ListQuery {
-    token: Option<String>,
     from: Option<String>,
     to: Option<String>,
     q: Option<String>,
@@ -702,19 +690,13 @@ pub(crate) struct EnrollVoiceprintReq {
 #[derive(Deserialize)]
 pub(crate) struct DeleteVoiceprintQuery {
     #[serde(default)]
-    token: Option<String>,
-    #[serde(default)]
     id: Option<String>,
 }
 
 pub(crate) async fn enroll_voiceprint(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<EnrollVoiceprintReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     d.reload_config().await;
     let audio_bytes = if req.from_recent {
         let Ok(mut dir) = tokio::fs::read_dir(audio_dir()).await else {
@@ -794,9 +776,6 @@ pub(crate) async fn delete_voiceprint(
     State(d): State<Shared>,
     Query(q): Query<DeleteVoiceprintQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     d.reload_config().await;
     let save_res = {
         let mut c = d.config.lock().unwrap();
@@ -846,9 +825,6 @@ pub(crate) fn resume(d: Shared) {
 }
 
 pub(crate) async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let limit = q.limit.unwrap_or(100).clamp(1, 500) as i64;
     let search = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| {
         s.split_whitespace()
@@ -888,10 +864,7 @@ pub(crate) async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) ->
     }
 }
 
-pub(crate) async fn stats(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn stats(State(d): State<Shared>) -> Response {
     let since = (chrono::Utc::now() - chrono::Duration::hours(24)).timestamp();
     let rows = d.store.with_connection(|c| {
         let mut stmt = c.prepare(

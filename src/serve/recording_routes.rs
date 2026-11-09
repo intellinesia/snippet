@@ -51,19 +51,13 @@ pub(crate) fn apply(policy: &mut RecordingPolicy, req: &RecordingReq, now_ms: i6
     Ok(())
 }
 
-pub(crate) async fn get(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn get(State(d): State<Shared>) -> Response {
     d.reload_config().await;
     let policy = d.config.lock().unwrap().recording.clone();
     Json(view(&policy, crate::recording_policy::now_ms(), &crate::recordings::dir())).into_response()
 }
 
-pub(crate) async fn set(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<RecordingReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn set(State(d): State<Shared>, Json(req): Json<RecordingReq>) -> Response {
     d.reload_config().await;
     let now = crate::recording_policy::now_ms();
     let saved = {
@@ -85,10 +79,7 @@ pub(crate) async fn set(State(d): State<Shared>, Query(a): Query<Auth>, Json(req
     }
 }
 
-pub(crate) async fn delete(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<DeleteReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+pub(crate) async fn delete(State(d): State<Shared>, Json(req): Json<DeleteReq>) -> Response {
     let redact = match req.mode.as_str() {
         "delete" | "" => false,
         "redact" => true,

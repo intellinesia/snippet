@@ -6,7 +6,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{unauthorized, Auth, Shared};
+use super::{Shared};
 
 const LINK_TTL_SECS: i64 = 6 * 60 * 60;
 
@@ -20,14 +20,10 @@ pub fn router() -> Router<Shared> {
 
 #[derive(Deserialize)]
 struct ListQuery {
-    token: Option<String>,
     session: String,
 }
 
 async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let artifacts: Vec<_> = crate::artifacts::list(&q.session)
         .into_iter()
         .map(|a| {
@@ -117,13 +113,9 @@ struct ZipArtifactReq {
 }
 
 async fn zip_artifact(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<ZipArtifactReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let Some(artifact) = crate::artifacts::get(&req.session, &req.id) else {
         return (StatusCode::NOT_FOUND, "no such artifact").into_response();
     };
@@ -156,13 +148,9 @@ struct ZipFilesReq {
 }
 
 async fn zip_files(
-    State(d): State<Shared>,
-    Query(a): Query<Auth>,
+    
     Json(req): Json<ZipFilesReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let sources: Vec<std::path::PathBuf> = req
         .paths
         .iter()

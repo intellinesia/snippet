@@ -20,7 +20,7 @@ use crate::session::{
     write_session_sidecar, SessionRole, SessionSidecar,
 };
 use super::{
-    apply_profile, live_from_handle, record_dispatch_notice, unauthorized, Auth, Daemon,
+    apply_profile, live_from_handle, record_dispatch_notice, Daemon,
     LoopInput, Shared,
 };
 
@@ -41,7 +41,6 @@ pub fn router() -> Router<Shared> {
 
 #[derive(Deserialize)]
 struct MissionListQuery {
-    token: Option<String>,
     archived: Option<bool>,
     #[serde(default)]
     view: Option<String>,
@@ -192,12 +191,8 @@ struct AgentBuildReq {
 
 async fn build_agent_from_prompt(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<AgentBuildReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let prompt = req.prompt.trim();
     if prompt.len() < 12 {
         return (
@@ -250,13 +245,7 @@ async fn build_agent_from_prompt(
     }
 }
 
-async fn overview(
-    State(d): State<Shared>,
-    Query(q): Query<MissionListQuery>,
-) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
+async fn overview(State(d): State<Shared>) -> Response {
     let root = &d.mission_control_root;
     let Ok(tasks) = d.store.list_tasks(None, None) else {
         return mission_error("could not read Mission Control tasks".to_string());
@@ -313,9 +302,6 @@ async fn tasks(
     State(d): State<Shared>,
     Query(q): Query<MissionListQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let summary = q.view.as_deref() == Some("summary");
     match d.store.list_tasks(None, None) {
         Ok(tasks) => Json(
@@ -338,12 +324,8 @@ async fn tasks(
 
 async fn task(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match d.store.get_task(&id) {
         Ok(Some(task)) => Json(mission_task_view(&d.store, &task)).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "no such task").into_response(),
@@ -869,12 +851,8 @@ fn release_failed_claim(d: &Daemon, task: &Task, error: &str) -> Result<(), Stri
 
 async fn create_task(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<MissionTaskReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     if req.title.trim().is_empty() || req.session_id.trim().is_empty() {
         return mission_error("title and session_id are required".to_string());
     }
@@ -932,13 +910,9 @@ async fn create_task(
 
 async fn update_task(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     AxumPath(id): AxumPath<String>,
     Json(req): Json<MissionTaskReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let root = &d.mission_control_root;
     let existing = match d.store.get_task(&id) {
         Ok(Some(task)) => task,
@@ -1025,12 +999,8 @@ async fn update_task(
 
 async fn archive_task(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match d.store.complete_task(
         &id,
         TaskStatus::Cancelled,
@@ -1049,9 +1019,6 @@ async fn sessions(
     State(d): State<Shared>,
     Query(q): Query<MissionListQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let root = &d.mission_control_root;
     let tasks = d.store.list_tasks(None, None).unwrap_or_default();
     match mission_control::list_sessions(root, false) {
@@ -1082,12 +1049,8 @@ async fn sessions(
 
 async fn create_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<MissionSessionReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let folder = PathBuf::from(&req.folder);
     if !folder.is_dir() {
         return mission_error("folder is not a directory".to_string());
@@ -1149,13 +1112,9 @@ async fn create_session(
 
 async fn update_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     AxumPath(id): AxumPath<String>,
     Json(req): Json<MissionSessionUpdate>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match mission_control::update_session(&d.mission_control_root, &id, |session| {
         if let Some(title) = req
             .title
@@ -1173,12 +1132,8 @@ async fn update_session(
 
 async fn archive_session(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match mission_control::archive_session(&d.mission_control_root, &id) {
         Ok(session) => Json(mission_session_view(&session, 0)).into_response(),
         Err(error) => mission_error(error),
@@ -1193,12 +1148,8 @@ struct MissionOpenReq {
 
 async fn open(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<MissionOpenReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match open_mission_control(&d, req.profile).await {
         Ok((id, home)) => Json(serde_json::json!({ "id": id, "folder": home })).into_response(),
         Err(error) => mission_error(error),
@@ -1483,17 +1434,11 @@ struct AutonomyReq {
     utc_offset_minutes: Option<i32>,
 }
 
-async fn autonomy(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn autonomy() -> Response {
     Json(autonomy_view()).into_response()
 }
 
-async fn update_autonomy(State(d): State<Shared>, Query(a): Query<Auth>, Json(req): Json<AutonomyReq>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn update_autonomy(Json(req): Json<AutonomyReq>) -> Response {
     for clock in [&req.quiet_start, &req.quiet_end].into_iter().flatten() {
         if !clock.is_empty() && !crate::mission_autonomy::valid_clock(clock) {
             return (StatusCode::BAD_REQUEST, format!("quiet hours must be HH:MM, got `{clock}`")).into_response();
@@ -1531,21 +1476,14 @@ struct MissionSettingsReq {
     notification_policy: String,
 }
 
-async fn settings(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn settings(State(d): State<Shared>) -> Response {
     Json(mission_control::load_settings(&d.mission_control_root)).into_response()
 }
 
 async fn update_settings(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<MissionSettingsReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match mission_control::set_notification_policy(
         &d.mission_control_root,
         &req.notification_policy,

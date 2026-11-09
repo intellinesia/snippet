@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::extract::{Json, Path as AxumPath, Query, State};
+use axum::extract::{Json, Path as AxumPath, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::Router;
@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::harness::{GoalStatus, LoopInput};
 use crate::recurring::{self, Schedule};
 use crate::session::{read_session_meta, state_path_for_id, status_str};
-use super::{mission_error, unauthorized, Auth, Shared};
+use super::{mission_error, Shared};
 
 pub fn router() -> Router<Shared> {
     Router::new()
@@ -288,10 +288,7 @@ async fn report_run_to_mission_control(daemon: &Shared, title: &str, session_id:
     "mission_control"
 }
 
-async fn list_recurring(State(d): State<Shared>, Query(a): Query<Auth>) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
+async fn list_recurring(State(d): State<Shared>) -> Response {
     match recurring::list_jobs(&d.recurring_root) {
         Ok(jobs) => Json(jobs).into_response(),
         Err(error) => mission_error(error),
@@ -332,12 +329,8 @@ struct RecurringUpdateReq {
 
 async fn create_recurring(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     Json(req): Json<RecurringCreateReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let schedule = match Schedule::parse(&req.schedule) {
         Ok(s) => s,
         Err(error) => return mission_error(error),
@@ -367,13 +360,9 @@ async fn create_recurring(
 
 async fn update_recurring(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     AxumPath(id): AxumPath<String>,
     Json(req): Json<RecurringUpdateReq>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     let schedule = match req.schedule.as_deref() {
         Some(raw) if !raw.trim().is_empty() => match Schedule::parse(raw) {
             Ok(s) => Some(s),
@@ -438,12 +427,8 @@ async fn update_recurring(
 
 async fn delete_recurring(
     State(d): State<Shared>,
-    Query(a): Query<Auth>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if !d.authed(&a.token) {
-        return unauthorized();
-    }
     match recurring::delete_job(&d.recurring_root, &id) {
         Ok(()) => {
             Json(serde_json::json!({ "ok": true })).into_response()

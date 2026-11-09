@@ -20,7 +20,7 @@ use crate::session::{
     SessionRole, SessionSidecar, state_path_for_id, write_session_sidecar,
 };
 
-use super::{Auth, Shared, unauthorized};
+use super::{Shared};
 
 /// Recent messages included when a recipient is woken. Enough to read the
 /// current exchange, small enough to keep the wake cheap.
@@ -540,12 +540,8 @@ pub(super) struct DirectSendReq {
 /// recipient is woken by the delivery loop, not by this request.
 pub(super) async fn direct_send_message(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Json(req): Json<DirectSendReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     if req.body.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "body is required").into_response();
     }
@@ -668,7 +664,6 @@ pub(super) async fn direct_send_message(
 
 #[derive(Deserialize)]
 pub(super) struct DirectActorQuery {
-    token: Option<String>,
     actor_kind: String,
     actor_id: String,
 }
@@ -679,9 +674,6 @@ pub(super) async fn direct_list_threads(
     State(d): State<Shared>,
     Query(q): Query<DirectActorQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     match d.store.list_direct_threads(&q.actor_kind, &q.actor_id) {
         Ok(threads) => Json(threads).into_response(),
         Err(error) => (
@@ -694,7 +686,6 @@ pub(super) async fn direct_list_threads(
 
 #[derive(Deserialize)]
 pub(super) struct DirectMessagesQuery {
-    token: Option<String>,
     actor_kind: String,
     actor_id: String,
     peer_kind: String,
@@ -715,9 +706,6 @@ pub(super) async fn direct_list_messages(
     State(d): State<Shared>,
     Query(q): Query<DirectMessagesQuery>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let from = (q.actor_kind.as_str(), q.actor_id.as_str());
     let to = (q.peer_kind.as_str(), q.peer_id.as_str());
     let thread_id = crate::coordination::direct_thread_id(from, to);
@@ -749,12 +737,8 @@ pub(super) struct DirectReadReq {
 /// POST /coordination/direct/read — mark a conversation read for one side.
 pub(super) async fn direct_mark_read(
     State(d): State<Shared>,
-    Query(q): Query<Auth>,
     Json(req): Json<DirectReadReq>,
 ) -> Response {
-    if !d.authed(&q.token) {
-        return unauthorized();
-    }
     let thread_id = crate::coordination::direct_thread_id(
         (req.actor_kind.as_str(), req.actor_id.as_str()),
         (req.peer_kind.as_str(), req.peer_id.as_str()),
