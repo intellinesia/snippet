@@ -97,7 +97,7 @@ fn direct_message_envelope(
          reply_to: {reply_to}\n{tags}\
          note: {who} wrote directly; this is not a turn in your own conversation. \
          {answer} \
-         Answer quick questions here. Workspace work requires a task: claim a [task_offer], or ask Mission Control to file new work and tell the sender. Ask one question if unclear. Recent history only; use read_agent_thread for more.\n{history}body: {body}\n\
+         Recent history only; use read_agent_thread for more.\n{history}body: {body}\n\
          [/direct_message]",
         thread = event.thread_id,
         sender = sender,
@@ -379,7 +379,14 @@ async fn deliver_direct(
             d.deliver(&session_id, LoopInput::UserMessage(envelope)).await;
             return Ok(());
         }
-        let from_self = session_id.starts_with(event.actor_id.as_str()) || event.actor_id.starts_with(session_id.as_str());
+        // By the session it came from, not the actor's name: agent `snippet`
+        // must still reach a session called `snippet-service-…`.
+        let from = event
+            .payload
+            .get("origin_session")
+            .and_then(|v| v.as_str())
+            .or((event.actor_kind == "session").then_some(event.actor_id.as_str()));
+        let from_self = from.is_some_and(|from| session_id.starts_with(from) || from.starts_with(session_id.as_str()));
         if !from_self && !crate::session::is_lane_session_id(&session_id) {
             let reply_to = if event.actor_kind == "agent" { event.actor_id.clone() } else { "human".to_string() };
             let envelope = format!(
@@ -858,14 +865,14 @@ mod tests {
     }
 
     #[test]
-    fn envelope_states_sender_recipient_and_the_no_work_rule() {
+    fn envelope_states_sender_recipient_and_how_to_reply() {
         let current = event(2, "local", "please review this", "agent:a");
         let envelope = direct_message_envelope(&current, &[]);
         assert!(envelope.starts_with("[direct_message]"));
         assert!(envelope.contains("from: human:local"));
         assert!(envelope.contains("to: agent:a"));
         assert!(envelope.contains("send_agent_message"));
-        assert!(envelope.contains("Workspace work requires a task"));
+        assert!(!envelope.contains("Workspace work requires a task"), "the desk layer teaches that, not every message");
         assert!(envelope.contains("plain reply text is delivered to them automatically"));
         assert!(envelope.ends_with("body: please review this\n[/direct_message]"));
     }
