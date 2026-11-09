@@ -369,7 +369,11 @@ impl Tool for SubmitReview {
             task.title,
             task.id,
             findings.iter().map(|f| format!("  - {f}")).collect::<Vec<_>>().join("\n"),
-            state.render(false),
+            {
+                let mut ledger = state.clone();
+                ledger.review_findings.clear();
+                ledger.render(false)
+            },
         );
         store
             .send_task_notice(("agent", &reviewer), reopened.reporting_session.as_deref().unwrap_or(&task.session_id), &task.id, "task_brief", &envelope, &now)

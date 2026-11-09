@@ -428,7 +428,14 @@ async fn deliver_direct(
         .collect();
     let envelope = direct_message_envelope(event, &history);
     drop(tx);
-    deliver_by_urgency(d, &session_id, envelope, &event.payload).await;
+    // The user is talking to the agent: steer a running desk turn rather than
+    // wait behind it, as an agent's reply already does.
+    if event.actor_kind == "human" {
+        crate::session::wake_settled(&session_id);
+        d.deliver(&session_id, LoopInput::UserMessage(envelope)).await;
+    } else {
+        deliver_by_urgency(d, &session_id, envelope, &event.payload).await;
+    }
     Ok(())
 }
 
