@@ -142,16 +142,16 @@ pub(crate) fn apply_profile(cfg: &mut SnippetConfig, profile: &Option<String>) {
 /// the persisted state. Returns the error Response to send on any failure.
 fn load_session_workspace(session: &str) -> Result<(PathBuf, PathBuf), Response> {
     let Some(sp) = state_path_for_id(session) else {
-        return Err((StatusCode::NOT_FOUND, "no such session").into_response());
+        return Err(api_error(StatusCode::NOT_FOUND, "no such session"));
     };
     // Store-or-file: a session ported to the database has no state file, so
     // reading the file directly would 404 every migrated session.
     let Some(state) = read_session_meta(&sp) else {
-        return Err((StatusCode::NOT_FOUND, "session state unreadable").into_response());
+        return Err(api_error(StatusCode::NOT_FOUND, "session state unreadable"));
     };
     let folder = PathBuf::from(&state.workspace);
     if state.workspace.is_empty() || !folder.is_dir() {
-        return Err((StatusCode::BAD_REQUEST, "session workspace missing").into_response());
+        return Err(api_error(StatusCode::BAD_REQUEST, "session workspace missing"));
     }
     Ok((sp, folder))
 }
@@ -948,6 +948,10 @@ pub async fn run_serve(
         let d = daemon.clone();
         tokio::spawn(async move { settle_routes::settle_loop(d).await });
     }
+    {
+        let d = daemon.clone();
+        tokio::spawn(async move { ws::terminal_pump_loop(d).await });
+    }
     if let Some(rx) = crate::routing::subscribe() {
         let d = daemon.clone();
         tokio::spawn(async move { routing_routes::routing_loop(d, rx).await });
@@ -1127,7 +1131,12 @@ pub async fn run_serve(
 }
 
 fn unauthorized() -> Response {
-    (StatusCode::UNAUTHORIZED, "unauthorized").into_response()
+    api_error(StatusCode::UNAUTHORIZED, "unauthorized")
+}
+
+/// The one error shape every route returns: `{"error": "..."}` with a real status.
+pub(crate) fn api_error(status: StatusCode, message: impl std::fmt::Display) -> Response {
+    (status, Json(serde_json::json!({ "error": message.to_string() }))).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1217,7 +1226,7 @@ struct UsageQuery {
 async fn usage_summary(State(d): State<Shared>, Query(q): Query<UsageQuery>) -> Response {
     let totals = match d.store.usage_totals(q.since) {
         Ok(rows) => rows,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     let sessions: HashMap<String, u64> = d
         .store
@@ -1329,7 +1338,7 @@ async fn open_session(
 ) -> Response {
     let folder = PathBuf::from(&req.folder);
     if !folder.is_dir() {
-        return (StatusCode::BAD_REQUEST, "not a directory").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "not a directory");
     }
     let folder = crate::session::session_workspace(&folder, req.workspace);
     let base_state = {

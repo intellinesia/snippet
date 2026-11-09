@@ -1,3 +1,4 @@
+use super::api_error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -179,7 +180,7 @@ fn mission_session_view(session: &ManagedSession, task_count: usize) -> serde_js
 }
 
 pub fn mission_error(error: String) -> Response {
-    (StatusCode::BAD_REQUEST, error).into_response()
+    api_error(StatusCode::BAD_REQUEST, error)
 }
 
 #[derive(Deserialize)]
@@ -195,14 +196,10 @@ async fn build_agent_from_prompt(
 ) -> Response {
     let prompt = req.prompt.trim();
     if prompt.len() < 12 {
-        return (
-            StatusCode::BAD_REQUEST,
-            "prompt must describe the desired agent",
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "prompt must describe the desired agent");
     }
     if !d.store.has_conversation(mission_control::SESSION_ID).unwrap_or(false) {
-        return (StatusCode::CONFLICT, "open Mission Control before building an agent").into_response();
+        return api_error(StatusCode::CONFLICT, "open Mission Control before building an agent");
     }
     let session_id = crate::mission_control::SESSION_ID;
     let task_id = uuid::Uuid::new_v4().to_string();
@@ -328,7 +325,7 @@ async fn task(
 ) -> Response {
     match d.store.get_task(&id) {
         Ok(Some(task)) => Json(mission_task_view(&d.store, &task)).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "no such task").into_response(),
+        Ok(None) => api_error(StatusCode::NOT_FOUND, "no such task"),
         Err(error) => mission_error(error.to_string()),
     }
 }
@@ -1441,7 +1438,7 @@ async fn autonomy() -> Response {
 async fn update_autonomy(Json(req): Json<AutonomyReq>) -> Response {
     for clock in [&req.quiet_start, &req.quiet_end].into_iter().flatten() {
         if !clock.is_empty() && !crate::mission_autonomy::valid_clock(clock) {
-            return (StatusCode::BAD_REQUEST, format!("quiet hours must be HH:MM, got `{clock}`")).into_response();
+            return api_error(StatusCode::BAD_REQUEST, format!("quiet hours must be HH:MM, got `{clock}`"));
         }
     }
     let result = crate::mission_autonomy::update(|state| {

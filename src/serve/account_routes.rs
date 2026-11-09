@@ -1,3 +1,4 @@
+use super::api_error;
 use super::*;
 
 #[derive(Deserialize)]
@@ -17,7 +18,7 @@ fn pooled(provider: &str) -> Result<(), Response> {
     if crate::accounts::is_pooled(provider) {
         Ok(())
     } else {
-        Err((StatusCode::BAD_REQUEST, "provider must be chatgpt, xai or claude-code").into_response())
+        Err(api_error(StatusCode::BAD_REQUEST, "provider must be chatgpt, xai or claude-code"))
     }
 }
 
@@ -47,11 +48,11 @@ pub(crate) async fn add_account(
         "claude-code" => {
             let token = req.token.as_deref().map(str::trim).unwrap_or("");
             if !token.starts_with("sk-ant-") {
-                return (StatusCode::BAD_REQUEST, "paste the token `claude setup-token` prints (it starts with sk-ant-)").into_response();
+                return api_error(StatusCode::BAD_REQUEST, "paste the token `claude setup-token` prints (it starts with sk-ant-)");
             }
             let body = serde_json::json!({ "token": token }).to_string();
             if let Err(e) = crate::accounts::write_credential(&provider, &id, &body) {
-                return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, e);
             }
             crate::accounts::set_label(&provider, &id, &label);
             Json(serde_json::json!({ "id": id, "accounts": listing() })).into_response()
@@ -69,7 +70,7 @@ pub(crate) async fn add_account(
                 });
                 Json(serde_json::json!({ "id": id, "user_code": user_code, "verification_uri": url })).into_response()
             }
-            Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+            Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
         },
         _ => match crate::xai_auth::begin_device_code_login().await {
             Ok(device) => {
@@ -89,7 +90,7 @@ pub(crate) async fn add_account(
                 }))
                 .into_response()
             }
-            Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+            Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
         },
     }
 }
@@ -102,11 +103,11 @@ pub(crate) async fn remove_account(
         return r;
     }
     let Some(id) = req.id.as_deref().filter(|id| !id.is_empty()) else {
-        return (StatusCode::BAD_REQUEST, "id required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "id required");
     };
     match crate::accounts::remove(&req.provider, id) {
         Ok(()) => Json(listing()).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => api_error(StatusCode::BAD_REQUEST, e),
     }
 }
 

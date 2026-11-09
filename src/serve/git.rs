@@ -1,3 +1,4 @@
+use super::api_error;
 use super::*;
 
 // ---- git operations (server-side, shells out to the system `git`) -----------
@@ -68,7 +69,7 @@ pub(super) async fn git_status(
         Ok((_, _, stderr, _)) => {
             Json(serde_json::json!({"ok": false, "error": stderr.trim()})).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -175,7 +176,7 @@ pub(super) async fn git_diff(
     let file = req.file.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let args: Vec<String> = if req.untracked {
         let Some(f) = file else {
-            return (StatusCode::BAD_REQUEST, "untracked diff needs a file").into_response();
+            return api_error(StatusCode::BAD_REQUEST, "untracked diff needs a file");
         };
         // /dev/null → file shows the entire file as additions.
         vec![
@@ -205,7 +206,7 @@ pub(super) async fn git_diff(
             "truncated": truncated,
         }))
         .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -246,7 +247,7 @@ pub(super) async fn git_log(
         Ok((_, _, stderr, _)) => {
             Json(serde_json::json!({"ok": false, "error": stderr.trim()})).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -300,7 +301,7 @@ pub(super) async fn git_branches(
         Ok((_, _, stderr, _)) => {
             Json(serde_json::json!({"ok": false, "error": stderr.trim()})).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -329,16 +330,12 @@ pub(super) async fn git_stage(
         args.push("--".into());
         args.extend(req.paths.iter().cloned());
     } else {
-        return (
-            StatusCode::BAD_REQUEST,
-            "no paths (pass paths[] or all:true)",
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "no paths (pass paths[] or all:true)");
     }
     let _lock = d.git_write.lock().await;
     match run_git(&dir, &args).await {
         Ok((c, so, se, t)) => git_result(c, so, se, t),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -367,7 +364,7 @@ pub(super) async fn git_unstage(
     let _lock = d.git_write.lock().await;
     match run_git(&dir, &args).await {
         Ok((c, so, se, t)) => git_result(c, so, se, t),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -385,7 +382,7 @@ pub(super) async fn git_commit(
     Json(req): Json<GitCommitReq>,
 ) -> Response {
     if req.message.trim().is_empty() && !req.amend {
-        return (StatusCode::BAD_REQUEST, "empty commit message").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "empty commit message");
     }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
@@ -398,7 +395,7 @@ pub(super) async fn git_commit(
     let _lock = d.git_write.lock().await;
     match run_git(&dir, &args).await {
         Ok((c, so, se, t)) => git_result(c, so, se, t),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -416,7 +413,7 @@ pub(super) async fn git_checkout(
     Json(req): Json<GitCheckoutReq>,
 ) -> Response {
     if req.target.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "empty target").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "empty target");
     }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
@@ -430,7 +427,7 @@ pub(super) async fn git_checkout(
     let _lock = d.git_write.lock().await;
     match run_git(&dir, &args).await {
         Ok((c, so, se, t)) => git_result(c, so, se, t),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -446,7 +443,7 @@ pub(super) async fn git_push(
     let _lock = d.git_write.lock().await;
     match run_git(&dir, ["push"]).await {
         Ok((c, so, se, t)) => git_result(c, so, se, t),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -462,7 +459,7 @@ pub(super) async fn git_pull(
     let _lock = d.git_write.lock().await;
     match run_git(&dir, ["pull", "--ff-only"]).await {
         Ok((c, so, se, t)) => git_result(c, so, se, t),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -488,17 +485,13 @@ pub(super) async fn git_stash(
         "drop" => "drop",
         "push" | "save" | "" => "push",
         other => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("unknown stash op `{other}`"),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, format!("unknown stash op `{other}`"));
         }
     };
     let _lock = d.git_write.lock().await;
     match run_git(&dir, ["stash", sub]).await {
         Ok((c, so, se, t)) => git_result(c, so, se, t),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -520,11 +513,11 @@ pub(super) async fn git_discard(
     match run_git(&dir, ["reset", "--hard", "HEAD"]).await {
         Ok((0, ..)) => {}
         Ok((c, so, se, t)) => return git_result(c, so, se, t),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
     match run_git(&dir, ["clean", "-fd"]).await {
         Ok((c, so, se, t)) => git_result(c, so, se, t),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -543,7 +536,7 @@ pub(super) async fn git_worktrees(
 ) -> Response {
     let folder = std::path::PathBuf::from(&q.folder);
     if !folder.is_dir() {
-        return (StatusCode::BAD_REQUEST, "not a directory").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "not a directory");
     }
     let found = tokio::task::spawn_blocking(move || crate::session::repo_worktrees(&folder))
         .await
@@ -575,6 +568,6 @@ pub(super) async fn git_init(
             }
             git_result(c, so, se, t)
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }

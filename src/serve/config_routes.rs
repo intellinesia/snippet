@@ -1,3 +1,4 @@
+use super::api_error;
 use super::*;
 
 #[derive(Deserialize)]
@@ -33,20 +34,16 @@ pub(crate) async fn put_profile(
     Json(req): Json<ProfileReq>,
 ) -> Response {
     if req.provider.trim().is_empty() || req.model.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "provider and model are required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "provider and model are required");
     }
     // Reject providers `SnippetConfig::load` won't accept — persisting one works
     // in-memory but bricks the next daemon/TUI startup on the config re-parse.
     if !crate::config::provider_supported(&req.provider) {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!(
+        return api_error(StatusCode::BAD_REQUEST, format!(
                 "unsupported provider `{}`; expected one of {}",
                 req.provider,
                 crate::config::SUPPORTED_PROVIDERS.join(", ")
-            ),
-        )
-            .into_response();
+            ));
     }
     d.reload_config().await; // modify the current on-disk config, not a stale copy
     let result = {
@@ -106,7 +103,7 @@ pub(crate) async fn put_profile(
             notify_models(None);
             Json(serde_json::json!({ "name": name })).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -124,7 +121,7 @@ pub(crate) async fn set_active(
     let result = {
         let mut c = d.config.lock().unwrap();
         if !c.activate(&req.name) {
-            return (StatusCode::NOT_FOUND, "no such profile").into_response();
+            return api_error(StatusCode::NOT_FOUND, "no such profile");
         }
         save_config(&c, &d.config_path)
     };
@@ -133,7 +130,7 @@ pub(crate) async fn set_active(
             notify_models(None);
             Json(serde_json::json!({ "active": req.name })).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -163,7 +160,7 @@ pub(crate) async fn xai_login() -> Response {
             }))
             .into_response()
         }
-        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
 
@@ -176,7 +173,7 @@ pub(crate) async fn xai_status() -> Response {
 pub(crate) async fn xai_logout() -> Response {
     match crate::xai_auth::logout_blocking() {
         Ok(()) => Json(serde_json::json!({ "signed_in": false })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -198,7 +195,7 @@ pub(crate) async fn chatgpt_login() -> Response {
             }))
             .into_response()
         }
-        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
 
@@ -227,7 +224,7 @@ pub(crate) struct CliAgentQuery {
 // GET /cli-agent/status — whether a CLI-backed provider is installed and signed in here.
 pub(crate) async fn cli_agent_status(Query(q): Query<CliAgentQuery>) -> Response {
     if !matches!(q.provider.as_str(), "claude-code" | "antigravity") {
-        return (StatusCode::BAD_REQUEST, "not a CLI-backed provider").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "not a CLI-backed provider");
     }
     Json(crate::harness::cli_agent_status(&q.provider).await).into_response()
 }
@@ -236,7 +233,7 @@ pub(crate) async fn cli_agent_status(Query(q): Query<CliAgentQuery>) -> Response
 pub(crate) async fn chatgpt_logout() -> Response {
     match crate::chatgpt_auth::logout_blocking() {
         Ok(()) => Json(serde_json::json!({ "signed_in": false })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -252,7 +249,7 @@ pub(crate) async fn vault_set(
     let mut vault = crate::vault::Vault::load();
     match vault.set(&req.name, &req.value) {
         Ok(()) => Json(serde_json::json!({ "stored": req.name })).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => api_error(StatusCode::BAD_REQUEST, e),
     }
 }
 
@@ -266,8 +263,8 @@ pub(crate) async fn vault_delete(Query(q): Query<VaultNameQ>) -> Response {
     let mut vault = crate::vault::Vault::load();
     match vault.remove(&q.name) {
         Ok(true) => Json(serde_json::json!({ "removed": q.name })).into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "no such secret").into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such secret"),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -307,7 +304,7 @@ pub(crate) async fn provider_models(
                 provider: req.provider.clone().unwrap_or_default(),
                 ..Default::default()
             },
-            None => return (StatusCode::NOT_FOUND, "no such profile").into_response(),
+            None => return api_error(StatusCode::NOT_FOUND, "no such profile"),
         }
     };
     // Editor-supplied overrides win over the stored profile's values.
@@ -324,7 +321,7 @@ pub(crate) async fn provider_models(
         }
     match crate::catalog::fetch_models(&cfg).await {
         Ok(models) => Json(serde_json::json!({ "models": models })).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
 
@@ -339,7 +336,7 @@ pub(crate) async fn set_routing(
     Json(req): Json<RoutingReq>,
 ) -> Response {
     let Some(route) = crate::routing::Route::parse(&req.route) else {
-        return (StatusCode::BAD_REQUEST, "unknown route").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "unknown route");
     };
     d.reload_config().await;
     let result = {
@@ -347,7 +344,7 @@ pub(crate) async fn set_routing(
         let mut profiles: Vec<String> = Vec::new();
         for name in req.profiles.into_iter().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
             if !c.setups.as_ref().is_some_and(|m| m.contains_key(&name)) {
-                return (StatusCode::NOT_FOUND, format!("no such profile `{name}`")).into_response();
+                return api_error(StatusCode::NOT_FOUND, format!("no such profile `{name}`"));
             }
             if !profiles.contains(&name) {
                 profiles.push(name);
@@ -364,7 +361,7 @@ pub(crate) async fn set_routing(
             notify_models(None);
             Json(serde_json::json!({ "route": route.key(), "profiles": profiles })).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -385,7 +382,7 @@ pub(crate) async fn set_keep_task_profile(
     };
     match result {
         Ok(_) => Json(serde_json::json!({ "keep_task_profile": req.on })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -406,7 +403,7 @@ pub(crate) async fn set_manual_approval(
         save_config(&c, &d.config_path)
     };
     if let Err(e) = result {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
     let mode = if req.on {
         crate::harness::ApprovalMode::Manual
@@ -435,7 +432,7 @@ pub(crate) async fn delete_profile(State(d): State<Shared>, Query(q): Query<Dele
             notify_models(None);
             Json(serde_json::json!({ "removed": q.name })).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -453,11 +450,7 @@ pub(crate) async fn set_session_model(
     Json(req): Json<SessionModelReq>,
 ) -> Response {
     if super::is_agent_desk(&req.session) {
-        return (
-            StatusCode::BAD_REQUEST,
-            "A desk runs on its agent's profile; change the agent's profile instead.",
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "A desk runs on its agent's profile; change the agent's profile instead.");
     }
     // One implementation, shared with dispatch: both need the same
     // resolve → abort → restart-on-new-model sequence, and a second copy would
@@ -472,7 +465,7 @@ pub(crate) async fn set_session_model(
             Json(serde_json::json!({ "session": req.session, "profile": req.profile }))
                 .into_response()
         }
-        Err(error) => (StatusCode::NOT_FOUND, error).into_response(),
+        Err(error) => api_error(StatusCode::NOT_FOUND, error),
     }
 }
 
@@ -532,7 +525,7 @@ pub(crate) async fn set_voice(
     };
     match result {
         Ok(view) => Json(view).into_response(),
-        Err((code, e)) => (code, e).into_response(),
+        Err((code, e)) => api_error(code, e),
     }
 }
 
@@ -565,6 +558,6 @@ pub(crate) async fn set_web_search(
     };
     match result {
         Ok(view) => Json(view).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }

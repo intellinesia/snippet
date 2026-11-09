@@ -1,6 +1,7 @@
 //! Settling sessions: the routes, the memory-saving settle itself, and the sweep that
 //! settles cold sessions and deletes long-settled ones. Thresholds live in `crate::settle`.
 
+use super::api_error;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -218,7 +219,7 @@ fn outcome_response(outcome: SettleOutcome) -> Response {
             Json(serde_json::json!({"ok": false, "error": reason})),
         )
             .into_response(),
-        SettleOutcome::Gone => (StatusCode::NOT_FOUND, "no such session").into_response(),
+        SettleOutcome::Gone => api_error(StatusCode::NOT_FOUND, "no such session"),
     }
 }
 
@@ -237,7 +238,7 @@ pub(crate) async fn unsettle_route(
 ) -> Response {
     match unsettle_session(&req.session) {
         Some(s) => Json(serde_json::json!({"ok": true, "session": s})).into_response(),
-        None => (StatusCode::NOT_FOUND, "no such session").into_response(),
+        None => api_error(StatusCode::NOT_FOUND, "no such session"),
     }
 }
 
@@ -261,7 +262,7 @@ pub(crate) async fn keep_awake_route(
 ) -> Response {
     match set_keep_awake(&req.session, req.on) {
         Some(s) => Json(serde_json::json!({"ok": true, "session": s})).into_response(),
-        None => (StatusCode::NOT_FOUND, "no such session").into_response(),
+        None => api_error(StatusCode::NOT_FOUND, "no such session"),
     }
 }
 
@@ -276,10 +277,10 @@ pub(crate) async fn cache_route(
     Query(q): Query<CacheQuery>,
 ) -> Response {
     let Some(store) = crate::session::store_for_sessions() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "no store").into_response();
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "no store");
     };
     let Some(row) = store.get_session_row(&q.id).ok().flatten() else {
-        return (StatusCode::NOT_FOUND, "no such session").into_response();
+        return api_error(StatusCode::NOT_FOUND, "no such session");
     };
     let (touched, context) = store.cache_touch(&row.id).unwrap_or((None, None));
     let ttl = ttl_for(&profile_cache_ttls(), row.profile.as_deref());

@@ -9,6 +9,7 @@
 //! it, and a reconnecting client cannot cause a second delivery.
 
 
+use super::api_error;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
@@ -543,12 +544,12 @@ pub(super) async fn direct_send_message(
     Json(req): Json<DirectSendReq>,
 ) -> Response {
     if req.body.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "body is required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "body is required");
     }
     let from = (req.from_kind.trim(), req.from_id.trim());
     let to = (req.to_kind.trim(), req.to_id.trim());
     if from.1.is_empty() || to.1.is_empty() {
-        return (StatusCode::BAD_REQUEST, "from_id and to_id are required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "from_id and to_id are required");
     }
     // A caller may not send as just any identity. The local human is the only
     // human; an agent sender must be a real directory entry. This is what stops
@@ -556,30 +557,22 @@ pub(super) async fn direct_send_message(
     match from.0 {
         "human" => {
             if from.1 != crate::coordination::LOCAL_HUMAN_ID {
-                return (StatusCode::FORBIDDEN, "unknown human sender").into_response();
+                return api_error(StatusCode::FORBIDDEN, "unknown human sender");
             }
         }
         "agent" => match d.store.get_agent(from.1) {
             Ok(Some(_)) => {}
             Ok(None) => {
-                return (StatusCode::NOT_FOUND, "unknown sender agent").into_response();
+                return api_error(StatusCode::NOT_FOUND, "unknown sender agent");
             }
             Err(error) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("look up sender: {error}"),
-                )
-                    .into_response();
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("look up sender: {error}"));
             }
         },
-        _ => return (StatusCode::BAD_REQUEST, "from_kind must be human or agent").into_response(),
+        _ => return api_error(StatusCode::BAD_REQUEST, "from_kind must be human or agent"),
     }
     if to.0 != "agent" && to.0 != "human" && to.0 != "session" {
-        return (
-            StatusCode::BAD_REQUEST,
-            "to_kind must be agent, human, or session",
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "to_kind must be agent, human, or session");
     }
     // A human recipient is the local operator — the only human this device knows.
     // An agent replying to the person who messaged it is the same direct-message
@@ -587,7 +580,7 @@ pub(super) async fn direct_send_message(
     match to.0 {
         "human" => {
             if to.1 != crate::coordination::LOCAL_HUMAN_ID {
-                return (StatusCode::NOT_FOUND, "unknown human recipient").into_response();
+                return api_error(StatusCode::NOT_FOUND, "unknown human recipient");
             }
         }
         // A SESSION recipient puts the message back where the question was asked,
@@ -599,18 +592,14 @@ pub(super) async fn direct_send_message(
                 )
                 .is_none()
             {
-                return (StatusCode::NOT_FOUND, "unknown recipient session").into_response();
+                return api_error(StatusCode::NOT_FOUND, "unknown recipient session");
             }
         }
         _ => match d.store.get_agent(to.1) {
             Ok(Some(_)) => {}
-            Ok(None) => return (StatusCode::NOT_FOUND, "unknown recipient agent").into_response(),
+            Ok(None) => return api_error(StatusCode::NOT_FOUND, "unknown recipient agent"),
             Err(error) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("look up recipient: {error}"),
-                )
-                    .into_response();
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("look up recipient: {error}"));
             }
         },
     }
@@ -630,7 +619,7 @@ pub(super) async fn direct_send_message(
         .filter(|s| !s.is_empty());
     let prepared_body = match super::transcribe::prepare_message(&d, req.body.trim().to_string()).await {
         Ok(t) => t,
-        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+        Err(error) => return api_error(StatusCode::BAD_REQUEST, error),
     };
     match d.store.send_direct_message_from(
         from,
@@ -654,11 +643,7 @@ pub(super) async fn direct_send_message(
             }
             (StatusCode::ACCEPTED, Json(saved)).into_response()
         }
-        Err(error) => (
-            StatusCode::CONFLICT,
-            format!("send direct message: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::CONFLICT, format!("send direct message: {error}")),
     }
 }
 
@@ -676,11 +661,7 @@ pub(super) async fn direct_list_threads(
 ) -> Response {
     match d.store.list_direct_threads(&q.actor_kind, &q.actor_id) {
         Ok(threads) => Json(threads).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("list direct threads: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("list direct threads: {error}")),
     }
 }
 
@@ -718,11 +699,7 @@ pub(super) async fn direct_list_messages(
             "events": events,
         }))
         .into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("read direct messages: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read direct messages: {error}")),
     }
 }
 
@@ -751,11 +728,7 @@ pub(super) async fn direct_mark_read(
         &at,
     ) {
         Ok(()) => Json(json!({"thread_id": thread_id, "read_at": at})).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("mark read: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("mark read: {error}")),
     }
 }
 

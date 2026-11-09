@@ -1,3 +1,4 @@
+use super::api_error;
 use super::*;
 
 // A shell belongs to the machine: switching or closing a session must not kill
@@ -90,7 +91,7 @@ pub(crate) async fn attach_ws(
         let Some(state_path) = state_path_for_id(&q.session)
             .filter(|path| crate::session::read_session_meta(path).is_some())
         else {
-            return (StatusCode::NOT_FOUND, "no such lane").into_response();
+            return api_error(StatusCode::NOT_FOUND, "no such lane");
         };
         let stream: crate::llm::StreamHandle =
             std::sync::Arc::new(std::sync::Mutex::new(crate::llm::StreamBuffer::default()));
@@ -112,7 +113,7 @@ pub(crate) async fn attach_ws(
                 handle_ws(socket, daemon, session, state_path, stream, terms, AttachOptions { compact, stream_delta, read_only: false })
             })
         }
-        None => (StatusCode::NOT_FOUND, "no such session").into_response(),
+        None => api_error(StatusCode::NOT_FOUND, "no such session"),
     }
 }
 
@@ -537,45 +538,24 @@ fn apply_term_client(terms: &crate::term::SessionTerms, val: &serde_json::Value)
 // WS /events — device-wide firehose. Emits a compact event on status changes
 // (including running) so the session list can update live, even for chats the
 // app isn't painting. Durable notifications are emitted as separate full frames.
-pub(crate) async fn events_ws(
-    ws: WebSocketUpgrade,
-    State(d): State<Shared>
-) -> Response {
-    ws.on_upgrade(move |socket| handle_events_ws(socket, d))
+pub(crate) async fn events_ws(ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(handle_events_ws)
 }
 
 
-async fn handle_events_ws(socket: WebSocket, daemon: Shared) {
+async fn handle_events_ws(socket: WebSocket) {
     let (mut sender, mut receiver) = socket.split();
     let mut rx = subscribe_device_events();
     let push = tokio::spawn(async move {
-        // Idle PTYs still need a pump so BEL / OSC fire when nobody is attached.
-        // 5s is plenty — the firehose itself is push, not this tick.
-        let mut harvest = tokio::time::interval(Duration::from_secs(5));
-        harvest.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tokio::select! {
-                ev = rx.recv() => {
-                    match ev {
-                        Ok(e) => {
-                            if sender
-                                .send(Message::Text(e.to_string().into()))
-                                .await
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                    }
-                }
-                _ = harvest.tick() => {
-                    let live = daemon.sessions.lock().await;
-                    for sess in live.values() {
-                        sess.terms.pump();
-                    }
-                }
+            let frame = match rx.recv().await {
+                Ok(e) => e.to_string(),
+                // A slow client missed frames: tell it to refetch rather than drift.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => r#"{"kind":"resync"}"#.to_string(),
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            };
+            if sender.send(Message::Text(frame.into())).await.is_err() {
+                return;
             }
         }
     });
@@ -585,6 +565,18 @@ async fn handle_events_ws(socket: WebSocket, daemon: Shared) {
         }
     }
     push.abort();
+}
+
+/// Idle PTYs still need a pump so BEL / OSC fire when nobody is attached.
+pub(crate) async fn terminal_pump_loop(daemon: Shared) {
+    let mut tick = tokio::time::interval(Duration::from_secs(5));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        for sess in daemon.sessions.lock().await.values() {
+            sess.terms.pump();
+        }
+    }
 }
 
 

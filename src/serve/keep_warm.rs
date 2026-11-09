@@ -1,3 +1,4 @@
+use super::api_error;
 use std::time::Duration;
 
 use axum::extract::{Json, Path as AxumPath, State};
@@ -120,11 +121,11 @@ async fn put_entry(
 ) -> Response {
     let kind = match crate::agent_wakes::resolve_owner(&d.store, &owner) {
         Ok(kind) => kind,
-        Err(error) => return (StatusCode::NOT_FOUND, error).into_response(),
+        Err(error) => return api_error(StatusCode::NOT_FOUND, error),
     };
     match keep_warm::set(&d.recurring_root, &owner, kind, spec, Setter::User, now()) {
         Ok(entry) => Json(keep_warm::view(&entry)).into_response(),
-        Err(error) => (StatusCode::BAD_REQUEST, error).into_response(),
+        Err(error) => api_error(StatusCode::BAD_REQUEST, error),
     }
 }
 

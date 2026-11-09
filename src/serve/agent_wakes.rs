@@ -1,3 +1,4 @@
+use super::api_error;
 use axum::extract::{Json, Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -51,7 +52,7 @@ async fn put_wake(
 ) -> Response {
     let kind = match agent_wakes::resolve_owner(&d.store, &owner) {
         Ok(kind) => kind,
-        Err(error) => return (StatusCode::NOT_FOUND, error).into_response(),
+        Err(error) => return api_error(StatusCode::NOT_FOUND, error),
     };
     match agent_wakes::set(&d.recurring_root, &owner, kind, spec, Setter::User, now()) {
         Ok(job) => Json(agent_wakes::view_with_runs(&d.recurring_root, &job, now())).into_response(),

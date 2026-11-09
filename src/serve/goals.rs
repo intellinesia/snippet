@@ -1,6 +1,7 @@
 //! GET /goals and GET /goals/{id}: goals with progress, blockers and the plan,
 //! for the app to render.
 
+use super::api_error;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -80,7 +81,7 @@ async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
         None | Some("") | Some("all") => None,
         Some(s) => match GoalStatus::parse(s) {
             Some(parsed) => Some(parsed),
-            None => return (StatusCode::BAD_REQUEST, "status must be open, closed, cancelled or all").into_response(),
+            None => return api_error(StatusCode::BAD_REQUEST, "status must be open, closed, cancelled or all"),
         },
     };
     match d.store.list_goals(status) {
@@ -91,15 +92,15 @@ async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
                 .collect::<Vec<_>>(),
         )
         .into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 
 async fn detail(State(d): State<Shared>, Path(id): Path<String>) -> Response {
     match d.store.get_goal(&id) {
         Ok(Some(goal)) => Json(detail_view(&d.store, &goal)).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "no such goal").into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+        Ok(None) => api_error(StatusCode::NOT_FOUND, "no such goal"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 

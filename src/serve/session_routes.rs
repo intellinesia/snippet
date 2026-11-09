@@ -1,3 +1,4 @@
+use super::api_error;
 use super::*;
 
 pub(crate) fn session_event_page(
@@ -147,27 +148,19 @@ pub(crate) async fn rewind_session(
 
     // Load current state (store or file — authoritative for history indices).
     let Some(mut state) = read_session_state(&sp) else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to read session state",
-        )
-            .into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, "failed to read session state");
     };
 
     let label = match state.apply_checkpoint_rewind(&checkpoint_id) {
         Ok(label) => label,
-        Err(_) => return (StatusCode::NOT_FOUND, "checkpoint not found").into_response(),
+        Err(_) => return api_error(StatusCode::NOT_FOUND, "checkpoint not found"),
     };
 
     // Persist truncated history first so any client re-read sees the cut.
     // `write_session_state` targets whichever store holds the session, so a
     // rewind does not silently write a file a DB session will never read.
     if let Err(error) = crate::session::write_session_state(&sp, &state) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to write state: {error}"),
-        )
-            .into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("failed to write state: {error}"));
     }
     // Keep a live loop in sync (it may overwrite disk on its next persist otherwise).
     {
@@ -194,8 +187,8 @@ pub(crate) async fn rewind_session(
             "message_end": state.messages.len(),
         }))
         .into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(Err(e)) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 
@@ -216,7 +209,7 @@ pub(crate) async fn exec_in_session(
         Err(resp) => return resp,
     };
     if req.command.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "empty command").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "empty command");
     }
     let fut = tokio::process::Command::new("sh")
         .arg("-c")
@@ -229,7 +222,7 @@ pub(crate) async fn exec_in_session(
         .output();
     let out = match tokio::time::timeout(Duration::from_secs(60), fut).await {
         Ok(Ok(o)) => o,
-        Ok(Err(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(Err(e)) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         Err(_) => {
             return Json(serde_json::json!({
                 "exit_code": -1, "stdout": "", "stderr": "timed out after 60s", "truncated": false,
@@ -279,7 +272,7 @@ pub(crate) async fn bg_kill(
         Err(r) => return r,
     };
     let Some(id) = req.id.as_deref() else {
-        return (StatusCode::BAD_REQUEST, "id required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "id required");
     };
     match crate::bg::kill_by_id(&dir, id) {
         Ok(_) => Json(serde_json::json!({"ok": true})).into_response(),
@@ -297,7 +290,7 @@ pub(crate) async fn bg_log(
         Err(r) => return r,
     };
     let Some(id) = req.id.as_deref() else {
-        return (StatusCode::BAD_REQUEST, "id required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "id required");
     };
     let text = std::fs::read_to_string(crate::bg::log_path(&dir, id)).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
@@ -338,7 +331,7 @@ pub(crate) fn resolve_session_dir(session: &str) -> Result<PathBuf, Response> {
     if dir.is_dir() {
         return Ok(dir);
     }
-    Err((StatusCode::NOT_FOUND, "no such session or directory").into_response())
+    Err(api_error(StatusCode::NOT_FOUND, "no such session or directory"))
 }
 
 /// Lossy-decode bytes and clip to `max` chars, returning (text, was_truncated).
@@ -363,7 +356,7 @@ pub(crate) async fn delete_session(
     Json(req): Json<DeleteReq>,
 ) -> Response {
     if !purge_session(&d, &req.session, false).await {
-        return (StatusCode::NOT_FOUND, "no such session").into_response();
+        return api_error(StatusCode::NOT_FOUND, "no such session");
     }
     Json(serde_json::json!({"deleted": true})).into_response()
 }
@@ -415,7 +408,7 @@ pub(crate) async fn interrupt_session(
     Json(req): Json<InterruptReq>,
 ) -> Response {
     let Some(sp) = state_path_for_id(&req.session) else {
-        return (StatusCode::NOT_FOUND, "no such session").into_response();
+        return api_error(StatusCode::NOT_FOUND, "no such session");
     };
     let live = d
         .sessions
@@ -468,7 +461,7 @@ pub(crate) async fn rename_session(
     Json(req): Json<RenameReq>,
 ) -> Response {
     let Some(sp) = state_path_for_id(&req.session) else {
-        return (StatusCode::NOT_FOUND, "no such session").into_response();
+        return api_error(StatusCode::NOT_FOUND, "no such session");
     };
     {
         let sessions = d.sessions.lock().await;
@@ -480,7 +473,7 @@ pub(crate) async fn rename_session(
     }
     match crate::session::set_session_title(&sp, &req.title) {
         Ok(()) => Json(serde_json::json!({"renamed": true})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -503,7 +496,7 @@ pub(crate) async fn fork_session(
     Json(req): Json<ForkReq>,
 ) -> Response {
     let Some(sp) = state_path_for_id(&req.session) else {
-        return (StatusCode::NOT_FOUND, "no such session").into_response();
+        return api_error(StatusCode::NOT_FOUND, "no such session");
     };
 
     // Prefer the live session's own path when it is running, so the fork sees a
@@ -522,11 +515,7 @@ pub(crate) async fn fork_session(
         match read_session_state(&path) {
             Some(state) => state,
             None => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "session state unreadable",
-                )
-                    .into_response();
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, "session state unreadable");
             }
         }
     };
@@ -537,7 +526,7 @@ pub(crate) async fn fork_session(
         req.event_index,
     ) {
         Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, e),
     };
 
     match crate::session::write_forked_conversation(&sp, &state, point) {
@@ -556,7 +545,7 @@ pub(crate) async fn fork_session(
             }))
             .into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 

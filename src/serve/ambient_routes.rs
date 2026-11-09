@@ -1,3 +1,4 @@
+use super::api_error;
 use super::*;
 
 
@@ -20,7 +21,7 @@ pub(crate) async fn lease(
     Json(req): Json<LeaseReq>,
 ) -> Response {
     if req.device.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "device is required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "device is required");
     }
     if req.release {
         lease_release(&req.device);
@@ -291,7 +292,7 @@ pub(crate) async fn set_settings(
             crate::tts::apply_config(&d.config.lock().unwrap());
             Json(settings_view(&d)).into_response()
         }
-        Err((code, e)) => (code, e).into_response(),
+        Err((code, e)) => api_error(code, e),
     }
 }
 
@@ -700,7 +701,7 @@ pub(crate) async fn enroll_voiceprint(
     d.reload_config().await;
     let audio_bytes = if req.from_recent {
         let Ok(mut dir) = tokio::fs::read_dir(audio_dir()).await else {
-            return (StatusCode::BAD_REQUEST, "No recent ambient voice recordings found").into_response();
+            return api_error(StatusCode::BAD_REQUEST, "No recent ambient voice recordings found");
         };
         let mut latest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
         while let Ok(Some(entry)) = dir.next_entry().await {
@@ -710,32 +711,32 @@ pub(crate) async fn enroll_voiceprint(
                 }
         }
         let Some((_, path)) = latest else {
-            return (StatusCode::BAD_REQUEST, "No recent ambient voice recordings found").into_response();
+            return api_error(StatusCode::BAD_REQUEST, "No recent ambient voice recordings found");
         };
         match tokio::fs::read(&path).await {
             Ok(b) => b,
-            Err(e) => return (StatusCode::BAD_REQUEST, format!("Failed to read recording: {e}")).into_response(),
+            Err(e) => return api_error(StatusCode::BAD_REQUEST, format!("Failed to read recording: {e}")),
         }
     } else {
         use base64::Engine as _;
         match base64::engine::general_purpose::STANDARD.decode(req.audio_base64.trim()) {
             Ok(b) if !b.is_empty() => b,
-            _ => return (StatusCode::BAD_REQUEST, "audio_base64 is required").into_response(),
+            _ => return api_error(StatusCode::BAD_REQUEST, "audio_base64 is required"),
         }
     };
 
     let pcm = match crate::voiceprint::pcm_from_audio(&audio_bytes) {
         Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, e),
     };
     let (model, vec) = match crate::voiceprint::embed_enrolment(&pcm).await {
         Ok((v, _)) => (crate::voiceprint::NEURAL_MODEL.to_string(), v),
-        Err(e) if e.starts_with("Not enough") => return (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) if e.starts_with("Not enough") => return api_error(StatusCode::BAD_REQUEST, e),
         Err(e) => {
             eprintln!("[voiceprint] enrolling with legacy scorer: {e}");
             match crate::voiceprint::extract_from_pcm_or_wav(&pcm) {
                 Ok(v) => (String::new(), v),
-                Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+                Err(e) => return api_error(StatusCode::BAD_REQUEST, e),
             }
         }
     };
@@ -767,7 +768,7 @@ pub(crate) async fn enroll_voiceprint(
         crate::config::save_config(&c, &d.config_path)
     };
     if let Err(e) = save_res {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
     Json(settings_view(&d)).into_response()
 }
@@ -794,7 +795,7 @@ pub(crate) async fn delete_voiceprint(
         crate::config::save_config(&c, &d.config_path)
     };
     if let Err(e) = save_res {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
     Json(settings_view(&d)).into_response()
 }
@@ -860,7 +861,7 @@ pub(crate) async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) ->
     });
     match rows {
         Ok(events) => Json(serde_json::json!({ "events": events })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")),
     }
 }
 
@@ -893,7 +894,7 @@ pub(crate) async fn stats(State(d): State<Shared>) -> Response {
             }))
             .into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")),
     }
 }
 

@@ -1,3 +1,4 @@
+use super::api_error;
 use super::*;
 
 pub(crate) fn default_agent_page_limit() -> u32 {
@@ -20,11 +21,7 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
         (Some(name), Some(id)) => Some((name, id)),
         // A lone cursor half is a caller error, not a silent full listing.
         (Some(_), None) | (None, Some(_)) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                "after_name and after_id must be provided together",
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, "after_name and after_id must be provided together");
         }
         (None, None) => None,
     };
@@ -34,8 +31,7 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
             let counts = match d.store.agent_task_counts(&since) {
                 Ok(rows) => rows,
                 Err(error) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("store: {error}"))
-                        .into_response();
+                    return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("store: {error}"));
                 }
             };
             let colors = d.store.agent_colors().unwrap_or_default();
@@ -95,7 +91,7 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
             Json(agents).into_response()
         }
         Err(error) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("store: {error}")).into_response()
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("store: {error}"))
         }
     }
 }
@@ -142,11 +138,7 @@ pub(crate) async fn agent_board(
         Some(raw) => match crate::coordination::BoardEntryKind::parse(raw) {
             Some(kind) => Some(kind),
             None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("unknown kind `{raw}` — use dispatched, reported, noted, or progress"),
-                )
-                    .into_response();
+                return api_error(StatusCode::BAD_REQUEST, format!("unknown kind `{raw}` — use dispatched, reported, noted, or progress"));
             }
         },
     };
@@ -160,11 +152,11 @@ pub(crate) async fn agent_board(
     };
     if let Some(raw) = q.group.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
         let Some(grouping) = crate::coordination::BoardGrouping::parse(raw) else {
-            return (StatusCode::BAD_REQUEST, format!("unknown group `{raw}`: use task or folder")).into_response();
+            return api_error(StatusCode::BAD_REQUEST, format!("unknown group `{raw}`: use task or folder"));
         };
         return match d.store.read_board_groups(&agent_id, grouping, &query, q.limit.clamp(1, 200)) {
             Ok(groups) => Json(serde_json::json!({"agent_id": agent_id, "entries": groups, "awaiting": []})).into_response(),
-            Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, format!("agent board: {error}")).into_response(),
+            Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("agent board: {error}")),
         };
     }
     let awaiting = d.store.board_awaiting_report(&agent_id);
@@ -179,11 +171,7 @@ pub(crate) async fn agent_board(
             "awaiting": awaiting,
         }))
         .into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("read board: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read board: {error}")),
     }
 }
 
@@ -212,11 +200,7 @@ pub(crate) async fn agent_inbox(
         Some(raw) => match crate::coordination::InboxKind::parse(raw) {
             Some(kind) => Some(kind),
             None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("unknown kind `{raw}`: use offer, message or room"),
-                )
-                    .into_response();
+                return api_error(StatusCode::BAD_REQUEST, format!("unknown kind `{raw}`: use offer, message or room"));
             }
         },
     };
@@ -233,11 +217,7 @@ pub(crate) async fn agent_inbox(
             }
             Json(body).into_response()
         }
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("read inbox: {error}"),
-        )
-            .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read inbox: {error}")),
     }
 }
 
@@ -381,12 +361,12 @@ pub(crate) async fn create_agent(
     Json(req): Json<AgentReq>,
 ) -> Response {
     if req.id.trim().is_empty() || req.handle.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "id and handle are required").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "id and handle are required");
     }
     let profile = req.profile.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
     if let Some(name) = profile.as_deref()
         && let Err(error) = crate::mission_tools::check_profile(name).await {
-            return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
+            return api_error(StatusCode::BAD_REQUEST, error.to_string());
         }
     let req_nickname = req.nickname.as_deref().map(|n| n.trim().to_string());
     let agent = crate::coordination::types::Agent {
@@ -402,7 +382,7 @@ pub(crate) async fn create_agent(
         &agent.id,
     ) {
         Ok(home) => home,
-        Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        Err(error) => return api_error(StatusCode::BAD_REQUEST, error.to_string()),
     };
     let default_identity = format!(
         "# {}\n\nAgent handle: @{}\n\nThis identity is awaiting its first build and research pass.\n",
@@ -410,11 +390,7 @@ pub(crate) async fn create_agent(
     );
     let fresh_home = !home.root().exists();
     if let Err(error) = home.ensure_layout(&default_identity) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("create agent home: {error}"),
-        )
-            .into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("create agent home: {error}"));
     }
     match d.store.create_agent(&agent) {
         Ok(()) => {
@@ -469,11 +445,10 @@ pub(crate) async fn set_agent_status(
     match d.store.set_agent_status(&agent_id, &req.status) {
         Ok(true) => match d.store.get_agent(&agent_id) {
             Ok(Some(agent)) => Json(agent).into_response(),
-            _ => (StatusCode::NOT_FOUND, "no such agent").into_response(),
+            _ => api_error(StatusCode::NOT_FOUND, "no such agent"),
         },
-        Ok(false) => (StatusCode::NOT_FOUND, "no such agent").into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, format!("set agent status: {error}"))
-            .into_response(),
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such agent"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("set agent status: {error}")),
     }
 }
 
@@ -493,14 +468,13 @@ pub(crate) async fn set_agent_color(
     if let Some(c) = &color {
         let hex = c.strip_prefix('#').unwrap_or("");
         if hex.len() != 6 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
-            return (StatusCode::BAD_REQUEST, "color must be #RRGGBB").into_response();
+            return api_error(StatusCode::BAD_REQUEST, "color must be #RRGGBB");
         }
     }
     match d.store.set_agent_color(&agent_id, color.as_deref()) {
         Ok(true) => Json(serde_json::json!({ "id": agent_id, "color": color })).into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "no such agent").into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, format!("set agent color: {error}"))
-            .into_response(),
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such agent"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("set agent color: {error}")),
     }
 }
 
@@ -521,17 +495,12 @@ pub(crate) async fn set_agent_shape(
     let shape = req.shape.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
     if let Some(s) = &shape
         && !AGENT_SHAPES.contains(&s.as_str()) {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("shape must be one of: {}", AGENT_SHAPES.join(", ")),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, format!("shape must be one of: {}", AGENT_SHAPES.join(", ")));
         }
     match d.store.set_agent_shape(&agent_id, shape.as_deref()) {
         Ok(true) => Json(serde_json::json!({ "id": agent_id, "shape": shape })).into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "no such agent").into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, format!("set agent shape: {error}"))
-            .into_response(),
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such agent"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("set agent shape: {error}")),
     }
 }
 
@@ -548,13 +517,12 @@ pub(crate) async fn set_agent_nickname(
 ) -> Response {
     let nickname = req.nickname.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
     if nickname.as_deref().is_some_and(|n| n.chars().count() > 40) {
-        return (StatusCode::BAD_REQUEST, "nickname is at most 40 characters").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "nickname is at most 40 characters");
     }
     match d.store.set_agent_nickname(&agent_id, nickname.as_deref()) {
         Ok(true) => Json(serde_json::json!({ "id": agent_id, "nickname": nickname })).into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "no such agent").into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, format!("set agent nickname: {error}"))
-            .into_response(),
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such agent"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("set agent nickname: {error}")),
     }
 }
 
@@ -574,7 +542,7 @@ pub(crate) async fn set_agent_profile(
     if let Some(name) = profile.as_deref() {
         d.reload_config().await;
         if let Err(error) = crate::mission_tools::check_profile(name).await {
-            return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
+            return api_error(StatusCode::BAD_REQUEST, error.to_string());
         }
     }
     match d.store.set_agent_profile(&agent_id, profile.as_deref()) {
@@ -582,9 +550,8 @@ pub(crate) async fn set_agent_profile(
             d.follow_agent_profile(&agent_id);
             Json(serde_json::json!({ "id": agent_id, "profile": profile })).into_response()
         }
-        Ok(false) => (StatusCode::NOT_FOUND, "no such agent").into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, format!("set agent profile: {error}"))
-            .into_response(),
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such agent"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("set agent profile: {error}")),
     }
 }
 
@@ -602,14 +569,13 @@ pub(crate) async fn set_agent_context(
 ) -> Response {
     let tokens = match crate::agent_context::validate(req.max_context_tokens) {
         Ok(tokens) => tokens,
-        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+        Err(error) => return api_error(StatusCode::BAD_REQUEST, error),
     };
     match d.store.set_agent_context_limit(&agent_id, tokens) {
         Ok(true) => Json(serde_json::json!({ "id": agent_id, "max_context_tokens": tokens }))
             .into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "no such agent").into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, format!("set agent context: {error}"))
-            .into_response(),
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such agent"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("set agent context: {error}")),
     }
 }
 
@@ -630,9 +596,9 @@ pub(crate) async fn delete_agent(
             }
             Json(serde_json::json!({ "deleted": true })).into_response()
         }
-        Ok(AgentRemoval::NotFound) => (StatusCode::NOT_FOUND, "no such agent").into_response(),
+        Ok(AgentRemoval::NotFound) => api_error(StatusCode::NOT_FOUND, "no such agent"),
         Ok(AgentRemoval::MissionControl) => {
-            (StatusCode::BAD_REQUEST, "Mission Control can't be deleted").into_response()
+            api_error(StatusCode::BAD_REQUEST, "Mission Control can't be deleted")
         }
         Ok(AgentRemoval::OnOpenTasks(titles)) => {
             let shown: Vec<String> = titles.iter().take(3).cloned().collect();
@@ -642,10 +608,10 @@ pub(crate) async fn delete_agent(
                 msg.push_str(&format!(" and {more} more"));
             }
             msg.push_str(". Finish or reassign them first.");
-            (StatusCode::CONFLICT, msg).into_response()
+            api_error(StatusCode::CONFLICT, msg)
         }
         Err(error) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("delete agent: {error}")).into_response()
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("delete agent: {error}"))
         }
     }
 }
@@ -667,13 +633,13 @@ pub(crate) async fn notification_replay(
     Query(q): Query<NotificationReplayQuery>,
 ) -> Response {
     if q.since > i64::MAX as u64 || q.limit == 0 || q.limit > 500 {
-        return (StatusCode::BAD_REQUEST, "since must fit signed 64-bit; limit must be 1..500").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "since must fit signed 64-bit; limit must be 1..500");
     }
     if q.since_event_id.is_some_and(|id| id > i64::MAX as u64)
         || (q.since_created_at.is_none() && q.since_event_id.is_some())
         || (q.since_created_at.is_some() && q.since != 0)
         || q.since_created_at.is_some_and(|ts| ts < 0) {
-        return (StatusCode::BAD_REQUEST, "use since_created_at >= 0 with optional since_event_id (signed 64-bit); do not mix with since").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "use since_created_at >= 0 with optional since_event_id (signed 64-bit); do not mix with since");
     }
     let result = if let Some(created_at) = q.since_created_at {
         crate::session::replay_notification_events_after_cursor(created_at, q.since_event_id.unwrap_or(0), q.limit)
@@ -682,7 +648,7 @@ pub(crate) async fn notification_replay(
     };
     match result {
         Ok(page) => Json(page).into_response(),
-        Err(error) => (StatusCode::SERVICE_UNAVAILABLE, error).into_response(),
+        Err(error) => api_error(StatusCode::SERVICE_UNAVAILABLE, error),
     }
 }
 

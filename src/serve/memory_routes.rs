@@ -8,6 +8,7 @@
 //! where durable facts leave a session. Consolidations only start while no session is running, one at a
 //! time, so they never compete with the user's own work.
 
+use super::api_error;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -58,7 +59,7 @@ struct EntryReq {
 
 async fn edit_entry(Json(req): Json<EntryReq>) -> Response {
     let Some(repo) = MemoryRepo::from_key(&req.key) else {
-        return (StatusCode::NOT_FOUND, "no such memory").into_response();
+        return api_error(StatusCode::NOT_FOUND, "no such memory");
     };
     let file = req.file.as_deref().unwrap_or("MEMORY.md");
     let result = match req.entry.as_deref() {
@@ -71,7 +72,7 @@ async fn edit_entry(Json(req): Json<EntryReq>) -> Response {
             let _ = repo.commit_all(&format!("{verb} from the app"));
             Json(serde_json::json!({ "ok": true, "message": msg })).into_response()
         }
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => api_error(StatusCode::BAD_REQUEST, e),
     }
 }
 
@@ -118,7 +119,7 @@ async fn list_scopes() -> Response {
 fn repo_for(key: &str) -> Result<MemoryRepo, Response> {
     match MemoryRepo::from_key(key) {
         Some(repo) if repo.exists() => Ok(repo),
-        _ => Err((StatusCode::NOT_FOUND, "no such memory").into_response()),
+        _ => Err(api_error(StatusCode::NOT_FOUND, "no such memory")),
     }
 }
 
@@ -136,7 +137,7 @@ async fn read_file(Query(q): Query<KeyQuery>) -> Response {
             "files": repo.files(),
         }))
         .into_response(),
-        Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
+        Err(e) => api_error(StatusCode::NOT_FOUND, e),
     }
 }
 
