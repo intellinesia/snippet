@@ -813,17 +813,22 @@ pub fn resolve_tunnel(
     public_url: Option<String>,
     tailscale_port: Option<u16>,
 ) -> Result<Tunnel, String> {
-    let port = tailscale_port.unwrap_or(tunnel::DEFAULT_TAILSCALE_PORT);
-    if port == 0 {
-        return Err("--tailscale-port must be between 1 and 65535".into());
-    }
     if no_tunnel {
         return Ok(Tunnel::None);
     }
     if let Some(u) = public_url {
         return Ok(Tunnel::Url(u));
     }
-    match kind.map(|k| k.trim().to_ascii_lowercase()).as_deref() {
+    let port = tailscale_port.unwrap_or(tunnel::DEFAULT_TAILSCALE_PORT);
+    let kind = kind.map(|k| k.trim().to_ascii_lowercase());
+    let uses_tailscale = matches!(
+        kind.as_deref(),
+        None | Some("" | "auto" | "tailscale" | "ts" | "funnel" | "tailscale-funnel")
+    );
+    if port == 0 && uses_tailscale {
+        return Err("--tailscale-port must be between 1 and 65535".into());
+    }
+    match kind.as_deref() {
         None | Some("") | Some("auto") => Ok(Tunnel::Auto { ts_port: port }),
         Some("cloudflare" | "cloudflared" | "cf") => Ok(Tunnel::Cloudflare),
         Some("tailscale" | "ts") => Ok(Tunnel::Tailscale { funnel: false, port }),

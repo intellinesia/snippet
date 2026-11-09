@@ -18,17 +18,19 @@ impl Running {
             // Only our root mount: a plain `off` drops every path on the port,
             // including other services the user put there.
             Running::Tailscale { bin, funnel, port } => {
-                let _ = tokio::process::Command::new(&bin)
+                let off = tokio::process::Command::new(&bin)
                     .args([
                         if funnel { "funnel" } else { "serve" },
                         &format!("--https={port}"),
                         "--set-path=/",
                         "off",
                     ])
+                    .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
-                    .status()
-                    .await;
+                    .kill_on_drop(true)
+                    .status();
+                let _ = tokio::time::timeout(Duration::from_secs(10), off).await;
             }
             Running::Nothing => {}
         }
@@ -59,6 +61,11 @@ pub(super) async fn open(tunnel: Tunnel, port: u16) -> Result<(String, Running),
         Tunnel::Auto { ts_port } => {
             if let Some(bin) = find_tailscale()
                 && let Some(dns) = tailscale_dns_name(&bin).await {
+                    // A taken port must not silently become a public trycloudflare link.
+                    if let Some(taken) = tailscale_conflict(&bin, &dns, port, ts_port, false).await {
+                        println!("tailscale serve did not start: {taken}. Staying local.");
+                        return Ok((local, Running::Nothing));
+                    }
                     match start_tailscale(&bin, &dns, port, ts_port, false).await {
                         Ok(up) => return Ok(up),
                         Err(e) => println!("tailscale serve did not start: {e}"),
@@ -146,12 +153,8 @@ async fn start_tailscale(
 ) -> Result<(String, Running), String> {
     let verb = if funnel { "funnel" } else { "serve" };
     let target = format!("http://127.0.0.1:{port}");
-    if let Some(status) = tailscale_serve_status(bin).await
-        && let Some(taken) = serve_conflict(&status, dns, ts_port, &target, funnel)
-    {
-        return Err(format!(
-            "{taken}. Pick a free port with `snippet serve --tailscale-port <port>` (see `tailscale serve status`)."
-        ));
+    if let Some(taken) = tailscale_conflict(bin, dns, port, ts_port, funnel).await {
+        return Err(taken);
     }
     let run = tokio::process::Command::new(bin)
         .args([verb, "--bg", &format!("--https={ts_port}"), &target])
@@ -192,6 +195,25 @@ async fn start_tailscale(
             port: ts_port,
         },
     ))
+}
+
+async fn tailscale_conflict(
+    bin: &std::path::Path,
+    dns: &str,
+    port: u16,
+    ts_port: u16,
+    funnel: bool,
+) -> Option<String> {
+    let Some(status) = tailscale_serve_status(bin).await else {
+        eprintln!("could not read `tailscale serve status`; skipping the port conflict check");
+        return None;
+    };
+    let target = format!("http://127.0.0.1:{port}");
+    serve_conflict(&status, dns, ts_port, &target, funnel).map(|taken| {
+        format!(
+            "{taken}. Pick a free port with `snippet serve --tailscale-port <port>` (see `tailscale serve status`)."
+        )
+    })
 }
 
 async fn tailscale_serve_status(bin: &std::path::Path) -> Option<serde_json::Value> {
@@ -244,7 +266,9 @@ fn serve_conflict(
                 .get("Proxy")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("another handler");
-            return Some(format!("Tailscale port {ts_port} already serves {what} at /"));
+            return Some(format!(
+                "Tailscale port {ts_port} already serves {what} at / (if that is a stale Snippet, clear it with `tailscale serve --https={ts_port} --set-path=/ off`)"
+            ));
         }
     }
     let public = status
@@ -257,9 +281,10 @@ fn serve_conflict(
             "Tailscale port {ts_port} is shared with other tailnet-only paths, and Funnel would make them public"
         ));
     }
-    if public && !funnel {
+    if !others.is_empty() && public && !funnel {
         return Some(format!(
-            "Tailscale port {ts_port} is public through Funnel, so Snippet would be exposed to the internet"
+            "Tailscale port {ts_port} is public through Funnel, and serving here would make {} private",
+            others.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(", ")
         ));
     }
     None
@@ -356,6 +381,9 @@ mod tests {
         public["AllowFunnel"] = serde_json::json!({ format!("{DNS}:8443"): true });
         assert!(serve_conflict(&public, DNS, 8443, OURS, false).unwrap().contains("Funnel"));
         assert_eq!(serve_conflict(&public, DNS, 8443, OURS, true), None);
+        let mut stale_funnel = web(8443, serde_json::json!({ "/": { "Proxy": OURS } }));
+        stale_funnel["AllowFunnel"] = serde_json::json!({ format!("{DNS}:8443"): true });
+        assert_eq!(serve_conflict(&stale_funnel, DNS, 8443, OURS, false), None);
     }
 
     #[tokio::test]
@@ -398,6 +426,8 @@ mod tests {
         assert!(super::super::resolve_tunnel(Some("funnel"), false, None, Some(9000)).is_err());
         assert!(super::super::resolve_tunnel(Some("funnel"), false, None, Some(10000)).is_ok());
         assert!(super::super::resolve_tunnel(Some("tailscale"), false, None, Some(0)).is_err());
+        assert!(super::super::resolve_tunnel(Some("cloudflare"), false, None, Some(0)).is_ok());
+        assert!(super::super::resolve_tunnel(None, true, None, Some(0)).is_ok());
         assert!(matches!(
             super::super::resolve_tunnel(None, false, None, None),
             Ok(Tunnel::Auto { ts_port: 8443 })
