@@ -357,7 +357,10 @@ impl CodingHarness {
             }
             if let Some(text) = turn_text
                 && let Ok(Some(row)) = store.get_session_row(&id)
-                && let Some(agent_id) = row.agent_id.filter(|a| !a.is_empty())
+                && let Some(agent_id) = row
+                    .agent_id
+                    .filter(|a| !a.is_empty())
+                    .or_else(|| (id == crate::mission_control::SESSION_ID).then(|| id.to_string()))
             {
                 let _ = store.note_agent_last_message(&agent_id, &text, &Utc::now().to_rfc3339(), "agent");
             }
