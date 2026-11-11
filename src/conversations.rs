@@ -729,18 +729,17 @@ impl Store {
         })
     }
 
-    /// Whether the parent's lane records list `lane` as running.
-    pub fn session_lane_recorded_running(&self, parent: &str, lane: &str) -> Result<bool, StoreError> {
+    /// The status the parent's lane records hold for `lane`, if they list it.
+    pub fn session_lane_record_status(&self, parent: &str, lane: &str) -> Result<Option<String>, StoreError> {
         self.with_connection(|conn| {
             conn.query_row(
-                "SELECT EXISTS (
-                     SELECT 1 FROM sessions s, json_each(s.state_json, '$.lanes') l
-                     WHERE s.id = ?1
-                       AND json_extract(l.value, '$.id') = ?2
-                       AND json_extract(l.value, '$.status') = 'running')",
+                "SELECT json_extract(l.value, '$.status')
+                 FROM sessions s, json_each(s.state_json, '$.lanes') l
+                 WHERE s.id = ?1 AND json_extract(l.value, '$.id') = ?2",
                 params![parent, lane],
                 |row| row.get(0),
             )
+            .optional()
         })
     }
 

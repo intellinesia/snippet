@@ -151,8 +151,10 @@ pub const STUCK_LANE_SECS: i64 = 6 * 3600;
 const LANE_GRACE_SECS: i64 = 600;
 
 /// Mark lane sessions that nothing will ever finish as `interrupted`: running
-/// for over `STUCK_LANE_SECS` without activity, or running while an idle or
-/// completed parent has no record of the lane as running. Nothing is deleted.
+/// for over `STUCK_LANE_SECS` without activity, running while the parent's own
+/// record says the lane has ended (an aborted lane never writes its row), or
+/// running while an idle or completed parent has no record of it. Nothing is
+/// deleted.
 pub fn sweep_stuck_lanes(store: &Store, now: i64) -> Vec<String> {
     let mut fixed = Vec::new();
     for row in store.list_all_sessions().unwrap_or_default() {
@@ -165,13 +167,17 @@ pub fn sweep_stuck_lanes(store: &Store, now: i64) -> Vec<String> {
             .unwrap_or(0);
         let idle = idle_secs(now, seen);
         let orphaned = row.id.rsplit_once("/lanes/").is_some_and(|(parent, lane)| {
-            idle >= LANE_GRACE_SECS
-                && store
+            if idle < LANE_GRACE_SECS {
+                return false;
+            }
+            match store.session_lane_record_status(parent, lane).ok().flatten() {
+                Some(status) => status != "running",
+                None => store
                     .get_session_row(parent)
                     .ok()
                     .flatten()
-                    .is_some_and(|p| matches!(p.status.as_str(), "idle" | "completed"))
-                && !store.session_lane_recorded_running(parent, lane).unwrap_or(true)
+                    .is_some_and(|p| matches!(p.status.as_str(), "idle" | "completed")),
+            }
         });
         if idle < STUCK_LANE_SECS && !orphaned {
             continue;
@@ -284,23 +290,28 @@ mod tests {
     fn stuck_lane_sessions_are_interrupted_and_live_ones_left() {
         let db = Store::open_in_memory().unwrap();
         let now = 100_000_000;
-        let mk = |id: &str, status: &str, active: i64| {
-            db.save_session_scalar(id, "wk", "/w", None, status, "{\"lanes\":[]}", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z").unwrap();
+        let mk = |id: &str, status: &str, active: i64, state: &str| {
+            db.save_session_scalar(id, "wk", "/w", None, status, state, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z").unwrap();
             db.set_session_last_active(id, active).unwrap();
         };
-        mk("p/lanes/lane-1", "running", now - STUCK_LANE_SECS - 1);
-        mk("p", "idle", now - 5000);
-        mk("p/lanes/lane-2", "running", now - 3000);
-        mk("q", "running", now - 5000);
-        mk("q/lanes/lane-1", "running", now - 3000);
-        mk("p/lanes/lane-3", "running", now - 60);
-        mk("p/lanes/lane-4", "completed", now - STUCK_LANE_SECS - 1);
+        mk("p/lanes/lane-1", "running", now - STUCK_LANE_SECS - 1, "{\"lanes\":[]}");
+        mk("p", "idle", now - 5000, "{\"lanes\":[]}");
+        mk("p/lanes/lane-2", "running", now - 3000, "{\"lanes\":[]}");
+        // A running parent that cancelled lane-1 and still runs lane-2.
+        mk("q", "running", now - 5000, "{\"lanes\":[{\"id\":\"lane-1\",\"status\":\"cancelled\"},{\"id\":\"lane-2\",\"status\":\"running\"}]}");
+        mk("q/lanes/lane-1", "running", now - 3000, "{\"lanes\":[]}");
+        mk("q/lanes/lane-2", "running", now - 3000, "{\"lanes\":[]}");
+        mk("q/lanes/lane-3", "running", now - 3000, "{\"lanes\":[]}");
+        mk("p/lanes/lane-3", "running", now - 60, "{\"lanes\":[]}");
+        mk("p/lanes/lane-4", "completed", now - STUCK_LANE_SECS - 1, "{\"lanes\":[]}");
         let mut fixed = sweep_stuck_lanes(&db, now);
         fixed.sort();
-        assert_eq!(fixed, vec!["p/lanes/lane-1".to_string(), "p/lanes/lane-2".to_string()]);
+        assert_eq!(fixed, vec!["p/lanes/lane-1".to_string(), "p/lanes/lane-2".to_string(), "q/lanes/lane-1".to_string()]);
         let status = |id: &str| db.get_session_row(id).unwrap().unwrap().status;
         assert_eq!(status("p/lanes/lane-1"), "interrupted");
-        assert_eq!(status("q/lanes/lane-1"), "running");
+        assert_eq!(status("q/lanes/lane-1"), "interrupted", "the parent's record says cancelled");
+        assert_eq!(status("q/lanes/lane-2"), "running");
+        assert_eq!(status("q/lanes/lane-3"), "running", "unknown to a running parent: left alone");
         assert_eq!(status("p/lanes/lane-3"), "running");
         assert_eq!(status("p/lanes/lane-4"), "completed");
         assert!(sweep_stuck_lanes(&db, now).is_empty());
