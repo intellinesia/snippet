@@ -997,6 +997,14 @@ pub fn all_device_sessions() -> Vec<SessionInfo> {
                 )
             };
             let worker_agent_id = contexts.workers.get(&row.id).cloned();
+            let cache = if crate::settle::never_cold(&row.id) {
+                "warm"
+            } else {
+                crate::settle::cache_state(
+                    crate::settle::idle_secs(now, row.last_active.unwrap_or(0)),
+                    crate::settle::ttl_for(&ttls, row.profile.as_deref()),
+                )
+            };
             SessionInfo {
                 attention,
                 conversation: conversation_name_from_id(&row.id).to_string(),
@@ -1018,10 +1026,7 @@ pub fn all_device_sessions() -> Vec<SessionInfo> {
                 total_changes: row.total_changes.as_deref().and_then(|j| serde_json::from_str(j).ok()),
                 running_since: None,
                 idle_secs: crate::settle::idle_secs(now, row.last_active.unwrap_or(0)),
-                cache: crate::settle::cache_state(
-                    crate::settle::idle_secs(now, row.last_active.unwrap_or(0)),
-                    crate::settle::ttl_for(&ttls, row.profile.as_deref()),
-                ),
+                cache,
                 cache_ttl_secs: crate::settle::ttl_for(&ttls, row.profile.as_deref()),
                 task_id,
                 parent_session_id,
