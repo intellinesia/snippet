@@ -25,6 +25,12 @@ pub fn idle_secs(now: i64, last_active: i64) -> i64 {
     (now - last_active).max(0)
 }
 
+/// Mission Control and agent desks are conversations the user keeps coming back
+/// to; they are never offered a cold resume.
+pub fn never_cold(id: &str) -> bool {
+    crate::mission_control::is_session_id(id) || crate::session::is_inbox_session_id(id)
+}
+
 pub fn cache_state(idle: i64, ttl: i64) -> &'static str {
     if idle < ttl { "warm" } else { "cold" }
 }
@@ -302,5 +308,12 @@ mod tests {
         assert!(sweep_eligible(false, false, AUTO_SETTLE_AFTER_SECS, "idle"));
         assert!(!sweep_eligible(false, true, AUTO_SETTLE_AFTER_SECS * 2, "idle"));
         assert!(!sweep_eligible(false, false, AUTO_SETTLE_AFTER_SECS * 2, "running"));
+    }
+
+    #[test]
+    fn mission_control_and_desks_are_never_cold() {
+        assert!(never_cold(crate::mission_control::SESSION_ID));
+        assert!(never_cold("inbox-snippet"));
+        assert!(!never_cold("snippet-mobile-8f8d298804"));
     }
 }
