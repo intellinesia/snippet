@@ -68,9 +68,6 @@ impl Store {
         at: &str,
         from: &str,
     ) -> Result<(), StoreError> {
-        if is_mission_control(agent_id) {
-            return Ok(());
-        }
         let text = snippet_text(raw);
         if text.is_empty() {
             return Ok(());
@@ -115,9 +112,6 @@ impl Store {
         &self,
         agent_id: &str,
     ) -> Result<Option<LastMessage>, StoreError> {
-        if is_mission_control(agent_id) {
-            return Ok(None);
-        }
         let stored: Option<(String, i64, String)> = self.with_connection(|conn| {
             conn.query_row(
                 "SELECT text, at_ms, from_side FROM agent_last_message WHERE agent_id = ?1",
@@ -163,17 +157,22 @@ impl Store {
             }
         }
 
-        let sessions: Vec<String> = self.with_connection(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id FROM sessions WHERE agent_id = ?1 AND id <> ?2
-                 ORDER BY updated_at DESC LIMIT ?3",
-            )?;
-            let rows = stmt.query_map(
-                params![agent_id, crate::mission_control::SESSION_ID, BACKFILL_SESSIONS],
-                |row| row.get::<_, String>(0),
-            )?;
-            rows.collect::<Result<_, _>>()
-        })?;
+        // Mission Control's own chat is its session; it has no agent-owned ones.
+        let sessions: Vec<String> = if is_mission_control(agent_id) {
+            vec![agent_id.to_string()]
+        } else {
+            self.with_connection(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM sessions WHERE agent_id = ?1 AND id <> ?2
+                     ORDER BY updated_at DESC LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(
+                    params![agent_id, crate::mission_control::SESSION_ID, BACKFILL_SESSIONS],
+                    |row| row.get::<_, String>(0),
+                )?;
+                rows.collect::<Result<_, _>>()
+            })?
+        };
         for id in sessions {
             let tail = self.load_recent_conversation(&id, BACKFILL_TAIL)?;
             let last = tail.iter().rev().find_map(|m| match &m.message {
@@ -292,14 +291,29 @@ mod tests {
     }
 
     #[test]
-    fn mission_control_is_excluded() {
+    fn mission_control_keeps_its_last_reply() {
         let db = Store::open_in_memory().unwrap();
         let mc = crate::mission_control::SESSION_ID;
-        db.note_agent_last_message(mc, "hello", "2026-01-01T00:00:00Z", "agent").unwrap();
-        db.send_direct_message(("human", LOCAL_HUMAN_ID), ("agent", mc), "yo", "k", "2026-01-01T00:00:00Z")
+        db.note_agent_last_message(mc, "Routed it to Snippet.", "2026-01-01T00:00:00Z", "agent")
             .unwrap();
-        assert!(db.agent_last_messages().unwrap().is_empty());
-        assert!(db.agent_last_message_or_backfill(mc).unwrap().is_none());
+        assert_eq!(db.agent_last_messages().unwrap()[mc].text, "Routed it to Snippet.");
+    }
+
+    #[test]
+    fn mission_control_backfills_from_its_own_session() {
+        let db = Store::open_in_memory().unwrap();
+        let mc = crate::mission_control::SESSION_ID;
+        db.save_session_scalar(mc, "k", "/w", None, "idle", "{}", "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z")
+            .unwrap();
+        db.append_conversation_messages(
+            mc,
+            &[HarnessMessage::Assistant { content: "Filed the review task.".into(), tool_calls: vec![] }],
+            "2026-01-02T00:00:00Z",
+        )
+        .unwrap();
+        let got = db.agent_last_message_or_backfill(mc).unwrap().unwrap();
+        assert_eq!(got.text, "Filed the review task.");
+        assert_eq!(got.from, "agent");
     }
 
     #[test]
