@@ -144,6 +144,9 @@ pub enum HarnessEvent {
     },
     AssistantText {
         text: String,
+        /// Set by the daemon on a voice turn that produced no speak call.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        quiet: bool,
     },
     /// The agent replaced its visible plan.
     PlanUpdated {
@@ -467,6 +470,18 @@ fn earliest_reset(snap: &crate::llm::RateLimitSnapshot) -> Option<i64> {
         .min()
 }
 
+/// A human message the session owes an answer to; cleared once the human is told something.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HumanWait {
+    pub thread_id: String,
+    pub since: String,
+    #[serde(default)]
+    pub steered: bool,
+    /// `state.events.len()` when the wait was noted; the desk tool budget counts from here.
+    #[serde(default)]
+    pub event_index: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QueuedInput {
     pub id: String,
@@ -556,6 +571,8 @@ pub struct HarnessState {
     /// a stale hold list.
     #[serde(default)]
     pub queued_inputs: Vec<QueuedInput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub human_waiting: Vec<HumanWait>,
     /// The agent's current plan, kept with `update_plan` and shown to the user
     /// as a checklist.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

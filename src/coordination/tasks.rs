@@ -838,16 +838,20 @@ impl Store {
                 status: format!("{existing:?}"),
             });
         }
-        // An offer nobody claimed must not read as pending on a finished task.
-        let settled = if task.status == TaskStatus::Done { "done" } else { "withdrawn" };
+        let done = task.status == TaskStatus::Done;
         self.with_connection(|conn| {
             conn.execute(
-                "UPDATE task_agents SET status = ?2
-                 WHERE task_id = ?1 AND status = 'offered' AND removed_at IS NULL",
-                params![id, settled],
+                "UPDATE task_agents SET status = CASE
+                     WHEN status = 'active' AND ?2 THEN 'done'
+                     WHEN status = 'offered' AND ?2 THEN 'done'
+                     ELSE 'withdrawn' END
+                 WHERE task_id = ?1 AND removed_at IS NULL
+                   AND status IN ('offered', 'pending', 'waiting', 'active')",
+                params![id, done],
             )?;
             Ok(())
         })?;
+        self.sync_task_lease(id, now)?;
         Ok(task)
     }
 
@@ -1470,6 +1474,40 @@ impl Store {
         Ok(())
     }
 
+    /// The one in-progress task an agent is actively working in its own session.
+    /// `None` when there are none or several: then nobody can say which the
+    /// user means.
+    pub fn working_task_of_agent(&self, agent_id: &str) -> Result<Option<Task>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks
+                 WHERE status = 'in_progress' AND session_id <> ''
+                   AND EXISTS (
+                        SELECT 1 FROM task_agents ta
+                        WHERE ta.task_id = tasks.id AND ta.agent_id = ?1
+                          AND ta.status = 'active' AND ta.removed_at IS NULL)
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT 2"
+            ))?;
+            let mut tasks = stmt
+                .query_map(params![agent_id], task_from_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(if tasks.len() == 1 { tasks.pop() } else { None })
+        })
+    }
+
+    /// The open task whose work session is `session_id`.
+    pub fn open_task_of_session(&self, session_id: &str) -> Result<Option<Task>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks
+                 WHERE session_id = ?1 AND status IN ('todo', 'in_progress', 'blocked', 'in_review')
+                 ORDER BY updated_at DESC, id DESC LIMIT 1"
+            ))?;
+            stmt.query_row(params![session_id], task_from_row).optional()
+        })
+    }
+
     pub fn get_task_by_thread(&self, thread_id: &str) -> Result<Option<Task>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(&format!(
@@ -2026,6 +2064,39 @@ mod tests {
     }
 
     #[test]
+    fn finishing_settles_every_member_and_releases_the_lease() {
+        for (status, active, rest) in [(TaskStatus::Done, "done", "done"), (TaskStatus::Cancelled, "withdrawn", "withdrawn")] {
+            let db = db();
+            for a in ["a1", "a2", "a3"] {
+                agent(&db, a);
+            }
+            db.create_task(&task("t")).unwrap();
+            db.add_task_agent_full("t", "a1", "implementer", None, "", "active", "2026-01-01T00:00:00Z").unwrap();
+            db.add_task_agent_full("t", "a2", "reviewer", None, "", "waiting", "2026-01-01T00:00:00Z").unwrap();
+            db.add_task_agent_full("t", "a3", "reviewer", None, "", "pending", "2026-01-01T00:00:00Z").unwrap();
+            assert!(db.sync_task_lease("t", "2026-01-01T00:00:01Z").unwrap().is_some());
+            db.move_task("t", status, "x", "2026-01-01T00:00:02Z").unwrap();
+            let roster = db.list_task_agents("t").unwrap();
+            assert_eq!(roster.iter().find(|m| m.agent_id == "a1").unwrap().status, active);
+            assert!(roster.iter().filter(|m| m.agent_id != "a1").all(|m| m.status == "withdrawn"), "{rest}");
+            assert!(db.lease_of("t").unwrap().is_none());
+        }
+    }
+
+    #[test]
+    #[ignore = "replay probe: HYG_REPLAY_DB=<copy of a live db>"]
+    fn replay_complete_task_on_a_db_copy() {
+        let db = Store::open(std::env::var("HYG_REPLAY_DB").unwrap()).unwrap();
+        agent(&db, "hyg-probe");
+        db.create_task(&task("hyg-probe-task")).unwrap();
+        db.add_task_agent_full("hyg-probe-task", "hyg-probe", "implementer", None, "", "active", "2026-01-01T00:00:00Z").unwrap();
+        assert!(db.sync_task_lease("hyg-probe-task", "2026-01-01T00:00:01Z").unwrap().is_some());
+        db.move_task("hyg-probe-task", TaskStatus::Done, "x", "2026-01-01T00:00:02Z").unwrap();
+        assert_eq!(db.list_task_agents("hyg-probe-task").unwrap()[0].status, "done");
+        assert!(db.lease_of("hyg-probe-task").unwrap().is_none());
+    }
+
+    #[test]
     fn finishing_settles_an_unclaimed_offer() {
         let db = db();
         agent(&db, "a1");
@@ -2037,7 +2108,7 @@ mod tests {
         let roster = db.list_task_agents("t1").unwrap();
         let status = |id: &str| roster.iter().find(|m| m.agent_id == id).unwrap().status.clone();
         assert_eq!(status("a1"), "done");
-        assert_eq!(status("a2"), "waiting");
+        assert_eq!(status("a2"), "withdrawn");
     }
 
     #[test]

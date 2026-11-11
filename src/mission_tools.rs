@@ -839,7 +839,7 @@ fn inspect_event_row(event: &crate::harness::HarnessEvent) -> Option<Value> {
             }
             Some(json!({"kind": "user", "text": text}))
         }
-        AssistantText { text } => {
+        AssistantText { text, .. } => {
             let text = clip(text, 400);
             if text.is_empty() {
                 return None;
@@ -2902,9 +2902,11 @@ pub(crate) fn announce_report(
     // created the task, so it is the one record that knows who did the work.
     let roster = store.list_task_agents(&task.id).unwrap_or_default();
     let current = roster.iter().filter(|member| member.removed_at.is_none());
+    // By now complete_task has settled the worker from `active` to `done`.
     let reporter = current
         .clone()
         .find(|member| member.status == "active")
+        .or_else(|| current.clone().find(|member| member.status == "done"))
         .or_else(|| current.clone().next())
         .map(|member| member.agent_id.clone())
         .or_else(|| ctx.agent_id().map(str::to_string));

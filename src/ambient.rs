@@ -529,6 +529,43 @@ pub fn mark(id: &str, stage: &str) {
     }
     let ms = map.get(id).map(|t| now.duration_since(*t).as_millis()).unwrap_or(0);
     eprintln!("[ambient-t] {} {stage} +{ms}ms", &id[..id.len().min(8)]);
+    drop(map);
+    if let Ok(store) = store() {
+        let _ = store.with_connection(|c| write_stage(c, id, stage, ms));
+    }
+}
+
+const STAGES_KEPT: usize = 24;
+
+use rusqlite::OptionalExtension;
+
+fn write_stage(c: &rusqlite::Connection, id: &str, stage: &str, ms: u128) -> rusqlite::Result<()> {
+    let old: Option<String> = c
+        .query_row("SELECT stages FROM ambient_events WHERE id = ?1", [id], |r| r.get(0))
+        .optional()?
+        .flatten();
+    let mut entries: Vec<String> = old.unwrap_or_default().split_whitespace().map(str::to_string).collect();
+    entries.push(format!("{stage}+{ms}ms"));
+    if entries.len() > STAGES_KEPT {
+        entries.drain(..entries.len() - STAGES_KEPT);
+    }
+    let joined = format!("{} ", entries.join(" "));
+    c.execute("UPDATE ambient_events SET stage = ?2, stages = ?3 WHERE id = ?1", rusqlite::params![id, stage, joined])?;
+    Ok(())
+}
+
+pub fn record_outcome(ids: &[String], outcome: &str) {
+    if ids.is_empty() {
+        return;
+    }
+    if let Ok(store) = store() {
+        let _ = store.with_connection(|c| {
+            for id in ids {
+                c.execute("UPDATE ambient_events SET outcome = ?2 WHERE id = ?1", rusqlite::params![id, outcome])?;
+            }
+            Ok(())
+        });
+    }
 }
 
 fn last() -> &'static std::sync::Mutex<String> {
@@ -802,5 +839,42 @@ mod wait_tests {
         assert!(slot.pending(), "the older waiter's drop must not free the newer one");
         drop(second);
         assert!(!slot.pending());
+    }
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+
+    #[test]
+    fn stage_is_written_and_history_is_capped() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        crate::app_schema::ensure(&c).unwrap();
+        c.execute("INSERT INTO ambient_events (id, started_at, status, created_at) VALUES ('e1', 't', 'pending', 0)", []).unwrap();
+        for i in 0..30 {
+            write_stage(&c, "e1", &format!("s{i}"), i).unwrap();
+        }
+        let (stage, stages): (String, String) =
+            c.query_row("SELECT stage, stages FROM ambient_events WHERE id = 'e1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(stage, "s29");
+        assert_eq!(stages.split_whitespace().count(), STAGES_KEPT);
+        assert!(stages.starts_with("s6+6ms ") && stages.ends_with("s29+29ms "));
+        write_stage(&c, "missing", "x", 0).unwrap();
+    }
+
+    #[test]
+    #[ignore = "opens a copy of a real database at /tmp/ambient-replay.db"]
+    fn replay_copy_gains_stage_columns() {
+        let store = crate::store::Store::open("/tmp/ambient-replay.db").unwrap();
+        let cols: Vec<String> = store
+            .with_connection(|c| {
+                c.prepare("PRAGMA table_info(ambient_events)")?.query_map([], |r| r.get::<_, String>(1))?.collect()
+            })
+            .unwrap();
+        println!("ambient_events columns: {cols:?}");
+        for want in ["stage", "stages", "outcome"] {
+            assert!(cols.iter().any(|c| c == want), "missing {want}");
+        }
+        store.with_connection(|c| write_stage(c, "no-such-event", "flush", 1)).unwrap();
     }
 }

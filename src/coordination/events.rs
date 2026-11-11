@@ -4,7 +4,7 @@ use serde_json::Value;
 use super::{Store, StoreError, types::CoordinationEvent};
 
 impl Store {
-    /// Append an event and its outbox entry atomically. Repeating an idempotency
+    /// Append an event atomically. Repeating an idempotency
     /// key returns the original event without creating a duplicate sequence.
     pub fn append_event(
         &self,
@@ -74,10 +74,6 @@ impl Store {
                     event.idempotency_key,
                     event.created_at,
                 ],
-            )?;
-            tx.execute(
-                "INSERT INTO outbox (event_id, available_at) VALUES (?1, ?2)",
-                params![event.event_id, event.created_at],
             )?;
             if event.actor_kind == "agent" {
                 tx.execute(

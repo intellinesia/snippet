@@ -182,6 +182,15 @@ pub(super) fn note_heard() {
 }
 
 pub(super) fn resume_unless_heard(daemon: Shared) {
+    resume(daemon, false);
+}
+
+/// From the speech interrupt hook: resumes only while the cut reply is still unconsumed.
+pub(super) fn resume_after_barge_in(daemon: Shared) {
+    resume(daemon, true);
+}
+
+fn resume(daemon: Shared, needs_interruption: bool) {
     use std::time::{Duration, Instant};
     let sent = mission_control_inputs();
     let started = Instant::now();
@@ -196,7 +205,7 @@ pub(super) fn resume_unless_heard(daemon: Shared) {
                 break;
             }
         }
-        if mission_control_busy() {
+        if mission_control_busy() || (needs_interruption && !crate::speech::interruption_pending()) {
             return;
         }
         // A resume that was itself cut with nothing said in between would loop on the same reply.
@@ -380,7 +389,7 @@ fn waiting_and_dormant(tasks: &[crate::coordination::Task], now: i64) -> (Vec<St
         if dormant.len() < 8 {
             let last_said = session_full_state(&session.id).and_then(|full| {
                 full.events.iter().rev().find_map(|event| match event {
-                    crate::harness::HarnessEvent::AssistantText { text } => Some(one_line(text, 220)),
+                    crate::harness::HarnessEvent::AssistantText { text, .. } => Some(one_line(text, 220)),
                     _ => None,
                 })
             });

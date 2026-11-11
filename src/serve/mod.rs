@@ -52,7 +52,7 @@ pub(crate) use config_routes::*;
 mod coordination;
 pub use coordination::{COORDINATION_THREAD, queue_coordination_wake};
 mod direct;
-pub(crate) use direct::relay_desk_reply;
+pub(crate) use direct::{human_dm_thread, relay_desk_reply, relay_restart};
 mod autonomy;
 mod fs;
 mod git;
@@ -909,6 +909,16 @@ pub async fn run_serve(
     call_track::sweep_loop(daemon.clone());
     ambient_routes::warm_voice(daemon.clone());
     {
+        static RESUME: std::sync::OnceLock<(Shared, tokio::runtime::Handle)> = std::sync::OnceLock::new();
+        let _ = RESUME.set((daemon.clone(), tokio::runtime::Handle::current()));
+        crate::speech::set_resume_hook(|| {
+            if let Some((d, handle)) = RESUME.get() {
+                let _guard = handle.enter();
+                autonomy::resume_after_barge_in(d.clone());
+            }
+        });
+    }
+    {
         let d = daemon.clone();
         let handle = tokio::runtime::Handle::current();
         crate::ambient::set_mode_hook(Box::new(move |mode, reason| {
@@ -1113,7 +1123,7 @@ pub async fn run_serve(
         .route("/git/init", post(git_init))
         .layer(axum::middleware::from_fn_with_state(daemon.clone(), require_token))
         .layer(compression())
-        .with_state(daemon);
+        .with_state(daemon.clone());
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
         .map_err(|e| format!("invalid bind address {host}:{port}: {e}"))?;
@@ -1154,11 +1164,35 @@ pub async fn run_serve(
         },
         _ = shutdown_signal() => Ok(()),
     };
+    let _ = tokio::time::timeout(Duration::from_secs(3), announce_restart(&daemon)).await;
     server.abort();
     running.stop().await;
     let _ = std::fs::remove_file(state_json_path());
     let _ = std::fs::remove_file(pid_path());
     result
+}
+
+async fn announce_restart(d: &Shared) {
+    let live: Vec<(String, PathBuf)> = d
+        .sessions
+        .lock()
+        .await
+        .iter()
+        .filter(|(_, l)| !l.join.is_finished())
+        .map(|(id, l)| (id.clone(), l.state_path.clone()))
+        .collect();
+    for (id, path) in live {
+        let Some(meta) = read_session_meta(&path) else { continue };
+        if meta.status != crate::harness::HarnessStatus::Running && meta.human_waiting.is_empty() {
+            continue;
+        }
+        let event = crate::harness::HarnessEvent::SystemDecision {
+            step: "daemon_restart".to_string(),
+            reasoning: "Snippet restarted while this turn was running; continuing is up to the next message".to_string(),
+        };
+        let _ = d.store.append_conversation_events(&id, &[event], &chrono::Utc::now().to_rfc3339());
+        relay_restart(&d.store, &id, &meta);
+    }
 }
 
 fn unauthorized() -> Response {

@@ -9,7 +9,7 @@
 //! delivery row was never written (a crash between the event insert and the
 //! delivery insert) is still discovered and delivered once.
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use super::types::CoordinationEvent;
@@ -56,6 +56,15 @@ impl InboxKind {
             Self::Room => "room",
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct OwedReply {
+    pub event_id: String,
+    pub recipient: String,
+    pub sender: String,
+    pub thread_id: String,
+    pub since: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -373,20 +382,29 @@ impl Store {
             let _ = self.note_agent_last_message(agent, &envelope_text(body), created_at, from);
         }
 
+        let owes_reply = matches!(saved.payload.get("kind").and_then(|k| k.as_str()), Some("question" | "blocker"))
+            .then_some(created_at);
         // The sender has by definition already seen this message; the recipient
         // has not, so its `read_at` stays NULL until it reads the thread.
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT OR IGNORE INTO message_deliveries
-                 (event_id, recipient_kind, recipient_id, recipient, queued_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                 (event_id, recipient_kind, recipient_id, recipient, queued_at, awaiting_reply)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     saved.event_id,
                     recipient.0,
                     recipient.1,
                     recipient_ref,
-                    created_at
+                    created_at,
+                    owes_reply
                 ],
+            )?;
+            conn.execute(
+                "UPDATE message_deliveries SET awaiting_reply = NULL
+                 WHERE awaiting_reply IS NOT NULL AND recipient = ?1 AND event_id IN (
+                     SELECT event_id FROM board_events WHERE thread_id = ?2 AND actor_id = ?3 AND actor_kind = ?4)",
+                params![sender_ref, saved.thread_id, recipient.1, recipient.0],
             )?;
             conn.execute(
                 "INSERT OR IGNORE INTO message_deliveries
@@ -404,6 +422,40 @@ impl Store {
         })?;
 
         Ok(saved)
+    }
+
+    /// Questions and blockers still unanswered past `cutoff` and eligible for a nag:
+    /// (event_id, recipient agent, sender id, thread, queued_at). Marks nothing.
+    pub fn owed_replies(&self, cutoff: &str, renag_before: &str) -> Result<Vec<OwedReply>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT d.event_id, d.recipient_id, e.actor_id, e.thread_id, d.awaiting_reply
+                 FROM message_deliveries d JOIN board_events e ON e.event_id = d.event_id
+                 WHERE d.awaiting_reply IS NOT NULL AND d.awaiting_reply < ?1 AND d.recipient_kind = 'agent'
+                   AND d.nag_count < 2 AND (d.nagged_at IS NULL OR d.nagged_at < ?2)",
+            )?;
+            let rows = stmt.query_map(params![cutoff, renag_before], |row| {
+                Ok(OwedReply {
+                    event_id: row.get(0)?,
+                    recipient: row.get(1)?,
+                    sender: row.get(2)?,
+                    thread_id: row.get(3)?,
+                    since: row.get(4)?,
+                })
+            })?;
+            rows.collect()
+        })
+    }
+
+    pub fn mark_nagged(&self, event_id: &str, recipient: &str, at: &str) -> Result<(), StoreError> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE message_deliveries SET nagged_at = ?3, nag_count = nag_count + 1
+                 WHERE event_id = ?1 AND recipient_id = ?2",
+                params![event_id, recipient, at],
+            )?;
+            Ok(())
+        })
     }
 
     /// What has reached an agent, newest first.
@@ -788,6 +840,30 @@ impl Store {
             let mut events = rows.collect::<Result<Vec<_>, _>>()?;
             events.reverse();
             Ok(events)
+        })
+    }
+
+    /// Whether `agent_id` has sent anything on `thread_id` after `since`. The
+    /// daemon's own acknowledgements (`auto` set) do not count as the agent.
+    pub fn agent_replied_on_thread_since(
+        &self,
+        thread_id: &str,
+        agent_id: &str,
+        since: &str,
+    ) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            let found: Option<i64> = conn
+                .query_row(
+                    "SELECT 1 FROM board_events
+                     WHERE thread_id = ?1 AND event_type = 'direct_message.sent'
+                       AND actor_kind = 'agent' AND actor_id = ?2 AND created_at > ?3
+                       AND json_extract(payload_json, '$.auto') IS NULL
+                     LIMIT 1",
+                    params![thread_id, agent_id, since],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(found.is_some())
         })
     }
 

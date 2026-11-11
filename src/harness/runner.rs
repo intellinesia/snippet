@@ -211,6 +211,7 @@ impl CodingHarness {
                                     state.messages.push(HarnessMessage::User {
                                         content: steer_message(&text),
                                     });
+                                    Self::note_human_wait(&mut state, &text, true);
                                     state.events.push(HarnessEvent::Steer { text });
                                     self.bump_activity();
                                 } else {
@@ -236,6 +237,7 @@ impl CodingHarness {
                                 state.messages.push(HarnessMessage::User {
                                     content: steer_message(&text),
                                 });
+                                Self::note_human_wait(&mut state, &text, true);
                                 state.events.push(HarnessEvent::Steer { text });
                                 self.bump_activity();
                             } else if hold {
@@ -307,6 +309,7 @@ impl CodingHarness {
                         state.messages.push(HarnessMessage::User {
                             content: steer_message(&text),
                         });
+                        Self::note_human_wait(&mut state, &text, true);
                         state.events.push(HarnessEvent::Steer { text });
                         self.bump_activity();
                     }
@@ -414,6 +417,9 @@ impl CodingHarness {
                     if let Some(sink) = sink.as_ref() {
                         StreamBuffer::clear(sink);
                     }
+                    if let Some((ids, _)) = voice_turn_ids(&state.messages) {
+                        crate::ambient::record_outcome(&ids, "interrupted");
+                    }
                     repair_unanswered_tool_events(&mut state.events, evt_mark);
                     repair_unanswered_tool_calls(&mut state.messages);
                     trim_spoken_calls(&mut state, evt_mark);
@@ -454,6 +460,12 @@ impl CodingHarness {
                             })
                             .unwrap_or(false);
                         if voice_turn {
+                            if let Some((ids, outcome)) = classify_voice_turn(&state.messages, &mut state.events) {
+                                crate::ambient::record_outcome(&ids, outcome);
+                                if outcome != "spoken" {
+                                    self.persist(&mut state, &lanes).await?;
+                                }
+                            }
                             crate::ambient::release_hold();
                         }
                         if matches!(kind, TurnEndKind::Complete)
@@ -866,5 +878,103 @@ fn trim_spoken_calls(state: &mut HarnessState, evt_mark: usize) {
                     arguments["text"] = serde_json::Value::String(heard);
                     arguments["cut_off_by_user"] = serde_json::Value::String(note.into());
                 }
+    }
+}
+
+/// Ids of the latest user message when it is an ambient turn (resumes carry none).
+fn voice_turn_ids(messages: &[HarnessMessage]) -> Option<(Vec<String>, bool)> {
+    let content = messages.iter().rev().find_map(|m| match m {
+        HarnessMessage::User { content } => Some(content),
+        _ => None,
+    })?;
+    let turn = content.contains("<ambient_turn");
+    if !turn && !content.contains("<ambient_resume") {
+        return None;
+    }
+    let ids = content
+        .find(" ids=\"")
+        .map(|i| &content[i + 6..])
+        .and_then(|rest| rest.split('"').next())
+        .map(|v| v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default();
+    Some((ids, turn))
+}
+
+/// Outcome of a delivered voice turn; marks its closing assistant text quiet when nothing was spoken.
+fn classify_voice_turn(messages: &[HarnessMessage], events: &mut [HarnessEvent]) -> Option<(Vec<String>, &'static str)> {
+    let (ids, turn) = voice_turn_ids(messages)?;
+    if !turn {
+        return None;
+    }
+    let spoke = messages
+        .iter()
+        .rev()
+        .take_while(|m| !matches!(m, HarnessMessage::User { .. }))
+        .any(|m| matches!(m, HarnessMessage::Assistant { tool_calls, .. } if tool_calls.iter().any(|c| is_speak_tool(&c.name))));
+    if spoke {
+        return Some((ids, "spoken"));
+    }
+    let last = events
+        .iter_mut()
+        .rev()
+        .take_while(|e| !matches!(e, HarnessEvent::UserInput { .. }))
+        .find_map(|e| match e {
+            HarnessEvent::AssistantText { text, quiet } if !text.trim().is_empty() => Some(quiet),
+            _ => None,
+        });
+    match last {
+        Some(quiet) => {
+            *quiet = true;
+            Some((ids, "typed"))
+        }
+        None => Some((ids, "quiet")),
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+    use crate::llm::ToolCallRecord;
+
+    fn user() -> HarnessMessage {
+        HarnessMessage::User { content: "<ambient_turn mode=\"active\" ids=\"x,y\" parts=\"2\">hi</ambient_turn>".into() }
+    }
+
+    fn text(s: &str) -> HarnessEvent {
+        HarnessEvent::AssistantText { text: s.into(), quiet: false }
+    }
+
+    fn quiet_flags(events: &[HarnessEvent]) -> Vec<bool> {
+        events.iter().filter_map(|e| if let HarnessEvent::AssistantText { quiet, .. } = e { Some(*quiet) } else { None }).collect()
+    }
+
+    #[test]
+    fn outcomes_spoken_typed_quiet() {
+        let speak = HarnessMessage::Assistant {
+            content: String::new(),
+            tool_calls: vec![ToolCallRecord { id: "1".into(), name: "speak".into(), arguments: serde_json::json!({"text": "hi"}), signature: None, origin_model: None }],
+        };
+        let mut events = vec![HarnessEvent::UserInput { text: "t".into() }, text("done")];
+        let (ids, outcome) = classify_voice_turn(&[user(), speak], &mut events).unwrap();
+        assert_eq!((ids, outcome), (vec!["x".to_string(), "y".to_string()], "spoken"));
+        assert_eq!(quiet_flags(&events), vec![false]);
+
+        let reply = HarnessMessage::Assistant { content: "no reply needed".into(), tool_calls: vec![] };
+        let mut events = vec![HarnessEvent::UserInput { text: "t".into() }, text("no reply needed")];
+        assert_eq!(classify_voice_turn(&[user(), reply.clone()], &mut events).unwrap().1, "typed");
+        assert_eq!(quiet_flags(&events), vec![true]);
+
+        let mut events = vec![HarnessEvent::UserInput { text: "t".into() }];
+        assert_eq!(classify_voice_turn(&[user()], &mut events).unwrap().1, "quiet");
+
+        let typed = [HarnessMessage::User { content: "hello".into() }, reply];
+        assert!(classify_voice_turn(&typed, &mut []).is_none());
+    }
+
+    #[test]
+    fn quiet_is_omitted_from_json_when_false() {
+        assert_eq!(serde_json::to_value(text("a")).unwrap().get("quiet"), None);
+        let q = HarnessEvent::AssistantText { text: "a".into(), quiet: true };
+        assert_eq!(serde_json::to_value(q).unwrap()["quiet"], true);
     }
 }

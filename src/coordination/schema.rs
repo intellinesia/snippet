@@ -99,14 +99,6 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
          CREATE INDEX IF NOT EXISTS board_events_thread_sequence
              ON board_events(thread_id, sequence);
 
-         CREATE TABLE IF NOT EXISTS outbox (
-             id INTEGER PRIMARY KEY AUTOINCREMENT,
-             event_id TEXT NOT NULL UNIQUE REFERENCES board_events(event_id) ON DELETE CASCADE,
-             attempts INTEGER NOT NULL DEFAULT 0,
-             available_at TEXT NOT NULL,
-             delivered_at TEXT
-         );
-
          -- The task board. A task is the unit of work; each task owns one board
          -- thread (its message room) so the agents on that task can talk without
          -- a global room every participant has to read.
@@ -263,6 +255,10 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              last_error TEXT,
              -- When a failed delivery may be tried again; NULL means now.
              retry_at TEXT,
+             -- Set on a question or blocker until the recipient replies on the thread.
+             awaiting_reply TEXT,
+             nagged_at TEXT,
+             nag_count INTEGER NOT NULL DEFAULT 0,
              PRIMARY KEY (event_id, recipient)
          );
          CREATE INDEX IF NOT EXISTS message_deliveries_pending
