@@ -524,6 +524,17 @@ impl Daemon {
         known.then_some(profile)
     }
 
+    /// The profile an agent's desk is kept on apart from its work, when set and still defined.
+    pub(crate) fn agent_desk_profile(&self, agent_id: &str) -> Option<String> {
+        let profile = self.store.agent_desk_profile(agent_id).ok().flatten()?;
+        let known = self
+            .config
+            .lock()
+            .map(|c| c.profile_names().iter().any(|name| *name == profile))
+            .unwrap_or(false);
+        known.then_some(profile)
+    }
+
     /// The profile a task runs on: its own override first, then the profile of
     /// the agent doing the work.
     pub(crate) fn task_profile(&self, task: &crate::coordination::Task) -> Option<String> {
@@ -539,7 +550,7 @@ impl Daemon {
 
     pub(crate) fn routed_profile(&self, id: &str) -> Option<String> {
         if let Some(agent_id) = id.strip_prefix("inbox-")
-            && let Some(profile) = self.agent_profile(agent_id) {
+            && let Some(profile) = self.agent_desk_profile(agent_id).or_else(|| self.agent_profile(agent_id)) {
                 return Some(profile);
             }
         let route = if id == crate::mission_control::SESSION_ID {
@@ -990,6 +1001,7 @@ pub async fn run_serve(
         .route("/agents/{agent_id}/shape", post(set_agent_shape))
         .route("/agents/{agent_id}/nickname", post(set_agent_nickname))
         .route("/agents/{agent_id}/profile", post(set_agent_profile))
+        .route("/agents/{agent_id}/desk-profile", post(set_agent_desk_profile))
         .route("/agents/{agent_id}/context", post(agent_routes::set_agent_context))
         .route("/agents/{agent_id}", axum::routing::delete(delete_agent))
         .merge(coordination::router())

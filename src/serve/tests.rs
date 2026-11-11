@@ -737,3 +737,36 @@ use super::*;
 
 
 
+    #[test]
+    fn a_separate_desk_profile_moves_only_the_desk() {
+        use crate::coordination::types::{Agent, AgentKind, AgentStatus};
+        let d = test_daemon();
+        *d.config.lock().unwrap() = toml::from_str(
+            "[setups.work]\nprovider = \"openai\"\nmodel = \"a\"\napi_key = \"\"\n[setups.desk]\nprovider = \"openai\"\nmodel = \"b\"\napi_key = \"\"\n",
+        )
+        .unwrap();
+        d.store
+            .create_agent(&Agent {
+                id: "builder".into(),
+                display_name: "Builder".into(),
+                handle: "builder".into(),
+                kind: AgentKind::Worker,
+                status: AgentStatus::Active,
+                capabilities: vec![],
+            })
+            .unwrap();
+        assert!(!d.store.set_agent_desk_profile("ghost", Some("desk")).unwrap());
+        d.store.set_agent_profile("builder", Some("work")).unwrap();
+        assert_eq!(d.routed_profile("inbox-builder").as_deref(), Some("work"));
+
+        d.store.set_agent_desk_profile("builder", Some("desk")).unwrap();
+        assert_eq!(d.routed_profile("inbox-builder").as_deref(), Some("desk"));
+        assert_eq!(d.agent_profile("builder").as_deref(), Some("work"));
+
+        d.store.set_agent_desk_profile("builder", Some("gone")).unwrap();
+        assert_eq!(d.routed_profile("inbox-builder").as_deref(), Some("work"));
+
+        d.store.set_agent_desk_profile("builder", None).unwrap();
+        assert_eq!(d.store.agent_desk_profile("builder").unwrap(), None);
+        assert_eq!(d.routed_profile("inbox-builder").as_deref(), Some("work"));
+    }

@@ -38,6 +38,7 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
             let shapes = d.store.agent_shapes().unwrap_or_default();
             let nicknames = d.store.agent_nicknames().unwrap_or_default();
             let profiles = d.store.agent_profiles().unwrap_or_default();
+            let desk_models = d.store.agent_desk_profiles().unwrap_or_default();
             let context_limits = d.store.agent_context_limits().unwrap_or_default();
             let mut last_messages = d.store.agent_last_messages().unwrap_or_default();
             let desks = d.desk_profiles().await;
@@ -67,6 +68,9 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
                         }
                         if let Some(profile) = profiles.get(&agent.id) {
                             object.insert("profile".into(), profile.clone().into());
+                        }
+                        if let Some(desk_model) = desk_models.get(&agent.id) {
+                            object.insert("desk_model".into(), desk_model.clone().into());
                         }
                         if let Some(running) = desks.get(&agent.id) {
                             object.insert("desk_profile".into(), running.clone().into());
@@ -552,6 +556,30 @@ pub(crate) async fn set_agent_profile(
         }
         Ok(false) => api_error(StatusCode::NOT_FOUND, "no such agent"),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("set agent profile: {error}")),
+    }
+}
+
+/// POST /agents/{id}/desk-profile — keep the agent's desk on its own profile,
+/// apart from the one its tasks run on, or null to share it again.
+pub(crate) async fn set_agent_desk_profile(
+    State(d): State<Shared>,
+    axum::extract::Path(agent_id): axum::extract::Path<String>,
+    Json(req): Json<AgentProfileReq>,
+) -> Response {
+    let profile = req.profile.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    if let Some(name) = profile.as_deref() {
+        d.reload_config().await;
+        if let Err(error) = crate::mission_tools::check_profile(name).await {
+            return api_error(StatusCode::BAD_REQUEST, error.to_string());
+        }
+    }
+    match d.store.set_agent_desk_profile(&agent_id, profile.as_deref()) {
+        Ok(true) => {
+            d.follow_agent_profile(&agent_id);
+            Json(serde_json::json!({ "id": agent_id, "desk_model": profile })).into_response()
+        }
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such agent"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("set desk profile: {error}")),
     }
 }
 

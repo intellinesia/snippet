@@ -154,6 +154,7 @@ impl Store {
             tx.execute("DELETE FROM agent_shapes WHERE agent_id = ?1", params![id])?;
             tx.execute("DELETE FROM agent_nicknames WHERE agent_id = ?1", params![id])?;
             tx.execute("DELETE FROM agent_profiles WHERE agent_id = ?1", params![id])?;
+            tx.execute("DELETE FROM agent_desk_profiles WHERE agent_id = ?1", params![id])?;
             tx.execute("DELETE FROM agent_context_limits WHERE agent_id = ?1", params![id])?;
             tx.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
             tx.commit()?;
@@ -208,18 +209,45 @@ impl Store {
     }
 
     pub fn agent_profiles(&self) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        self.profiles_in("agent_profiles")
+    }
+
+    /// The inference profile an agent works on, if one is set.
+    pub fn agent_profile(&self, id: &str) -> Result<Option<String>, StoreError> {
+        self.profile_in("agent_profiles", id)
+    }
+
+    /// Set or clear (`None`) the agent's profile. Returns whether the agent exists.
+    pub fn set_agent_profile(&self, id: &str, profile: Option<&str>) -> Result<bool, StoreError> {
+        self.set_profile_in("agent_profiles", id, profile)
+    }
+
+    pub fn agent_desk_profiles(&self) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        self.profiles_in("agent_desk_profiles")
+    }
+
+    /// The profile the agent's desk runs on when it is kept apart from its work profile.
+    pub fn agent_desk_profile(&self, id: &str) -> Result<Option<String>, StoreError> {
+        self.profile_in("agent_desk_profiles", id)
+    }
+
+    /// Set or clear (`None`) the agent's separate desk profile. Returns whether the agent exists.
+    pub fn set_agent_desk_profile(&self, id: &str, profile: Option<&str>) -> Result<bool, StoreError> {
+        self.set_profile_in("agent_desk_profiles", id, profile)
+    }
+
+    fn profiles_in(&self, table: &'static str) -> Result<std::collections::HashMap<String, String>, StoreError> {
         self.with_connection(|conn| {
-            let mut stmt = conn.prepare("SELECT agent_id, profile FROM agent_profiles")?;
+            let mut stmt = conn.prepare(&format!("SELECT agent_id, profile FROM {table}"))?;
             let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
             rows.collect::<Result<_, _>>()
         })
     }
 
-    /// The inference profile an agent works on, if one is set.
-    pub fn agent_profile(&self, id: &str) -> Result<Option<String>, StoreError> {
+    fn profile_in(&self, table: &'static str, id: &str) -> Result<Option<String>, StoreError> {
         self.with_connection(|conn| {
             match conn.query_row(
-                "SELECT profile FROM agent_profiles WHERE agent_id = ?1",
+                &format!("SELECT profile FROM {table} WHERE agent_id = ?1"),
                 params![id],
                 |row| row.get::<_, String>(0),
             ) {
@@ -230,8 +258,7 @@ impl Store {
         })
     }
 
-    /// Set or clear (`None`) the agent's profile. Returns whether the agent exists.
-    pub fn set_agent_profile(&self, id: &str, profile: Option<&str>) -> Result<bool, StoreError> {
+    fn set_profile_in(&self, table: &'static str, id: &str, profile: Option<&str>) -> Result<bool, StoreError> {
         self.with_connection(|conn| {
             let exists: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM agents WHERE id = ?1)",
@@ -243,11 +270,13 @@ impl Store {
             }
             match profile {
                 Some(profile) => conn.execute(
-                    "INSERT INTO agent_profiles (agent_id, profile) VALUES (?1, ?2)
-                     ON CONFLICT(agent_id) DO UPDATE SET profile = excluded.profile",
+                    &format!(
+                        "INSERT INTO {table} (agent_id, profile) VALUES (?1, ?2)
+                         ON CONFLICT(agent_id) DO UPDATE SET profile = excluded.profile"
+                    ),
                     params![id, profile],
                 )?,
-                None => conn.execute("DELETE FROM agent_profiles WHERE agent_id = ?1", params![id])?,
+                None => conn.execute(&format!("DELETE FROM {table} WHERE agent_id = ?1"), params![id])?,
             };
             Ok(true)
         })
