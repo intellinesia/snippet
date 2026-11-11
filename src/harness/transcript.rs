@@ -277,7 +277,7 @@ pub(super) fn record_assistant_text(
         });
     }
     if !redundant && !text.trim().is_empty() {
-        state.events.push(HarnessEvent::AssistantText { text });
+        state.events.push(HarnessEvent::AssistantText { text, quiet: false });
     }
 }
 
@@ -305,7 +305,7 @@ pub(super) fn assistant_text_is_redundant(text: &str, events: &[HarnessEvent]) -
         .iter()
         .rev()
         .filter_map(|e| match e {
-            HarnessEvent::AssistantText { text } => Some(text.as_str()),
+            HarnessEvent::AssistantText { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .take(3)

@@ -24,7 +24,7 @@ use super::*;
     fn session_event_page_returns_bounded_backward_cursor() {
         let events = vec![
             crate::harness::HarnessEvent::UserInput { text: "one".into() },
-            crate::harness::HarnessEvent::AssistantText { text: "two".into() },
+            crate::harness::HarnessEvent::AssistantText { text: "two".into(), quiet: false },
             crate::harness::HarnessEvent::UserInput {
                 text: "three".into(),
             },

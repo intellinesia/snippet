@@ -2243,7 +2243,7 @@ impl CodingHarness {
                             StreamBuffer::clear(sink);
                         }
                         state.messages.push(HarnessMessage::Assistant { content: text.clone(), tool_calls: Vec::new() });
-                        state.events.push(HarnessEvent::AssistantText { text });
+                        state.events.push(HarnessEvent::AssistantText { text, quiet: false });
                         (true, false)
                     }
                     Some("tool") => {
@@ -2444,7 +2444,7 @@ impl CodingHarness {
                                     StreamBuffer::clear(sink);
                                 }
                                 state.messages.push(HarnessMessage::Assistant { content: text.clone(), tool_calls: Vec::new() });
-                                state.events.push(HarnessEvent::AssistantText { text });
+                                state.events.push(HarnessEvent::AssistantText { text, quiet: false });
                                 self.lane_progress("model", super::step::MODEL_ACTIVITY_TEXT);
                                 changed = true;
                             }
@@ -2528,7 +2528,7 @@ impl CodingHarness {
                     let message = event.get("result").and_then(Value::as_str)
                         .or_else(|| event.get("subtype").and_then(Value::as_str))
                         .unwrap_or("Claude Code reported an error").to_string();
-                    if matches!(state.events.last(), Some(HarnessEvent::AssistantText { text }) if text.trim() == message.trim()) {
+                    if matches!(state.events.last(), Some(HarnessEvent::AssistantText { text, .. }) if text.trim() == message.trim()) {
                         state.events.pop();
                         if matches!(state.messages.last(), Some(HarnessMessage::Assistant { content, tool_calls }) if tool_calls.is_empty() && content.trim() == message.trim()) {
                             state.messages.pop();

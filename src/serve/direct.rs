@@ -167,7 +167,7 @@ pub(crate) fn desk_relay_text(
         return None;
     }
     let text = turn.iter().rev().find_map(|e| match e {
-        E::AssistantText { text } if !text.trim().is_empty() => Some(text.trim().to_string()),
+        E::AssistantText { text, .. } if !text.trim().is_empty() => Some(text.trim().to_string()),
         _ => None,
     })?;
     Some((start, text))
@@ -756,7 +756,7 @@ mod tests {
         }
     }
     fn say(text: &str) -> E {
-        E::AssistantText { text: text.into() }
+        E::AssistantText { text: text.into(), quiet: false }
     }
     fn send(to: &str, ok: bool) -> Vec<E> {
         vec![

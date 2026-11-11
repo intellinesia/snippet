@@ -144,6 +144,9 @@ pub enum HarnessEvent {
     },
     AssistantText {
         text: String,
+        /// Set by the daemon on a voice turn that produced no speak call.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        quiet: bool,
     },
     /// The agent replaced its visible plan.
     PlanUpdated {

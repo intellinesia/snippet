@@ -424,7 +424,7 @@ pub(super) fn event_lines(event: &HarnessEvent, width: usize) -> Vec<Line<'stati
                 steer_lines(text, width)
             }
         }
-        HarnessEvent::AssistantText { text } => {
+        HarnessEvent::AssistantText { text, .. } => {
             indent_block(render_prose(text, width.saturating_sub(SPINE)), SPINE)
         }
         HarnessEvent::Retired | HarnessEvent::TurnChanges { .. } => Vec::new(),

@@ -347,10 +347,12 @@ fn event_json(row: &rusqlite::Row) -> rusqlite::Result<serde_json::Value> {
         "addressed": row.get::<_, Option<f64>>(8)?,
         "kept": row.get::<_, i64>(9)? != 0,
         "intent": row.get::<_, Option<String>>(10)?,
+        "stage": row.get::<_, Option<String>>(11)?,
+        "outcome": row.get::<_, Option<String>>(12)?,
     }))
 }
 
-const COLUMNS: &str = "e.id, e.device, e.started_at, e.duration_ms, e.status, e.text, e.error, e.verdict, e.addressed, e.kept, e.intent";
+const COLUMNS: &str = "e.id, e.device, e.started_at, e.duration_ms, e.status, e.text, e.error, e.verdict, e.addressed, e.kept, e.intent, e.stage, e.outcome";
 
 fn fetch(d: &Daemon, id: &str) -> Option<serde_json::Value> {
     d.store
