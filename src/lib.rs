@@ -8,6 +8,7 @@ pub mod agent_context;
 pub mod agent_wakes;
 pub mod keep_warm;
 pub mod ambient;
+pub mod ambient_tuning;
 pub mod agent_tools;
 pub mod anthropic;
 pub mod artifacts;

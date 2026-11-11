@@ -560,7 +560,11 @@ pub(super) async fn observe(d: &Shared, device: &str, parts: &[Part], v: &Verdic
         }
     }
     let policy = crate::recording_policy::live_or(&d.config.lock().unwrap().recording);
-    let memorable = !delivered && v.kept() && v.memorable >= MEMORABLE;
+    let memorable = match crate::ambient_tuning::current(device).note_policy {
+        crate::ambient_tuning::NotePolicy::Off => false,
+        crate::ambient_tuning::NotePolicy::Everything => !delivered && v.kept(),
+        crate::ambient_tuning::NotePolicy::Important => !delivered && v.kept() && v.memorable >= MEMORABLE,
+    };
     let fx = {
         let mut book = book();
         book.set_policy(policy);

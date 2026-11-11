@@ -86,6 +86,8 @@ pub fn add_mission_control_tools(registry: &mut ToolRegistry) {
     registry.insert(crate::goal_plan::ReplanGoal);
     registry.insert(Speak);
     registry.insert(AmbientMode);
+    registry.insert(AmbientTune);
+    registry.insert(AmbientFeedback);
     registry.insert(UserOnCall);
     registry.insert(AmbientExpect);
     registry.insert(WaitForUser);
@@ -316,6 +318,8 @@ struct SpeakArgs {
     about: Option<String>,
     #[serde(default)]
     mode: Option<String>,
+    #[serde(default)]
+    urgent: bool,
 }
 
 #[derive(Deserialize)]
@@ -567,6 +571,148 @@ impl Tool for UserOnCall {
     }
 }
 
+#[derive(Deserialize)]
+struct AmbientTuneArgs {
+    action: String,
+    #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
+    address_threshold: Option<f64>,
+    #[serde(default)]
+    only_my_voice: Option<bool>,
+    #[serde(default)]
+    chattiness: Option<String>,
+    #[serde(default)]
+    hold_ms: Option<u64>,
+    #[serde(default)]
+    conversation_ttl_s: Option<u64>,
+    #[serde(default)]
+    room_quiet_s: Option<i64>,
+    #[serde(default)]
+    note_policy: Option<String>,
+    #[serde(default)]
+    barge_words: Option<Vec<String>>,
+    #[serde(default)]
+    minutes: Option<u64>,
+    #[serde(default)]
+    until: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+fn tuning_result(t: &crate::ambient_tuning::Tuning) -> Value {
+    let mut out = serde_json::to_value(t).unwrap_or_else(|_| json!({}));
+    out["expires_in_s"] = json!(t.expires_at.map(|e| (e - chrono::Utc::now().timestamp()).max(0)));
+    out
+}
+
+pub struct AmbientTune;
+#[async_trait]
+impl Tool for AmbientTune {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "ambient_tune".into(),
+            description: "Tune how the always-on microphone treats speech. `set` a `profile` (`alone`: normal; `with_people`: only the user's voice counts and you stay quiet unless addressed; `meeting`: nearly silent, notes everything; `demo`: forward and quick; `driving`: short, hands-free) or individual knobs, for `minutes`/`until` or standing. Say what you set in one line. Use it when the user says who is around or how they want you to behave, or when you see repeated misfires (lines not meant for you answered, or lines for you missed). `get` shows the effective values; `clear` returns to `alone`.".into(),
+            input_schema: schema(json!({
+                "action": {"type": "string", "enum": ["get", "set", "clear"]},
+                "profile": {"type": "string", "enum": ["alone", "with_people", "meeting", "demo", "driving", "custom"]},
+                "address_threshold": {"type": "number", "description": "0.3 to 0.9."},
+                "only_my_voice": {"type": "boolean"},
+                "chattiness": {"type": "string", "enum": ["quiet", "normal", "forward"]},
+                "hold_ms": {"type": "integer"},
+                "conversation_ttl_s": {"type": "integer"},
+                "room_quiet_s": {"type": "integer"},
+                "note_policy": {"type": "string", "enum": ["off", "important", "everything"]},
+                "barge_words": {"type": "array", "items": {"type": "string"}, "description": "Extra barge-in words or two-word phrases."},
+                "minutes": {"type": "integer"},
+                "until": {"type": "string", "description": "RFC 3339 or local YYYY-MM-DD HH:MM."},
+                "reason": {"type": "string", "description": "User's words or observation; required for set."}
+            }), &["action"]),
+        }
+    }
+    async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let a: AmbientTuneArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let device = crate::ambient_tuning::lease_device();
+        match a.action.as_str() {
+            "get" => Ok(ToolResult::success(tuning_result(&crate::ambient_tuning::current(&device)))),
+            "clear" => {
+                crate::ambient_tuning::clear(&device);
+                crate::ambient::emit_state("tuning cleared");
+                Ok(ToolResult::success(tuning_result(&crate::ambient_tuning::current(&device))))
+            }
+            "set" => {
+                let reason = a.reason.as_deref().map(str::trim).filter(|r| !r.is_empty()).ok_or_else(|| ToolError::msg("reason is required for set"))?;
+                let profile = match a.profile.as_deref() {
+                    Some(p) => Some(crate::ambient_tuning::Profile::parse(p).ok_or_else(|| ToolError::msg(format!("unknown profile `{p}`")))?),
+                    None => None,
+                };
+                let mut knobs = serde_json::Map::new();
+                if let Some(v) = a.address_threshold { knobs.insert("address_threshold".into(), json!(v)); }
+                if let Some(v) = a.only_my_voice { knobs.insert("only_my_voice".into(), json!(v)); }
+                if let Some(v) = &a.chattiness { knobs.insert("chattiness".into(), json!(v)); }
+                if let Some(v) = a.hold_ms { knobs.insert("hold_ms".into(), json!(v)); }
+                if let Some(v) = a.conversation_ttl_s { knobs.insert("conversation_ttl_s".into(), json!(v)); }
+                if let Some(v) = a.room_quiet_s { knobs.insert("room_quiet_s".into(), json!(v)); }
+                if let Some(v) = &a.note_policy { knobs.insert("note_policy".into(), json!(v)); }
+                if let Some(v) = &a.barge_words { knobs.insert("barge_words".into(), json!(v)); }
+                let until = match a.until.as_deref() {
+                    Some(u) => Some(crate::recording_policy::parse_when(u).map_err(ToolError::msg)? / 1000),
+                    None => None,
+                };
+                let t = crate::ambient_tuning::set(&device, profile, Value::Object(knobs), a.minutes, until, "model", reason)
+                    .await
+                    .map_err(ToolError::msg)?;
+                crate::ambient::emit_state("tuning set");
+                Ok(ToolResult::success(tuning_result(&t)))
+            }
+            other => Err(ToolError::msg(format!("action must be get, set or clear, got `{other}`"))),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct AmbientFeedbackArgs {
+    ids: Vec<String>,
+    was: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+pub struct AmbientFeedback;
+#[async_trait]
+impl Tool for AmbientFeedback {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "ambient_feedback".into(),
+            description: "Tell the microphone it judged a line wrongly. `not_for_me`: it reached you but was for someone else; `for_me`: it was for you but came as a note or not at all; `should_note`: it was worth keeping. Each call nudges the device's address threshold by 0.05 and the classifier sees the example.".into(),
+            input_schema: schema(json!({
+                "ids": {"type": "array", "items": {"type": "string"}, "description": "Envelope ids."},
+                "was": {"type": "string", "enum": ["not_for_me", "for_me", "should_note"]},
+                "note": {"type": "string"}
+            }), &["ids", "was"]),
+        }
+    }
+    async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let a: AmbientFeedbackArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        if a.ids.is_empty() {
+            return Err(ToolError::msg("ids must name at least one ambient event"));
+        }
+        let device = crate::ambient_tuning::lease_device();
+        let mut text = crate::ambient_tuning::lookup_event_text(&a.ids);
+        if text.is_empty() {
+            text = a.note.clone().unwrap_or_default();
+        }
+        let t = crate::ambient_tuning::feedback(&device, &a.ids, &text, &a.was).map_err(ToolError::msg)?;
+        crate::ambient::emit_state("tuning feedback");
+        Ok(ToolResult::success(json!({
+            "was": a.was,
+            "address_threshold": t.address_threshold,
+            "note_policy": t.note_policy,
+            "profile": t.profile,
+        })))
+    }
+}
+
 pub struct AmbientMode;
 #[async_trait]
 impl Tool for AmbientMode {
@@ -684,7 +830,8 @@ impl Tool for Speak {
                 "text": {"type": "string", "description": "What to say, in plain spoken sentences."},
                 "expecting": {"type": "string", "enum": ["answer", "confirmation", "choice", "dictation", "none"], "description": "Set this when you are asking something: it tells the voice classifier a short reply is meant for you."},
                 "about": {"type": "string", "description": "What the expected reply is about, in a short phrase."},
-                "mode": {"type": "string", "enum": ["append", "replace"], "description": "append (default) queues after what is still being said; replace stops anything unplayed first, for when the user said something that makes the rest of your queued speech wrong or stale."}
+                "mode": {"type": "string", "enum": ["append", "replace"], "description": "append (default) queues after what is still being said; replace stops anything unplayed first, for when the user said something that makes the rest of your queued speech wrong or stale."},
+                "urgent": {"type": "boolean", "description": "Speak through a quiet profile; only when waiting would cause harm."}
             }), &["text"]),
         }
     }
@@ -701,7 +848,7 @@ impl Tool for Speak {
         }
         let asking = crate::speech::asks_aloud(&args.text, args.expecting.as_deref());
         let expecting = args.expecting.as_deref().filter(|_| asking);
-        let mut out = crate::speech::speak(&args.text, expecting, args.about.as_deref(), args.mode.as_deref() == Some("replace")).await.map_err(ToolError::msg)?;
+        let mut out = crate::speech::speak(&args.text, expecting, args.about.as_deref(), args.mode.as_deref() == Some("replace"), args.urgent).await.map_err(ToolError::msg)?;
         if !asking {
             let ignored = args.expecting.as_deref().is_some_and(|k| !k.is_empty() && k != "none");
             let lead = if ignored { "Speech is playing; `expecting` was ignored because the line asks no question. " } else { "Speech is playing. " };

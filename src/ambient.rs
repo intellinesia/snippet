@@ -17,8 +17,6 @@ static EXPECT: Mutex<Option<Expectation>> = Mutex::new(None);
 static CALL_QUIET: AtomicBool = AtomicBool::new(false);
 static LAST_OTHERS: AtomicI64 = AtomicI64::new(0);
 
-pub const ROOM_QUIET_SECS: i64 = 120;
-
 /// Seconds timestamp of the last overheard human conversation not meant for the assistant; 0 clears it.
 pub fn set_last_others(at: i64) {
     LAST_OTHERS.store(at, Ordering::Relaxed);
@@ -28,13 +26,14 @@ pub fn last_others() -> i64 {
     LAST_OTHERS.load(Ordering::Relaxed)
 }
 
-pub fn room_busy_at(now: i64, last_others: i64, last_user_turn: i64) -> bool {
-    last_others > 0 && now - last_others < ROOM_QUIET_SECS && last_user_turn < last_others
+pub fn room_busy_at(now: i64, last_others: i64, last_user_turn: i64, quiet_secs: i64) -> bool {
+    last_others > 0 && now - last_others < quiet_secs && last_user_turn < last_others
 }
 
 /// People nearby were talking to each other recently and the user has not addressed the assistant since.
 pub fn room_busy() -> bool {
-    room_busy_at(chrono::Utc::now().timestamp(), last_others(), LAST_USER_TURN.load(Ordering::Relaxed))
+    let quiet = crate::ambient_tuning::current_for_lease().room_quiet_s;
+    room_busy_at(chrono::Utc::now().timestamp(), last_others(), LAST_USER_TURN.load(Ordering::Relaxed), quiet)
 }
 
 /// Set while a call is pending or tracked: Snippet must not speak over it.
@@ -386,8 +385,11 @@ pub fn sub_state() -> &'static str {
 
 pub fn state_json(reason: &str) -> Value {
     let device = lease_holder().map(|(d, _)| d).unwrap_or_default();
+    let tuning = crate::ambient_tuning::current(&device);
     json!({
         "kind": "ambient_state",
+        "profile": tuning.profile.as_str(),
+        "tuning_expires_at": tuning.expires_at,
         "mode": state_name(),
         "sub": sub_state(),
         "reason": reason,
@@ -750,12 +752,12 @@ mod room_tests {
 
     #[test]
     fn busy_until_the_user_speaks_or_two_minutes_pass() {
-        assert!(!room_busy_at(1000, 0, 0));
-        assert!(room_busy_at(1000, 950, 0));
-        assert!(room_busy_at(1000, 950, 900));
-        assert!(!room_busy_at(1000, 950, 960), "a direct address clears it");
-        assert!(room_busy_at(1069, 950, 0));
-        assert!(!room_busy_at(1070, 950, 0), "expires after 120 s");
+        assert!(!room_busy_at(1000, 0, 0, 120));
+        assert!(room_busy_at(1000, 950, 0, 120));
+        assert!(room_busy_at(1000, 950, 900, 120));
+        assert!(!room_busy_at(1000, 950, 960, 120), "a direct address clears it");
+        assert!(room_busy_at(1069, 950, 0, 120));
+        assert!(!room_busy_at(1070, 950, 0, 120), "expires after 120 s");
     }
 }
 
