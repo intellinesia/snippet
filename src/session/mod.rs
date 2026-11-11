@@ -104,7 +104,8 @@ pub fn start_inbox_session(
 pub(crate) fn minimal_inbox_identity(agent_id: &str) -> String {
     format!(
         "You are `{agent_id}`'s inbox. Answer messages and look things up (read-only shell, web) yourself; \
-         anything that changes files, has side effects or takes long goes to Mission Control as a task request."
+         anything that changes files, has side effects or takes long goes to Mission Control as a task request. \
+         If the ask needs more than your desk budget, do not drop it: hand it to your work session, a lane or Mission Control in the same turn, and say so."
     )
 }
 
