@@ -85,10 +85,87 @@ pub(super) fn sweep(store: &Store, now: DateTime<Utc>, probe: impl Fn(&str) -> O
     flagged
 }
 
+const OWED_AFTER_MINUTES: i64 = 20;
+
+/// Notices for questions and blockers that have waited past the threshold with no
+/// reply on their thread: (recipient session, text). Each is marked as sent, so a
+/// message is nagged at most twice, 20 minutes apart.
+pub(super) fn owed_sweep(store: &Store, now: DateTime<Utc>) -> Vec<(String, String)> {
+    let window = chrono::Duration::minutes(OWED_AFTER_MINUTES);
+    let owed = store.owed_replies(&(now - window).to_rfc3339(), &(now - window).to_rfc3339()).unwrap_or_default();
+    let mut notices = Vec::new();
+    for row in owed {
+        let waiting = DateTime::parse_from_rfc3339(&row.since).map(|t| (now - t.with_timezone(&Utc)).num_minutes()).unwrap_or(OWED_AFTER_MINUTES);
+        if store.mark_nagged(&row.event_id, &row.recipient, &now.to_rfc3339()).is_err() {
+            continue;
+        }
+        let notice = format!(
+            "[owed_reply]\nfrom: {}\nthread_id: {}\nwaiting_minutes: {waiting}\nnote: a question or blocker sent to you has had no reply. Answer it with send_agent_message to the thread, or say in one line why it needs no answer.\n[/owed_reply]",
+            row.sender, row.thread_id
+        );
+        notices.push((super::direct::recipient_session_id(&row.recipient), notice));
+    }
+    notices
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::coordination::Task;
+
+    fn ask(store: &Store, from: &str, to: &str, kind: &str, key: &str, at: &str) -> String {
+        let mut extra = serde_json::Map::new();
+        extra.insert("kind".into(), kind.into());
+        store
+            .send_direct_message_typed(("agent", from), ("agent", to), "b", key, at, None, None, None, extra)
+            .unwrap()
+            .event_id
+    }
+
+    fn awaiting(store: &Store, event: &str) -> Option<String> {
+        store
+            .with_connection(|c| c.query_row("SELECT awaiting_reply FROM message_deliveries WHERE event_id = ?1 AND recipient_kind = 'agent' AND read_at IS NULL", [event], |r| r.get(0)))
+            .unwrap()
+    }
+
+    #[test]
+    fn question_and_blocker_are_owed_but_status_and_result_are_not() {
+        let store = Store::open_in_memory().unwrap();
+        let at = "2026-01-01T00:00:00+00:00";
+        let q = ask(&store, "w", "mc", "question", "k1", at);
+        let b = ask(&store, "w", "mc", "blocker", "k2", at);
+        let s = ask(&store, "w", "mc", "status", "k3", at);
+        let r = ask(&store, "w", "mc", "result", "k4", at);
+        assert_eq!(awaiting(&store, &q).as_deref(), Some(at));
+        assert_eq!(awaiting(&store, &b).as_deref(), Some(at));
+        assert_eq!(awaiting(&store, &s), None);
+        assert_eq!(awaiting(&store, &r), None);
+    }
+
+    #[test]
+    fn a_reply_on_the_thread_settles_what_is_owed() {
+        let store = Store::open_in_memory().unwrap();
+        let q = ask(&store, "w", "mc", "question", "k1", "2026-01-01T00:00:00+00:00");
+        let _ = ask(&store, "mc", "w", "answer", "k2", "2026-01-01T00:01:00+00:00");
+        assert_eq!(awaiting(&store, &q), None);
+        assert!(owed_sweep(&store, Utc::now()).is_empty());
+    }
+
+    #[test]
+    fn the_sweep_nags_once_per_spell_and_at_most_twice() {
+        let store = Store::open_in_memory().unwrap();
+        let t0 = Utc::now() - chrono::Duration::minutes(30);
+        ask(&store, "w", crate::mission_control::SESSION_ID, "question", "k1", &t0.to_rfc3339());
+        let fresh = ask(&store, "w", crate::mission_control::SESSION_ID, "blocker", "k2", &Utc::now().to_rfc3339());
+        let first = owed_sweep(&store, Utc::now());
+        assert_eq!(first.len(), 1, "only the stale one");
+        assert!(first[0].1.contains("[owed_reply]") && first[0].1.contains("from: w") && first[0].1.contains("waiting_minutes: 30"));
+        assert_eq!(first[0].0, crate::mission_control::SESSION_ID);
+        assert!(owed_sweep(&store, Utc::now()).is_empty(), "not again within the spell");
+        assert_eq!(owed_sweep(&store, Utc::now() + chrono::Duration::minutes(25)).len(), 2, "second nag, plus the now-stale one");
+        assert_eq!(owed_sweep(&store, Utc::now() + chrono::Duration::minutes(50)).len(), 1, "the first is capped at two");
+        let _ = fresh;
+    }
 
     fn running_task(store: &Store, id: &str, progress_minutes_ago: i64, expected: Option<u32>) {
         let t0 = (Utc::now() - chrono::Duration::hours(3)).to_rfc3339();

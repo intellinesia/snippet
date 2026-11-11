@@ -29,7 +29,7 @@ pub use board::{
     ALL_AGENTS, BoardEntry, BoardEntryKind, BoardGroup, BoardGrouping, BoardQuery, NewBoardEntry,
 };
 pub use direct::{
-    InboxEntry, InboxKind, InboxQuery,
+    InboxEntry, InboxKind, InboxQuery, OwedReply,
     DirectThreadSummary, LOCAL_HUMAN_ID, PendingDirectMessage, actor_ref, direct_thread_id,
 };
 pub use agents::AgentRemoval;

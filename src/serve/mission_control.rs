@@ -1283,6 +1283,9 @@ pub async fn dispatch_loop(daemon: Shared) {
         }
         super::review::drive_reviews(&daemon).await;
         super::stall::sweep(&daemon.store, chrono::Utc::now(), super::stall::probe_session);
+        for (session, notice) in super::stall::owed_sweep(&daemon.store, chrono::Utc::now()) {
+            daemon.deliver(&session, crate::harness::LoopInput::UserMessage(notice)).await;
+        }
         deliver_mission_control_reports(&daemon).await;
         tokio::time::sleep(Duration::from_secs(2)).await;
     }

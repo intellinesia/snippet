@@ -35,7 +35,7 @@ const DELIVER_BATCH: u32 = 50;
 /// Mission Control's own session IS its inbox — it is a singleton whose whole
 /// job is being addressed. Every other agent gets a dedicated inbox session, so
 /// a message never lands in whichever task session happens to be running.
-fn recipient_session_id(agent_id: &str) -> String {
+pub(super) fn recipient_session_id(agent_id: &str) -> String {
     if agent_id == crate::mission_control::SESSION_ID {
         crate::mission_control::SESSION_ID.to_string()
     } else {
