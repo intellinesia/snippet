@@ -477,6 +477,7 @@ fn plan_progress(task: &crate::coordination::Task) -> String {
     format!(" · plan {done}/{}{now}", task.work_plan.len())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn round_envelope(
     tasks: &[crate::coordination::Task],
     state: &mission_autonomy::AutonomyState,
