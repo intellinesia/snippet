@@ -112,7 +112,7 @@ mod assistant_dedup_tests {
             .events
             .iter()
             .filter_map(|e| match e {
-                HarnessEvent::AssistantText { text } => Some(text.as_str()),
+                HarnessEvent::AssistantText { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect()
@@ -299,6 +299,7 @@ mod notice_tests {
         let mut events = vec![
             HarnessEvent::AssistantText {
                 text: "Running a shell command to check status".to_string(),
+                quiet: false,
             },
             HarnessEvent::ToolCall {
                 tool_name: "bash".to_string(),
@@ -311,7 +312,7 @@ mod notice_tests {
         assert_eq!(events.len(), 3);
         assert!(matches!(
             &events[0],
-            HarnessEvent::AssistantText { text } if text == "Running a shell command to check status"
+            HarnessEvent::AssistantText { text, .. } if text == "Running a shell command to check status"
         ));
         assert!(matches!(
             &events[1],
@@ -463,7 +464,7 @@ mod empty_reply_tests {
         assert!(empty_turn_needs_reply(&typed, true));
         let ambient_elsewhere = [input("<ambient_turn mode=\"active\">Okay.</ambient_turn>"), speak("success")];
         assert!(empty_turn_needs_reply(&ambient_elsewhere, false));
-        let replied = [input("what changed?"), HarnessEvent::AssistantText { text: "Nothing.".into() }];
+        let replied = [input("what changed?"), HarnessEvent::AssistantText { text: "Nothing.".into(), quiet: false }];
         assert!(!empty_turn_needs_reply(&replied, false));
     }
 }

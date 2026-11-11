@@ -614,7 +614,7 @@ impl CodingHarness {
                 false
             }
             LoopInput::KeepWarm(id) => {
-                crate::keep_warm::complete(&id, crate::keep_warm::Outcome::Skipped("session was mid-turn".into()));
+                crate::keep_warm::complete(&id, crate::keep_warm::Outcome::Skipped(keep_warm_skip_reason(state.status).into()));
                 false
             }
             // Spawned by `drain_pending`, which holds the lane manager.
@@ -960,5 +960,20 @@ mod turn_changes_tests {
             v,
             serde_json::json!({"kind":"turn_changes","files":[{"path":"a.rs","add":1,"del":2}],"total_files":1,"add":1,"del":2})
         );
+    }
+}
+
+fn keep_warm_skip_reason(status: HarnessStatus) -> &'static str {
+    if status == HarnessStatus::Running { "session was mid-turn" } else { "cli harness keeps no provider cache" }
+}
+
+#[cfg(test)]
+mod keep_warm_tests {
+    use super::*;
+
+    #[test]
+    fn idle_cli_loop_reports_no_provider_cache() {
+        assert_eq!(keep_warm_skip_reason(HarnessStatus::Idle), "cli harness keeps no provider cache");
+        assert_eq!(keep_warm_skip_reason(HarnessStatus::Running), "session was mid-turn");
     }
 }

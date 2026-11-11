@@ -77,13 +77,16 @@ fn summarize_tool(tc: &crate::llm::ToolCallRecord) -> Option<String> {
     Some(redact(&summary))
 }
 
-fn is_ignored_ambient_dismissal(content: &str) -> bool {
-    let lower = content.to_ascii_lowercase();
-    (lower.contains("staying quiet") || lower.contains("no reply needed"))
-        && (lower.contains("out-of-context")
-            || lower.contains("not meant for me")
-            || lower.contains("not addressed to me")
-            || lower.contains("not for me"))
+/// A closing reply to an ambient turn with no speak call in the turn: the daemon's quiet rule.
+fn quiet_voice_reply(before: &[crate::conversations::StoredMessage]) -> bool {
+    for row in before.iter().rev() {
+        match &row.message {
+            crate::llm::HarnessMessage::User { content } => return content.contains("<ambient_turn"),
+            crate::llm::HarnessMessage::Assistant { tool_calls, .. } if tool_calls.iter().any(|c| c.name == "speak") => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 pub(crate) fn mission_control(d: &Shared) -> Value {
@@ -136,7 +139,7 @@ pub(crate) fn mission_control(d: &Shared) -> Value {
                     })
                     .unwrap_or(false);
                 let has_speak = tool_calls.iter().any(|tc| tc.name == "speak");
-                if is_ignored_ambient_dismissal(content) && !has_speak {
+                if !has_speak && tool_calls.is_empty() && quiet_voice_reply(&rows[..idx]) {
                     skip_prev_user_ambient = true;
                     continue;
                 }

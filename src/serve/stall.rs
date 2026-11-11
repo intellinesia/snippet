@@ -33,7 +33,7 @@ fn last_assistant_text(session_id: &str) -> Option<String> {
     let path = crate::session::state_path_for_id(session_id)?;
     let (events, _, _) = crate::session::read_session_event_page(&path, None, 12)?;
     events.into_iter().rev().find_map(|e| match e {
-        crate::harness::HarnessEvent::AssistantText { text } if !text.trim().is_empty() => {
+        crate::harness::HarnessEvent::AssistantText { text, .. } if !text.trim().is_empty() => {
             let text = text.trim();
             Some(match text.char_indices().nth(600) {
                 Some((cut, _)) => format!("{}…", &text[..cut]),

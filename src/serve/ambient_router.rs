@@ -425,9 +425,7 @@ async fn flush(d: &Shared, device: &str, parts: Vec<Part>, fast: bool, last: &mu
             if !wake && !pinned && is_unrelated(&v) {
                 crate::ambient::end_conversation();
                 let _ = crate::speech::interrupt(&dev3);
-                if super::autonomy::interrupt_mission_control(&d3).await {
-                    super::autonomy::resume_unless_heard(d3);
-                }
+                super::autonomy::interrupt_mission_control(&d3).await;
             }
         });
         *last = Some(Flushed::new(ids, &parts, delivered, wake_verdict(early.as_ref())));

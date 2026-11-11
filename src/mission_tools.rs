@@ -839,7 +839,7 @@ fn inspect_event_row(event: &crate::harness::HarnessEvent) -> Option<Value> {
             }
             Some(json!({"kind": "user", "text": text}))
         }
-        AssistantText { text } => {
+        AssistantText { text, .. } => {
             let text = clip(text, 400);
             if text.is_empty() {
                 return None;

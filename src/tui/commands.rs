@@ -360,7 +360,7 @@ impl App {
             return Vec::new();
         };
         let text = state.events.iter().rev().find_map(|e| match e {
-            HarnessEvent::AssistantText { text } if text.contains("](session:") => Some(text.as_str()),
+            HarnessEvent::AssistantText { text, .. } if text.contains("](session:") => Some(text.as_str()),
             _ => None,
         });
         let mut ids: Vec<String> = Vec::new();

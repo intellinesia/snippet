@@ -110,7 +110,10 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              user_voice REAL,
              other_party REAL,
              played REAL,
-             speaker TEXT
+             speaker TEXT,
+             stage TEXT,
+             stages TEXT,
+             outcome TEXT
          );
          CREATE INDEX IF NOT EXISTS ambient_events_started
              ON ambient_events(started_at);

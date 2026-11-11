@@ -909,6 +909,16 @@ pub async fn run_serve(
     call_track::sweep_loop(daemon.clone());
     ambient_routes::warm_voice(daemon.clone());
     {
+        static RESUME: std::sync::OnceLock<(Shared, tokio::runtime::Handle)> = std::sync::OnceLock::new();
+        let _ = RESUME.set((daemon.clone(), tokio::runtime::Handle::current()));
+        crate::speech::set_resume_hook(|| {
+            if let Some((d, handle)) = RESUME.get() {
+                let _guard = handle.enter();
+                autonomy::resume_after_barge_in(d.clone());
+            }
+        });
+    }
+    {
         let d = daemon.clone();
         let handle = tokio::runtime::Handle::current();
         crate::ambient::set_mode_hook(Box::new(move |mode, reason| {

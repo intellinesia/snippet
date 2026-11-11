@@ -40,6 +40,7 @@ mod fork_tests {
             HarnessEvent::UserInput { text: "hi".into() },
             HarnessEvent::AssistantText {
                 text: "hello".into(),
+                quiet: false,
             },
             HarnessEvent::UserInput {
                 text: "again".into(),

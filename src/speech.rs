@@ -265,7 +265,26 @@ pub fn interrupt(device: &str) -> bool {
     }
     emit(json!({"kind": "ambient_speech_interrupt", "device": device, "turns": open}));
     crate::ambient::emit_state("interrupted");
+    fire_resume_hook();
     true
+}
+
+static RESUME_HOOK: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+pub fn set_resume_hook(f: fn()) {
+    let _ = RESUME_HOOK.set(f);
+}
+
+pub fn interruption_pending() -> bool {
+    STREAM_INTERRUPTED.lock().unwrap().as_ref().is_some_and(|(at, cut)| at.elapsed() < INTERRUPTION_FRESH && !cut.unsaid.trim().is_empty())
+}
+
+fn fire_resume_hook() {
+    if interruption_pending()
+        && let Some(hook) = RESUME_HOOK.get()
+    {
+        hook();
+    }
 }
 
 pub fn cancel_all(reason: &str) {
@@ -580,5 +599,30 @@ mod tests {
         assert_eq!(speakable("Got it [cut off by the user; the rest was never spoken]").trim(), "Got it");
         assert_eq!(speakable("Hello [unfinished"), "Hello ");
         assert_eq!(speakable("Plain reply."), "Plain reply.");
+    }
+}
+
+#[cfg(test)]
+mod resume_hook_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn hook_fires_only_with_unsaid_text() {
+        set_resume_hook(|| {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+        });
+        clear_interruption();
+        fire_resume_hook();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 0);
+        note_stream_interruption(Interruption { heard: "a".into(), unsaid: "  ".into() });
+        fire_resume_hook();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 0);
+        note_stream_interruption(Interruption { heard: "a".into(), unsaid: "b".into() });
+        fire_resume_hook();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        clear_interruption();
     }
 }
