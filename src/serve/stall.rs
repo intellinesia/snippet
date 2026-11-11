@@ -4,6 +4,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::coordination::{
+    Goal, GoalStatus, Task,
     TaskStatus, progress_stamp, stall_marker_for_current_spell, stalled_minutes,
 };
 use crate::store::Store;
@@ -83,6 +84,107 @@ pub(super) fn sweep(store: &Store, now: DateTime<Utc>, probe: impl Fn(&str) -> O
         }
     }
     flagged
+}
+
+const GOAL_STALL_HOURS: i64 = 6;
+
+fn goal_moving(goal: &Goal, tasks: &[Task], now: DateTime<Utc>) -> bool {
+    if tasks.iter().any(|t| matches!(t.status, TaskStatus::Todo | TaskStatus::InProgress | TaskStatus::InReview)) {
+        return true;
+    }
+    let drive = goal.drive();
+    if !drive.waiting_on.is_empty() && !drive.nudge_due(now.timestamp()) {
+        return true;
+    }
+    let hours = goal.plan["stall_hours"].as_f64().filter(|h| *h > 0.0).unwrap_or(GOAL_STALL_HOURS as f64);
+    let latest = tasks
+        .iter()
+        .map(|t| t.updated_at.as_str())
+        .chain([goal.created_at.as_str(), drive.next_step_at.as_str()])
+        .filter_map(|s| DateTime::parse_from_rfc3339(s).ok())
+        .max();
+    latest.is_none_or(|at| ((now - at.with_timezone(&Utc)).num_seconds() as f64) < hours * 3600.0)
+}
+
+fn quiet_hours_of(goal: &Goal, tasks: &[Task], now: DateTime<Utc>) -> i64 {
+    let drive = goal.drive();
+    let latest = tasks
+        .iter()
+        .map(|t| t.updated_at.as_str())
+        .chain([goal.created_at.as_str(), drive.next_step_at.as_str()])
+        .filter_map(|s| DateTime::parse_from_rfc3339(s).ok())
+        .max();
+    latest.map_or(0, |at| (now - at.with_timezone(&Utc)).num_hours())
+}
+
+/// Mark each open goal with nothing moving past its threshold once per quiet
+/// spell (and clear the mark when it moves again). Returns the ids newly flagged.
+pub(super) fn goal_sweep(store: &Store, now: DateTime<Utc>) -> Vec<String> {
+    let mut flagged = Vec::new();
+    for mut goal in store.list_goals(Some(GoalStatus::Open)).unwrap_or_default() {
+        let tasks = store.goal_tasks(&goal.id).unwrap_or_default();
+        let marked = goal.plan["stall"]["stalled_at"].is_string();
+        if goal_moving(&goal, &tasks, now) {
+            if marked {
+                goal.plan.as_object_mut().map(|p| p.remove("stall"));
+                let _ = store.save_goal(&goal);
+            }
+            continue;
+        }
+        if marked {
+            continue;
+        }
+        let hours = quiet_hours_of(&goal, &tasks, now);
+        let stamp = now.to_rfc3339();
+        goal.plan["stall"] = serde_json::json!({ "stalled_at": stamp, "hours": hours });
+        let mut log = goal.plan["stall_log"].as_array().cloned().unwrap_or_default();
+        log.push(serde_json::json!(format!("{stamp} stalled: nothing moving for {hours} h")));
+        let keep = log.len().saturating_sub(20);
+        goal.plan["stall_log"] = serde_json::Value::Array(log.split_off(keep));
+        if store.save_goal(&goal).is_ok() {
+            flagged.push(goal.id);
+        }
+    }
+    flagged
+}
+
+/// One line per open goal currently marked stalled.
+pub(super) fn stalled_goal_lines(store: &Store, now: DateTime<Utc>) -> Vec<String> {
+    let _ = now;
+    store
+        .list_goals(Some(GoalStatus::Open))
+        .unwrap_or_default()
+        .iter()
+        .filter(|g| g.plan["stall"]["stalled_at"].is_string())
+        .map(|g| {
+            let hours = g.plan["stall"]["hours"].as_i64().unwrap_or(0);
+            let next = g.drive().next_step;
+            let next = if next.is_empty() { "none".to_string() } else { next };
+            format!("- {} · {} · nothing moving for {hours} h · last next_step: {next}", g.title, g.id)
+        })
+        .collect()
+}
+
+pub(super) fn stalled_goals_section(lines: &[String]) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!("\n\n## Goals stalled\nNothing is moving these. Replan, file the next task, nudge the user or park them; the daemon has filed nothing.\n{}", lines.join("\n"))
+}
+
+/// Runs the goal sweep; returns a wake envelope when something was newly
+/// flagged and the wake is allowed. A suppressed wake keeps the marker, so the
+/// next scheduled wake lists the goal.
+pub(super) fn goal_stall_wake(store: &Store, now: DateTime<Utc>, suppressed: bool) -> Option<String> {
+    let flagged = goal_sweep(store, now);
+    if flagged.is_empty() || suppressed {
+        return None;
+    }
+    let lines = stalled_goal_lines(store, now);
+    Some(format!(
+        "[automated_wake]\nA goal has stopped moving.{}\n[/automated_wake]\nWorkflow W4 · decide for each: move it, replan it, nudge the user or park it, then stop.",
+        stalled_goals_section(&lines)
+    ))
 }
 
 const OWED_AFTER_MINUTES: i64 = 20;
@@ -243,5 +345,66 @@ mod tests {
             .unwrap();
         assert!(sweep(&store, Utc::now(), idle).is_empty());
         assert!(store.get_task("old").unwrap().unwrap().last_progress_at.is_some());
+    }
+
+    fn goal_at(store: &Store, id: &str, hours_ago: i64, stall_hours: Option<f64>) -> Goal {
+        let at = (Utc::now() - chrono::Duration::hours(hours_ago)).to_rfc3339();
+        let mut g = Goal::new(id.into(), id.into(), "o".into(), vec![], "u".into(), at);
+        if let Some(h) = stall_hours {
+            g.plan["stall_hours"] = serde_json::json!(h);
+        }
+        store.create_goal(&g).unwrap();
+        g
+    }
+
+    #[test]
+    fn goal_with_a_running_task_is_not_flagged() {
+        let store = Store::open_in_memory().unwrap();
+        goal_at(&store, "g", 9, None);
+        running_task(&store, "t", 1, None);
+        store.update_task_in("t", &Utc::now().to_rfc3339(), |x| x.goal_id = Some("g".into())).unwrap();
+        assert!(goal_sweep(&store, Utc::now()).is_empty());
+    }
+
+    #[test]
+    fn quiet_goal_is_flagged_once_until_it_moves() {
+        let store = Store::open_in_memory().unwrap();
+        goal_at(&store, "g", 7, None);
+        assert_eq!(goal_sweep(&store, Utc::now()), vec!["g".to_string()]);
+        assert!(goal_sweep(&store, Utc::now()).is_empty());
+        let g = store.get_goal("g").unwrap().unwrap();
+        assert_eq!(g.plan["stall_log"].as_array().unwrap().len(), 1);
+        assert!(stalled_goal_lines(&store, Utc::now())[0].contains("nothing moving for 7 h"));
+
+        let mut g = g;
+        let mut d = g.drive();
+        d.next_step = "do it".into();
+        d.next_step_at = Utc::now().to_rfc3339();
+        g.set_drive(&d);
+        store.save_goal(&g).unwrap();
+        assert!(goal_sweep(&store, Utc::now()).is_empty());
+        assert!(stalled_goal_lines(&store, Utc::now()).is_empty(), "marker cleared");
+        assert_eq!(goal_sweep(&store, Utc::now() + chrono::Duration::hours(7)), vec!["g".to_string()]);
+    }
+
+    #[test]
+    fn stall_hours_override_applies() {
+        let store = Store::open_in_memory().unwrap();
+        goal_at(&store, "short", 3, Some(2.0));
+        goal_at(&store, "long", 7, Some(24.0));
+        assert_eq!(goal_sweep(&store, Utc::now()), vec!["short".to_string()]);
+    }
+
+    #[test]
+    fn quiet_hours_keep_the_marker_without_a_wake() {
+        let store = Store::open_in_memory().unwrap();
+        goal_at(&store, "g", 8, None);
+        assert!(goal_stall_wake(&store, Utc::now(), true).is_none());
+        assert_eq!(stalled_goal_lines(&store, Utc::now()).len(), 1);
+        assert!(goal_stall_wake(&store, Utc::now(), false).is_none(), "already flagged");
+        let store = Store::open_in_memory().unwrap();
+        goal_at(&store, "g", 8, None);
+        let text = goal_stall_wake(&store, Utc::now(), false).unwrap();
+        assert!(text.contains("## Goals stalled") && text.contains("last next_step: none"));
     }
 }

@@ -1283,12 +1283,23 @@ pub async fn dispatch_loop(daemon: Shared) {
         }
         super::review::drive_reviews(&daemon).await;
         super::stall::sweep(&daemon.store, chrono::Utc::now(), super::stall::probe_session);
+        wake_for_stalled_goals(&daemon).await;
         for (session, notice) in super::stall::owed_sweep(&daemon.store, chrono::Utc::now()) {
             daemon.deliver(&session, crate::harness::LoopInput::UserMessage(notice)).await;
         }
         deliver_mission_control_reports(&daemon).await;
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+async fn wake_for_stalled_goals(daemon: &Shared) {
+    let state = crate::mission_autonomy::load();
+    let quiet = crate::mission_autonomy::in_quiet_hours(&state.settings);
+    let Some(text) = super::stall::goal_stall_wake(&daemon.store, chrono::Utc::now(), quiet || !state.settings.on) else { return };
+    if super::autonomy::mission_control_busy() {
+        return;
+    }
+    super::autonomy::deliver_to_mission_control(daemon, text).await;
 }
 
 fn task_artifacts_block(session_id: &str, created_at: &str) -> String {
