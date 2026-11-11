@@ -1279,7 +1279,7 @@ mod tests {
         let mut state = crate::harness::HarnessState::blank("/tmp", None);
         state.human_waiting.push(crate::harness::HumanWait { thread_id: "t".into(), since: "s".into(), steered: true, event_index: 0 });
         state.events.push(E::UserInput { text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: hi\n[/direct_message]".into() });
-        state.events.push(E::AssistantText { text: "Almost done.".into() });
+        state.events.push(E::AssistantText { text: "Almost done.".into(), quiet: false });
         super::relay_desk_reply(&store, "task-session", &mut state);
         // No session row: the identity comes from the task's roster, not the fallback.
         let thread = crate::coordination::direct::direct_thread_id(("agent", "a"), ("human", "local"));
