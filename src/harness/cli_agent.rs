@@ -1349,6 +1349,7 @@ impl CodingHarness {
                         state.messages.push(HarnessMessage::User {
                             content: steered.clone(),
                         });
+                        Self::note_human_wait(&mut state, &text, true);
                         state.events.push(HarnessEvent::Steer { text });
                         self.bump_activity();
                         outbox.push(steered);
@@ -1567,6 +1568,7 @@ impl CodingHarness {
                                     outbox.push(answer);
                                 }
                             } else if state.status == HarnessStatus::Running {
+                                Self::note_human_wait(&mut state, &text, true);
                                 state.events.push(HarnessEvent::Steer { text: text.clone() });
                                 state.messages.push(HarnessMessage::User { content: text.clone() });
                                 self.bump_activity();
@@ -1583,6 +1585,7 @@ impl CodingHarness {
                             }
                             if state.pending_question.is_none() {
                                 for held in held_envelopes.drain(..) {
+                                    Self::note_human_wait(&mut state, &held, true);
                                     state.events.push(HarnessEvent::Steer { text: held.clone() });
                                     state.messages.push(HarnessMessage::User { content: held.clone() });
                                     outbox.push(held);
@@ -1670,6 +1673,7 @@ impl CodingHarness {
                                 continue;
                             };
                             if state.status == HarnessStatus::Running && process.is_some() {
+                                Self::note_human_wait(&mut state, &text, true);
                                 state.events.push(HarnessEvent::Steer { text: text.clone() });
                                 state.messages.push(HarnessMessage::User { content: text.clone() });
                                 self.bump_activity();

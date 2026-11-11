@@ -123,27 +123,28 @@ fn direct_message_envelope(
 
 const HUMAN_DM_MARKER: &str = "[direct_message]";
 
-/// The reply to post to the human's DM thread when a desk turn that began with
-/// a human DM ended without the model messaging the human itself.
-pub(crate) fn desk_relay_text(
-    session_id: &str,
-    events: &[crate::harness::HarnessEvent],
-) -> Option<(usize, String)> {
+/// The thread id of a `[direct_message]` envelope that came from the human and
+/// expects its answer back in the human's DM thread.
+pub(crate) fn human_dm_thread(text: &str) -> Option<String> {
+    if !text.starts_with(HUMAN_DM_MARKER) {
+        return None;
+    }
+    let has = |wanted: &str| text.lines().any(|line| line.trim() == wanted);
+    if !(has("from_kind: human") && has("reply_to: human")) {
+        return None;
+    }
+    Some(
+        text.lines()
+            .find_map(|line| line.trim().strip_prefix("thread_id:"))
+            .map(|id| id.trim().to_string())
+            .unwrap_or_default(),
+    )
+}
+
+fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool {
     use crate::harness::HarnessEvent as E;
-    if !crate::session::is_inbox_session_id(session_id) {
-        return None;
-    }
-    let start = events.iter().rposition(|e| matches!(e, E::UserInput { .. }))?;
-    let E::UserInput { text } = &events[start] else { return None };
-    let human_dm = text.starts_with(HUMAN_DM_MARKER)
-        && text.lines().any(|line| line.trim() == "from_kind: human")
-        && text.lines().any(|line| line.trim() == "reply_to: human");
-    if !human_dm {
-        return None;
-    }
-    let turn = &events[start + 1..];
     let mut sent = false;
-    for (i, event) in turn.iter().enumerate() {
+    for (i, event) in turn.iter().enumerate().skip(from) {
         if let E::ToolCall { tool_name, arguments } = event
             && tool_name == "send_agent_message"
             && matches!(
@@ -163,32 +164,66 @@ pub(crate) fn desk_relay_text(
             }
         }
     }
-    if sent {
+    sent
+}
+
+/// What to say to the human when a turn ends with `waiting` human messages
+/// outstanding: `(turn start index, line)`, or None when they already got a reply.
+pub(crate) fn turn_end_relay(
+    waiting: usize,
+    who: &str,
+    events: &[crate::harness::HarnessEvent],
+) -> Option<(usize, String)> {
+    use crate::harness::HarnessEvent as E;
+    if waiting == 0 {
+        return None;
+    }
+    let start = events.iter().rposition(|e| matches!(e, E::UserInput { .. })).unwrap_or(0);
+    let turn = events.get(start + 1..).unwrap_or(&[]);
+    // A reply sent before the latest human message does not answer it.
+    let last_dm = turn
+        .iter()
+        .rposition(|e| matches!(e, E::Steer { text } if human_dm_thread(text).is_some()))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    if sent_to_human_ok(turn, last_dm) {
         return None;
     }
     let text = turn.iter().rev().find_map(|e| match e {
         E::AssistantText { text } if !text.trim().is_empty() => Some(text.trim().to_string()),
         _ => None,
-    })?;
-    Some((start, text))
+    });
+    let line = match text {
+        Some(text) => text,
+        None => {
+            eprintln!("[relay] no reply from {who}");
+            let last_tool = turn
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    E::ToolCall { tool_name, .. } => Some(tool_name.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("none");
+            format!("{who} finished this turn without a reply; its last step was {last_tool}.")
+        }
+    };
+    let line = if waiting >= 2 {
+        format!("Answering your {waiting} messages:\n\n{line}")
+    } else {
+        line
+    };
+    Some((start, line))
 }
 
-/// Post `text` to the human's DM thread as the desk's agent, as send_agent_message would.
-pub(crate) fn relay_desk_reply(
-    store: &crate::store::Store,
-    session_id: &str,
-    events: &[crate::harness::HarnessEvent],
-) {
-    let Some((start, text)) = desk_relay_text(session_id, events) else { return };
-    let Some(agent_id) = session_id.strip_prefix("inbox-") else { return };
-    let key = format!("desk-relay:{session_id}:{start}");
+fn post_to_human(store: &crate::store::Store, agent_id: &str, session_id: &str, origin: Option<&str>, key: &str, text: &str) {
     match store.send_direct_message_typed(
         ("agent", agent_id),
         ("human", crate::coordination::LOCAL_HUMAN_ID),
-        &text,
-        &key,
+        text,
+        key,
         &chrono::Utc::now().to_rfc3339(),
-        Some(session_id),
+        origin,
         None,
         None,
         crate::coordination::typed::payload_fields(None, crate::coordination::typed::Urgency::Normal, None),
@@ -199,6 +234,59 @@ pub(crate) fn relay_desk_reply(
         })),
         Err(error) => eprintln!("relay desk reply for {session_id}: {error}"),
     }
+}
+
+fn relay_identity(store: &crate::store::Store, session_id: &str) -> (String, String) {
+    let agent_id = session_id
+        .strip_prefix("inbox-")
+        .map(str::to_string)
+        .or_else(|| {
+            store
+                .get_session_row(session_id)
+                .ok()
+                .flatten()
+                .and_then(|row| row.agent_id)
+                .filter(|a| !a.is_empty())
+        })
+        .unwrap_or_else(|| "snippet".to_string());
+    let name = store
+        .get_agent(&agent_id)
+        .ok()
+        .flatten()
+        .map(|a| a.display_name)
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| session_id.to_string());
+    (agent_id, name)
+}
+
+/// At turn end, tell the human something if they were waiting; then clear the wait.
+pub(crate) fn relay_desk_reply(
+    store: &crate::store::Store,
+    session_id: &str,
+    state: &mut crate::harness::HarnessState,
+) {
+    if state.human_waiting.is_empty() {
+        return;
+    }
+    let (agent_id, name) = relay_identity(store, session_id);
+    let relay = turn_end_relay(state.human_waiting.len(), &name, &state.events);
+    state.human_waiting.clear();
+    let Some((start, text)) = relay else { return };
+    let key = format!("desk-relay:{session_id}:{start}");
+    let origin = session_id.starts_with("inbox-").then_some(session_id);
+    post_to_human(store, &agent_id, session_id, origin, &key, &text);
+}
+
+/// Shutdown notice for a session that was mid-turn or had a human waiting.
+pub(crate) fn relay_restart(store: &crate::store::Store, session_id: &str, state: &crate::harness::HarnessState) {
+    if state.human_waiting.is_empty() {
+        return;
+    }
+    let (agent_id, name) = relay_identity(store, session_id);
+    let text = format!("Snippet restarted while {name} was answering; it will pick this up.");
+    let key = format!("restart-relay:{session_id}:{}", state.events.len());
+    let origin = session_id.starts_with("inbox-").then_some(session_id);
+    post_to_human(store, &agent_id, session_id, origin, &key, &text);
 }
 
 /// Create (or re-bind) an agent's durable inbox session.
@@ -771,7 +859,7 @@ mod tests {
     #[test]
     fn relays_plain_reply_to_human_dm() {
         let events = vec![dm("human"), say("draft"), say("Yes, boss.")];
-        assert_eq!(super::desk_relay_text("inbox-x-scout", &events), Some((0, "Yes, boss.".into())));
+        assert_eq!(super::turn_end_relay(1, "Scout", &events), Some((0, "Yes, boss.".into())));
     }
 
     #[test]
@@ -780,7 +868,7 @@ mod tests {
             let mut events = vec![dm("human")];
             events.extend(send(to, true));
             events.push(say("done"));
-            assert_eq!(super::desk_relay_text("inbox-a", &events), None, "{to}");
+            assert_eq!(super::turn_end_relay(1, "Scout", &events), None, "{to}");
         }
     }
 
@@ -789,22 +877,59 @@ mod tests {
         let mut events = vec![dm("human")];
         events.extend(send("human", false));
         events.push(say("answer"));
-        assert!(super::desk_relay_text("inbox-a", &events).is_some());
+        assert!(super::turn_end_relay(1, "Scout", &events).is_some());
         let mut events = vec![dm("human")];
         events.extend(send("mission-control", true));
         events.push(say("answer"));
-        assert!(super::desk_relay_text("inbox-a", &events).is_some());
+        assert!(super::turn_end_relay(1, "Scout", &events).is_some());
     }
 
     #[test]
-    fn no_relay_outside_human_dm_desk_turns() {
-        let events = vec![dm("human"), say("x")];
-        assert_eq!(super::desk_relay_text("mission-control", &events), None);
-        assert_eq!(super::desk_relay_text("some-task-session", &events), None);
-        assert_eq!(super::desk_relay_text("inbox-a", &[dm("session:abc"), say("x")]), None);
-        let plain = vec![E::UserInput { text: "hello".into() }, say("x")];
-        assert_eq!(super::desk_relay_text("inbox-a", &plain), None);
-        assert_eq!(super::desk_relay_text("inbox-a", &[dm("human"), say("  ")]), None);
+    fn tool_call_only_turn_gets_fixed_line() {
+        let events = vec![dm("human"), E::ToolCall { tool_name: "bash".into(), arguments: serde_json::json!({}) }];
+        assert_eq!(
+            super::turn_end_relay(1, "Scout", &events),
+            Some((0, "Scout finished this turn without a reply; its last step was bash.".into()))
+        );
+        assert_eq!(super::turn_end_relay(1, "Scout", &[dm("human"), say("  ")]).map(|r| r.1.contains("without a reply")), Some(true));
+    }
+
+    #[test]
+    fn nothing_waiting_means_no_relay() {
+        assert_eq!(super::turn_end_relay(0, "Scout", &[dm("human"), say("x")]), None);
+    }
+
+    #[test]
+    fn steered_second_message_is_prefixed() {
+        let steer = E::Steer { text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: and?\n[/direct_message]".into() };
+        let events = vec![dm("human"), steer, say("Both answered.")];
+        assert_eq!(
+            super::turn_end_relay(2, "Scout", &events),
+            Some((0, "Answering your 2 messages:\n\nBoth answered.".into()))
+        );
+    }
+
+    #[test]
+    fn reply_before_a_later_steer_does_not_cover_it() {
+        let steer = E::Steer { text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: and?\n[/direct_message]".into() };
+        let mut events = vec![dm("human")];
+        events.extend(send("human", true));
+        events.push(steer);
+        events.push(say("late"));
+        assert!(super::turn_end_relay(2, "Scout", &events).is_some());
+    }
+
+    #[test]
+    fn parses_human_dm_envelope() {
+        assert_eq!(super::human_dm_thread(&match dm("human") { E::UserInput { text } => text, _ => unreachable!() }), Some("t".into()));
+        assert_eq!(super::human_dm_thread("[direct_message]\nfrom_kind: human\nreply_to: session:x\n[/direct_message]"), None);
+        assert_eq!(super::human_dm_thread("hello"), None);
+    }
+
+    #[test]
+    fn old_state_json_loads_without_human_waiting() {
+        let w: crate::harness::HumanWait = serde_json::from_str(r#"{"thread_id":"t","since":"s"}"#).unwrap();
+        assert!(!w.steered);
     }
 
     #[test]
@@ -813,7 +938,7 @@ mod tests {
         events.extend(send("human", true));
         events.push(E::UserInput { text: "other".into() });
         events.push(say("x"));
-        assert_eq!(super::desk_relay_text("inbox-a", &events), None);
+        assert_eq!(super::turn_end_relay(1, "Scout", &events), Some((3, "x".into())));
     }
     use super::*;
     use crate::coordination::types::CoordinationEvent;

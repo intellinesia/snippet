@@ -86,12 +86,25 @@ mod assistant_dedup_tests {
             rate_limit: None,
             context_window: 10_000,
             queued_inputs: Vec::new(),
+            human_waiting: Vec::new(),
             plan: Vec::new(),
             history_rewritten: false,
             events_rewritten: false,
             compactions: 0,
             reflected_events: None,
         }
+    }
+
+    #[test]
+    fn state_without_human_waiting_loads_and_round_trips() {
+        let mut state = empty_state();
+        let json = serde_json::to_value(&state).unwrap();
+        assert!(json.get("human_waiting").is_none());
+        let loaded: HarnessState = serde_json::from_value(json).unwrap();
+        assert!(loaded.human_waiting.is_empty());
+        state.human_waiting.push(HumanWait { thread_id: "t".into(), since: "s".into(), steered: true });
+        let back: HarnessState = serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        assert_eq!(back.human_waiting, state.human_waiting);
     }
 
     fn assistant_texts(state: &HarnessState) -> Vec<&str> {

@@ -1,6 +1,16 @@
 use super::*;
 
 impl CodingHarness {
+    pub(super) fn note_human_wait(state: &mut HarnessState, text: &str, steered: bool) {
+        if let Some(thread_id) = crate::serve::human_dm_thread(text) {
+            state.human_waiting.push(HumanWait {
+                thread_id,
+                since: Utc::now().to_rfc3339(),
+                steered,
+            });
+        }
+    }
+
     pub(super) async fn accept_user_message(
         &self,
         state: &mut HarnessState,
@@ -49,6 +59,7 @@ impl CodingHarness {
                 text.clone()
             },
         });
+        Self::note_human_wait(state, &text, false);
         state.events.push(HarnessEvent::UserInput { text });
         state.status = HarnessStatus::Running;
         vars.empty_reply_reprompts = 0;
