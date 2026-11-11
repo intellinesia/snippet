@@ -169,6 +169,7 @@ fn configure(connection: &Connection) -> Result<(), rusqlite::Error> {
 /// Order matters only in that `agents` must exist before anything referencing it;
 /// the domains are otherwise independent.
 fn migrate(connection: &Connection) -> Result<(), rusqlite::Error> {
+    connection.execute("DROP TABLE IF EXISTS outbox", [])?;
     add_missing_columns(connection)?;
     create_schema(connection)
 }
