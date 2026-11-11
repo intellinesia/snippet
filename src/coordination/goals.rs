@@ -70,6 +70,7 @@ pub struct Drive {
     pub last_nudged_at: String,
     pub nudges: u32,
     pub snoozed_until: String,
+    pub next_step_at: String,
 }
 
 const DAY_SECS: i64 = 86_400;

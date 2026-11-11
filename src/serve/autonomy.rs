@@ -113,7 +113,8 @@ pub async fn autonomy_loop(daemon: Shared) {
         let offers = pending_offers(&daemon, &tasks);
         let waiting = waiting_on(&daemon, &tasks);
         let goal_lines = goal_attention_lines(&daemon.store);
-        let envelope = round_envelope(&tasks, &state, &due, &offers, &waiting, &goal_lines, now);
+        let stalled_goals = super::stall::stalled_goal_lines(&daemon.store, chrono::Utc::now());
+        let envelope = round_envelope(&tasks, &state, &due, &offers, &waiting, &goal_lines, &stalled_goals, now);
         let summary = round_summary(&tasks, &state, &due);
         let _ = mission_autonomy::update(|s| {
             s.last_round_at = now;
@@ -483,6 +484,7 @@ fn round_envelope(
     offers: &std::collections::HashMap<String, String>,
     waiting: &std::collections::HashMap<String, Vec<String>>,
     goal_lines: &[String],
+    stalled_goals: &[String],
     now: i64,
 ) -> String {
     let since = state.last_round_at;
@@ -545,6 +547,8 @@ fn round_envelope(
         out.push_str("\n\n## Goals needing you\nStalled: file or replan the next step, or take it to the user. Waiting on the user, NUDGE DUE: nudge them (one is enough this wake, the most important), then update_goal nudged. ASK WHETHER TO DROP OR PARK IT: three nudges went unanswered, so ask that instead. Ready to close: confirm with the user, then close_goal.\n");
         out.push_str(&goal_lines.join("\n"));
     }
+
+    out.push_str(&super::stall::stalled_goals_section(stalled_goals));
 
     if !due.is_empty() {
         out.push_str("\n\n## Wake-ups due now\n");

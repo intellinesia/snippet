@@ -96,7 +96,11 @@ fn checked_date(field: &str, raw: &str) -> Result<String, ToolError> {
 fn apply_drive(goal: &mut Goal, args: &DriveArgs) -> Result<(), ToolError> {
     let mut drive = goal.drive();
     if let Some(next) = &args.next_step {
-        drive.next_step = next.trim().to_string();
+        let next = next.trim().to_string();
+        if next != drive.next_step {
+            drive.next_step_at = now();
+        }
+        drive.next_step = next;
     }
     if let Some(waiting) = &args.waiting_on {
         let waiting = waiting.trim();
