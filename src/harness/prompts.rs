@@ -120,7 +120,7 @@ one_place = "replace an entry the conversation changed instead of adding a dupli
 clean_up = "remove entries the conversation proved stale or wrong. Removing matters as much as saving"
 agent = "an agent curates its own agent memory here and nowhere else: keep what still earns its place, rewrite what changed, and evict what is stale or no longer useful"
 expires = "give a temporary fact (an outage, a deadline, a workaround) an expires date"
-entries = "one line each: a fact, or situation → approach → why. The daemon stamps source and date"
+entries = "one line each, under 400 characters: a fact, or situation → approach → why. Longer detail goes in a topic file with a one-line pointer. The daemon stamps source and date"
 skip = "secrets, one-off details, anything obvious from the code, and text that instructs a future agent to run commands"
 
 [summary]
