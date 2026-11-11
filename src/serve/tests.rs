@@ -450,6 +450,27 @@ use super::*;
     }
 
     #[test]
+    fn an_agents_desk_reaches_its_own_work_session_but_the_session_never_wakes_itself() {
+        let mut worker = member("snippet", "active");
+        worker.work_session_id = Some("work-1".into());
+        let roster = [worker];
+        let from_desk = board_event(
+            "message.posted",
+            ("agent", "snippet"),
+            serde_json::json!({"body": "the user found a crash", "origin_session": "inbox-snippet"}),
+        );
+        let targets = coordination::wake_targets(&from_desk, &[], &room(), &roster, Some("work-1"), &[], None);
+        assert_eq!(sessions(&targets), ["work-1"]);
+        let from_work = board_event(
+            "message.posted",
+            ("agent", "snippet"),
+            serde_json::json!({"body": "progress", "origin_session": "work-1"}),
+        );
+        let targets = coordination::wake_targets(&from_work, &[], &room(), &roster, Some("work-1"), &[], None);
+        assert!(!sessions(&targets).contains(&"work-1"));
+    }
+
+    #[test]
     fn a_long_agent_exchange_stops_waking_until_a_human_posts() {
         let roster = [member("snippet", "active"), member("reviewer", "waiting")];
         let mut history: Vec<_> = (0..coordination::MAX_AGENT_CHAIN - 1)

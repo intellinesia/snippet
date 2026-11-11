@@ -877,8 +877,11 @@ pub(super) fn wake_targets(
     let holder = live().find(|m| m.status == "active").map(|m| m.agent_id.as_str());
     let chatter = CHATTER_EVENTS.contains(&event.event_type.as_str());
     let blocker = event.payload.get("kind").and_then(|v| v.as_str()) == Some("blocker");
+    // An agent's desk posting about its own task must still reach its work session.
+    let from_own_desk = event.payload.get("origin_session").and_then(|v| v.as_str())
+        == Some(crate::session::inbox_session_id(&event.actor_id).as_str());
     for (actor_id, actor_kind) in participants {
-        if *actor_id == event.actor_id || lease_to.is_some_and(|to| to != actor_id) {
+        if (*actor_id == event.actor_id && !from_own_desk) || lease_to.is_some_and(|to| to != actor_id) {
             continue;
         }
         // Waking costs a model turn per member, so once a task has seats a post
