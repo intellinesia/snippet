@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::coordination::TaskStatus;
+use crate::coordination::{Task, TaskStatus};
 use crate::coordination::types::CoordinationEvent;
 use crate::tools::ToolContext;
 
@@ -119,8 +119,34 @@ fn task_gate(ctx: &ToolContext, targets: &[PathBuf]) -> Gate {
     }
     let Some(outside) = inside.iter().find(|t| !task.owned_paths.iter().any(|o| t.starts_with(o))) else { return Gate::Allow };
     let note = format!("`{}` is outside the paths task `{}` owns; recorded as a conflict event.", outside.display(), task.id);
-    record_conflict(&store, &task.thread_id, &task.id, &note);
+    if first_conflict_of_spell(&store, &task, &note) {
+        record_conflict(&store, &task.thread_id, &task.id, &note);
+    }
     Gate::Warn(note)
+}
+
+/// True for the first stray write of a quiet spell; later ones only bump the
+/// count on the task's notice, so one task cannot flood the board.
+fn first_conflict_of_spell(store: &crate::store::Store, task: &Task, note: &str) -> bool {
+    let stamp = crate::coordination::progress_stamp(task).to_string();
+    let mut first = false;
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = store.update_task_in(&task.id, &now, |t| {
+        let marker = format!("since {stamp}");
+        let count = |m: &str| m.split(' ').next().and_then(|n| n.parse::<u32>().ok()).unwrap_or(1);
+        match t.notifications.iter_mut().find(|n| n.kind == "ownership_conflict" && n.message.contains(&marker)) {
+            Some(n) => {
+                let c = count(&n.message) + 1;
+                n.message = format!("{c} writes outside owned paths {marker}: {note}");
+            }
+            None => {
+                first = true;
+                t.notifications.retain(|n| n.kind != "ownership_conflict");
+                t.notify_once("ownership_conflict", &format!("1 writes outside owned paths {marker}: {note}"));
+            }
+        }
+    });
+    first
 }
 
 fn record_conflict(store: &crate::store::Store, thread_id: &str, task_id: &str, note: &str) {
@@ -179,6 +205,13 @@ mod tests {
         assert!(matches!(gate(&ctx, "change_files", &edit("other/a.md")), Gate::Warn(_)));
         let events = store.events_for_thread(&Task::thread_for("mine"), 0, 10).unwrap();
         assert!(events.iter().any(|e| e.event_type == "task.ownership_conflict"));
+        for _ in 0..2 {
+            assert!(matches!(gate(&ctx, "change_files", &edit("other/b.md")), Gate::Warn(_)));
+        }
+        let events = store.events_for_thread(&Task::thread_for("mine"), 0, 10).unwrap();
+        assert_eq!(events.iter().filter(|e| e.event_type == "task.ownership_conflict").count(), 1);
+        let t = store.get_task("mine").unwrap().unwrap();
+        assert!(t.notifications.iter().any(|n| n.kind == "ownership_conflict" && n.message.starts_with("3 ")));
         assert_eq!(gate(&ctx, "bash", &json!({"command": "echo hi > docs/x"})), Gate::Refuse(format!("`{}` is owned by task `theirs`; wait for it or ask Mission Control to re-scope.", root.join("docs/x").display())));
         assert_eq!(gate(&ctx, "bash", &json!({"command": "ls"})), Gate::Allow);
         drop(dir);
