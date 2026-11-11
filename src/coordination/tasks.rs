@@ -1474,6 +1474,40 @@ impl Store {
         Ok(())
     }
 
+    /// The one in-progress task an agent is actively working in its own session.
+    /// `None` when there are none or several: then nobody can say which the
+    /// user means.
+    pub fn working_task_of_agent(&self, agent_id: &str) -> Result<Option<Task>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks
+                 WHERE status = 'in_progress' AND session_id <> ''
+                   AND EXISTS (
+                        SELECT 1 FROM task_agents ta
+                        WHERE ta.task_id = tasks.id AND ta.agent_id = ?1
+                          AND ta.status = 'active' AND ta.removed_at IS NULL)
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT 2"
+            ))?;
+            let mut tasks = stmt
+                .query_map(params![agent_id], task_from_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(if tasks.len() == 1 { tasks.pop() } else { None })
+        })
+    }
+
+    /// The open task whose work session is `session_id`.
+    pub fn open_task_of_session(&self, session_id: &str) -> Result<Option<Task>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks
+                 WHERE session_id = ?1 AND status IN ('todo', 'in_progress', 'blocked', 'in_review')
+                 ORDER BY updated_at DESC, id DESC LIMIT 1"
+            ))?;
+            stmt.query_row(params![session_id], task_from_row).optional()
+        })
+    }
+
     pub fn get_task_by_thread(&self, thread_id: &str) -> Result<Option<Task>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(&format!(

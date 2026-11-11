@@ -477,6 +477,9 @@ pub struct HumanWait {
     pub since: String,
     #[serde(default)]
     pub steered: bool,
+    /// `state.events.len()` when the wait was noted; the desk tool budget counts from here.
+    #[serde(default)]
+    pub event_index: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
