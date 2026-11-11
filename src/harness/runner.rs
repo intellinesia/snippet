@@ -211,6 +211,7 @@ impl CodingHarness {
                                     state.messages.push(HarnessMessage::User {
                                         content: steer_message(&text),
                                     });
+                                    Self::note_human_wait(&mut state, &text, true);
                                     state.events.push(HarnessEvent::Steer { text });
                                     self.bump_activity();
                                 } else {
@@ -236,6 +237,7 @@ impl CodingHarness {
                                 state.messages.push(HarnessMessage::User {
                                     content: steer_message(&text),
                                 });
+                                Self::note_human_wait(&mut state, &text, true);
                                 state.events.push(HarnessEvent::Steer { text });
                                 self.bump_activity();
                             } else if hold {
@@ -307,6 +309,7 @@ impl CodingHarness {
                         state.messages.push(HarnessMessage::User {
                             content: steer_message(&text),
                         });
+                        Self::note_human_wait(&mut state, &text, true);
                         state.events.push(HarnessEvent::Steer { text });
                         self.bump_activity();
                     }

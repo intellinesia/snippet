@@ -140,6 +140,7 @@ impl CodingHarness {
             rate_limit: None,
             context_window: self.config.context_window_tokens,
             queued_inputs: Vec::new(),
+            human_waiting: Vec::new(),
             plan: Vec::new(),
             history_rewritten: false,
             events_rewritten: false,
@@ -380,7 +381,7 @@ impl CodingHarness {
                 // so the parked state never contradicts what the store holds.
                 crate::session::park_failed_session_work(&id, &prev_status, state);
                 if prev_status == "running" && status != "running" {
-                    crate::serve::relay_desk_reply(&store, &id, &state.events);
+                    crate::serve::relay_desk_reply(&store, &id, state);
                 }
                 crate::session::emit_status_transition(
                     &id,
