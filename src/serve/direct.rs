@@ -267,6 +267,16 @@ fn relay_identity(store: &crate::store::Store, session_id: &str) -> (String, Str
                 .and_then(|row| row.agent_id)
                 .filter(|a| !a.is_empty())
         })
+        // A task session with no agent row: the worker on its task's roster.
+        .or_else(|| {
+            let task = store.open_task_of_session(session_id).ok().flatten()?;
+            store
+                .list_task_agents(&task.id)
+                .ok()?
+                .into_iter()
+                .find(|m| m.removed_at.is_none() && m.status == "active")
+                .map(|m| m.agent_id)
+        })
         .unwrap_or_else(|| "snippet".to_string());
     let name = store
         .get_agent(&agent_id)
@@ -1271,9 +1281,10 @@ mod tests {
         state.events.push(E::UserInput { text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: hi\n[/direct_message]".into() });
         state.events.push(E::AssistantText { text: "Almost done.".into() });
         super::relay_desk_reply(&store, "task-session", &mut state);
-        let thread = crate::coordination::direct::direct_thread_id(("agent", "snippet"), ("human", "local"));
+        // No session row: the identity comes from the task's roster, not the fallback.
+        let thread = crate::coordination::direct::direct_thread_id(("agent", "a"), ("human", "local"));
         let sent = store.recent_direct_thread_events(&thread, 5).unwrap();
-        assert_eq!(sent.len(), 1);
+        assert_eq!(sent.len(), 1, "reply goes out as the task's worker");
         assert_eq!(sent[0].payload["about_task"], "t1");
         assert_eq!(sent[0].payload["body"], "Almost done.");
     }
