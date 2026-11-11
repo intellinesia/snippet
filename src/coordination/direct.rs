@@ -9,7 +9,7 @@
 //! delivery row was never written (a crash between the event insert and the
 //! delivery insert) is still discovered and delivered once.
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use super::types::CoordinationEvent;
@@ -788,6 +788,30 @@ impl Store {
             let mut events = rows.collect::<Result<Vec<_>, _>>()?;
             events.reverse();
             Ok(events)
+        })
+    }
+
+    /// Whether `agent_id` has sent anything on `thread_id` after `since`. The
+    /// daemon's own acknowledgements (`auto` set) do not count as the agent.
+    pub fn agent_replied_on_thread_since(
+        &self,
+        thread_id: &str,
+        agent_id: &str,
+        since: &str,
+    ) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            let found: Option<i64> = conn
+                .query_row(
+                    "SELECT 1 FROM board_events
+                     WHERE thread_id = ?1 AND event_type = 'direct_message.sent'
+                       AND actor_kind = 'agent' AND actor_id = ?2 AND created_at > ?3
+                       AND json_extract(payload_json, '$.auto') IS NULL
+                     LIMIT 1",
+                    params![thread_id, agent_id, since],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(found.is_some())
         })
     }
 

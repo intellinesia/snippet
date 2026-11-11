@@ -27,6 +27,9 @@ use super::{Shared};
 /// current exchange, small enough to keep the wake cheap.
 pub(super) const DIRECT_HISTORY_ON_WAKE: u32 = 10;
 
+/// How long an agent desk has to answer a human before the daemon says it has the message.
+const ACK_AFTER: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// How many pending deliveries one pass of the loop takes.
 const DELIVER_BATCH: u32 = 50;
 
@@ -69,6 +72,10 @@ fn direct_message_envelope(
         .filter(|session| !session.is_empty())
         .map(|session| format!("session:{session}"))
         .unwrap_or_else(|| "human".to_string());
+    let history: Vec<_> = history
+        .iter()
+        .filter(|prior| prior.payload.get("auto").is_none())
+        .collect();
     let mut digest = String::new();
     if history.is_empty() {
         digest.push_str("history: (first message in this conversation)\n");
@@ -216,7 +223,19 @@ pub(crate) fn turn_end_relay(
     Some((start, line))
 }
 
-fn post_to_human(store: &crate::store::Store, agent_id: &str, session_id: &str, origin: Option<&str>, key: &str, text: &str) {
+#[allow(clippy::too_many_arguments)]
+fn post_to_human(
+    store: &crate::store::Store,
+    agent_id: &str,
+    session_id: &str,
+    origin: Option<&str>,
+    about_task: Option<&str>,
+    key: &str,
+    text: &str,
+    extra: serde_json::Map<String, serde_json::Value>,
+) {
+    let mut fields = crate::coordination::typed::payload_fields(None, crate::coordination::typed::Urgency::Normal, None);
+    fields.extend(extra);
     match store.send_direct_message_typed(
         ("agent", agent_id),
         ("human", crate::coordination::LOCAL_HUMAN_ID),
@@ -225,8 +244,8 @@ fn post_to_human(store: &crate::store::Store, agent_id: &str, session_id: &str, 
         &chrono::Utc::now().to_rfc3339(),
         origin,
         None,
-        None,
-        crate::coordination::typed::payload_fields(None, crate::coordination::typed::Urgency::Normal, None),
+        about_task,
+        fields,
     ) {
         Ok(saved) => crate::session::emit_device_event(json!({
             "kind": "coordination_event",
@@ -274,7 +293,9 @@ pub(crate) fn relay_desk_reply(
     let Some((start, text)) = relay else { return };
     let key = format!("desk-relay:{session_id}:{start}");
     let origin = session_id.starts_with("inbox-").then_some(session_id);
-    post_to_human(store, &agent_id, session_id, origin, &key, &text);
+    let task = store.open_task_of_session(session_id).ok().flatten();
+    let about_task = task.as_ref().map(|t| t.id.as_str());
+    post_to_human(store, &agent_id, session_id, origin, about_task, &key, &text, Default::default());
 }
 
 /// Shutdown notice for a session that was mid-turn or had a human waiting.
@@ -286,7 +307,7 @@ pub(crate) fn relay_restart(store: &crate::store::Store, session_id: &str, state
     let text = format!("Snippet restarted while {name} was answering; it will pick this up.");
     let key = format!("restart-relay:{session_id}:{}", state.events.len());
     let origin = session_id.starts_with("inbox-").then_some(session_id);
-    post_to_human(store, &agent_id, session_id, origin, &key, &text);
+    post_to_human(store, &agent_id, session_id, origin, None, &key, &text, Default::default());
 }
 
 /// Create (or re-bind) an agent's durable inbox session.
@@ -387,6 +408,58 @@ pub(super) async fn deliver_by_urgency(
             d.deliver(session_id, LoopInput::UserMessage(envelope)).await;
         }
     }
+}
+
+/// After `delay`, tell the human the agent has their message, unless the agent
+/// already answered on the thread. Keyed on the message, so it posts at most once.
+async fn ack_if_silent(
+    store: crate::store::Store,
+    agent_id: String,
+    session_id: String,
+    event_id: String,
+    thread_id: String,
+    since: String,
+    delay: std::time::Duration,
+) {
+    tokio::time::sleep(delay).await;
+    if store.agent_replied_on_thread_since(&thread_id, &agent_id, &since).unwrap_or(true) {
+        return;
+    }
+    let (_, name) = relay_identity(&store, &session_id);
+    let text = format!("{name} has your message and is working on it.");
+    let mut extra = serde_json::Map::new();
+    extra.insert("auto".into(), json!("ack"));
+    post_to_human(&store, &agent_id, &session_id, Some(&session_id), None, &format!("ack:{event_id}"), &text, extra);
+}
+
+/// Hand a human message to the agent's single in-progress task session instead
+/// of its desk. False when there is no such task or its session will not start.
+async fn route_to_working_task(
+    d: &Shared,
+    event: &crate::coordination::types::CoordinationEvent,
+    history: &[crate::coordination::types::CoordinationEvent],
+    agent_id: &str,
+    desk_session_id: &str,
+) -> bool {
+    let Ok(Some(task)) = d.store.working_task_of_agent(agent_id) else {
+        return false;
+    };
+    let Some((tx, _path, _stream)) = d.ensure_live(&task.session_id).await else {
+        eprintln!("[coordination] route to task session failed, desk instead");
+        return false;
+    };
+    drop(tx);
+    let prefix = format!("note: about task {} ({}); routed to the session doing it. ", task.id, task.title);
+    let envelope = direct_message_envelope(event, history).replacen("note: ", &prefix, 1);
+    deliver_by_urgency(d, &task.session_id, envelope, &event.payload).await;
+    let body = event.payload.get("body").and_then(|v| v.as_str()).unwrap_or_default();
+    let quoted: String = body.chars().take(120).collect();
+    let notice = format!(
+        "{quoted}  routed to task {}'s session; its reply goes to the user directly.",
+        task.id
+    );
+    super::record_agent_message(d, desk_session_id, "daemon", &notice, false).await;
+    true
 }
 
 async fn deliver_direct(
@@ -526,8 +599,21 @@ async fn deliver_direct(
     // The user is talking to the agent: steer a running desk turn rather than
     // wait behind it, as an agent's reply already does.
     if event.actor_kind == "human" {
-        crate::session::wake_settled(&session_id);
-        d.deliver(&session_id, LoopInput::UserMessage(envelope)).await;
+        if !route_to_working_task(d, event, &history, agent_id, &session_id).await {
+            crate::session::wake_settled(&session_id);
+            d.deliver(&session_id, LoopInput::UserMessage(envelope)).await;
+        }
+        if agent_id != crate::mission_control::SESSION_ID {
+            tokio::spawn(ack_if_silent(
+                d.store.clone(),
+                agent_id.to_string(),
+                session_id.clone(),
+                event.event_id.clone(),
+                event.thread_id.clone(),
+                event.created_at.clone(),
+                ACK_AFTER,
+            ));
+        }
     } else {
         deliver_by_urgency(d, &session_id, envelope, &event.payload).await;
     }
@@ -1022,4 +1108,174 @@ mod tests {
         let envelope = direct_message_envelope(&current, &[]);
         assert!(envelope.contains("first message in this conversation"));
     }
+    fn test_daemon() -> super::Shared {
+        std::sync::Arc::new(crate::serve::Daemon {
+            config: std::sync::Mutex::new(crate::config::SnippetConfig::default()),
+            config_path: std::path::PathBuf::new(),
+            token: String::new(),
+            hostname: "test".into(),
+            sessions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            shells: crate::term::SessionTerms::new(std::env::temp_dir()),
+            git_write: tokio::sync::Mutex::new(()),
+            seen_nonces: std::sync::Mutex::new(std::collections::HashMap::new()),
+            queue_hidden: std::sync::Mutex::new(std::collections::HashMap::new()),
+            queue_revision: std::sync::atomic::AtomicU64::new(0),
+            mission_control_root: tempfile::tempdir().expect("tempdir").keep(),
+            store: crate::store::Store::open_in_memory().unwrap(),
+            coordination_events: tokio::sync::broadcast::channel(16).0,
+            recurring_root: tempfile::tempdir().expect("tempdir").keep(),
+        })
+    }
+
+    async fn fake_session(d: &super::Shared, id: &str) -> tokio::sync::mpsc::UnboundedReceiver<LoopInput> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let live = crate::serve::LiveSession {
+            input_tx: tx,
+            join: tokio::spawn(std::future::pending()),
+            state_path: std::path::PathBuf::new(),
+            profile: None,
+            stream: std::sync::Arc::new(std::sync::Mutex::new(crate::llm::StreamBuffer::default())),
+            terms: crate::term::SessionTerms::new(std::env::temp_dir()),
+        };
+        d.sessions.lock().await.insert(id.to_string(), live);
+        rx
+    }
+
+    fn agent(id: &str) -> crate::coordination::types::Agent {
+        use crate::coordination::types::{Agent, AgentKind, AgentStatus};
+        Agent { id: id.into(), display_name: "Scout".into(), handle: id.into(), kind: AgentKind::Worker, status: AgentStatus::Active, capabilities: vec![] }
+    }
+
+    fn human_says(store: &crate::store::Store, body: &str, key: &str) -> crate::coordination::types::CoordinationEvent {
+        store
+            .send_direct_message_typed(("human", "local"), ("agent", "a"), body, key, "2026-01-01T00:00:00Z", None, None, None, Default::default())
+            .unwrap()
+    }
+
+    fn acks(store: &crate::store::Store, thread: &str) -> Vec<crate::coordination::types::CoordinationEvent> {
+        store
+            .recent_direct_thread_events(thread, 20)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.payload.get("auto").is_some())
+            .collect()
+    }
+
+    async fn run_ack(store: &crate::store::Store, event: &crate::coordination::types::CoordinationEvent) {
+        super::ack_if_silent(
+            store.clone(),
+            "a".into(),
+            "inbox-a".into(),
+            event.event_id.clone(),
+            event.thread_id.clone(),
+            event.created_at.clone(),
+            std::time::Duration::ZERO,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn ack_is_posted_once_when_nothing_came_back() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store.create_agent(&agent("a")).unwrap();
+        let event = human_says(&store, "hello", "k1");
+        run_ack(&store, &event).await;
+        run_ack(&store, &event).await;
+        let found = acks(&store, &event.thread_id);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].payload["auto"], "ack");
+        assert_eq!(found[0].payload["body"], "Scout has your message and is working on it.");
+        assert_eq!(found[0].actor_id, "a");
+    }
+
+    #[tokio::test]
+    async fn no_ack_when_the_agent_replied_in_time() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store.create_agent(&agent("a")).unwrap();
+        let event = human_says(&store, "hello", "k1");
+        store
+            .send_direct_message_typed(("agent", "a"), ("human", "local"), "on it", "r1", "2026-01-01T00:00:03Z", None, None, None, Default::default())
+            .unwrap();
+        run_ack(&store, &event).await;
+        assert!(acks(&store, &event.thread_id).is_empty());
+    }
+
+    #[test]
+    fn the_ack_is_not_the_model_replying_and_stays_out_of_history() {
+        let mut ack = event(2, "a", "Scout has your message and is working on it.", "human:local");
+        ack.payload["auto"] = json!("ack");
+        let envelope = direct_message_envelope(&event(3, "local", "and?", "agent:a"), &[ack]);
+        assert!(envelope.contains("first message in this conversation"));
+        assert!(!envelope.contains("has your message"));
+        let events = vec![
+            E::UserInput { text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: hi\n[/direct_message]".into() },
+            E::ToolCall { tool_name: "bash".into(), arguments: json!({}) },
+        ];
+        assert!(super::turn_end_relay(1, "Scout", &events).is_some());
+    }
+
+    fn working_task(store: &crate::store::Store, id: &str, session: &str) {
+        let mut task = crate::coordination::Task::filed_by_human(id.into(), format!("Task {id}"), "d".into(), "s1".into(), 0, "2026-01-01T00:00:00Z".into());
+        task.status = crate::coordination::TaskStatus::InProgress;
+        task.session_id = session.into();
+        store.create_task(&task).unwrap();
+        store.add_task_agent_full(id, "a", "implementer", Some(session), "", "active", "2026-01-01T00:00:00Z").unwrap();
+    }
+
+    #[tokio::test]
+    async fn human_dm_goes_to_the_single_working_task_session() {
+        let d = test_daemon();
+        d.store.create_agent(&agent("a")).unwrap();
+        working_task(&d.store, "t1", "task-session");
+        let mut task_rx = fake_session(&d, "task-session").await;
+        let mut desk_rx = fake_session(&d, "inbox-a").await;
+        let event = human_says(&d.store, "how is it going", "k1");
+
+        assert!(super::route_to_working_task(&d, &event, &[], "a", "inbox-a").await);
+
+        match task_rx.try_recv().expect("task session got the message") {
+            LoopInput::UserMessage(text) | LoopInput::Queue(crate::harness::QueuedInput { text, .. }) => {
+                assert!(text.contains("note: about task t1 (Task t1); routed to the session doing it. The user wrote directly"), "{text}");
+                assert!(text.contains("from_kind: human") && text.contains("reply_to: human"));
+                assert_eq!(crate::serve::human_dm_thread(&text), Some(event.thread_id.clone()));
+            }
+            _ => panic!("unexpected input"),
+        }
+        match desk_rx.try_recv().expect("desk got a notice") {
+            LoopInput::Notice(crate::harness::HarnessEvent::AgentMessage { body, .. }) => {
+                assert!(body.contains("how is it going") && body.contains("routed to task t1's session"), "{body}");
+            }
+            _ => panic!("desk should only get a notice"),
+        }
+    }
+
+    #[tokio::test]
+    async fn two_working_tasks_leave_the_message_with_the_desk() {
+        let d = test_daemon();
+        d.store.create_agent(&agent("a")).unwrap();
+        working_task(&d.store, "t1", "s-one");
+        working_task(&d.store, "t2", "s-two");
+        let mut rx = fake_session(&d, "s-one").await;
+        let event = human_says(&d.store, "hello", "k1");
+        assert!(!super::route_to_working_task(&d, &event, &[], "a", "inbox-a").await);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_reply_from_a_task_session_carries_the_task() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store.create_agent(&agent("a")).unwrap();
+        working_task(&store, "t1", "task-session");
+        let mut state = crate::harness::HarnessState::blank("/tmp", None);
+        state.human_waiting.push(crate::harness::HumanWait { thread_id: "t".into(), since: "s".into(), steered: true, event_index: 0 });
+        state.events.push(E::UserInput { text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: hi\n[/direct_message]".into() });
+        state.events.push(E::AssistantText { text: "Almost done.".into() });
+        super::relay_desk_reply(&store, "task-session", &mut state);
+        let thread = crate::coordination::direct::direct_thread_id(("agent", "snippet"), ("human", "local"));
+        let sent = store.recent_direct_thread_events(&thread, 5).unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].payload["about_task"], "t1");
+        assert_eq!(sent[0].payload["body"], "Almost done.");
+    }
+
 }

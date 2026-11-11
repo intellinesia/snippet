@@ -7,6 +7,7 @@ impl CodingHarness {
                 thread_id,
                 since: Utc::now().to_rfc3339(),
                 steered,
+                event_index: state.events.len(),
             });
         }
     }

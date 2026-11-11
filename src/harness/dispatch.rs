@@ -187,6 +187,10 @@ fn answer_call(state: &mut HarnessState, tool_name: &str, call_id: &str, result:
     });
 }
 
+const DESK_TOOL_BUDGET: usize = 6;
+const DESK_BUDGET_MESSAGE: &str = "Desk budget: 6 tool calls while the user waits. Answer now with what you know; if the work needs more, say so in one line and hand it to your work session, a lane or Mission Control.";
+const DESK_BUDGET_SHORT: &str = "Desk budget exhausted; reply now.";
+
 impl CodingHarness {
     /// Execute one turn's tool calls. `Err` ends the turn immediately
     /// (`terminate_loop`, `ask_user`); `Ok` carries the turn's productivity.
@@ -212,9 +216,26 @@ impl CodingHarness {
             .count();
         let mut approval_index = 0usize;
 
+        let mut refused_this_turn = false;
         let mut i = 0;
         while i < calls.len() {
-            let end = self.parallel_run_end(&calls, i, conversation_mode);
+            if let Some(0) = self.desk_budget_left(state) {
+                let call = &calls[i];
+                i += 1;
+                let text = if refused_this_turn { DESK_BUDGET_SHORT } else { DESK_BUDGET_MESSAGE };
+                refused_this_turn = true;
+                state.events.push(HarnessEvent::ToolCall {
+                    tool_name: call.tool_name.clone(),
+                    arguments: call.arguments.clone(),
+                });
+                let call_id = call.id.clone().unwrap_or_default();
+                answer_call(state, &call.tool_name, &call_id, tool_error(text));
+                continue;
+            }
+            let mut end = self.parallel_run_end(&calls, i, conversation_mode);
+            if let Some(left) = self.desk_budget_left(state) {
+                end = end.min(i + left);
+            }
             if end > i + 1 {
                 self.run_parallel_reads(state, lanes, &calls[i..end], &mut stats)
                     .await;
@@ -251,6 +272,23 @@ impl CodingHarness {
             }
         }
         Ok(stats)
+    }
+
+    /// Tool calls an inbox session may still make while a human waits; `None`
+    /// when no budget applies.
+    fn desk_budget_left(&self, state: &HarnessState) -> Option<usize> {
+        let since = state.human_waiting.last()?.event_index;
+        let id = self.session_id()?;
+        if !crate::session::is_inbox_session_id(&id) {
+            return None;
+        }
+        let used = state
+            .events
+            .iter()
+            .skip(since)
+            .filter(|e| matches!(e, HarnessEvent::ToolCall { .. }))
+            .count();
+        Some(DESK_TOOL_BUDGET.saturating_sub(used))
     }
 
     fn is_parallel_safe(&self, call: &GeneratedToolCall, conversation_mode: bool) -> bool {
