@@ -729,6 +729,34 @@ impl Store {
         })
     }
 
+    /// Whether the parent's lane records list `lane` as running.
+    pub fn session_lane_recorded_running(&self, parent: &str, lane: &str) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT EXISTS (
+                     SELECT 1 FROM sessions s, json_each(s.state_json, '$.lanes') l
+                     WHERE s.id = ?1
+                       AND json_extract(l.value, '$.id') = ?2
+                       AND json_extract(l.value, '$.status') = 'running')",
+                params![parent, lane],
+                |row| row.get(0),
+            )
+        })
+    }
+
+    /// Set the row's status and the status held in its state JSON, nothing else.
+    pub fn set_session_status(&self, id: &str, status: &str) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            let n = conn.execute(
+                "UPDATE sessions SET status = ?2,
+                     state_json = CASE WHEN json_valid(state_json) THEN json_set(state_json, '$.status', ?2) ELSE state_json END
+                 WHERE id = ?1",
+                params![id, status],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
     pub fn session_has_running_lanes(&self, id: &str) -> Result<bool, StoreError> {
         self.with_connection(|conn| {
             conn.query_row(

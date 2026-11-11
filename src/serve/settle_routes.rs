@@ -307,6 +307,7 @@ pub(crate) async fn sweep_once(d: &Shared) -> (usize, usize) {
         return (0, 0);
     };
     let now = now();
+    sweep_stuck_lanes(&store, now);
     let mut deleted = 0;
     for id in expired_settled(&store, now).into_iter().take(MAX_DELETES_PER_TICK) {
         if purge_session(d, &id, true).await {
