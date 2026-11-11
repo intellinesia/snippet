@@ -540,3 +540,85 @@ mod desk_budget_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod presence_event_tests {
+    use super::*;
+    use crate::llm::ModelOutput;
+
+    struct Scripted(std::collections::VecDeque<ModelOutput>);
+
+    #[async_trait::async_trait]
+    impl AgentModel for Scripted {
+        async fn generate(
+            &mut self,
+            _messages: &[HarnessMessage],
+            _tools: &[NativeToolDefinition],
+            _force_tool: bool,
+            _sink: Option<StreamHandle>,
+        ) -> Result<ModelOutput, ToolError> {
+            Ok(self.0.pop_front().expect("scripted model ran out"))
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_run_publishes_presence_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                state_path: Some(dir.path().join("state.json")),
+                memory_enabled: false,
+                ..HarnessConfig::default()
+            },
+            ToolRegistry::new(),
+            ToolContext::new(dir.path())
+                .unwrap()
+                .with_store_path(dir.path().join("store.db")),
+        );
+        let id = harness.session_id().unwrap();
+        let mut events = crate::session::subscribe_device_events();
+        let mut model = Scripted(
+            [
+                ModelOutput {
+                    calls: vec![GeneratedToolCall {
+                        tool_name: "bash".into(),
+                        arguments: json!({"command": "ls -la"}),
+                        id: Some("c1".into()),
+                        origin_model: None,
+                        signature: None,
+                    }],
+                    ..Default::default()
+                },
+                ModelOutput {
+                    content_text: Some("done".into()),
+                    ..Default::default()
+                },
+            ]
+            .into(),
+        );
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut seen = Vec::new();
+        let watch = async {
+            while let Ok(event) = events.recv().await {
+                if event["session"] == id && event["kind"] == "agent_presence" {
+                    let state = event["state"].as_str().unwrap().to_string();
+                    if state == "tool" {
+                        assert_eq!(event["detail"], "ls");
+                    }
+                    let done = state == "idle";
+                    seen.push(state);
+                    if done {
+                        break;
+                    }
+                }
+            }
+            drop(tx);
+        };
+        let run = harness.run_interactive(&mut model, Some("list files".into()), rx, None, None);
+        let (ran, _) = tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(run, watch) })
+            .await
+            .expect("run finished");
+        ran.unwrap();
+        assert_eq!(seen, ["thinking", "tool", "thinking", "typing", "idle"]);
+    }
+}

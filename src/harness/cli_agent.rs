@@ -2306,6 +2306,7 @@ impl CodingHarness {
                         let announce = mcp || done.is_some_and(|d| d == "DONE" || d == "ERROR");
                         if announce && !quiet && parse.agy_tools.insert(index) {
                             self.lane_progress("tool_call", super::dispatch::tool_activity_text(&name, &arguments));
+                            self.presence("tool", &super::presence::tool_detail(&name, &arguments));
                             state.events.push(HarnessEvent::ToolCall { tool_name: name.clone(), arguments });
                             changed = true;
                         }
@@ -2464,6 +2465,7 @@ impl CodingHarness {
                             }
                             if !QUIET_TOOLS.contains(&name.as_str()) {
                                 self.lane_progress("tool_call", super::dispatch::tool_activity_text(&name, &arguments));
+                                self.presence("tool", &super::presence::tool_detail(&name, &arguments));
                                 state.events.push(HarnessEvent::ToolCall { tool_name: name, arguments });
                                 changed = true;
                             }

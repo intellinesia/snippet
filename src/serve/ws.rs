@@ -307,7 +307,10 @@ async fn handle_ws(
                 use std::hash::{Hash, Hasher};
                 let snap = crate::llm::StreamBuffer::snapshot(&stream);
                 let think = crate::llm::StreamBuffer::snapshot_thinking(&stream);
-                let visible = stream.try_lock().map(|b| b.text_visible).unwrap_or(false);
+                let (visible, voice) = stream
+                    .try_lock()
+                    .map(|b| (b.text_visible, b.voice_turn))
+                    .unwrap_or((false, false));
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 snap.hash(&mut h);
                 think.hash(&mut h);
@@ -320,20 +323,9 @@ async fn handle_ws(
                         && snap.starts_with(&sent_text)
                         && think.starts_with(&sent_thinking);
                     let frame = if append {
-                        serde_json::json!({
-                            "wire": "stream",
-                            "append": true,
-                            "text": &snap[sent_text.len()..],
-                            "thinking": &think[sent_thinking.len()..],
-                            "text_visible": visible,
-                        })
+                        stream_frame(true, &snap[sent_text.len()..], &think[sent_thinking.len()..], visible, voice)
                     } else {
-                        serde_json::json!({
-                            "wire": "stream",
-                            "text": snap,
-                            "thinking": think,
-                            "text_visible": visible,
-                        })
+                        stream_frame(false, &snap, &think, visible, voice)
                     };
                     sent_once = true;
                     sent_text = snap;
@@ -770,5 +762,35 @@ mod tests {
         session_tx.send_replace(());
         tokio::time::timeout(Duration::from_millis(50), signals.changed()).await.expect("pending signal wakes at once");
         assert!(signals.mark_seen(), "a session change must trigger a state check");
+    }
+}
+
+fn stream_frame(append: bool, text: &str, thinking: &str, visible: bool, voice: bool) -> serde_json::Value {
+    let mut frame = serde_json::json!({
+        "wire": "stream",
+        "text": text,
+        "thinking": thinking,
+        "text_visible": visible,
+    });
+    if append {
+        frame["append"] = true.into();
+    }
+    if voice {
+        frame["voice"] = true.into();
+    }
+    frame
+}
+
+#[cfg(test)]
+mod stream_frame_tests {
+    use super::stream_frame;
+
+    #[test]
+    fn voice_flag_only_on_voice_turns() {
+        let voice = stream_frame(false, "hi", "", true, true);
+        assert_eq!(voice["voice"], true);
+        let plain = stream_frame(true, "hi", "", true, false);
+        assert!(plain.get("voice").is_none());
+        assert_eq!(plain["append"], true);
     }
 }

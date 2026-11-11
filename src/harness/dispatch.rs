@@ -323,6 +323,7 @@ impl CodingHarness {
         stats.only_delegations = false;
         for call in calls {
             self.lane_progress("tool_call", tool_activity_text(&call.tool_name, &call.arguments));
+            self.presence("tool", &super::presence::tool_detail(&call.tool_name, &call.arguments));
         }
         let results = futures_util::future::join_all(calls.iter().map(|call| {
             self.tools
@@ -378,6 +379,7 @@ impl CodingHarness {
             arguments: call.arguments.clone(),
         });
         self.lane_progress("tool_call", tool_activity_text(&tool_name, &call.arguments));
+        self.presence("tool", &super::presence::tool_detail(&tool_name, &call.arguments));
 
         // Headless explicit completion: a lane / one-shot run ends with a
         // structured `summary` (folded back into the caller). Not advertised to
