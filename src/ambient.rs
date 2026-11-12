@@ -392,6 +392,8 @@ pub fn state_json(reason: &str) -> Value {
         "tuning_expires_at": tuning.expires_at,
         "mode": state_name(),
         "sub": sub_state(),
+        "attention_state": crate::serve::attention::state(),
+        "attention": crate::serve::attention::snapshot(),
         "reason": reason,
         "device": device,
         "expecting": expectation().map(|e| json!({"kind": e.kind, "about": e.about})),

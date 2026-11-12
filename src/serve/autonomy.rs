@@ -181,53 +181,31 @@ pub(super) fn note_heard() {
     crate::ambient::note_hearing();
 }
 
+pub(super) fn heard_quiet() -> bool {
+    HEARD_AT.lock().unwrap().is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(2500))
+}
+
+pub(super) fn last_resume_matches_inputs() -> bool {
+    LAST_RESUME.load(std::sync::atomic::Ordering::SeqCst) == mission_control_inputs()
+}
+
+pub(super) fn mark_resume_delivered() {
+    LAST_RESUME.store(mission_control_inputs(), std::sync::atomic::Ordering::SeqCst);
+}
+
+#[allow(dead_code)]
 pub(super) fn resume_unless_heard(daemon: Shared) {
-    resume(daemon, false);
+    super::attention::arm_resume(&daemon, crate::ambient::run_generation(), false);
 }
 
 /// From the speech interrupt hook: resumes only while the cut reply is still unconsumed.
 pub(super) fn resume_after_barge_in(daemon: Shared) {
-    resume(daemon, true);
-}
-
-fn resume(daemon: Shared, needs_interruption: bool) {
-    use std::time::{Duration, Instant};
-    let sent = mission_control_inputs();
-    let started = Instant::now();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            if mission_control_inputs() != sent {
-                return;
-            }
-            let quiet = HEARD_AT.lock().unwrap().is_none_or(|t| t.elapsed() >= Duration::from_millis(2500));
-            if quiet || started.elapsed() >= Duration::from_secs(60) {
-                break;
-            }
-        }
-        if mission_control_busy() || (needs_interruption && !crate::speech::interruption_pending()) {
-            return;
-        }
-        // A resume that was itself cut with nothing said in between would loop on the same reply.
-        if LAST_RESUME.load(std::sync::atomic::Ordering::SeqCst) == mission_control_inputs() {
-            let _ = crate::speech::take_interruption();
-            return;
-        }
-        eprintln!("[ambient-speech] no new turn followed the barge-in; resuming Mission Control");
-        let heard = crate::speech::take_interruption()
-            .map(|h| super::ambient_watch::interruption_attrs(&h))
-            .unwrap_or_default();
-        deliver_to_mission_control(
-            &daemon,
-            format!("<ambient_resume{heard}>A sound cut your speech off but no new request followed. Carry on without mentioning it: if your last reply was cut short, restate the sentence that was cut and finish what `unsaid` still holds, in a sentence or two, as whole sentences and never starting mid-phrase (`interrupted_reply` is what they heard); otherwise answer Chief's latest turn or continue what you were doing.</ambient_resume>"),
-        )
-        .await;
-        LAST_RESUME.store(mission_control_inputs(), std::sync::atomic::Ordering::SeqCst);
-    });
+    super::attention::arm_resume(&daemon, crate::ambient::run_generation(), true);
 }
 
 pub(super) async fn deliver_to_mission_control(daemon: &Shared, text: String) {
     note_input();
+    super::attention::delivered(crate::ambient::run_generation());
     if let Err(error) = super::mission_control::open_mission_control(daemon, None).await {
         eprintln!("[autonomy] could not open Mission Control: {error}");
         return;

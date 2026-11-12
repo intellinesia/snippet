@@ -53,6 +53,7 @@ mod coordination;
 pub use coordination::{COORDINATION_THREAD, queue_coordination_wake};
 mod direct;
 pub(crate) use direct::{human_dm_thread, relay_desk_reply, relay_restart};
+pub(crate) mod attention;
 mod autonomy;
 mod fs;
 mod git;

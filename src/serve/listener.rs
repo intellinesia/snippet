@@ -558,12 +558,7 @@ impl Listener {
             let device = self.device.clone();
             let sent = super::autonomy::mission_control_inputs();
             tokio::spawn(async move {
-                let spoke = crate::speech::interrupt(&device);
-                let busy = crate::ambient::conversation().is_some() && super::autonomy::mission_control_busy();
-                if (spoke || busy) && super::autonomy::mission_control_inputs() == sent && !crate::ambient::waiting_for_user() {
-                    super::autonomy::interrupt_mission_control(&d).await;
-                    super::autonomy::resume_unless_heard(d);
-                }
+                super::attention::interrupt_since(&d, &device, super::attention::Trigger::Barge, sent).await;
             });
         }
         let barge_ready = if during_playback {
@@ -604,7 +599,9 @@ impl Listener {
             let d = self.d.clone();
             let device = self.device.clone();
             let sent = super::autonomy::mission_control_inputs();
+            let guard = super::attention::classify_begin(&self.device);
             tokio::spawn(async move {
+                let _guard = guard;
                 let verdict = super::ambient_watch::classify_live(&d, &device, &clean_text, during_playback, live_vp).await;
                 let go = super::ambient_router::should_interrupt(&d, &verdict, &clean_text);
                 let mut do_interrupt = false;
@@ -619,12 +616,7 @@ impl Listener {
                     }
                 }
                 if do_interrupt {
-                    let spoke = crate::speech::interrupt(&device);
-                    let busy = crate::ambient::conversation().is_some() && super::autonomy::mission_control_busy();
-                    if (spoke || busy) && super::autonomy::mission_control_inputs() == sent && !crate::ambient::waiting_for_user() {
-                        super::autonomy::interrupt_mission_control(&d).await;
-                        super::autonomy::resume_unless_heard(d);
-                    }
+                    super::attention::interrupt_since(&d, &device, super::attention::Trigger::LiveVerdict, sent).await;
                 }
             });
         }
