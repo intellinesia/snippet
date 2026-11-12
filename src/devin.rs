@@ -231,7 +231,8 @@ pub fn build_config_json(exe_path: &Path, org_id: Option<&str>) -> Value {
                 "hooks": [{
                     "type": "command",
                     "command": format!("'{}' devin-hook", exe_path.display()),
-                    "timeout": 10
+                    "timeout": 10,
+                    "fail_closed": true
                 }]
             }]
         }
