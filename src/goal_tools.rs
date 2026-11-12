@@ -181,10 +181,7 @@ impl Tool for CreateGoal {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: CreateGoalArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "create_goal".into(),
-            })?;
+        let args: CreateGoalArgs = serde_json::from_value(arguments)?;
         let store = mc_store(ctx)?;
         if args.title.trim().is_empty() || args.outcome.trim().is_empty() {
             return Err(ToolError::msg("title and outcome must be non-empty"));
@@ -259,10 +256,7 @@ impl Tool for UpdateGoal {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: UpdateGoalArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "update_goal".into(),
-            })?;
+        let args: UpdateGoalArgs = serde_json::from_value(arguments)?;
         let store = mc_store(ctx)?;
         let mut goal = find(&store, &args.id)?;
         if let Some(t) = args
@@ -341,10 +335,7 @@ impl Tool for CloseGoal {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: CloseGoalArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "close_goal".into(),
-            })?;
+        let args: CloseGoalArgs = serde_json::from_value(arguments)?;
         let store = mc_store(ctx)?;
         let mut goal = find(&store, &args.id)?;
         if goal.status != GoalStatus::Open {
@@ -396,10 +387,7 @@ impl Tool for ListGoals {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: ListGoalsArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "list_goals".into(),
-            })?;
+        let args: ListGoalsArgs = serde_json::from_value(arguments)?;
         let store = mc_store(ctx)?;
         let status =
             match args.status.as_deref().map(str::trim) {

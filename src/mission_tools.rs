@@ -1552,10 +1552,7 @@ impl Tool for InspectSession {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: SessionArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "inspect_session".into(),
-            })?;
+        let args: SessionArgs = serde_json::from_value(arguments)?;
         let path =
             state_path_for_id(&args.session_id).ok_or_else(|| ToolError::msg("unknown session"))?;
         // Store-or-file: MC inspecting a session that lives in the database must
@@ -1828,10 +1825,7 @@ impl Tool for CreateMissionSession {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let _ = root(ctx)?;
-        let args: CreateSessionArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "create_mission_session".into(),
-            })?;
+        let args: CreateSessionArgs = serde_json::from_value(arguments)?;
         if args.folder.trim().is_empty() {
             return Err(ToolError::msg("folder must be a non-empty path"));
         }
@@ -1950,10 +1944,7 @@ impl Tool for CreateMissionTask {
         NativeToolDefinition { name: "create_mission_task".into(), description: "Create a task for project work requested by the user or an agent. File dependent steps together and link prerequisites with `blocked_by`. The description is the worker's full brief and scope. Choose `resume` if the target has context, otherwise `fresh`. Use `agent_id` for a matching specialist; use `crew` to seat reviewers or advisors before work starts.".into(), input_schema: schema(json!({"title":{"type":"string"}, "description":{"type":"string"}, "session":{"type":"string","description":"Session id, title fragment or workspace path; `latest` selects the most recent match."}, "supersedes":{"type":"string","description":"optional; id of the cancelled task this one replaces"}, "handoff_mode":{"type":"string","enum":["resume","fresh"]}, "owned_paths":{"type":"array","items":{"type":"string"}}, "agent_id":{"type":"string","description":"Specialist agent id from list_coordination_agents."}, "crew":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"role":{"type":"string","description":"reviewer (default), advisor or tester"}},"required":["agent_id"]},"description":"Agents seated beside the worker; they wait until called."}, "profile":{"type":"string","description":"Profile from list_profiles. Overrides the session model and restarts it, losing its prompt cache; use only to rescue a rate-limited session."}, "reply_to":{"type":"string","description":"Exact `reply_to` value from the request message, such as `session:<id>` or `agent:<id>`."}, "blocked_by":{"type":"array","items":{"type":"string"},"description":"Task ids that must finish first."}, "read_only":{"type":"boolean","description":"investigation that changes nothing"}, "verify_mode":{"type":"string","enum":["self","reviewer","mission_control","user"],"description":"Who confirms completion. `self` skips review; `reviewer` uses a read-only agent; `mission_control` or `user` leaves the verdict with you. Defaults to reviewer (self when read_only)."}, "reviewer":{"type":"string","description":"Agent id for the reviewer; defaults to the worker in a fresh lane."}, "revises_task_id":{"type":"string","description":"optional; the finished task this one revises"}, "audience":{"type":"string","description":"Intended audience for content work."}, "definition_of_good":{"type":"string","description":"Quality bar for content work."}, "goal":{"type":"string","description":"Open goal id this task serves."}, "expected_minutes":{"type":"integer","description":"Expected duration in minutes; flagged stalled after twice this (minimum 20). Defaults by verify_mode."}}), &["title","description","session"]) }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let mut args: CreateTaskArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "create_mission_task".into(),
-            })?;
+        let mut args: CreateTaskArgs = serde_json::from_value(arguments)?;
         args.description
             .push_str(&crate::mission_autonomy::standing_rules_note());
         create_task(ctx, args, ("agent", crate::mission_control::SESSION_ID)).await
@@ -2424,10 +2415,7 @@ impl Tool for DeliverToSession {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let _ = root(ctx)?;
-        let args: DeliverArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "deliver_to_session".into(),
-            })?;
+        let args: DeliverArgs = serde_json::from_value(arguments)?;
         if args.brief.trim().is_empty() {
             return Err(ToolError::msg("brief must be non-empty"));
         }
@@ -3403,10 +3391,7 @@ impl Tool for RetryMissionTask {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: RetryTaskArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "retry_mission_task".into(),
-            })?;
+        let args: RetryTaskArgs = serde_json::from_value(arguments)?;
         if args.task_id.trim().is_empty() {
             return Err(ToolError::msg("task_id must be non-empty"));
         }
@@ -3455,10 +3440,7 @@ impl Tool for CancelMissionTask {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: CancelTaskArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "cancel_mission_task".into(),
-            })?;
+        let args: CancelTaskArgs = serde_json::from_value(arguments)?;
         let (task_id, reason) = (args.task_id.trim(), args.reason.trim());
         if task_id.is_empty() || reason.is_empty() {
             return Err(ToolError::msg(
@@ -3919,10 +3901,7 @@ impl Tool for RegisterAgent {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: RegisterAgentArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "register_agent".into(),
-            })?;
+        let args: RegisterAgentArgs = serde_json::from_value(arguments)?;
         if args.identity.trim().len() < 200 {
             return Err(ToolError::msg(
                 "identity is too thin: write the agent's mandate, how it works and how it reports",
@@ -4144,10 +4123,7 @@ impl Tool for ReportMissionTask {
         NativeToolDefinition { name: "report_mission_task".into(), description: "Report a Mission Control task's completion, failure, or blocker. Use only for the [mission_control_task] envelope delivered to this session. A done report is three short parts: scope, done and how; a task with a reviewer goes to review before it completes.".into(), input_schema: schema(json!({"task_id":{"type":"string"}, "status":{"type":"string","enum":["done","blocked","failed"]}, "scope":{"type":"string","description":"done: what the scope was, and anything that changed and why"}, "done":{"type":"string","description":"done: how much got done, and anything left out and why"}, "how":{"type":"string","description":"done: how it was done and checked"}, "summary":{"type":"string","description":"blocked or failed: on what, and what would unblock it"}, "artifacts":{"type":"array","items":{"type":"string"}}}), &["task_id","status"]) }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: ReportArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "report_mission_task".into(),
-            })?;
+        let args: ReportArgs = serde_json::from_value(arguments)?;
         // Authority binding: the caller must be the durable session this task
         // was dispatched to (bound at dispatch via `claim_task_for_dispatch`),
         // or the task's own target session while parking has cleared that
@@ -4374,10 +4350,7 @@ impl Tool for CreateRecurringJob {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let _ = root(ctx)?;
-        let args: CreateRecurringArgs =
-            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
-                tool: "create_recurring_job".into(),
-            })?;
+        let args: CreateRecurringArgs = serde_json::from_value(arguments)?;
         let target_session_id = match args
             .session_id
             .as_deref()
