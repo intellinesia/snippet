@@ -312,8 +312,9 @@ pub(crate) fn post_to_human(
     }
 }
 
-fn relay_identity(store: &crate::store::Store, session_id: &str) -> (String, String) {
-    let agent_id = session_id
+/// The agent a session works for, when the session names one at all.
+fn relay_agent_id(store: &crate::store::Store, session_id: &str) -> Option<String> {
+    session_id
         .strip_prefix("inbox-")
         .map(str::to_string)
         .or_else(|| {
@@ -334,14 +335,21 @@ fn relay_identity(store: &crate::store::Store, session_id: &str) -> (String, Str
                 .find(|m| m.removed_at.is_none() && m.status == "active")
                 .map(|m| m.agent_id)
         })
-        .unwrap_or_else(|| "snippet".to_string());
-    let name = store
-        .get_agent(&agent_id)
+}
+
+fn relay_agent_name(store: &crate::store::Store, agent_id: &str, session_id: &str) -> String {
+    store
+        .get_agent(agent_id)
         .ok()
         .flatten()
         .map(|a| a.display_name)
         .filter(|n| !n.trim().is_empty())
-        .unwrap_or_else(|| session_id.to_string());
+        .unwrap_or_else(|| session_id.to_string())
+}
+
+fn relay_identity(store: &crate::store::Store, session_id: &str) -> (String, String) {
+    let agent_id = relay_agent_id(store, session_id).unwrap_or_else(|| "snippet".to_string());
+    let name = relay_agent_name(store, &agent_id, session_id);
     (agent_id, name)
 }
 
@@ -373,7 +381,163 @@ pub(crate) fn relay_desk_reply(
         origin,
         about_task,
         Some(&key),
+        Default::default(),
     );
+}
+
+/// When a session pauses on `ask_user`, put the question in the agent's chat so
+/// the human can answer it there. Keyed on the `UserQuestion` event's index, so
+/// a re-persist never posts the same question twice.
+pub(crate) fn relay_question(
+    store: &crate::store::Store,
+    session_id: &str,
+    state: &crate::harness::HarnessState,
+) {
+    if session_id == crate::mission_control::SESSION_ID {
+        return;
+    }
+    let Some(question) = state.pending_question.as_ref() else {
+        return;
+    };
+    let Some(agent_id) = relay_agent_id(store, session_id) else {
+        return;
+    };
+    let Some(index) = state
+        .events
+        .iter()
+        .rposition(|e| matches!(e, crate::harness::HarnessEvent::UserQuestion { .. }))
+    else {
+        return;
+    };
+    let Some(questions) = question.get("questions").and_then(|q| q.as_array()) else {
+        return;
+    };
+    let body = questions
+        .iter()
+        .filter_map(|q| {
+            let text = q.get("text").and_then(|t| t.as_str())?.trim();
+            if text.is_empty() {
+                return None;
+            }
+            Some(
+                match q
+                    .get("header")
+                    .and_then(|h| h.as_str())
+                    .map(str::trim)
+                    .filter(|h| !h.is_empty())
+                {
+                    Some(header) => format!("{header}: {text}"),
+                    None => text.to_string(),
+                },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if body.is_empty() {
+        return;
+    }
+    let name = relay_agent_name(store, &agent_id, session_id);
+    let key = format!("ask:{session_id}:{index}");
+    let origin = session_id.starts_with("inbox-").then_some(session_id);
+    let task = store.open_task_of_session(session_id).ok().flatten();
+    let about_task = task.as_ref().map(|t| t.id.as_str());
+    let mut extra = serde_json::Map::new();
+    extra.insert("kind".into(), json!("question"));
+    extra.insert("auto".into(), json!("ask"));
+    extra.insert(
+        "question".into(),
+        json!({
+            "session": session_id,
+            "questions": questions,
+            "asked_at": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
+    crate::coordination::reach::reach_with_key(
+        store,
+        &agent_id,
+        crate::coordination::reach::Kind::Question,
+        &name,
+        &body,
+        false,
+        origin,
+        about_task,
+        Some(&key),
+        extra,
+    );
+}
+
+/// The newest relayed `ask_user` question for `session_id`, when its agent's
+/// chat thread carries one.
+pub(super) fn latest_question_event(
+    store: &crate::store::Store,
+    session_id: &str,
+) -> Option<crate::coordination::types::CoordinationEvent> {
+    let agent_id = relay_agent_id(store, session_id)?;
+    let thread = crate::coordination::direct_thread_id(
+        ("agent", agent_id.as_str()),
+        ("human", crate::coordination::LOCAL_HUMAN_ID),
+    );
+    store
+        .recent_direct_thread_events(&thread, 50)
+        .ok()?
+        .into_iter()
+        .rev()
+        .find(|event| {
+            event.payload.get("auto").and_then(|v| v.as_str()) == Some("ask")
+                && event
+                    .payload
+                    .get("question")
+                    .and_then(|q| q.get("session"))
+                    .and_then(|v| v.as_str())
+                    == Some(session_id)
+        })
+}
+
+/// The human's answer to a relayed question, posted back onto the agent's chat
+/// thread. Keyed on the question event, so chat and session-screen answers of
+/// the same question post once. Returns the saved event id.
+pub(super) fn record_question_answer(
+    store: &crate::store::Store,
+    session_id: &str,
+    question_event_id: &str,
+    text: &str,
+    answers: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<String> {
+    let agent_id = relay_agent_id(store, session_id)?;
+    let mut extra = serde_json::Map::new();
+    extra.insert("channel".into(), json!("chat"));
+    extra.insert("auto".into(), json!("answer"));
+    extra.insert("answer_to".into(), json!(question_event_id));
+    if let Some(answers) = answers.filter(|a| !a.is_empty()) {
+        extra.insert("answers".into(), json!(answers));
+    }
+    let key = format!("answer:{question_event_id}");
+    let origin = session_id.starts_with("inbox-").then_some(session_id);
+    let task = store.open_task_of_session(session_id).ok().flatten();
+    let about_task = task.as_ref().map(|t| t.id.as_str());
+    match store.send_direct_message_typed(
+        ("human", crate::coordination::LOCAL_HUMAN_ID),
+        ("agent", agent_id.as_str()),
+        text,
+        &key,
+        &chrono::Utc::now().to_rfc3339(),
+        origin,
+        None,
+        about_task,
+        extra,
+    ) {
+        Ok(saved) => {
+            crate::session::emit_device_event(json!({
+                "kind": "coordination_event",
+                "event": saved.clone(),
+            }));
+            Some(saved.event_id)
+        }
+        Err(error) => {
+            eprintln!("record question answer for {session_id}: {error}");
+            None
+        }
+    }
 }
 
 /// Shutdown notice for a session that was mid-turn or had a human waiting.
@@ -1139,6 +1303,74 @@ pub(super) async fn direct_mark_read(
     ) {
         Ok(()) => Json(json!({"thread_id": thread_id, "read_at": at})).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("mark read: {error}")),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct DirectAnswerReq {
+    session: String,
+    question_event_id: String,
+    text: String,
+    /// Per-question answers, keyed by question id or index.
+    #[serde(default)]
+    answers: serde_json::Map<String, serde_json::Value>,
+}
+
+/// POST /coordination/direct/answer — answer a relayed `ask_user` question from
+/// the agent's chat. The session gets `LoopInput::Answer` exactly as the
+/// session-screen path delivers it, and the exchange lands on the chat thread.
+pub(super) async fn direct_answer(
+    State(d): State<Shared>,
+    Json(req): Json<DirectAnswerReq>,
+) -> Response {
+    let session = req.session.trim();
+    if session.is_empty()
+        || req.question_event_id.trim().is_empty()
+        || req.text.trim().is_empty()
+    {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "session, question_event_id and text are required",
+        );
+    }
+    let waiting = d
+        .store
+        .get_session_row(session)
+        .ok()
+        .flatten()
+        .is_some_and(|row| row.status == "waiting_for_input")
+        && d
+            .store
+            .load_session_scalar(session)
+            .ok()
+            .flatten()
+            .and_then(|scalar| serde_json::from_str::<serde_json::Value>(&scalar).ok())
+            .is_some_and(|state| {
+                state
+                    .get("pending_question")
+                    .is_some_and(|q| !q.is_null())
+            });
+    if !waiting {
+        return api_error(
+            StatusCode::CONFLICT,
+            "no question is waiting in that session",
+        );
+    }
+    crate::speech::cancel_all("interrupted");
+    d.deliver(session, LoopInput::Answer(req.text.trim().to_string()))
+        .await;
+    match record_question_answer(
+        &d.store,
+        session,
+        req.question_event_id.trim(),
+        req.text.trim(),
+        Some(&req.answers),
+    ) {
+        Some(event_id) => Json(json!({"event_id": event_id})).into_response(),
+        None => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not record the answer",
+        ),
     }
 }
 
@@ -1972,6 +2204,180 @@ mod tests {
 
         let desk_id = crate::session::minimal_inbox_identity(agent_id);
         assert!(desk_id.contains("Your channels and the kinds of message each carries are in reach_policy;"));
+    }
+
+    fn waiting_question_state() -> crate::harness::HarnessState {
+        let mut state = crate::harness::HarnessState::blank("/tmp", None);
+        state.status = crate::harness::HarnessStatus::WaitingForInput;
+        state.pending_question = Some(json!({
+            "questions": [
+                {"id": "q0", "text": "Ship now or wait for review?", "header": "Deploy", "answer_kind": {"kind": "yes_no"}},
+                {"id": "q1", "text": "Which channel?", "answer_kind": {"kind": "free_text"}},
+            ],
+            "context": null,
+        }));
+        state.events.push(E::UserQuestion {
+            questions: state.pending_question.clone().unwrap(),
+        });
+        state
+    }
+
+    fn import_waiting_session(
+        store: &crate::store::Store,
+        id: &str,
+        agent_id: &str,
+        state: &crate::harness::HarnessState,
+    ) {
+        store
+            .import_session(
+                id,
+                "wk",
+                state,
+                &crate::conversations::SessionExtras {
+                    agent_id: Some(agent_id.to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+
+    fn thread_events(
+        store: &crate::store::Store,
+        agent_id: &str,
+    ) -> Vec<crate::coordination::types::CoordinationEvent> {
+        let thread = crate::coordination::direct_thread_id(
+            ("agent", agent_id),
+            ("human", crate::coordination::LOCAL_HUMAN_ID),
+        );
+        store.recent_direct_thread_events(&thread, 50).unwrap()
+    }
+
+    #[test]
+    fn relay_question_posts_once_per_question_event() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store.create_agent(&agent("a")).unwrap();
+        let state = waiting_question_state();
+        import_waiting_session(&store, "sess-1", "a", &state);
+        super::relay_question(&store, "sess-1", &state);
+        super::relay_question(&store, "sess-1", &state);
+        let asks: Vec<_> = thread_events(&store, "a")
+            .into_iter()
+            .filter(|e| e.payload.get("auto").and_then(|v| v.as_str()) == Some("ask"))
+            .collect();
+        assert_eq!(asks.len(), 1);
+        let ask = &asks[0];
+        assert_eq!(ask.payload["kind"], "question");
+        assert_eq!(ask.payload["body"], "Deploy: Ship now or wait for review?\nWhich channel?");
+        assert_eq!(ask.payload["question"]["session"], "sess-1");
+        assert_eq!(
+            ask.payload["question"]["questions"],
+            state.pending_question.as_ref().unwrap()["questions"]
+        );
+        assert!(ask.payload["question"]["asked_at"].as_str().is_some());
+        assert_eq!(ask.idempotency_key, "ask:sess-1:0");
+    }
+
+    #[test]
+    fn relay_question_skips_mission_control_and_agentless_sessions() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store.create_agent(&agent("a")).unwrap();
+        let state = waiting_question_state();
+        super::relay_question(&store, crate::mission_control::SESSION_ID, &state);
+        super::relay_question(&store, "sess-unknown", &state);
+        assert!(thread_events(&store, "a").is_empty());
+        // The relay_identity fallback must not post as `snippet` either.
+        let snippet_thread = crate::coordination::direct_thread_id(
+            ("agent", "snippet"),
+            ("human", crate::coordination::LOCAL_HUMAN_ID),
+        );
+        assert!(store
+            .recent_direct_thread_events(&snippet_thread, 50)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn direct_answer_conflicts_when_no_question_waits() {
+        let d = test_daemon();
+        let res = super::direct_answer(
+            State(d.clone()),
+            Json(super::DirectAnswerReq {
+                session: "sess-1".into(),
+                question_event_id: "e1".into(),
+                text: "yes".into(),
+                answers: Default::default(),
+            }),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn direct_answer_delivers_and_records_on_the_thread() {
+        let d = test_daemon();
+        let store = d.store.clone();
+        store.create_agent(&agent("a")).unwrap();
+        let state = waiting_question_state();
+        import_waiting_session(&store, "sess-1", "a", &state);
+        super::relay_question(&store, "sess-1", &state);
+        let ask = thread_events(&store, "a")
+            .into_iter()
+            .find(|e| e.payload.get("auto").and_then(|v| v.as_str()) == Some("ask"))
+            .unwrap();
+        let mut rx = fake_session(&d, "sess-1").await;
+        let mut answers = serde_json::Map::new();
+        answers.insert("q0".into(), json!("wait"));
+        let res = super::direct_answer(
+            State(d.clone()),
+            Json(super::DirectAnswerReq {
+                session: "sess-1".into(),
+                question_event_id: ask.event_id.clone(),
+                text: "wait for review".into(),
+                answers,
+            }),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        match rx.try_recv().expect("answer delivered to session") {
+            LoopInput::Answer(text) => assert_eq!(text, "wait for review"),
+            other => panic!("expected LoopInput::Answer, got {other:?}"),
+        }
+        let events = thread_events(&store, "a");
+        let answer = events
+            .iter()
+            .find(|e| e.payload.get("auto").and_then(|v| v.as_str()) == Some("answer"))
+            .expect("human answer event on the thread");
+        assert_eq!(answer.actor_kind, "human");
+        assert_eq!(answer.payload["body"], "wait for review");
+        assert_eq!(answer.payload["answer_to"], ask.event_id);
+        assert_eq!(answer.payload["answers"]["q0"], "wait");
+        assert_eq!(answer.idempotency_key, format!("answer:{}", ask.event_id));
+    }
+
+    #[tokio::test]
+    async fn session_screen_answer_mirrors_to_the_thread_once() {
+        let d = test_daemon();
+        let store = d.store.clone();
+        store.create_agent(&agent("a")).unwrap();
+        let state = waiting_question_state();
+        import_waiting_session(&store, "sess-1", "a", &state);
+        super::relay_question(&store, "sess-1", &state);
+        // What the ws `answer` frame does: find the relayed question, mirror it.
+        for _ in 0..2 {
+            let question = super::latest_question_event(&store, "sess-1").unwrap();
+            super::record_question_answer(&store, "sess-1", &question.event_id, "ship it", None);
+        }
+        let ask = thread_events(&store, "a")
+            .into_iter()
+            .find(|e| e.payload.get("auto").and_then(|v| v.as_str()) == Some("ask"))
+            .unwrap();
+        let answers: Vec<_> = thread_events(&store, "a")
+            .into_iter()
+            .filter(|e| e.payload.get("auto").and_then(|v| v.as_str()) == Some("answer"))
+            .collect();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].payload["answer_to"], ask.event_id);
+        assert_eq!(answers[0].payload["body"], "ship it");
     }
 
 }

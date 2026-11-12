@@ -53,7 +53,7 @@ pub(crate) use config_routes::*;
 mod coordination;
 pub use coordination::{COORDINATION_THREAD, queue_coordination_wake};
 mod direct;
-pub(crate) use direct::{human_dm_thread, post_to_human, relay_desk_reply, relay_restart};
+pub(crate) use direct::{human_dm_thread, post_to_human, relay_desk_reply, relay_question, relay_restart};
 pub(crate) mod attention;
 mod autonomy;
 mod fs;
@@ -1025,6 +1025,7 @@ pub async fn run_serve(
         )
         .route("/coordination/direct/threads", get(direct::direct_list_threads))
         .route("/coordination/direct/read", post(direct::direct_mark_read))
+        .route("/coordination/direct/answer", post(direct::direct_answer))
         .route("/sessions", get(list_sessions).post(open_session))
         .route("/sessions/counts", get(session_counts))
         .route("/usage", get(usage_summary))
