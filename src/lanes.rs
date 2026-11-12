@@ -1192,10 +1192,7 @@ async fn run_lane_once(
     });
     let cli_profile = model.cli_agent_profile();
     let defaults = HarnessConfig::default();
-    let (context_window_tokens, compact_at_pct) = match &cli_profile {
-        Some(cli) => (cli.context_window, cli.compact_at_pct),
-        None => (defaults.context_window_tokens, defaults.compact_at_pct),
-    };
+    let (context_window_tokens, compact_at_pct) = lane_context(&*model, &defaults);
     let context_window_tokens = crate::agent_context::effective_context_window(
         context_window_tokens,
         crate::agent_context::limit_for(agent.as_deref()),
@@ -1401,6 +1398,15 @@ fn summarize_lane_outcome(outcome: &crate::harness::HarnessOutcome) -> String {
         }
     }
     out
+}
+
+fn lane_context(model: &dyn AgentModel, defaults: &HarnessConfig) -> (u64, u8) {
+    match model.cli_agent_profile() {
+        Some(cli) => (cli.context_window, cli.compact_at_pct),
+        None => model
+            .context_settings()
+            .unwrap_or((defaults.context_window_tokens, defaults.compact_at_pct)),
+    }
 }
 
 #[cfg(test)]
@@ -1709,5 +1715,42 @@ mod tests {
         // Next spawn id should be lane-42, not lane-1.
         assert_eq!(mgr.counter, 41);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lane_context_uses_profile_for_api_and_cli_and_falls_back_to_defaults() {
+        let defaults = HarnessConfig::default();
+
+        let api_profile = crate::config::InferenceProfileConfig {
+            provider: "gemini".to_string(),
+            model: "gemini-4-carbon".to_string(),
+            context_window: 1_048_576,
+            compact_at_pct: 85,
+            ..crate::config::InferenceProfileConfig::default()
+        };
+        let api_model = api_profile.build_model_for_session(Some("lane-api".to_string()));
+        assert_eq!(lane_context(&*api_model, &defaults), (1_048_576, 85));
+
+        let cli_profile = crate::config::InferenceProfileConfig {
+            provider: "claude-code".to_string(),
+            model: "sonnet".to_string(),
+            context_window: 500_000,
+            compact_at_pct: 80,
+            ..crate::config::InferenceProfileConfig::default()
+        };
+        let cli_model = cli_profile.build_model_for_session(Some("lane-cli".to_string()));
+        assert_eq!(lane_context(&*cli_model, &defaults), (500_000, 80));
+
+        let unconfigured = crate::config::InferenceProfileConfig {
+            provider: "openai".to_string(),
+            context_window: 0,
+            compact_at_pct: 75,
+            ..crate::config::InferenceProfileConfig::default()
+        };
+        let fallback_model = unconfigured.build_model_for_session(None);
+        assert_eq!(
+            lane_context(&*fallback_model, &defaults),
+            (defaults.context_window_tokens, defaults.compact_at_pct)
+        );
     }
 }
