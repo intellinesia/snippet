@@ -36,17 +36,14 @@ fn classify_turn(d: &Shared, device: &str, turn: &[Part], pending: &mut Option<P
     let vs = voices(turn);
     let (d2, dev2, ids2, text2) = (d.clone(), device.to_string(), ids.clone(), text.clone());
     let sent = super::autonomy::mission_control_inputs();
+    let guard = super::attention::classify_begin(device);
     let h = tokio::spawn(async move {
+        let _guard = guard;
         let v = ambient_watch::classify(&d2, &ids2, &text2, vs).await;
         if (crate::tts_stream::busy_for(&dev2) || super::autonomy::mission_control_busy())
             && should_interrupt(&d2, &v, &text2)
         {
-            let spoke = crate::speech::interrupt(&dev2);
-            let busy = crate::ambient::conversation().is_some() && super::autonomy::mission_control_busy();
-            if (spoke || busy) && super::autonomy::mission_control_inputs() == sent && !crate::ambient::waiting_for_user() {
-                super::autonomy::interrupt_mission_control(&d2).await;
-                super::autonomy::resume_unless_heard(d2);
-            }
+            super::attention::interrupt_since(&d2, &dev2, super::attention::Trigger::FinalVerdict, sent).await;
         }
         v
     });
@@ -399,7 +396,11 @@ async fn flush(d: &Shared, device: &str, parts: Vec<Part>, fast: bool, last: &mu
             }
             let vs = voices(&parts);
             let (d2, ids2, text2) = (d.clone(), ids.clone(), text.clone());
-            tokio::spawn(async move { ambient_watch::classify(&d2, &ids2, &text2, vs).await })
+            let guard = super::attention::classify_begin(device);
+            tokio::spawn(async move {
+                let _guard = guard;
+                ambient_watch::classify(&d2, &ids2, &text2, vs).await
+            })
         }
     };
     let mut delivered = false;
@@ -705,12 +706,13 @@ async fn deliver(
     let ctx = context(d, device, &ids);
     let envelope = format!("<ambient_turn{attrs}>{ctx}{}</ambient_turn>", ambient_watch::escape(&text));
     if mode == "active" && crate::ambient::offer_to_wait(&envelope) {
+        super::attention::delivered(crate::ambient::run_generation());
         if let Some(last) = ids.last() {
             super::ambient_routes::mark(last, "wait_handoff");
         }
     } else {
         if mode == "active" {
-            super::autonomy::interrupt_mission_control(d).await;
+            super::attention::interrupt(d, device, super::attention::Trigger::Delivery).await;
         }
         crate::tts::prewarm();
         super::autonomy::deliver_to_mission_control(d, envelope).await;
