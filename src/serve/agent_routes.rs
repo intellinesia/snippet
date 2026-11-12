@@ -98,6 +98,13 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
                             "max_context_tokens".into(),
                             context_limits.get(&agent.id).copied().into(),
                         );
+                        let (presence, needs_you) =
+                            super::agent_now::agent_presence_and_needs(&d.store, &agent.id);
+                        object.insert(
+                            "presence".into(),
+                            serde_json::to_value(presence).unwrap_or(serde_json::Value::Null),
+                        );
+                        object.insert("needs_you".into(), needs_you.into());
                     }
                     value
                 })

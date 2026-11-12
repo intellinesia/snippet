@@ -4,6 +4,57 @@ use super::*;
 
 const DETAIL_MAX: usize = 80;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionPresence {
+    pub state: String,
+    pub detail: String,
+    pub since: i64,
+    pub agent: Option<String>,
+}
+
+fn live_map() -> &'static std::sync::Mutex<std::collections::HashMap<String, SessionPresence>> {
+    static LIVE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, SessionPresence>>,
+    > = std::sync::OnceLock::new();
+    LIVE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+pub fn record_session_presence(
+    session: &str,
+    agent: Option<String>,
+    state: &str,
+    detail: &str,
+    since: i64,
+) {
+    let detail: String = detail.trim().chars().take(DETAIL_MAX).collect();
+    if let Ok(mut map) = live_map().lock() {
+        map.insert(
+            session.to_string(),
+            SessionPresence {
+                state: state.to_string(),
+                detail,
+                since,
+                agent,
+            },
+        );
+    }
+}
+
+pub fn session_presence(session: &str) -> Option<SessionPresence> {
+    live_map().lock().ok()?.get(session).cloned()
+}
+
+pub fn snapshot_presence() -> std::collections::HashMap<String, SessionPresence> {
+    live_map().lock().map(|m| m.clone()).unwrap_or_default()
+}
+
+#[cfg(test)]
+pub fn clear_presence_for_test() {
+    if let Ok(mut map) = live_map().lock() {
+        map.clear();
+    }
+}
+
 /// What the agent is doing right now, published on `/events` when it changes.
 #[derive(Default)]
 pub(super) struct Presence {
@@ -27,9 +78,10 @@ impl Presence {
             return None;
         }
         self.state = state;
-        self.detail = detail;
+        self.detail = detail.clone();
         self.since = now;
         let agent = self.agent.get_or_insert_with(agent).clone();
+        record_session_presence(session, agent.clone(), state, &detail, now);
         Some(json!({
             "kind": "agent_presence",
             "session": session,
