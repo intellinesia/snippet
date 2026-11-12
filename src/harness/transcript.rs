@@ -28,6 +28,13 @@ pub(crate) fn notice_text(event: &HarnessEvent) -> Option<String> {
             agent_id,
             body,
             outbound,
+        } if agent_id == "room digest" && !*outbound => Some(format!(
+            "[room digest] {body}\nContext only: what was said around the user while they were not talking to you. Do not reply or speak. Keep items marked remember the way you keep other remembered notes, with the event ids as source."
+        )),
+        HarnessEvent::AgentMessage {
+            agent_id,
+            body,
+            outbound,
         } => Some(if *outbound {
             format!("[sent to {agent_id}]\n{body}")
         } else {

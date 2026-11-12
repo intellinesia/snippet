@@ -26,6 +26,7 @@ const RESOLVED: usize = 32;
 const TRANSCRIPT_CHARS: usize = 60_000;
 const MAX_PENDING_MS: i64 = 1_200_000;
 const HEAD_LINES: usize = 12;
+const IMMEDIATE: f64 = 0.9;
 pub(crate) const TITLE: &str = "Take notes on this conversation?";
 pub(crate) const BODY: &str = "Sounds like you're talking with someone. Snippet can keep notes.";
 
@@ -35,6 +36,7 @@ pub(crate) struct Heard {
     pub ids: Vec<String>,
     pub text: String,
     pub memorable: bool,
+    pub score: f64,
     pub speaker: Option<String>,
 }
 
@@ -68,6 +70,7 @@ pub(crate) enum Effect {
     Append { call_id: String, line: Heard },
     Scrub { device: String, ids: Vec<String> },
     Note(String),
+    RoomLine { device: String, line: Heard },
     Summarise { call: Call, ended_at: i64 },
     Quiet(bool),
 }
@@ -191,15 +194,18 @@ impl CallBook {
         // Notes wait out a detection window so a call found later can still hold them back.
         let busy = self.active.as_ref().map(|c| c.device.clone());
         while let Some(i) = self.held.iter().position(|(d, at, _)| now - at >= WINDOW_MS && busy.as_deref() != Some(d)) {
-            let (_, _, h) = self.held.remove(i).unwrap();
+            let (dev, _, h) = self.held.remove(i).unwrap();
             if self.policy.matches_never(now, crate::recording_policy::local_at(now), &h.text) {
                 continue;
             }
-            let note = match h.speaker.as_deref() {
-                Some(s) if !s.is_empty() => format!("[{s}] {}", h.text),
-                _ => h.text,
-            };
-            fx.push(Effect::Note(note));
+            if h.score >= IMMEDIATE {
+                let note = match h.speaker.as_deref() {
+                    Some(s) if !s.is_empty() => format!("[{s}] {}", h.text.clone()),
+                    _ => h.text.clone(),
+                };
+                fx.push(Effect::Note(note));
+            }
+            fx.push(Effect::RoomLine { device: dev, line: h });
         }
         let Some(call) = self.active.as_ref() else { return fx };
         let (phase, expires_at, detected_at, last_user, device) = (call.phase, call.expires_at, call.detected_at, call.last_user, call.device.clone());
@@ -402,6 +408,10 @@ fn book() -> std::sync::MutexGuard<'static, CallBook> {
     BOOK.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
 }
 
+pub(crate) fn has_active_call() -> bool {
+    book().active().is_some()
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -578,7 +588,7 @@ pub(super) async fn observe(d: &Shared, device: &str, parts: &[Part], v: &Verdic
                 speaker: Some(sp),
                 ..signal.clone()
             };
-            let heard = Heard { at_ms, ids: g_ids, text: g_text, memorable, speaker: lbl };
+            let heard = Heard { at_ms, ids: g_ids, text: g_text, memorable, score: v.memorable, speaker: lbl };
             all_fx.extend(book.observe(device, &g_sig, heard, now));
         }
         all_fx
@@ -639,6 +649,20 @@ async fn apply(d: &Shared, fx: Vec<Effect>) {
             }
             Effect::Note(text) => {
                 super::agent_routes::record_agent_message(d, crate::mission_control::SESSION_ID, "voice classifier", &text, false).await;
+            }
+            Effect::RoomLine { device, line } => {
+                let new_line = super::ambient_room::NewRoomLine {
+                    at_ms: line.at_ms,
+                    speaker: line.speaker.unwrap_or_default(),
+                    text: line.text,
+                    score: line.score,
+                    event_ids: line.ids,
+                };
+                d.store.write(|c| {
+                    super::ambient_room::insert_line(c, &device, &new_line)?;
+                    Ok(())
+                });
+                super::ambient_room::ensure_ticker(d);
             }
             Effect::Summarise { call, ended_at } => {
                 let d = d.clone();
@@ -736,6 +760,7 @@ pub(crate) fn scrub_row(c: &rusqlite::Connection, id: &str) -> rusqlite::Result<
         [id],
     )?;
     c.execute("UPDATE ambient_events SET text = '', kept = 0 WHERE id = ?1", [id])?;
+    super::ambient_room::scrub_event_id(c, id)?;
     Ok(())
 }
 
@@ -766,6 +791,7 @@ async fn summarise(d: &Shared, call: Call, ended_at: i64) {
     }
     deliver_ended(d, &call.id, &call.device, call.started_at, ended_at, &call.lines).await;
     book().summarised(&call.id);
+    let _ = super::ambient_room::deliver(d, &call.device).await;
 }
 
 /// Saves the recording, hands it to Mission Control and marks the call summarised.
@@ -824,7 +850,7 @@ fn unsummarised(store: &crate::store::Store) -> Vec<Unsummarised> {
                 let lines = stmt
                     .query_map([&id], |r| {
                         let ids: String = r.get(2)?;
-                        Ok(Heard { at_ms: r.get(0)?, ids: serde_json::from_str(&ids).unwrap_or_default(), text: r.get(1)?, memorable: false, speaker: Some(r.get::<_, String>(3)?).filter(|s| !s.is_empty()) })
+                        Ok(Heard { at_ms: r.get(0)?, ids: serde_json::from_str(&ids).unwrap_or_default(), text: r.get(1)?, memorable: false, score: 0.0, speaker: Some(r.get::<_, String>(3)?).filter(|s| !s.is_empty()) })
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
                 let ended_at = ended_at.or_else(|| lines.last().map(|l| l.at_ms)).unwrap_or(started_at);
@@ -991,7 +1017,7 @@ mod tests {
     }
 
     fn heard(at_ms: i64, n: usize) -> Heard {
-        Heard { at_ms, ids: vec![format!("e{n}")], text: format!("line {n}"), memorable: false, speaker: None }
+        Heard { at_ms, ids: vec![format!("e{n}")], text: format!("line {n}"), memorable: false, score: 0.0, speaker: None }
     }
 
     /// Feeds a back-and-forth until it prompts; returns the effects and the clock.
@@ -1244,7 +1270,7 @@ mod tests {
     #[test]
     fn held_notes_wait_out_the_window_and_die_with_a_declined_call() {
         let mut book = CallBook::default();
-        let solo = Heard { memorable: true, ..heard(T0, 0) };
+        let solo = Heard { memorable: true, score: 0.95, ..heard(T0, 0) };
         let fx = book.observe("mac", &signal(T0, "note"), solo, T0);
         assert!(notes(&fx).is_empty());
         assert!(notes(&book.tick(T0 + 30_000)).is_empty());
@@ -1254,7 +1280,7 @@ mod tests {
         let mut fx = Vec::new();
         for n in 0..6 {
             let at = start + n as i64 * 8_000;
-            let h = Heard { memorable: true, ..heard(at, n) };
+            let h = Heard { memorable: true, score: 0.95, ..heard(at, n) };
             fx.extend(book.observe("mac", &signal(at, if n % 2 == 0 { "meeting" } else { "note" }), h, at));
         }
         let id = prompted(&fx).unwrap();
@@ -1637,8 +1663,88 @@ mod tests {
         book.set_policy(p);
 
         let sig = Signal { at_ms: T0, words: 8, speaker: Some(super::super::speakers::Speaker::You), ..Signal::default() };
-        let h = Heard { at_ms: T0, ids: vec!["1".into()], text: "My name is Sam, I am a solo founder".into(), memorable: true, speaker: Some("You".into()) };
+        let h = Heard { at_ms: T0, ids: vec!["1".into()], text: "My name is Sam, I am a solo founder".into(), memorable: true, score: 0.95, speaker: Some("You".into()) };
         assert!(book.observe("mac", &sig, h, T0).is_empty());
         assert!(book.tick(T0 + WINDOW_MS + 1000).is_empty(), "ignored rule must not emit Effect::Note");
+    }
+
+    #[test]
+    fn tick_splits_room_line_and_immediate_note_at_point_nine() {
+        let mut book = CallBook::default();
+        let low = Heard { memorable: true, score: 0.7, text: "low score".into(), ..heard(T0, 1) };
+        let high = Heard { memorable: true, score: 0.95, text: "high score".into(), ..heard(T0 + 1_000, 2) };
+        book.observe("mac", &signal(T0, "note"), low, T0);
+        book.observe("mac", &signal(T0 + 1_000, "note"), high, T0 + 1_000);
+
+        let fx = book.tick(T0 + 1_000 + WINDOW_MS);
+        let note_texts = notes(&fx);
+        let room_texts: Vec<String> = fx
+            .iter()
+            .filter_map(|e| match e {
+                Effect::RoomLine { line, .. } => Some(line.text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(note_texts, vec!["high score"]);
+        assert_eq!(room_texts, vec!["low score", "high score"]);
+    }
+
+    #[test]
+    fn scrub_and_delete_recording_remove_matching_room_lines() {
+        let (dir, store) = call_store();
+        store.write(|c| {
+            c.execute("INSERT INTO ambient_events (id, started_at, status, created_at, text, kept) VALUES ('e1', 't', 'done', 1, 'secret one', 1)", [])?;
+            c.execute("INSERT INTO ambient_events_fts(rowid, text) SELECT rowid, text FROM ambient_events WHERE id = 'e1'", [])?;
+            c.execute("INSERT INTO ambient_events (id, started_at, status, created_at, text, kept) VALUES ('e2', 't', 'done', 2, 'secret two', 1)", [])?;
+            c.execute("INSERT INTO ambient_events_fts(rowid, text) SELECT rowid, text FROM ambient_events WHERE id = 'e2'", [])?;
+            c.execute("INSERT INTO ambient_calls (id, device, detected_at, started_at, state) VALUES ('c1', 'mac', 1, 100, 'summarised')", [])?;
+            c.execute("INSERT INTO ambient_call_lines (call_id, at_ms, speaker, text, event_ids) VALUES ('c1', 100, 'You', 'secret two', '[\"e2\"]')", [])?;
+            super::super::ambient_room::insert_line(
+                c,
+                "mac",
+                &super::super::ambient_room::NewRoomLine {
+                    at_ms: 100,
+                    speaker: "You".into(),
+                    text: "secret one".into(),
+                    score: 0.8,
+                    event_ids: vec!["e1".into(), "other".into()],
+                },
+            )?;
+            super::super::ambient_room::insert_line(
+                c,
+                "mac",
+                &super::super::ambient_room::NewRoomLine {
+                    at_ms: 200,
+                    speaker: "You".into(),
+                    text: "secret two".into(),
+                    score: 0.8,
+                    event_ids: vec!["e2".into()],
+                },
+            )?;
+            super::super::ambient_room::insert_line(
+                c,
+                "mac",
+                &super::super::ambient_room::NewRoomLine {
+                    at_ms: 300,
+                    speaker: "You".into(),
+                    text: "safe line".into(),
+                    score: 0.8,
+                    event_ids: vec!["e10".into()],
+                },
+            )?;
+            Ok(())
+        });
+
+        store.with_connection(|c| scrub_row(c, "e1")).unwrap();
+        let remaining = store
+            .with_connection(|c| super::super::ambient_room::undigested_lines(c, "mac"))
+            .unwrap();
+        assert_eq!(remaining.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), vec!["secret two", "safe line"]);
+
+        delete_recording(&store, dir.path(), "c1", false).unwrap();
+        let remaining = store
+            .with_connection(|c| super::super::ambient_room::undigested_lines(c, "mac"))
+            .unwrap();
+        assert_eq!(remaining.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), vec!["safe line"]);
     }
 }

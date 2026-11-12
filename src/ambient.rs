@@ -483,6 +483,7 @@ pub fn conversation() -> Option<Conversation> {
         drop(conversation);
         cancel_wait("conversation ended");
         emit_state("conversation ended");
+        crate::serve::ambient_room::on_conversation_ended();
         return None;
     }
     conversation.clone()
@@ -515,6 +516,7 @@ pub fn end_conversation() {
     let had = CONVERSATION.lock().unwrap().take().is_some();
     if had {
         emit_state("conversation ended");
+        crate::serve::ambient_room::on_conversation_ended();
     }
 }
 

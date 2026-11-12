@@ -90,6 +90,7 @@ pub fn add_mission_control_tools(registry: &mut ToolRegistry) {
     registry.insert(AmbientFeedback);
     registry.insert(UserOnCall);
     registry.insert(AmbientExpect);
+    registry.insert(crate::serve::ambient_room::AmbientRoom);
     registry.insert(WaitForUser);
     registry.insert(AmbientSearch);
     registry.insert(Recordings);
