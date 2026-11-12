@@ -234,20 +234,19 @@ pub fn upsert_room(
     Ok(())
 }
 
-pub fn insert_item(
-    c: &Connection,
-    device: &str,
-    now_s: i64,
-    kind: &str,
-    text: &str,
-    rank: i64,
-    remember: bool,
-    source: &str,
-) -> rusqlite::Result<i64> {
+pub struct NewRoomItem<'a> {
+    pub kind: &'a str,
+    pub text: &'a str,
+    pub rank: i64,
+    pub remember: bool,
+    pub source: &'a str,
+}
+
+pub fn insert_item(c: &Connection, device: &str, now_s: i64, item: &NewRoomItem<'_>) -> rusqlite::Result<i64> {
     c.execute(
         "INSERT INTO ambient_room_items (device, created_at, kind, text, rank, remember, source, state, asked_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', 0)",
-        params![device, now_s, kind, text, rank, i64::from(remember), source],
+        params![device, now_s, item.kind, item.text, item.rank, i64::from(item.remember), item.source],
     )?;
     Ok(c.last_insert_rowid())
 }
@@ -598,7 +597,18 @@ pub async fn digest_with(
                 }
                 let rank = if note.rank > 0 { note.rank } else { (idx + 1) as i64 };
                 let source = map_line_ids_to_events(&note.lines, &lines);
-                insert_item(c, device, now_s, "note", text, rank, note.remember, &source)?;
+                insert_item(
+                    c,
+                    device,
+                    now_s,
+                    &NewRoomItem {
+                        kind: "note",
+                        text,
+                        rank,
+                        remember: note.remember,
+                        source: &source,
+                    },
+                )?;
             }
             for clarify in parsed.clarify.iter().take(3) {
                 let text = clarify.text.trim();
@@ -606,7 +616,18 @@ pub async fn digest_with(
                     continue;
                 }
                 let source = map_line_ids_to_events(&clarify.lines, &lines);
-                insert_item(c, device, now_s, "clarify", text, 0, false, &source)?;
+                insert_item(
+                    c,
+                    device,
+                    now_s,
+                    &NewRoomItem {
+                        kind: "clarify",
+                        text,
+                        rank: 0,
+                        remember: false,
+                        source: &source,
+                    },
+                )?;
             }
             mark_digested(c, &ids)?;
             Ok(())
@@ -866,18 +887,6 @@ pub async fn maybe_clarify(d: &Shared, device: &str) -> Result<bool, String> {
     Ok(true)
 }
 
-pub fn context_line(store: &Store, device: &str) -> Option<String> {
-    let room = store.with_connection(|c| get_room(c, device)).ok().flatten()?;
-    if room.topic.trim().is_empty() && room.activity.trim().is_empty() {
-        return None;
-    }
-    Some(format!(
-        "room topic=\"{}\" activity=\"{}\"",
-        room.topic.trim(),
-        room.activity.trim()
-    ))
-}
-
 #[derive(Deserialize)]
 struct AmbientRoomArgs {
     action: String,
@@ -899,8 +908,8 @@ impl Tool for AmbientRoom {
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["get", "drop", "clear"]},
-                    "device": {"type": "string", "description": "Optional device filter for get; required for clear (or clears all if omitted)."},
-                    "id": {"type": "integer", "description": "Item id to remove when action is drop."}
+                    "device": {"type": "string"},
+                    "id": {"type": "integer"}
                 },
                 "required": ["action"],
                 "additionalProperties": false
@@ -916,7 +925,7 @@ impl Tool for AmbientRoom {
         }
         let args: AmbientRoomArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let path = ctx.store_path().unwrap_or_else(crate::store::default_db_path);
-        let store = Store::open(&path).map_err(|e| ToolError::msg(e.to_string()))?;
+        let store = Store::open(path).map_err(|e| ToolError::msg(e.to_string()))?;
         let now_s = chrono::Utc::now().timestamp();
 
         match args.action.as_str() {
@@ -1003,5 +1012,249 @@ impl Tool for AmbientRoom {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn test_store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("room.db")).unwrap();
+        (dir, store)
+    }
+
+    struct StubSummariser {
+        replies: Vec<String>,
+        idx: AtomicUsize,
+    }
+
+    impl StubSummariser {
+        fn new(replies: Vec<&str>) -> Self {
+            Self {
+                replies: replies.into_iter().map(String::from).collect(),
+                idx: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Summariser for StubSummariser {
+        async fn summarise(&self, _system: &str, _prompt: &str) -> Result<Option<String>, String> {
+            let i = self.idx.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(
+                self.replies
+                    .get(i)
+                    .or_else(|| self.replies.last())
+                    .cloned()
+                    .unwrap_or_default(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn summariser_parses_eight_lines_and_handles_three_failures() {
+        let (_dir, store) = test_store();
+        let mut line_ids = Vec::new();
+        store
+            .with_connection(|c| {
+                for n in 0..8 {
+                    let id = insert_line(
+                        c,
+                        "desk",
+                        &NewRoomLine {
+                            at_ms: 1_000 + n * 5_000,
+                            speaker: if n % 2 == 0 { "You".into() } else { "Speaker 2".into() },
+                            text: format!("overheard line {n}"),
+                            score: 0.75,
+                            event_ids: vec![format!("ev{n}")],
+                        },
+                    )?;
+                    line_ids.push(id);
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        let fixed = format!(
+            r#"```json
+{{
+  "present": ["You", "Speaker 2"],
+  "topic": "dentist and groceries",
+  "activity": "cooking and chatting",
+  "digest": "You and Speaker 2 are cooking dinner and planning errands. Dentist appointment came up for next week.",
+  "notes": [
+    {{"text": "Dentist appointment next Friday", "rank": 1, "remember": true, "lines": [{}, {}]}},
+    {{"text": "Pick up olive oil", "rank": 2, "remember": false, "lines": [{}]}}
+  ],
+  "clarify": [
+    {{"text": "Did you mean Friday the 14th for the dentist?", "lines": [{}]}}
+  ]
+}}
+```"#,
+            line_ids[0], line_ids[2], line_ids[5], line_ids[2]
+        );
+
+        let stub = StubSummariser::new(vec![&fixed]);
+        let ran = digest_with(&store, "desk", &stub, 500).await.unwrap();
+        assert!(ran);
+
+        let (room, undigested, notes, clarifies) = store
+            .with_connection(|c| {
+                Ok((
+                    get_room(c, "desk")?.unwrap(),
+                    undigested_lines(c, "desk")?,
+                    items_for_device(c, "desk", Some("note"), Some("pending"))?,
+                    items_for_device(c, "desk", Some("clarify"), Some("pending"))?,
+                ))
+            })
+            .unwrap();
+
+        assert!(undigested.is_empty());
+        assert_eq!(room.present, "You,Speaker 2");
+        assert_eq!(room.topic, "dentist and groceries");
+        assert_eq!(room.activity, "cooking and chatting");
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].text, "Dentist appointment next Friday");
+        assert!(notes[0].remember);
+        assert_eq!(notes[0].source, "ev0,ev2");
+        assert_eq!(notes[1].source, "ev5");
+        assert_eq!(clarifies.len(), 1);
+        assert_eq!(clarifies[0].source, "ev2");
+
+        let body = store
+            .with_connection(|c| prepare_delivery(c, "desk", 510))
+            .unwrap()
+            .unwrap();
+        assert!(body.contains("<room_digest device=\"desk\" topic=\"dentist and groceries\""));
+        assert!(body.contains("- [remember] Dentist appointment next Friday (events: ev0,ev2)"));
+        let queued = store
+            .with_connection(|c| items_for_device(c, "desk", Some("clarify"), Some("queued")))
+            .unwrap();
+        assert_eq!(queued.len(), 1);
+
+        // Malformed JSON: two failures keep lines undigested; third marks them digested with no items.
+        store
+            .with_connection(|c| {
+                insert_line(
+                    c,
+                    "phone",
+                    &NewRoomLine {
+                        at_ms: 10_000,
+                        speaker: "You".into(),
+                        text: "half heard note".into(),
+                        score: 0.7,
+                        event_ids: vec!["ev9".into()],
+                    },
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let bad = StubSummariser::new(vec!["not json", "{bad", "still bad"]);
+        assert!(digest_with(&store, "phone", &bad, 600).await.is_err());
+        assert_eq!(
+            store.with_connection(|c| undigested_lines(c, "phone")).unwrap().len(),
+            1
+        );
+        assert!(digest_with(&store, "phone", &bad, 610).await.is_err());
+        assert_eq!(
+            store.with_connection(|c| undigested_lines(c, "phone")).unwrap().len(),
+            1
+        );
+        assert!(digest_with(&store, "phone", &bad, 620).await.is_err());
+        assert!(
+            store
+                .with_connection(|c| undigested_lines(c, "phone"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .with_connection(|c| items_for_device(c, "phone", None, None))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn digest_triggers_on_span_and_gap_and_not_when_empty() {
+        assert!(!digest_due(None, None, 500_000));
+        assert!(!digest_due(Some(100_000), Some(150_000), 260_000));
+        // 180s span from first line fires even when newest line is recent
+        assert!(digest_due(Some(100_000), Some(270_000), 280_000));
+        // 120s gap from newest line fires even when total span < 180s
+        assert!(digest_due(Some(100_000), Some(110_000), 230_000));
+    }
+
+    #[test]
+    fn clarify_gate_table_driven() {
+        let ok = GateInput {
+            passive: true,
+            alone: true,
+            room_busy: false,
+            call_active: false,
+            mc_busy: false,
+            quiet_hours: false,
+            user_on_call: false,
+            user_voice_recent: true,
+            asked_recently: false,
+        };
+        assert_eq!(clarify_allowed(ok.clone()), Ok(()));
+
+        let cases: Vec<(&str, GateInput)> = vec![
+            ("mode active", GateInput { passive: false, ..ok.clone() }),
+            ("not alone", GateInput { alone: false, ..ok.clone() }),
+            ("room busy", GateInput { room_busy: true, ..ok.clone() }),
+            ("call held", GateInput { call_active: true, ..ok.clone() }),
+            ("mc busy", GateInput { mc_busy: true, ..ok.clone() }),
+            ("quiet hours", GateInput { quiet_hours: true, ..ok.clone() }),
+            ("user on call", GateInput { user_on_call: true, ..ok.clone() }),
+            ("no recent user voice", GateInput { user_voice_recent: false, ..ok.clone() }),
+            ("asked in last 30m", GateInput { asked_recently: true, ..ok.clone() }),
+        ];
+        for (name, input) in cases {
+            assert!(clarify_allowed(input).is_err(), "gate should reject {name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn ambient_room_tool_get_drop_clear() {
+        let (dir, store) = test_store();
+        let item_id = store
+            .with_connection(|c| {
+                upsert_room(c, "room-test-dev", 100, "You", "budget", "quiet", "Reviewing numbers.")?;
+                insert_item(
+                    c,
+                    "room-test-dev",
+                    100,
+                    &NewRoomItem {
+                        kind: "clarify",
+                        text: "Was that Q3 or Q4?",
+                        rank: 0,
+                        remember: false,
+                        source: "e1",
+                    },
+                )
+            })
+            .unwrap();
+        let ctx = ToolContext::mission_control(dir.path().to_path_buf())
+            .unwrap()
+            .with_store_path(dir.path().join("room.db"));
+        let tool = AmbientRoom;
+
+        let res = tool.execute(&ctx, json!({"action": "get"})).await.unwrap();
+        assert_eq!(res.value["data"]["devices"][0]["device"], "room-test-dev");
+
+        tool.execute(&ctx, json!({"action": "drop", "id": item_id})).await.unwrap();
+        let dropped = store
+            .with_connection(|c| items_for_device(c, "room-test-dev", Some("clarify"), Some("dropped")))
+            .unwrap();
+        assert_eq!(dropped.len(), 1);
+
+        tool.execute(&ctx, json!({"action": "clear", "device": "room-test-dev"})).await.unwrap();
+        assert!(store.with_connection(|c| get_room(c, "room-test-dev")).unwrap().is_none());
+    }
+}
+
 
 
