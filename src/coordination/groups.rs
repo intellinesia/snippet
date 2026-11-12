@@ -283,6 +283,33 @@ impl Store {
         })
     }
 
+    /// Delete a group with its posts and their pending wakes. Returns whether it existed.
+    pub fn delete_group(&self, thread_id: &str) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            for table in ["message_deliveries", "group_replies"] {
+                let column = if table == "group_replies" {
+                    "post_event_id"
+                } else {
+                    "event_id"
+                };
+                tx.execute(
+                    &format!(
+                        "DELETE FROM {table} WHERE {column} IN
+                         (SELECT event_id FROM board_events WHERE thread_id = ?1)"
+                    ),
+                    params![thread_id],
+                )?;
+            }
+            let removed = tx.execute(
+                "DELETE FROM board_threads WHERE id = ?1 AND scope = 'group'",
+                params![thread_id],
+            )?;
+            tx.commit()?;
+            Ok(removed > 0)
+        })
+    }
+
     /// Whether `(kind, id)` sits in the group's participant list.
     pub fn is_group_member(
         &self,
@@ -634,6 +661,18 @@ mod tests {
         assert!(db.is_group_member(&id, "agent", "a").unwrap());
         assert_eq!(db.list_groups().unwrap().len(), 1);
         assert!(db.get_group("direct:x").unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_group_removes_posts_and_pending_wakes() {
+        let (db, id) = three_agent_group();
+        db.post_group_message(&id, ("human", "human"), "hi", &[], None, "k1", T0)
+            .unwrap();
+        assert!(!pending(&db, T2).is_empty());
+        assert!(db.delete_group(&id).unwrap());
+        assert!(db.get_group(&id).unwrap().is_none());
+        assert!(pending(&db, T2).is_empty());
+        assert!(!db.delete_group(&id).unwrap());
     }
 
     #[test]

@@ -22,7 +22,7 @@ const GROUP_DELIVER_BATCH: u32 = 50;
 pub fn router() -> Router<Shared> {
     Router::new()
         .route("/groups", get(list_groups).post(create_group))
-        .route("/groups/{id}", put(update_group))
+        .route("/groups/{id}", put(update_group).delete(delete_group))
         .route("/groups/{id}/events", get(group_events))
         .route("/groups/{id}/post", post(post_group))
 }
@@ -136,10 +136,79 @@ async fn create_group(State(d): State<Shared>, Json(req): Json<GroupCreateReq>) 
                 "kind": "group_changed",
                 "group": group,
             }));
+            notify_added(&d, &group, members);
             Json(group).into_response()
         }
         Err(error) => store_error(StatusCode::CONFLICT, error),
     }
+}
+
+/// DELETE /groups/:id — delete the group, its posts and any pending wakes.
+async fn delete_group(
+    State(d): State<Shared>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    match d.store.delete_group(&id) {
+        Ok(true) => {
+            crate::session::emit_device_event(serde_json::json!({
+                "kind": "group_deleted",
+                "id": id,
+            }));
+            Json(serde_json::json!({"ok": true})).into_response()
+        }
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such group"),
+        Err(error) => store_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+fn group_added_envelope(group: &crate::coordination::GroupSummary) -> String {
+    let members: Vec<&str> = group
+        .members
+        .iter()
+        .filter(|m| m.kind == "agent")
+        .map(|m| m.id.as_str())
+        .collect();
+    format!(
+        "[group_added]\nthread_id: {}\ntitle: {}\nmembers: {}\nlead: {}\n\
+         note: you were added to this group chat. Nothing to do now: do not post, just end \
+         your turn. Posts reach you as [group_message]; answer with group_thread post.\n\
+         [/group_added]",
+        group.id,
+        group.title,
+        members.join(", "),
+        group.lead.as_deref().unwrap_or("none"),
+    )
+}
+
+/// Tell each newly added agent's desk it joined the group, in the background.
+fn notify_added(d: &Shared, group: &crate::coordination::GroupSummary, agents: Vec<String>) {
+    if agents.is_empty() {
+        return;
+    }
+    let d = d.clone();
+    let envelope = group_added_envelope(group);
+    tokio::spawn(async move {
+        for agent_id in agents {
+            if agent_id != crate::mission_control::SESSION_ID
+                && let Err(error) = super::direct::ensure_agent_inbox(&d, &agent_id).await
+            {
+                eprintln!("[coordination] group notice for {agent_id} not delivered: {error}");
+                continue;
+            }
+            let session_id = super::direct::recipient_session_id(&agent_id);
+            if d.ensure_live(&session_id).await.is_none() {
+                continue;
+            }
+            super::direct::deliver_by_urgency(
+                &d,
+                &session_id,
+                envelope.clone(),
+                &serde_json::json!({}),
+                false,
+            )
+            .await;
+        }
+    });
 }
 
 /// PUT /groups/:id — rename, re-lead, add or remove members. Answers the
@@ -158,13 +227,20 @@ async fn update_group(
             return api_error(StatusCode::BAD_REQUEST, format!("unknown agent `{member}`"));
         }
     }
+    let mut added = Vec::new();
     for member in req.add_members.iter().flatten() {
         let member = member.trim();
-        if !member.is_empty()
-            && let Err(error) = d.store.add_group_member(&id, member)
+        if member.is_empty()
+            || d.store
+                .is_group_member(&id, "agent", member)
+                .unwrap_or(false)
         {
+            continue;
+        }
+        if let Err(error) = d.store.add_group_member(&id, member) {
             return store_error(StatusCode::CONFLICT, error);
         }
+        added.push(member.to_string());
     }
     for member in req.remove_members.iter().flatten() {
         let member = member.trim();
@@ -198,6 +274,7 @@ async fn update_group(
                 "kind": "group_changed",
                 "group": group,
             }));
+            notify_added(&d, &group, added);
             Json(group).into_response()
         }
         Ok(None) => api_error(StatusCode::NOT_FOUND, "no such group"),
@@ -398,6 +475,38 @@ pub async fn group_dispatch_loop(d: Shared) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn group_added_notice_names_members_and_says_no_reply() {
+        let group = crate::coordination::GroupSummary {
+            id: "group:1".into(),
+            title: "jh".into(),
+            members: vec![
+                crate::coordination::GroupMember {
+                    kind: "human".into(),
+                    id: "human".into(),
+                },
+                crate::coordination::GroupMember {
+                    kind: "agent".into(),
+                    id: "x-scout".into(),
+                },
+                crate::coordination::GroupMember {
+                    kind: "agent".into(),
+                    id: "snippet".into(),
+                },
+            ],
+            lead: Some("snippet".into()),
+            created_at: String::new(),
+            last_event_at: None,
+            unread: 0,
+        };
+        let e = super::group_added_envelope(&group);
+        assert!(e.starts_with("[group_added]\nthread_id: group:1\ntitle: jh\n"));
+        assert!(e.contains("members: x-scout, snippet\nlead: snippet\n"));
+        assert!(e.contains("do not post"));
+        assert!(e.ends_with("[/group_added]"));
+    }
+
     use super::*;
     use crate::coordination::types::{Agent, AgentKind, AgentStatus};
 
