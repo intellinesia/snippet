@@ -1736,6 +1736,7 @@ impl CodingHarness {
         let mut session = CliSession::open(kind, &session_key, self.config.resume);
         let mut last_mode_line = String::new();
         let mut last_task_note = String::new();
+        let mut last_vault_line = String::new();
         let mut compaction = CliCompaction::Idle;
         let mut compact_wanted = false;
         let mut save_at: Option<tokio::time::Instant> = None;
@@ -1971,6 +1972,16 @@ impl CodingHarness {
                             note.clone()
                         });
                         last_task_note = note;
+                    }
+                    let names = crate::vault::Vault::load().names();
+                    let vault_line = if names.is_empty() {
+                        String::new()
+                    } else {
+                        format!("Vault secrets usable as $NAME in bash (values are hidden from you): {}", names.join(", "))
+                    };
+                    if vault_line != last_vault_line {
+                        reminder.push(if vault_line.is_empty() { "The vault is empty now.".to_string() } else { vault_line.clone() });
+                        last_vault_line = vault_line;
                     }
                     if !reminder.is_empty()
                         && let Some(first) = outbox.iter_mut().find(|t| !t.starts_with(COMMAND_MARK))
