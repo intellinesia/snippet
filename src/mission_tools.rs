@@ -873,14 +873,124 @@ impl Tool for PingUser {
             }), &["title", "message"]),
         }
     }
-    async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: PingUserArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let kind = args.kind.as_deref().unwrap_or("update");
-        let outcome = crate::mission_autonomy::ping(args.title.trim(), args.message.trim(), kind).map_err(ToolError::msg)?;
+        let agent_id = resolve_reach_agent(ctx);
+        if ctx.is_mission_control() || agent_id == crate::mission_control::SESSION_ID {
+            let outcome = crate::mission_autonomy::ping(args.title.trim(), args.message.trim(), kind).map_err(ToolError::msg)?;
+            return Ok(ToolResult::success(json!({
+                "ping": outcome,
+                "note": if outcome == "held" { "Held until quiet hours or their call end." } else { "Sent to the user's phone." },
+            })));
+        }
+        let store = open_reach_store(ctx)?;
+        let origin = ctx
+            .durable_session_id()
+            .or(ctx.lane_origin().map(|(session, _)| session));
+        let about_task = origin
+            .and_then(|session| store.open_task_of_session(session).ok().flatten())
+            .map(|t| t.id);
+        let decision = crate::coordination::reach::reach(
+            &store,
+            &agent_id,
+            crate::coordination::reach::Kind::from_ping_kind(kind),
+            args.title.trim(),
+            args.message.trim(),
+            kind == "urgent",
+            origin,
+            about_task.as_deref(),
+        );
+        let outcome = if decision.used.contains(&crate::coordination::reach::Channel::Push) {
+            "sent"
+        } else if decision.held.contains(&crate::coordination::reach::Channel::Push) {
+            "held"
+        } else {
+            decision.reason
+        };
+        let note = match outcome {
+            "sent" => "Sent to the user's phone.",
+            "held" => "Held until quiet hours or their call end.",
+            "disabled" => "Push notifications are disabled for this agent; delivered on fallback channels.",
+            _ => "Delivered according to reach_policy.",
+        };
         Ok(ToolResult::success(json!({
             "ping": outcome,
-            "note": if outcome == "held" { "Held until quiet hours or their call end." } else { "Sent to the user's phone." },
+            "used": decision.used,
+            "held": decision.held,
+            "note": note,
         })))
+    }
+}
+
+fn open_reach_store(ctx: &ToolContext) -> Result<crate::store::Store, ToolError> {
+    let path = ctx
+        .store_path()
+        .unwrap_or_else(crate::store::default_db_path);
+    crate::store::Store::open(path).map_err(|e| ToolError::msg(format!("open store: {e}")))
+}
+
+fn resolve_reach_agent(ctx: &ToolContext) -> String {
+    if ctx.is_mission_control() {
+        return crate::mission_control::SESSION_ID.to_string();
+    }
+    if let Some(("agent", id)) = crate::coordination_tools::speaks_as(ctx) {
+        return id;
+    }
+    ctx.agent_id()
+        .unwrap_or(crate::coordination::SNIPPET_AGENT_ID)
+        .to_string()
+}
+
+pub struct ReachPolicyTool;
+#[async_trait]
+impl Tool for ReachPolicyTool {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "reach_policy".into(),
+            description: "How you reach the user. get shows your channels (chat, push, voice, task_room) and which kinds of message use which, in order; set changes it for yourself when the user asks (for example: questions by push, results in chat, nothing in quiet hours).".into(),
+            input_schema: schema(
+                json!({
+                    "action": {"type": "string", "enum": ["get", "set"]},
+                    "kind": {"type": "string", "enum": ["question", "blocker", "result", "status"]},
+                    "channels": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["chat", "push", "voice", "task_room"]}
+                    },
+                    "channel": {"type": "string", "enum": ["chat", "push", "voice", "task_room"]},
+                    "enabled": {"type": "boolean"},
+                    "quiet_hours": {"type": "boolean"}
+                }),
+                &["action"],
+            ),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let action = arguments
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::msg("missing `action`"))?;
+        let store = open_reach_store(ctx)?;
+        let agent_id = resolve_reach_agent(ctx);
+        match action {
+            "get" => Ok(ToolResult::success(crate::coordination::reach::view(
+                &store, &agent_id,
+            ))),
+            "set" => {
+                let mut current = crate::coordination::reach::load(&store, &agent_id);
+                crate::coordination::reach::apply_patch(&mut current, &arguments)
+                    .map_err(ToolError::msg)?;
+                crate::coordination::reach::save(&store, &agent_id, &current)
+                    .map_err(|e| ToolError::msg(format!("save reach policy: {e}")))?;
+                Ok(ToolResult::success(crate::coordination::reach::view(
+                    &store, &agent_id,
+                )))
+            }
+            other => Err(ToolError::msg(format!(
+                "unknown action `{other}`; use get or set"
+            ))),
+        }
     }
 }
 

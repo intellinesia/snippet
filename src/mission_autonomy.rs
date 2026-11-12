@@ -54,6 +54,8 @@ pub struct HeldPing {
     pub message: String,
     pub kind: String,
     pub at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -117,24 +119,46 @@ fn store() -> Result<Store, String> {
     Store::open_cached(crate::store::default_db_path()).map_err(|e| e.to_string())
 }
 
-pub fn load() -> AutonomyState {
-    store()
+pub fn load_from(store: &Store) -> AutonomyState {
+    store
+        .load_autonomy_json()
         .ok()
-        .and_then(|s| s.load_autonomy_json().ok().flatten())
+        .flatten()
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default()
 }
 
-pub fn save(state: &AutonomyState) -> Result<(), String> {
+pub fn save_to(store: &Store, state: &AutonomyState) -> Result<(), String> {
     let raw = serde_json::to_string(state).map_err(|e| e.to_string())?;
-    store()?.save_autonomy_json(&raw).map_err(|e| e.to_string())
+    store.save_autonomy_json(&raw).map_err(|e| e.to_string())
+}
+
+pub fn update_in<T>(store: &Store, f: impl FnOnce(&mut AutonomyState) -> T) -> Result<T, String> {
+    let mut state = load_from(store);
+    let out = f(&mut state);
+    save_to(store, &state)?;
+    Ok(out)
+}
+
+pub fn quiet_and_call_in(store: &Store) -> (bool, bool) {
+    let state = load_from(store);
+    let now = chrono::Utc::now().timestamp();
+    let on_call = state.user_call.as_ref().is_some_and(|c| c.until > now);
+    (in_quiet_hours(&state.settings), on_call)
+}
+
+pub fn load() -> AutonomyState {
+    store().ok().map(|s| load_from(&s)).unwrap_or_default()
+}
+
+pub fn save(state: &AutonomyState) -> Result<(), String> {
+    let s = store()?;
+    save_to(&s, state)
 }
 
 pub fn update<T>(f: impl FnOnce(&mut AutonomyState) -> T) -> Result<T, String> {
-    let mut state = load();
-    let out = f(&mut state);
-    save(&state)?;
-    Ok(out)
+    let s = store()?;
+    update_in(&s, f)
 }
 
 pub fn is_on() -> bool {
@@ -273,20 +297,58 @@ pub fn quiet_ends_after(
     }
 }
 
-fn emit(title: &str, message: &str, kind: &str) {
+fn emit(title: &str, message: &str, kind: &str, urgent: bool, agent: &str) {
     crate::session::emit_device_event(json!({
         "kind": "ping",
         "session": crate::mission_control::SESSION_ID,
+        "agent": agent,
+        "channel": "push",
         "title": title,
         "message": message,
         "ping_kind": kind,
-        "urgent": kind == "urgent",
+        "urgent": urgent || kind == "urgent",
     }));
 }
 
-pub fn ping(title: &str, message: &str, kind: &str) -> Result<&'static str, String> {
+pub fn hold_ping_in(
+    store: &Store,
+    agent: &str,
+    title: &str,
+    message: &str,
+    kind: &str,
+) -> Result<(), String> {
     let now = chrono::Utc::now().timestamp();
-    update(|state| {
+    update_in(store, |state| {
+        state.held_pings.push(HeldPing {
+            title: title.to_string(),
+            message: message.to_string(),
+            kind: kind.to_string(),
+            at: now,
+            agent: Some(agent.to_string()),
+        });
+    })
+}
+
+pub fn send_ping_in(
+    store: &Store,
+    agent: &str,
+    title: &str,
+    message: &str,
+    kind: &str,
+    urgent: bool,
+) -> Result<(), String> {
+    update_in(store, |state| {
+        state.pings_sent += 1;
+    })?;
+    emit(title, message, kind, urgent, agent);
+    Ok(())
+}
+
+pub fn ping(title: &str, message: &str, kind: &str) -> Result<&'static str, String> {
+    let s = store()?;
+    let now = chrono::Utc::now().timestamp();
+    let agent = crate::mission_control::SESSION_ID;
+    update_in(&s, |state| {
         let call = state.user_call.as_ref().is_some_and(|c| c.until > now);
         if kind != "urgent" && (call || in_quiet_hours(&state.settings)) {
             state.held_pings.push(HeldPing {
@@ -294,11 +356,12 @@ pub fn ping(title: &str, message: &str, kind: &str) -> Result<&'static str, Stri
                 message: message.to_string(),
                 kind: kind.to_string(),
                 at: now,
+                agent: Some(agent.to_string()),
             });
             "held"
         } else {
             state.pings_sent += 1;
-            emit(title, message, kind);
+            emit(title, message, kind, kind == "urgent", agent);
             "sent"
         }
     })
@@ -313,10 +376,28 @@ pub fn release_held_pings() {
     let held = update(|state| std::mem::take(&mut state.held_pings)).unwrap_or_default();
     match held.len() {
         0 => {}
-        1 => emit(&held[0].title, &held[0].message, &held[0].kind),
+        1 => {
+            let agent = held[0]
+                .agent
+                .as_deref()
+                .unwrap_or(crate::mission_control::SESSION_ID);
+            emit(
+                &held[0].title,
+                &held[0].message,
+                &held[0].kind,
+                held[0].kind == "urgent",
+                agent,
+            );
+        }
         n => {
             let lines: Vec<String> = held.iter().map(|p| format!("• {}", p.title)).collect();
-            emit(&format!("{n} updates from overnight"), &lines.join("\n"), "update");
+            emit(
+                &format!("{n} updates from overnight"),
+                &lines.join("\n"),
+                "update",
+                false,
+                crate::mission_control::SESSION_ID,
+            );
         }
     }
 }

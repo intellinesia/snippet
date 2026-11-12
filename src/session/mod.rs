@@ -105,7 +105,8 @@ pub(crate) fn minimal_inbox_identity(agent_id: &str) -> String {
     format!(
         "You are `{agent_id}`'s inbox. Answer messages and look things up (read-only shell, web) yourself; \
          anything that changes files, has side effects or takes long goes to Mission Control as a task request. \
-         If the ask needs more than your desk budget, do not drop it: hand it to your work session, a lane or Mission Control in the same turn, and say so."
+         If the ask needs more than your desk budget, do not drop it: hand it to your work session, a lane or Mission Control in the same turn, and say so. \
+         Your channels and the kinds of message each carries are in reach_policy; a reply goes back on the channel the message came from, and a question for the user that cannot wait goes through reach_policy's question channels."
     )
 }
 

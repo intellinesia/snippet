@@ -607,6 +607,37 @@ pub(crate) async fn set_agent_context(
     }
 }
 
+pub(crate) async fn get_agent_reach(
+    State(d): State<Shared>,
+    axum::extract::Path(agent_id): axum::extract::Path<String>,
+) -> Response {
+    match d.store.get_agent(&agent_id) {
+        Ok(Some(_)) => Json(crate::coordination::reach::view(&d.store, &agent_id)).into_response(),
+        Ok(None) => api_error(StatusCode::NOT_FOUND, "no such agent"),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("get agent reach: {error}")),
+    }
+}
+
+pub(crate) async fn put_agent_reach(
+    State(d): State<Shared>,
+    axum::extract::Path(agent_id): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    match d.store.get_agent(&agent_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return api_error(StatusCode::NOT_FOUND, "no such agent"),
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("get agent reach: {error}")),
+    }
+    let mut reach = crate::coordination::reach::load(&d.store, &agent_id);
+    if let Err(error) = crate::coordination::reach::apply_patch(&mut reach, &body) {
+        return api_error(StatusCode::BAD_REQUEST, error);
+    }
+    match crate::coordination::reach::save(&d.store, &agent_id, &reach) {
+        Ok(()) => Json(crate::coordination::reach::view(&d.store, &agent_id)).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("save agent reach: {error}")),
+    }
+}
+
 /// DELETE /agents/{id} — remove an agent and its home. Mission Control stays,
 /// and an agent still on an unfinished task is refused with those tasks named.
 pub(crate) async fn delete_agent(

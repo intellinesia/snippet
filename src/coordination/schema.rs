@@ -49,6 +49,21 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              shape TEXT NOT NULL
          );
 
+         CREATE TABLE IF NOT EXISTS agent_channels (
+             agent_id TEXT NOT NULL,
+             channel TEXT NOT NULL,
+             enabled INTEGER NOT NULL DEFAULT 1,
+             quiet_hours INTEGER NOT NULL DEFAULT 1,
+             PRIMARY KEY (agent_id, channel)
+         );
+
+         CREATE TABLE IF NOT EXISTS agent_reach_policy (
+             agent_id TEXT NOT NULL,
+             kind TEXT NOT NULL,
+             channels TEXT NOT NULL,
+             PRIMARY KEY (agent_id, kind)
+         );
+
          CREATE TABLE IF NOT EXISTS agents (
              id TEXT PRIMARY KEY NOT NULL,
              display_name TEXT NOT NULL,

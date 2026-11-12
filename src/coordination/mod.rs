@@ -19,6 +19,7 @@ pub mod turns;
 pub use turns::SessionMember;
 mod identity;
 pub mod leases;
+pub mod reach;
 pub mod schema;
 mod task_state;
 mod tasks;

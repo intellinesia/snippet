@@ -53,7 +53,7 @@ pub(crate) use config_routes::*;
 mod coordination;
 pub use coordination::{COORDINATION_THREAD, queue_coordination_wake};
 mod direct;
-pub(crate) use direct::{human_dm_thread, relay_desk_reply, relay_restart};
+pub(crate) use direct::{human_dm_thread, post_to_human, relay_desk_reply, relay_restart};
 pub(crate) mod attention;
 mod autonomy;
 mod fs;
@@ -1016,6 +1016,7 @@ pub async fn run_serve(
         .route("/agents/{agent_id}/profile", post(set_agent_profile))
         .route("/agents/{agent_id}/desk-profile", post(set_agent_desk_profile))
         .route("/agents/{agent_id}/context", post(agent_routes::set_agent_context))
+        .route("/agents/{agent_id}/reach", get(get_agent_reach).put(put_agent_reach))
         .route("/agents/{agent_id}", axum::routing::delete(delete_agent))
         .merge(coordination::router())
         .route(

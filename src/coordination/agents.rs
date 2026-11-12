@@ -156,6 +156,8 @@ impl Store {
             tx.execute("DELETE FROM agent_profiles WHERE agent_id = ?1", params![id])?;
             tx.execute("DELETE FROM agent_desk_profiles WHERE agent_id = ?1", params![id])?;
             tx.execute("DELETE FROM agent_context_limits WHERE agent_id = ?1", params![id])?;
+            tx.execute("DELETE FROM agent_channels WHERE agent_id = ?1", params![id])?;
+            tx.execute("DELETE FROM agent_reach_policy WHERE agent_id = ?1", params![id])?;
             tx.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
             tx.commit()?;
             Ok(AgentRemoval::Removed)
