@@ -35,6 +35,7 @@ pub fn add_coordination_tools(registry: &mut ToolRegistry) {
     registry.insert(crate::agent_wakes::WakeScheduleTool);
     registry.insert(crate::agent_context::ContextLimitTool);
     registry.insert(crate::keep_warm::KeepWarmTool);
+    registry.insert(crate::mission_tools::ReachPolicyTool);
 }
 
 
@@ -742,6 +743,15 @@ impl Tool for SendAgentMessage {
             reply_to.as_deref(),
             reaction,
         );
+        if to_kind == "human" {
+            extra.insert("channel".into(), json!("chat"));
+            if sender_kind == "agent"
+                && reaction.is_none()
+                && sender_id != crate::mission_control::SESSION_ID
+            {
+                crate::coordination::reach::apply_outbound_human(&db, &sender_id, &body, &mut extra);
+            }
+        }
         let key = args
             .idempotency_key
             .filter(|k| !k.trim().is_empty())

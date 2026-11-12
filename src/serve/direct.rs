@@ -280,7 +280,7 @@ pub(crate) fn turn_end_relay(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn post_to_human(
+pub(crate) fn post_to_human(
     store: &crate::store::Store,
     agent_id: &str,
     session_id: &str,
@@ -291,6 +291,7 @@ fn post_to_human(
     extra: serde_json::Map<String, serde_json::Value>,
 ) {
     let mut fields = crate::coordination::typed::payload_fields(None, crate::coordination::typed::Urgency::Normal, None);
+    fields.insert("channel".into(), json!("chat"));
     fields.extend(extra);
     match store.send_direct_message_typed(
         ("agent", agent_id),
@@ -361,7 +362,18 @@ pub(crate) fn relay_desk_reply(
     let origin = session_id.starts_with("inbox-").then_some(session_id);
     let task = store.open_task_of_session(session_id).ok().flatten();
     let about_task = task.as_ref().map(|t| t.id.as_str());
-    post_to_human(store, &agent_id, session_id, origin, about_task, &key, &text, Default::default());
+    let kind = crate::coordination::reach::Kind::from_reply(&text, None, false);
+    crate::coordination::reach::reach_with_key(
+        store,
+        &agent_id,
+        kind,
+        &name,
+        &text,
+        false,
+        origin,
+        about_task,
+        Some(&key),
+    );
 }
 
 /// Shutdown notice for a session that was mid-turn or had a human waiting.
@@ -1008,6 +1020,12 @@ pub(super) async fn direct_send_message(
             Err(error) => return api_error(StatusCode::BAD_REQUEST, error),
         }
     };
+    if to.0 == "human" {
+        extra.insert("channel".into(), json!("chat"));
+        if from.0 == "agent" && reaction.is_none() && from.1 != crate::mission_control::SESSION_ID {
+            crate::coordination::reach::apply_outbound_human(&d.store, from.1, &prepared_body, &mut extra);
+        }
+    }
     match d.store.send_direct_message_typed(
         from,
         to,
@@ -1714,6 +1732,246 @@ mod tests {
             }
             other => panic!("expected UserMessage steer on busy task session, got {other:?}"),
         }
+    }
+
+    fn force_quiet_hours(store: &crate::store::Store, quiet: bool) {
+        use chrono::Timelike;
+        let now_utc_hour = chrono::Utc::now().hour() as i32;
+        // Shift user local clock to 02:00 (inside 22:00..08:00) or 13:00 (outside 22:00..08:00).
+        let target_hour = if quiet { 2 } else { 13 };
+        let mut diff_hours = target_hour - now_utc_hour;
+        if diff_hours > 12 {
+            diff_hours -= 24;
+        } else if diff_hours < -12 {
+            diff_hours += 24;
+        }
+        crate::mission_autonomy::update_in(store, |st| {
+            st.settings.quiet_start = Some("22:00".into());
+            st.settings.quiet_end = Some("08:00".into());
+            st.settings.utc_offset_minutes = Some(diff_hours * 60);
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn worker_question_in_quiet_hours_posts_chat_with_held_push_and_no_ping() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let agent_id = "reach-quiet-worker";
+        store
+            .create_agent(&crate::coordination::types::Agent {
+                id: agent_id.into(),
+                display_name: "Quiet Worker".into(),
+                handle: agent_id.into(),
+                kind: crate::coordination::types::AgentKind::Worker,
+                status: crate::coordination::types::AgentStatus::Active,
+                capabilities: vec![],
+            })
+            .unwrap();
+        let mut task = crate::coordination::Task::filed_by_human(
+            "t-quiet".into(),
+            "Task quiet".into(),
+            "d".into(),
+            "s1".into(),
+            0,
+            "2026-01-01T00:00:00Z".into(),
+        );
+        task.status = crate::coordination::TaskStatus::InProgress;
+        task.session_id = "quiet-task-session".into();
+        store.create_task(&task).unwrap();
+        store
+            .add_task_agent_full(
+                "t-quiet",
+                agent_id,
+                "implementer",
+                Some("quiet-task-session"),
+                "",
+                "active",
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+
+        force_quiet_hours(&store, true);
+        assert_eq!(crate::mission_autonomy::quiet_and_call_in(&store), (true, false));
+
+        let mut dev_rx = crate::session::subscribe_device_events();
+        let mut state = crate::harness::HarnessState::blank("/tmp", None);
+        state.human_waiting.push(crate::harness::HumanWait {
+            thread_id: "t".into(),
+            since: "s".into(),
+            steered: false,
+            event_index: 0,
+        });
+        state.events.push(E::UserInput {
+            text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: status?\n[/direct_message]".into(),
+        });
+        state.events.push(E::AssistantText {
+            text: "Should I migrate the production schema now?".into(),
+            quiet: false,
+        });
+
+        super::relay_desk_reply(&store, "quiet-task-session", &mut state);
+
+        let thread =
+            crate::coordination::direct::direct_thread_id(("agent", agent_id), ("human", "local"));
+        let sent = store.recent_direct_thread_events(&thread, 10).unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].payload["channel"], "chat");
+        assert_eq!(sent[0].payload["kind"], "question");
+        assert_eq!(sent[0].payload["held"], json!(["push"]));
+
+        let mut chat_events = 0usize;
+        let mut ping_events = 0usize;
+        while let Ok(ev) = dev_rx.try_recv() {
+            if ev["kind"] == "ping" && ev["agent"] == agent_id {
+                ping_events += 1;
+            }
+            if ev["kind"] == "coordination_event" && ev["event"]["actor_id"] == agent_id {
+                assert_eq!(ev["event"]["payload"]["channel"], "chat");
+                assert_eq!(ev["event"]["payload"]["held"], json!(["push"]));
+                chat_events += 1;
+            }
+        }
+        assert_eq!(chat_events, 1, "expected exactly one chat coordination_event");
+        assert_eq!(ping_events, 0, "expected no ping device event in quiet hours");
+        assert_eq!(crate::mission_autonomy::load_from(&store).held_pings.len(), 1);
+
+        // Outside quiet hours, a worker question emits both chat and a tagged ping event.
+        force_quiet_hours(&store, false);
+        assert_eq!(crate::mission_autonomy::quiet_and_call_in(&store), (false, false));
+        state.human_waiting.push(crate::harness::HumanWait {
+            thread_id: "t".into(),
+            since: "s2".into(),
+            steered: false,
+            event_index: 2,
+        });
+        state.events.push(E::UserInput {
+            text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: next?\n[/direct_message]".into(),
+        });
+        state.events.push(E::AssistantText {
+            text: "Ready to cut the release?".into(),
+            quiet: false,
+        });
+        super::relay_desk_reply(&store, "quiet-task-session", &mut state);
+
+        let mut day_pings = Vec::new();
+        while let Ok(ev) = dev_rx.try_recv() {
+            if ev["kind"] == "ping" && ev["agent"] == agent_id {
+                day_pings.push(ev);
+            }
+        }
+        assert_eq!(day_pings.len(), 1);
+        assert_eq!(day_pings[0]["channel"], "push");
+        assert_eq!(day_pings[0]["agent"], agent_id);
+    }
+
+    #[tokio::test]
+    async fn agent_reach_routes_tool_and_non_mc_ping_user_work_end_to_end() {
+        use axum::body::to_bytes;
+        use crate::tools::{Tool, ToolContext};
+
+        let d = test_daemon();
+        let agent_id = "reach-route-worker";
+        d.store
+            .create_agent(&crate::coordination::types::Agent {
+                id: agent_id.into(),
+                display_name: "Route Worker".into(),
+                handle: agent_id.into(),
+                kind: crate::coordination::types::AgentKind::Worker,
+                status: crate::coordination::types::AgentStatus::Active,
+                capabilities: vec![],
+            })
+            .unwrap();
+
+        let missing = crate::serve::agent_routes::get_agent_reach(
+            State(d.clone()),
+            axum::extract::Path("ghost".into()),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        let get_resp = crate::serve::agent_routes::get_agent_reach(
+            State(d.clone()),
+            axum::extract::Path(agent_id.into()),
+        )
+        .await;
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let initial: serde_json::Value =
+            serde_json::from_slice(&to_bytes(get_resp.into_body(), 16 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(initial["agent_id"], agent_id);
+        assert_eq!(initial["policy"]["question"], json!(["push", "chat"]));
+        assert_eq!(initial["channels"]["push"]["enabled"], true);
+        assert_eq!(initial["channels"]["voice"]["enabled"], false);
+
+        let put_resp = crate::serve::agent_routes::put_agent_reach(
+            State(d.clone()),
+            axum::extract::Path(agent_id.into()),
+            Json(json!({
+                "channels": { "push": { "enabled": false, "quiet_hours": true } },
+                "policy": { "question": ["push", "chat"], "result": ["chat"] }
+            })),
+        )
+        .await;
+        assert_eq!(put_resp.status(), StatusCode::OK);
+        let updated: serde_json::Value =
+            serde_json::from_slice(&to_bytes(put_resp.into_body(), 16 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(updated["channels"]["push"]["enabled"], false);
+
+        // Verify reach_policy tool and non-Mission-Control ping_user on a file-backed store.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("reach-tool.sqlite");
+        let file_store = crate::store::Store::open(&db_path).unwrap();
+        file_store
+            .create_agent(&crate::coordination::types::Agent {
+                id: agent_id.into(),
+                display_name: "Route Worker".into(),
+                handle: agent_id.into(),
+                kind: crate::coordination::types::AgentKind::Worker,
+                status: crate::coordination::types::AgentStatus::Active,
+                capabilities: vec![],
+            })
+            .unwrap();
+        force_quiet_hours(&file_store, false);
+
+        let ctx = ToolContext::new(dir.path().to_path_buf())
+            .unwrap()
+            .with_store_path(db_path.clone())
+            .with_agent_id(agent_id);
+
+        let tool = crate::mission_tools::ReachPolicyTool;
+        let got = tool.execute(&ctx, json!({"action": "get"})).await.unwrap();
+        assert_eq!(got.value["data"]["agent_id"], agent_id);
+        assert_eq!(got.value["data"]["channels"]["push"]["enabled"], true);
+
+        let set_res = tool
+            .execute(
+                &ctx,
+                json!({"action": "set", "channel": "push", "enabled": false}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(set_res.value["data"]["channels"]["push"]["enabled"], false);
+
+        let mut dev_rx = crate::session::subscribe_device_events();
+        let ping_res = crate::mission_tools::PingUser
+            .execute(
+                &ctx,
+                json!({"title": "Need input", "message": "Pick option A or B?", "kind": "decision"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ping_res.value["data"]["ping"], "disabled");
+        assert_eq!(ping_res.value["data"]["used"], json!(["chat"]));
+        while let Ok(ev) = dev_rx.try_recv() {
+            assert!(
+                !(ev["kind"] == "ping" && ev["agent"] == agent_id),
+                "disabled push must not emit ping"
+            );
+        }
+
+        let desk_id = crate::session::minimal_inbox_identity(agent_id);
+        assert!(desk_id.contains("Your channels and the kinds of message each carries are in reach_policy;"));
     }
 
 }
