@@ -382,6 +382,9 @@ impl CodingHarness {
                 crate::session::park_failed_session_work(&id, &prev_status, state);
                 if prev_status == "running" && status != "running" {
                     crate::serve::relay_desk_reply(&store, &id, state);
+                    if status == "waiting_for_input" && state.pending_question.is_some() {
+                        crate::serve::relay_question(&store, &id, state);
+                    }
                 }
                 crate::session::emit_status_transition(
                     &id,

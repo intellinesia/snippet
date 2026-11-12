@@ -519,6 +519,18 @@ async fn handle_ws(
                     continue;
                 }
                 if let Ok(input) = serde_json::from_str::<LoopInput>(t.as_str()) {
+                    if let LoopInput::Answer(text) = &input
+                        && let Some(question) =
+                            direct::latest_question_event(&daemon.store, &session)
+                    {
+                        let _ = direct::record_question_answer(
+                            &daemon.store,
+                            &session,
+                            &question.event_id,
+                            text,
+                            None,
+                        );
+                    }
                     if matches!(
                         input,
                         LoopInput::UserMessage(_)

@@ -339,6 +339,7 @@ pub fn reach(
         origin_session,
         about_task,
         None,
+        Map::new(),
     )
 }
 
@@ -353,6 +354,7 @@ pub(crate) fn reach_with_key(
     origin_session: Option<&str>,
     about_task: Option<&str>,
     idempotency_key: Option<&str>,
+    payload_extra: Map<String, Value>,
 ) -> Decision {
     let cfg = load(store, agent_id);
     let (quiet, on_call) = crate::mission_autonomy::quiet_and_call_in(store);
@@ -366,7 +368,7 @@ pub(crate) fn reach_with_key(
     for &channel in &decision.used {
         match channel {
             Channel::Chat => {
-                let mut extra = Map::new();
+                let mut extra = payload_extra.clone();
                 extra.insert("channel".into(), json!("chat"));
                 extra.insert("kind".into(), json!(kind.as_str()));
                 if urgent {
