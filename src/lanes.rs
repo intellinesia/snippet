@@ -278,9 +278,8 @@ struct LaneLink {
     lease_token: Option<u64>,
 }
 
-/// Max lanes running at once — a runaway/cost guard so "spawn several" can't
-/// balloon into dozens of concurrent coding-agent runs.
-const MAX_ACTIVE_LANES: usize = 8;
+/// Max lanes running at once; set high on purpose, CPU is rationed by the caller.
+const MAX_ACTIVE_LANES: usize = 1000;
 
 /// Wall-clock cap per lane. Without one, a hung lane (stalled provider, endless
 /// tool loop under the iteration backstop) never reports, and the orchestrator —
