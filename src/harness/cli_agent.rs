@@ -591,6 +591,33 @@ enum CliLine {
     Exited(u64, String),
 }
 
+fn claude_transcript_lost(workspace: &Path, id: &str) -> bool {
+    let Some(base) = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude")))
+    else {
+        return false;
+    };
+    let projects = base.join("projects");
+    if !projects.is_dir() {
+        return false;
+    }
+    let file = format!("{id}.jsonl");
+    let present = |p: PathBuf| std::fs::metadata(p).is_ok_and(|m| m.len() > 0);
+    let slug: String = workspace
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    if present(projects.join(slug).join(&file)) {
+        return false;
+    }
+    let Ok(dirs) = std::fs::read_dir(&projects) else {
+        return false;
+    };
+    !dirs.flatten().any(|d| present(d.path().join(&file)))
+}
+
 pub(crate) fn claude_binary() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("SNIPPET_CLAUDE_BIN") {
         let path = PathBuf::from(path);
@@ -1893,7 +1920,16 @@ impl CodingHarness {
                         .saturating_mul(self.config.compact_at_pct.clamp(1, 100) as u64)
                         / 100;
                     let full = (away || once) && threshold > 0 && session.tokens >= threshold;
-                    if rewritten || behind || full {
+                    let lost = !rewritten
+                        && !behind
+                        && !full
+                        && kind == CliKind::ClaudeCode
+                        && process.is_none()
+                        && session
+                            .id
+                            .as_deref()
+                            .is_some_and(|id| claude_transcript_lost(self.context.workspace_root(), id));
+                    if rewritten || behind || full || lost {
                         if let Some(mut p) = process.take() {
                             let _ = p.child.start_kill();
                         }
@@ -1904,6 +1940,8 @@ impl CodingHarness {
                             step: "runtime_reseeded".to_string(),
                             reasoning: if rewritten {
                                 format!("This session's history was rewound or compacted elsewhere, so {} starts a fresh conversation from it.", kind.label())
+                            } else if lost {
+                                format!("{}'s saved conversation is missing or empty, so it starts a fresh conversation from this session's history.", kind.label())
                             } else if behind {
                                 format!("{} missed more than a catch-up can carry, so it starts a fresh conversation from this session's history.", kind.label())
                             } else {
