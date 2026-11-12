@@ -224,6 +224,7 @@ pub fn kind_of(path: &Path) -> &'static str {
         "png" | "jpg" | "jpeg" | "gif" | "webp" => "image",
         "csv" | "tsv" => "csv",
         "pdf" => "pdf",
+        "wav" | "mp3" | "ogg" => "audio",
         "json" | "yaml" | "yml" | "toml" | "rs" | "dart" | "py" | "js" | "ts" | "tsx" | "go"
         | "sh" | "sql" | "txt" | "diff" | "patch" => "code",
         _ => "file",
@@ -538,6 +539,7 @@ pub fn content_type(path: &Path) -> &'static str {
         "webm" => "video/webm",
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
         "md" | "markdown" | "txt" | "csv" | "tsv" | "rs" | "py" | "ts" | "dart" | "go" | "sh"
         | "toml" | "yaml" | "yml" | "sql" | "diff" | "patch" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
