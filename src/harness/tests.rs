@@ -622,3 +622,268 @@ mod presence_event_tests {
         assert_eq!(seen, ["thinking", "tool", "thinking", "typing", "idle"]);
     }
 }
+
+#[cfg(test)]
+mod steer_and_interrupt_tests {
+    use super::*;
+    use crate::llm::ModelOutput;
+    use crate::tools::{Tool, ToolError, ToolResult};
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
+
+    struct ScriptedModel {
+        outputs: Mutex<VecDeque<ModelOutput>>,
+        seen_messages: Arc<Mutex<Vec<Vec<HarnessMessage>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentModel for ScriptedModel {
+        async fn generate(
+            &mut self,
+            messages: &[HarnessMessage],
+            _tools: &[NativeToolDefinition],
+            _force_tool: bool,
+            _sink: Option<StreamHandle>,
+        ) -> Result<ModelOutput, ToolError> {
+            self.seen_messages
+                .lock()
+                .unwrap()
+                .push(messages.to_vec());
+            Ok(self
+                .outputs
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| ModelOutput {
+                    content_text: Some("done".into()),
+                    ..ModelOutput::default()
+                }))
+        }
+    }
+
+    struct GateTool {
+        name: &'static str,
+        started: Arc<Notify>,
+        release: Option<Arc<Notify>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for GateTool {
+        fn definition(&self) -> NativeToolDefinition {
+            NativeToolDefinition {
+                name: self.name.into(),
+                description: "test gate tool".into(),
+                input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            }
+        }
+
+        async fn execute(
+            &self,
+            _ctx: &ToolContext,
+            _arguments: serde_json::Value,
+        ) -> Result<ToolResult, ToolError> {
+            self.started.notify_one();
+            match &self.release {
+                Some(release) => {
+                    release.notified().await;
+                    Ok(ToolResult::success(serde_json::json!({"ok": true})))
+                }
+                None => {
+                    std::future::pending::<()>().await;
+                    unreachable!()
+                }
+            }
+        }
+    }
+
+    fn tool_call_output(name: &str, id: &str) -> ModelOutput {
+        ModelOutput {
+            calls: vec![GeneratedToolCall {
+                tool_name: name.into(),
+                arguments: serde_json::json!({}),
+                id: Some(id.into()),
+                signature: None,
+                origin_model: None,
+            }],
+            ..ModelOutput::default()
+        }
+    }
+
+    fn text_output(text: &str) -> ModelOutput {
+        ModelOutput {
+            content_text: Some(text.into()),
+            ..ModelOutput::default()
+        }
+    }
+
+    async fn wait_for_idle_final(store: &crate::store::Store, session_id: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(row) = store.get_session_row(session_id).ok().flatten()
+                    && row.status == "idle"
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("session reached idle");
+    }
+
+    #[tokio::test]
+    async fn mid_tool_user_message_steers_before_next_model_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let mut tools = ToolRegistry::new();
+        tools.insert(GateTool {
+            name: "work",
+            started: started.clone(),
+            release: Some(release.clone()),
+        });
+        let harness = Arc::new(CodingHarness::new(
+            HarnessConfig {
+                state_path: Some(dir.path().join("state.json")),
+                memory_enabled: false,
+                ..HarnessConfig::default()
+            },
+            tools,
+            ToolContext::new(dir.path())
+                .unwrap()
+                .with_store_path(dir.path().join("store.db")),
+        ));
+        let session_id = harness.session_id().unwrap();
+        let store = harness.store().unwrap();
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut model = ScriptedModel {
+            outputs: Mutex::new(VecDeque::from([
+                tool_call_output("work", "c1"),
+                text_output("Switched to sqlite."),
+            ])),
+            seen_messages: seen.clone(),
+        };
+        let (tx, rx) = mpsc::unbounded_channel();
+        let run_harness = harness.clone();
+        let join = tokio::spawn(async move {
+            run_harness
+                .run_interactive(&mut model, Some("start migration".into()), rx, None, None)
+                .await
+                .unwrap()
+        });
+
+        started.notified().await;
+        tx.send(LoopInput::UserMessage("use sqlite instead".into()))
+            .unwrap();
+        tokio::task::yield_now().await;
+        release.notify_one();
+
+        wait_for_idle_final(&store, &session_id).await;
+        drop(tx);
+        let state = join.await.unwrap();
+
+        let steer_pos = state
+            .events
+            .iter()
+            .position(|e| matches!(e, HarnessEvent::Steer { text } if text == "use sqlite instead"))
+            .expect("HarnessEvent::Steer recorded");
+        let final_pos = state
+            .events
+            .iter()
+            .position(|e| matches!(e, HarnessEvent::AssistantText { text, .. } if text == "Switched to sqlite."))
+            .expect("final reply recorded");
+        assert!(steer_pos < final_pos, "steer precedes second model reply");
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 2, "two model calls expected");
+        assert!(
+            calls[1].iter().any(|m| matches!(
+                m,
+                HarnessMessage::User { content } if content == &steer_message("use sqlite instead")
+            )),
+            "second model call saw steered User message: {:?}",
+            calls[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupt_then_user_message_ends_step_and_runs_message_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = Arc::new(Notify::new());
+        let mut tools = ToolRegistry::new();
+        tools.insert(GateTool {
+            name: "hang",
+            started: started.clone(),
+            release: None,
+        });
+        let harness = Arc::new(CodingHarness::new(
+            HarnessConfig {
+                state_path: Some(dir.path().join("state.json")),
+                memory_enabled: false,
+                ..HarnessConfig::default()
+            },
+            tools,
+            ToolContext::new(dir.path())
+                .unwrap()
+                .with_store_path(dir.path().join("store.db")),
+        ));
+        let session_id = harness.session_id().unwrap();
+        let store = harness.store().unwrap();
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut model = ScriptedModel {
+            outputs: Mutex::new(VecDeque::from([
+                tool_call_output("hang", "c1"),
+                text_output("Stopped at hang; deploy not started."),
+            ])),
+            seen_messages: seen.clone(),
+        };
+        let (tx, rx) = mpsc::unbounded_channel();
+        let run_harness = harness.clone();
+        let join = tokio::spawn(async move {
+            run_harness
+                .run_interactive(&mut model, Some("deploy staging".into()), rx, None, None)
+                .await
+                .unwrap()
+        });
+
+        started.notified().await;
+        tx.send(LoopInput::Interrupt).unwrap();
+        tx.send(LoopInput::UserMessage("stop: hold the deploy".into()))
+            .unwrap();
+
+        wait_for_idle_final(&store, &session_id).await;
+        drop(tx);
+        let state = join.await.unwrap();
+
+        assert!(
+            state.events.iter().any(|e| matches!(
+                e,
+                HarnessEvent::SystemDecision { step, .. } if step == "interrupted"
+            )),
+            "running step was interrupted: {:?}",
+            state.events
+        );
+        assert!(
+            state.events.iter().any(|e| matches!(
+                e,
+                HarnessEvent::UserInput { text } if text == "stop: hold the deploy"
+            )),
+            "follow-up message became the next UserInput: {:?}",
+            state.events
+        );
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 2, "two model calls expected");
+        assert!(
+            calls[1].iter().any(|m| matches!(
+                m,
+                HarnessMessage::User { content } if content == "stop: hold the deploy"
+            )),
+            "second model call received stop message as next input: {:?}",
+            calls[1]
+        );
+    }
+}

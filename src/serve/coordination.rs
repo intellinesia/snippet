@@ -1044,6 +1044,7 @@ pub async fn wake_coordination_thread_participants(
         let daemon = d.clone();
         let payload = saved.payload.clone();
         let urgent = crate::coordination::typed::urgency_of(&payload) == crate::coordination::typed::Urgency::Urgent;
+        let from_human = saved.actor_kind == "human";
         let envelope = match incoming {
             Some(agent_id) if target.inbox_agent.is_none() => {
                 format!("{}{envelope}", identity_overlay(d, agent_id, &target.session))
@@ -1057,7 +1058,7 @@ pub async fn wake_coordination_thread_participants(
                     return;
                 }
             if urgent {
-                direct::deliver_by_urgency(&daemon, &target.session, envelope, &payload).await;
+                direct::deliver_by_urgency(&daemon, &target.session, envelope, &payload, from_human).await;
             } else {
                 daemon
                     .deliver(&target.session, LoopInput::UserMessage(envelope))
