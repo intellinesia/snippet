@@ -723,7 +723,11 @@ impl Daemon {
     /// A wake with nobody there to choose: the session's resume mode decides
     /// whether a lapsed cache continues lean first.
     pub(crate) async fn deliver_wake(&self, id: &str, input: LoopInput) {
-        if matches!(input, LoopInput::UserMessage(_)) && resume_lean(id, false) {
+        let lean = match &input {
+            LoopInput::UserMessage(text) => !skip_lean_for_voice(text) && resume_lean(id, false),
+            _ => false,
+        };
+        if lean {
             Box::pin(self.deliver(id, LoopInput::ContinueLean)).await;
         }
         Box::pin(self.deliver(id, input)).await;
@@ -1583,6 +1587,10 @@ async fn get_config(State(d): State<Shared>) -> Response {
 }
 
 
+fn skip_lean_for_voice(text: &str) -> bool {
+    text.contains("<ambient_turn")
+}
+
 /// Whether the next user turn should continue lean first: the session's stored
 /// resume mode over its prompt-cache state. `attended` marks a live client
 /// send, where `ask` leaves the choice to the app.
@@ -1617,5 +1625,12 @@ mod wake_tests {
         assert!(wakes_settled(&LoopInput::UserMessage("hi".into())));
         assert!(!wakes_settled(&LoopInput::Compact));
         assert!(!wakes_settled(&LoopInput::CancelGoal));
+    }
+
+    #[test]
+    fn voice_turns_skip_the_lean_handover() {
+        assert!(skip_lean_for_voice("<ambient_turn mode=\"active\" ids=\"a\">hi</ambient_turn>"));
+        assert!(!skip_lean_for_voice("hello there"));
+        assert!(!skip_lean_for_voice("<ambient_resume>back</ambient_resume>"));
     }
 }

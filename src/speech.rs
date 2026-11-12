@@ -451,6 +451,28 @@ enum Route {
     Off,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Provisional {
+    Start,
+    Abandon,
+    Flush,
+    Off,
+}
+
+fn provisional(voice: bool, first_call: Option<&str>, quiet: bool, busy: bool) -> Provisional {
+    if !voice {
+        return Provisional::Off;
+    }
+    if quiet || busy {
+        return Provisional::Abandon;
+    }
+    match first_call {
+        None => Provisional::Flush,
+        Some(name) if name == "speak" || name.ends_with("__speak") => Provisional::Start,
+        Some(_) => Provisional::Abandon,
+    }
+}
+
 fn quiet_hold(t: &crate::ambient_tuning::Tuning) -> bool {
     t.chattiness == crate::ambient_tuning::Chattiness::Quiet
         && crate::ambient::seconds_since_user_turn().is_none_or(|s| s > t.room_quiet_s)
@@ -523,14 +545,68 @@ pub async fn consume_tool_stream(mut rx: tokio::sync::mpsc::UnboundedReceiver<cr
     let mut raw = String::new();
     let mut route = Route::Off;
     let mut pushed = 0usize;
+    let mut any_call = false;
+    let mut model_text = String::new();
+    let mut model_pushed = 0usize;
+    let mut voice_prof: Option<(Arc<crate::tts_stream::StreamTurn>, u64)> = None;
+    let mut voice_gave_up = false;
+    let mut first_text_marked = false;
     while let Some(event) = rx.recv().await {
         match event {
+            ToolArgEvent::Text { chunk } => {
+                if any_call {
+                    continue;
+                }
+                model_text.push_str(&chunk);
+                let clean = speakable(&model_text);
+                if clean.trim().is_empty() {
+                    continue;
+                }
+                if !first_text_marked {
+                    first_text_marked = true;
+                    crate::ambient::mark_last("first_text");
+                }
+                if voice_prof.is_none() {
+                    if voice_gave_up || !matches!(fresh_route(), Route::Pending) {
+                        voice_gave_up = true;
+                        continue;
+                    }
+                    match open_flux(&clean, false).await {
+                        Route::Flux(turn, token) => voice_prof = Some((turn, token)),
+                        _ => {
+                            voice_gave_up = true;
+                            continue;
+                        }
+                    }
+                }
+                if let Some((turn, _)) = &voice_prof {
+                    push_suffix(turn, &clean, &mut model_pushed);
+                }
+            }
             ToolArgEvent::Start { call_id, name } => {
+                any_call = true;
                 if let Route::Flux(turn, token) = &route {
                     drop_flux_provisional(*token);
                     turn.flush();
                 }
-                if name == "speak" || name.ends_with("__speak") {
+                if voice_prof.is_some() {
+                    match provisional(true, Some(name.as_str()), crate::ambient::call_quiet(), crate::ambient::room_busy()) {
+                        Provisional::Start => {
+                            crate::ambient::mark_last("speak_call");
+                            call = None;
+                            route = Route::Off;
+                            raw.clear();
+                            pushed = 0;
+                        }
+                        Provisional::Abandon => {
+                            voice_prof = None;
+                            abandon_stream();
+                            call = None;
+                            route = Route::Off;
+                        }
+                        _ => {}
+                    }
+                } else if name == "speak" || name.ends_with("__speak") {
                     crate::ambient::mark_last("speak_call");
                     call = Some(call_id);
                     raw.clear();
@@ -592,10 +668,38 @@ pub async fn consume_tool_stream(mut rx: tokio::sync::mpsc::UnboundedReceiver<cr
                 call = None;
                 raw.clear();
                 pushed = 0;
+                if let Some((turn, token)) = voice_prof.take() {
+                    if !any_call
+                        && matches!(provisional(true, None, crate::ambient::call_quiet(), crate::ambient::room_busy()), Provisional::Flush)
+                        && !turn.is_stopped()
+                        && !turn.text().trim().is_empty()
+                        && crate::sanitize::clean_user_text(&model_text).is_some()
+                        && matches!(fresh_route(), Route::Pending)
+                    {
+                        let said = turn.text();
+                        finalise_text(turn.turn, said.trim());
+                        turn.flush();
+                        drop_flux_provisional(token);
+                    } else if any_call {
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            drop_flux_provisional(token);
+                        });
+                    } else {
+                        abandon_stream();
+                    }
+                }
+                model_text.clear();
+                model_pushed = 0;
+                voice_gave_up = false;
+                first_text_marked = false;
             }
         }
     }
     if let Route::Flux(_, token) = route {
+        drop_flux_provisional(token);
+    }
+    if let Some((_, token)) = voice_prof {
         drop_flux_provisional(token);
     }
 }
@@ -610,7 +714,19 @@ pub fn mission_control_stream() -> crate::llm::StreamHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::speakable;
+    use super::{Provisional, provisional, speakable};
+
+    #[test]
+    fn provisional_decision() {
+        assert_eq!(provisional(false, None, false, false), Provisional::Off);
+        assert_eq!(provisional(true, None, false, false), Provisional::Flush);
+        assert_eq!(provisional(true, Some("speak"), false, false), Provisional::Start);
+        assert_eq!(provisional(true, Some("ambient__speak"), false, false), Provisional::Start);
+        assert_eq!(provisional(true, Some("bash"), false, false), Provisional::Abandon);
+        assert_eq!(provisional(true, None, true, false), Provisional::Abandon);
+        assert_eq!(provisional(true, Some("speak"), false, true), Provisional::Abandon);
+        assert_eq!(provisional(true, Some("bash"), true, true), Provisional::Abandon);
+    }
 
     #[test]
     fn bracketed_notes_are_never_spoken() {

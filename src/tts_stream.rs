@@ -548,6 +548,7 @@ fn begin(t: &StreamTurn, i: &mut TurnInner) {
     }
     i.started = true;
     i.start_offset = t.session.st.lock().unwrap().completed_ms;
+    crate::ambient::mark_last("tts_start");
     send_phone(&t.device, PhoneFrame::Text(json!({"t": "tts_start", "turn": t.turn}).to_string()));
 }
 
@@ -567,6 +568,7 @@ fn deliver_audio(t: &Arc<StreamTurn>, pcm: &[u8]) {
     begin(t, &mut i);
     if i.bytes == 0 {
         crate::ambient::mark_last("first_chunk");
+        crate::ambient::mark_last("first_audio");
     }
     i.bytes += pcm.len() as u64;
     if let Some(f) = i.file.as_mut() {
@@ -830,6 +832,48 @@ pub fn live_texts(device: &str) -> Vec<String> {
         .collect()
 }
 
+pub fn playing_turn(device: &str) -> i64 {
+    prune();
+    if let Some(p) = positions().lock().unwrap().get(device)
+        && !p.done
+        && p.at.elapsed() < POS_FRESH
+    {
+        return p.turn;
+    }
+    LIVE.lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|t| t.device == device)
+        .map(|t| t.turn)
+        .unwrap_or(0)
+}
+
+fn probe_seq(device: &str) -> u64 {
+    static SEQ: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    let mut map = SEQ.get_or_init(Default::default).lock().unwrap();
+    let n = map.entry(device.to_string()).or_insert(0);
+    *n += 1;
+    *n
+}
+
+fn probe_frame(phase: &str, turn: i64, seq: u64, go: Option<bool>) -> String {
+    match go {
+        Some(go) => json!({"t": "probe", "phase": phase, "go": go, "turn": turn, "seq": seq}).to_string(),
+        None => json!({"t": "probe", "phase": phase, "turn": turn, "seq": seq}).to_string(),
+    }
+}
+
+pub fn probe_begin(device: &str) -> u64 {
+    let seq = probe_seq(device);
+    send_phone(device, PhoneFrame::Text(probe_frame("begin", playing_turn(device), seq, None)));
+    seq
+}
+
+pub fn probe_verdict(device: &str, seq: u64, go: bool) {
+    send_phone(device, PhoneFrame::Text(probe_frame("verdict", playing_turn(device), seq, Some(go))));
+}
+
 pub fn audible(device: &str) -> bool {
     prune();
     let turns: Vec<Arc<StreamTurn>> = LIVE.lock().unwrap().iter().filter(|t| t.device == device).cloned().collect();
@@ -1060,6 +1104,17 @@ pub async fn settle(max: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_frames_have_the_phone_shape() {
+        let begin: Value = serde_json::from_str(&probe_frame("begin", 7, 3, None)).unwrap();
+        assert_eq!(begin, json!({"t": "probe", "phase": "begin", "turn": 7, "seq": 3}));
+        let verdict: Value = serde_json::from_str(&probe_frame("verdict", 7, 3, Some(true))).unwrap();
+        assert_eq!(verdict, json!({"t": "probe", "phase": "verdict", "go": true, "turn": 7, "seq": 3}));
+        let no: Value = serde_json::from_str(&probe_frame("verdict", 0, 1, Some(false))).unwrap();
+        assert_eq!(no["go"], false);
+        assert_eq!(no["turn"], 0);
+    }
 
     #[test]
     fn rime_start_carries_voice_and_streaming_split() {
