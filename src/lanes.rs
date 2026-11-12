@@ -1458,9 +1458,9 @@ mod tests {
             defs
         };
         let roles = [
-            ("work", with_meta(crate::session::work_tool_registry(key.clone(), None).definitions(), true), 27_850),
-            ("mission_control", with_meta(crate::session::mission_control_tool_registry(key.clone()).definitions(), true), 57_600),
-            ("desk", crate::session::coordination_tool_registry(key.clone()).definitions(), 13_550),
+            ("work", with_meta(crate::session::work_tool_registry(key.clone(), None).definitions(), true), 28_750),
+            ("mission_control", with_meta(crate::session::mission_control_tool_registry(key.clone()).definitions(), true), 58_500),
+            ("desk", crate::session::coordination_tool_registry(key.clone()).definitions(), 14_500),
             ("lane", lane_tool_registry(key.clone(), None, parent, false).definitions(), 9_500),
         ];
         for (role, defs, cap) in roles {

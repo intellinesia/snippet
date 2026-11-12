@@ -36,6 +36,7 @@ pub fn add_coordination_tools(registry: &mut ToolRegistry) {
     registry.insert(crate::agent_context::ContextLimitTool);
     registry.insert(crate::keep_warm::KeepWarmTool);
     registry.insert(crate::mission_tools::ReachPolicyTool);
+    registry.insert(GroupThread);
 }
 
 
@@ -1701,6 +1702,250 @@ impl Tool for DeclineTask {
             "task_id": task_id,
             "note": "Mission Control has been told why; the task waits as blocked until it is reassigned or reshaped.",
         })))
+    }
+}
+
+/// Group threads: rooms with several agents and the human where a post fans
+/// out and agents take turns like colleagues in a chat.
+pub struct GroupThread;
+
+/// The board identity a group call speaks as. Group threads belong to agents
+/// and Mission Control; a plain session has no place in one.
+fn group_agent(ctx: &ToolContext) -> Result<String, ToolError> {
+    if ctx.is_mission_control() {
+        return Ok(crate::mission_control::SESSION_ID.to_string());
+    }
+    match actor(ctx)? {
+        ("agent", id) => Ok(id),
+        ("session", id) if id == crate::mission_control::SESSION_ID => Ok(id),
+        _ => Err(ToolError::msg("group threads are for agents and Mission Control")),
+    }
+}
+
+fn known_group_agent(db: &Store, id: &str) -> bool {
+    id == crate::mission_control::SESSION_ID || db.get_agent(id).ok().flatten().is_some()
+}
+
+fn require_group(
+    db: &Store,
+    group_id: &str,
+) -> Result<crate::coordination::GroupSummary, ToolError> {
+    db.get_group(group_id)
+        .map_err(|e| ToolError::msg(format!("look up group: {e}")))?
+        .ok_or_else(|| ToolError::msg(format!("no group `{group_id}`")))
+}
+
+fn require_group_member(
+    group: &crate::coordination::GroupSummary,
+    agent_id: &str,
+) -> Result<(), ToolError> {
+    if agent_id == crate::mission_control::SESSION_ID
+        || group
+            .members
+            .iter()
+            .any(|m| m.kind == "agent" && m.id == agent_id)
+    {
+        return Ok(());
+    }
+    Err(ToolError::msg(format!(
+        "this agent is not a member of `{}`",
+        group.id
+    )))
+}
+
+fn string_list(arguments: &Value, key: &str) -> Vec<String> {
+    arguments
+        .get(key)
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::trim).map(str::to_string))
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+#[async_trait]
+impl Tool for GroupThread {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "group_thread".into(),
+            description: "Group threads: a thread with several agents and the human where posting fans out and agents take turns like colleagues in a chat — a post that names agents wakes just them, and a post that names nobody goes to the lead while everyone else only speaks if it is a question in their field. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
+            input_schema: schema(
+                json!({
+                    "action": {"type": "string", "enum": ["create", "list", "read", "post", "set_lead", "add_member"]},
+                    "title": {"type": "string"},
+                    "members": {"type": "array", "items": {"type": "string"}},
+                    "lead": {"type": "string"},
+                    "agent": {"type": "string"},
+                    "thread_id": {"type": "string"},
+                    "body": {"type": "string"},
+                    "mentions": {"type": "array", "items": {"type": "string"}},
+                    "in_reply_to": {"type": "string"},
+                    "after_sequence": {"type": "integer"},
+                    "limit": {"type": "integer"}
+                }),
+                &["action"],
+            ),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let action = arguments
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::msg("missing `action`"))?;
+        let db = db(ctx)?;
+        let agent_id = group_agent(ctx)?;
+        match action {
+            "create" => {
+                let title = arguments
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .ok_or_else(|| ToolError::msg("`title` is required"))?;
+                let members = string_list(&arguments, "members");
+                if members.is_empty() {
+                    return Err(ToolError::msg("`members` must name at least one agent"));
+                }
+                let mut deduped: Vec<String> = Vec::new();
+                for member in &members {
+                    if !known_group_agent(&db, member) {
+                        return Err(ToolError::msg(format!("unknown agent `{member}`")));
+                    }
+                    if !deduped.contains(member) {
+                        deduped.push(member.clone());
+                    }
+                }
+                let lead = arguments
+                    .get("lead")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty());
+                if let Some(lead) = lead
+                    && !deduped.iter().any(|m| m == lead)
+                {
+                    return Err(ToolError::msg(format!(
+                        "lead `{lead}` is not one of the group's members"
+                    )));
+                }
+                let group = db
+                    .create_group(title, ("agent", agent_id.as_str()), &deduped, lead, &now_rfc3339())
+                    .map_err(|e| ToolError::msg(format!("create group: {e}")))?;
+                Ok(ToolResult::success(json!(group)))
+            }
+            "list" => {
+                let groups = db
+                    .list_groups()
+                    .map_err(|e| ToolError::msg(format!("list groups: {e}")))?;
+                let groups: Vec<_> = if agent_id == crate::mission_control::SESSION_ID {
+                    groups
+                } else {
+                    groups
+                        .into_iter()
+                        .filter(|g| {
+                            g.members
+                                .iter()
+                                .any(|m| m.kind == "agent" && m.id == agent_id)
+                        })
+                        .collect()
+                };
+                Ok(ToolResult::success(json!(groups)))
+            }
+            "read" => {
+                let thread_id = arguments
+                    .get("thread_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ToolError::msg("`thread_id` is required"))?;
+                let group = require_group(&db, thread_id)?;
+                require_group_member(&group, &agent_id)?;
+                let after = arguments
+                    .get("after_sequence")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let limit = arguments
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(50)
+                    .clamp(1, 200) as u32;
+                let events = db
+                    .events_for_thread(thread_id, after, limit)
+                    .map_err(|e| ToolError::msg(format!("read group: {e}")))?;
+                Ok(ToolResult::success(json!(events)))
+            }
+            "post" => {
+                let thread_id = arguments
+                    .get("thread_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ToolError::msg("`thread_id` is required"))?;
+                let body = arguments
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|b| !b.is_empty())
+                    .ok_or_else(|| ToolError::msg("`body` is required"))?;
+                let group = require_group(&db, thread_id)?;
+                require_group_member(&group, &agent_id)?;
+                let mentions = string_list(&arguments, "mentions");
+                let in_reply_to = arguments
+                    .get("in_reply_to")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty());
+                let event = db
+                    .post_group_message(
+                        thread_id,
+                        ("agent", agent_id.as_str()),
+                        body,
+                        &mentions,
+                        in_reply_to,
+                        &uuid::Uuid::new_v4().to_string(),
+                        &now_rfc3339(),
+                    )
+                    .map_err(|e| ToolError::msg(format!("post to group: {e}")))?;
+                Ok(ToolResult::success(json!(event)))
+            }
+            "set_lead" => {
+                let thread_id = arguments
+                    .get("thread_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ToolError::msg("`thread_id` is required"))?;
+                let agent = arguments
+                    .get("agent")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|a| !a.is_empty())
+                    .ok_or_else(|| ToolError::msg("`agent` is required"))?;
+                let group = require_group(&db, thread_id)?;
+                require_group_member(&group, &agent_id)?;
+                db.set_group_lead(thread_id, agent)
+                    .map_err(|e| ToolError::msg(format!("set lead: {e}")))?;
+                Ok(ToolResult::success(json!({"thread_id": thread_id, "lead": agent})))
+            }
+            "add_member" => {
+                let thread_id = arguments
+                    .get("thread_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ToolError::msg("`thread_id` is required"))?;
+                let agent = arguments
+                    .get("agent")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|a| !a.is_empty())
+                    .ok_or_else(|| ToolError::msg("`agent` is required"))?;
+                let group = require_group(&db, thread_id)?;
+                require_group_member(&group, &agent_id)?;
+                if !known_group_agent(&db, agent) {
+                    return Err(ToolError::msg(format!("unknown agent `{agent}`")));
+                }
+                db.add_group_member(thread_id, agent)
+                    .map_err(|e| ToolError::msg(format!("add member: {e}")))?;
+                Ok(ToolResult::success(json!({"thread_id": thread_id, "member": agent})))
+            }
+            other => Err(ToolError::msg(format!(
+                "unknown action `{other}`; use create, list, read, post, set_lead or add_member"
+            ))),
+        }
     }
 }
 

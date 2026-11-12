@@ -174,11 +174,11 @@ const EVENT_COLUMNS: &str = "event_id, thread_id, partition_key, sequence, event
 ///
 /// The delivery query joins `message_deliveries`, which also has an `event_id`, so
 /// the shared unqualified list is ambiguous there.
-const EVENT_COLUMNS_QUALIFIED: &str = "e.event_id, e.thread_id, e.partition_key, e.sequence,
+pub(super) const EVENT_COLUMNS_QUALIFIED: &str = "e.event_id, e.thread_id, e.partition_key, e.sequence,
      e.event_type, e.actor_kind, e.actor_id, e.payload_version, e.payload_json,
      e.causation_id, e.correlation_id, e.idempotency_key, e.created_at";
 
-fn event_from_row(row: &rusqlite::Row<'_>) -> Result<CoordinationEvent, rusqlite::Error> {
+pub(super) fn event_from_row(row: &rusqlite::Row<'_>) -> Result<CoordinationEvent, rusqlite::Error> {
     let payload_json: String = row.get(8)?;
     let payload = serde_json::from_str(&payload_json).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(error))
