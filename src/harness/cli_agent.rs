@@ -3,8 +3,9 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 
-use axum::extract::{Path as AxPath, State as AxState};
+use axum::extract::{Path as AxPath, Request, State as AxState};
 use axum::http::StatusCode;
+use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
@@ -509,6 +510,7 @@ struct McpCall {
 
 type SteerQueue = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 type ServedResults = std::sync::Arc<std::sync::Mutex<HashMap<String, std::collections::VecDeque<Value>>>>;
+type LateResults = std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(String, String)>>>;
 
 #[derive(Clone)]
 struct McpState {
@@ -517,6 +519,7 @@ struct McpState {
     calls: mpsc::UnboundedSender<McpCall>,
     steers: SteerQueue,
     served: ServedResults,
+    late: LateResults,
     images: bool,
 }
 
@@ -803,7 +806,7 @@ async fn mcp_handler(
     if token != state.token {
         return StatusCode::NOT_FOUND.into_response();
     }
-    match body {
+    let mut res = match body {
         Value::Array(items) => {
             let mut out = Vec::new();
             for item in items {
@@ -821,7 +824,153 @@ async fn mcp_handler(
             Some(reply) => Json(reply).into_response(),
             None => StatusCode::ACCEPTED.into_response(),
         },
+    };
+    insert_session_id(&mut res, &token);
+    res
+}
+
+fn insert_session_id(res: &mut Response, token: &str) {
+    let id = format!("snippet-{}", token.get(..8).unwrap_or(token));
+    if let Ok(value) = axum::http::HeaderValue::from_str(&id) {
+        res.headers_mut().insert("mcp-session-id", value);
     }
+}
+
+async fn mcp_get(
+    AxState(state): AxState<McpState>,
+    AxPath(token): AxPath<String>,
+    request: Request,
+) -> Response {
+    if token != state.token {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if request.method() == axum::http::Method::HEAD {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    let stream = futures_util::stream::pending::<Result<axum::response::sse::Event, std::convert::Infallible>>();
+    let mut res = Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)).text("ping"))
+        .into_response();
+    res.headers_mut()
+        .insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-cache"));
+    insert_session_id(&mut res, &token);
+    res
+}
+
+async fn mcp_delete(AxState(state): AxState<McpState>, AxPath(token): AxPath<String>) -> Response {
+    if token != state.token {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let mut res = StatusCode::NO_CONTENT.into_response();
+    insert_session_id(&mut res, &token);
+    res
+}
+
+fn sh_quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
+fn read_command(arguments: &Value) -> String {
+    let path = sh_quote(arguments.get("path").and_then(Value::as_str).unwrap_or(""));
+    let num = |key: &str| arguments.get(key).and_then(Value::as_u64);
+    let range = match (num("start_line"), num("end_line")) {
+        (Some(start), end) => Some((start, end)),
+        _ => match (num("offset"), num("limit")) {
+            (Some(offset), limit) => Some((offset + 1, limit.map(|l| offset + l))),
+            _ => None,
+        },
+    };
+    match range {
+        Some((start, Some(end))) => format!("sed -n '{start},{end}p' {path}"),
+        Some((start, None)) => format!("sed -n '{start},$p' {path}"),
+        None => format!("cat -n {path}"),
+    }
+}
+
+fn normalise_call(name: &str, arguments: Value, known: &[String]) -> (String, Value) {
+    let known_tool = |tool: &str| known.iter().any(|k| k == tool);
+    let text = |key: &str| arguments.get(key).and_then(Value::as_str).map(str::to_string);
+
+    if name == "bash" && !arguments.as_object().is_some_and(|o| o.contains_key("command")) {
+        for key in ["cmd", "script", "shell"] {
+            if let Some(value) = arguments.get(key).cloned() {
+                let mut fixed = arguments.clone();
+                if let Some(o) = fixed.as_object_mut() {
+                    o.remove(key);
+                    o.insert("command".to_string(), value);
+                }
+                return (name.to_string(), fixed);
+            }
+        }
+        return (name.to_string(), arguments);
+    }
+
+    if name == "change_files" {
+        let mut fixed = arguments.clone();
+        let mut changed = false;
+        if let Some(changes) = fixed.get_mut("changes").and_then(Value::as_array_mut) {
+            for change in changes.iter_mut() {
+                let Some(fields) = change.as_object_mut() else { continue };
+                if fields.get("action").and_then(Value::as_str) == Some("overwrite") {
+                    fields.insert("action".to_string(), json!("create"));
+                    fields.insert("overwrite".to_string(), json!(true));
+                    changed = true;
+                }
+                if !fields.contains_key("path") {
+                    for key in ["file", "file_path"] {
+                        if let Some(value) = fields.remove(key) {
+                            fields.insert("path".to_string(), value);
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return (name.to_string(), if changed { fixed } else { arguments });
+    }
+
+    if known_tool(name) {
+        return (name.to_string(), arguments);
+    }
+
+    let path = text("path");
+    let rewritten = match name {
+        "read_file" | "read" | "view_file" | "cat" if path.is_some() => {
+            known_tool("bash").then(|| ("bash".to_string(), json!({"command": read_command(&arguments)})))
+        }
+        "write" | "write_file" | "create_file" => match (&path, text("content")) {
+            (Some(path), Some(content)) => known_tool("change_files").then(|| {
+                ("change_files".to_string(), json!({"changes": [{"action": "create", "path": path, "content": content, "overwrite": true}]}))
+            }),
+            _ => None,
+        },
+        "edit" | "edit_file" | "str_replace" | "replace" => {
+            let find = text("old_string").or_else(|| text("find"));
+            let with = text("new_string").or_else(|| text("with"));
+            match (&path, find, with) {
+                (Some(path), Some(find), Some(with)) => known_tool("change_files").then(|| {
+                    ("change_files".to_string(), json!({"changes": [{"action": "replace", "path": path, "find": find, "with": with}]}))
+                }),
+                _ => None,
+            }
+        }
+        "list_dir" | "ls" => match &path {
+            Some(path) => known_tool("bash").then(|| ("bash".to_string(), json!({"command": format!("ls -la {}", sh_quote(path))}))),
+            None => None,
+        },
+        "grep" | "search" => text("pattern").and_then(|pattern| {
+            known_tool("bash").then(|| {
+                let command = match &path {
+                    Some(path) => format!("rg -n {} {}", sh_quote(&pattern), sh_quote(path)),
+                    None => format!("rg -n {}", sh_quote(&pattern)),
+                };
+                ("bash".to_string(), json!({"command": command}))
+            })
+        }),
+        _ => None,
+    };
+    rewritten.unwrap_or_else(|| (name.to_string(), arguments))
 }
 
 async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
@@ -843,16 +992,56 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
             })).collect::<Vec<_>>()
         }),
         "tools/call" => {
-            let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
-            let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let raw_name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+            let raw_arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let known: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
+            let (name, arguments) = normalise_call(&raw_name, raw_arguments, &known);
+            if name != raw_name {
+                tracing::debug!("normalised tool call {raw_name} -> {name}");
+            }
             let (reply, rx) = oneshot::channel();
+            let mut rx = Box::pin(rx);
             let name_for_record = name.clone();
             if state.calls.send(McpCall { name, arguments, reply }).is_err() {
                 return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "session ended"}}));
             }
-            let mut value = rx
-                .await
-                .unwrap_or_else(|_| error_result("interrupted", "The call was interrupted."));
+            let mut value = match tokio::time::timeout(MCP_SYNC_WAIT, rx.as_mut()).await {
+                Ok(Ok(value)) => value,
+                Ok(Err(_)) => error_result("interrupted", "The call was interrupted."),
+                Err(_) => {
+                    let late_state = state.clone();
+                    let late_name = name_for_record.clone();
+                    tokio::spawn(async move {
+                        let Ok(mut value) = rx.await else { return };
+                        if let Some(o) = value.as_object_mut() {
+                            o.remove(IMAGE_PATH_KEY);
+                        }
+                        let vault = crate::vault::Vault::load();
+                        if !vault.is_empty() {
+                            vault.scrub_value(&mut value);
+                        }
+                        if let Ok(mut served) = late_state.served.lock() {
+                            let queue = served.entry(late_name.clone()).or_default();
+                            queue.push_back(value.clone());
+                            if queue.len() > 32 {
+                                queue.pop_front();
+                            }
+                        }
+                        let rendered = crate::llm::render_tool_result(&value);
+                        if let Ok(mut late) = late_state.late.lock() {
+                            late.push_back((late_name, rendered));
+                        }
+                    });
+                    return Some(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "content": [{"type": "text", "text": format!("{name_for_record} is still running after 200s. Its result will be attached to your next tool result as <late_tool_result name=\"{name_for_record}\">. Carry on with other work; do not rerun it.")}],
+                            "isError": false,
+                        }
+                    }));
+                }
+            };
             let image_path = value
                 .as_object_mut()
                 .and_then(|o| o.remove(IMAGE_PATH_KEY))
@@ -880,6 +1069,14 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
                 && std::fs::remove_file(&marker).is_ok()
             {
                 content.push(json!({"type": "text", "text": "<system-reminder>Your previous call_mcp_tool call was rejected before it ran because it left out toolSummary or toolAction. Include both on every call.</system-reminder>"}));
+            }
+            let late: Vec<(String, String)> = state
+                .late
+                .lock()
+                .map(|mut q| std::mem::take(&mut *q).into_iter().collect())
+                .unwrap_or_default();
+            for (late_name, late_text) in late {
+                content.push(json!({"type": "text", "text": format!("<late_tool_result name=\"{late_name}\">\n{late_text}\n</late_tool_result>")}));
             }
             let steers: Vec<String> = state.steers.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
             if !steers.is_empty() {
@@ -942,9 +1139,24 @@ fn cli_meta_tool_definitions(once: bool, lanes: bool, hidden: &[&str]) -> Vec<Na
 }
 
 const CLI_STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const MCP_SYNC_WAIT: std::time::Duration = std::time::Duration::from_secs(200);
 
 fn cli_stall_watched(state: &HarnessState, process_alive: bool, tools_running: bool) -> bool {
     state.status == HarnessStatus::Running && process_alive && !tools_running
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StallAction {
+    Restart,
+    Fail,
+}
+
+fn stall_action(restarts: u8, kind: CliKind) -> StallAction {
+    if restarts == 0 && matches!(kind, CliKind::Devin | CliKind::ClaudeCode) {
+        StallAction::Restart
+    } else {
+        StallAction::Fail
+    }
 }
 
 fn cli_goal_due(state: &HarnessState, idle_pass: bool, outbox_empty: bool, once: bool) -> bool {
@@ -964,12 +1176,9 @@ async fn start_mcp_server(
 ) -> Result<(String, mpsc::UnboundedReceiver<McpCall>), String> {
     let (calls, rx) = mpsc::unbounded_channel();
     let token = uuid::Uuid::new_v4().simple().to_string();
-    let state = McpState { token: token.clone(), tools, calls, steers, served, images };
+    let state = McpState { token: token.clone(), tools, calls, steers, served, late: Default::default(), images };
     let app = Router::new()
-        .route(
-            "/mcp/{token}",
-            post(mcp_handler).get(|| async { StatusCode::METHOD_NOT_ALLOWED }),
-        )
+        .route("/mcp/{token}", post(mcp_handler).get(mcp_get).delete(mcp_delete))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1153,7 +1362,9 @@ impl CodingHarness {
             .env("XDG_CONFIG_HOME", &env.xdg_config_home)
             .env("XDG_DATA_HOME", &env.xdg_data_home)
             .env("XDG_CACHE_HOME", &env.xdg_cache_home)
-            .env(crate::devin::SESSION_ENV, mcp_url);
+            .env(crate::devin::SESSION_ENV, mcp_url)
+            .env("MCP_TOOL_TIMEOUT", "3600000")
+            .env("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT", "0");
         if let Some(token) = env.api_key {
             cmd.env("WINDSURF_API_KEY", token);
         }
@@ -1548,6 +1759,7 @@ impl CodingHarness {
         let mut outbox: Vec<String> = Vec::new();
         let mut held_envelopes: Vec<String> = Vec::new();
         let mut last_heard = tokio::time::Instant::now();
+        let mut stall_restarts = 0u8;
 
         if state.status == HarnessStatus::Running
             && let Some(text) = state.messages.iter().rev().find_map(|m| match m {
@@ -1564,6 +1776,9 @@ impl CodingHarness {
         loop {
             if state.status == HarnessStatus::Running {
                 lane_prompt_shown = false;
+            }
+            if state.status == HarnessStatus::Idle {
+                stall_restarts = 0;
             }
             if compact_wanted
                 && compaction == CliCompaction::Idle
@@ -1820,23 +2035,48 @@ impl CodingHarness {
                         let _ = p.child.start_kill();
                     }
                     generation += 1;
-                    if let Ok(mut queue) = steers.lock() {
-                        queue.clear();
-                    }
-                    if let Some(s) = sink.as_ref() {
-                        StreamBuffer::clear(s);
-                    }
-                    state.events.push(HarnessEvent::ModelError {
-                        message: format!(
-                            "{} went silent for {} minutes mid-turn, so it was stopped. Send a message to carry on.",
-                            kind.label(),
-                            CLI_STALL_AFTER.as_secs() / 60
-                        ),
-                    });
-                    state.status = HarnessStatus::Failed;
-                    self.persist(&mut state, &lanes).await?;
-                    if once {
-                        break;
+                    let mins = CLI_STALL_AFTER.as_secs() / 60;
+                    match stall_action(stall_restarts, kind) {
+                        StallAction::Restart => {
+                            stall_restarts = 1;
+                            state.events.push(HarnessEvent::SystemDecision {
+                                step: "runtime_restarted".to_string(),
+                                reasoning: format!(
+                                    "{} went silent for {mins} minutes mid-turn, so it was restarted and asked to carry on.",
+                                    kind.label()
+                                ),
+                            });
+                            outbox.push(
+                                "Carry on from where you stopped. Your last tool results are above; do not repeat completed work."
+                                    .to_string(),
+                            );
+                            self.persist(&mut state, &lanes).await?;
+                        }
+                        StallAction::Fail => {
+                            if let Ok(mut queue) = steers.lock() {
+                                queue.clear();
+                            }
+                            if let Some(s) = sink.as_ref() {
+                                StreamBuffer::clear(s);
+                            }
+                            let message = if stall_restarts >= 1 {
+                                format!(
+                                    "{} went silent for {mins} minutes twice in a row, so it was stopped. Send a message to carry on.",
+                                    kind.label()
+                                )
+                            } else {
+                                format!(
+                                    "{} went silent for {mins} minutes mid-turn, so it was stopped. Send a message to carry on.",
+                                    kind.label()
+                                )
+                            };
+                            state.events.push(HarnessEvent::ModelError { message });
+                            state.status = HarnessStatus::Failed;
+                            self.persist(&mut state, &lanes).await?;
+                            if once {
+                                break;
+                            }
+                        }
                     }
                 }
                 _ = tokio::time::sleep_until(save_at.unwrap_or_else(tokio::time::Instant::now)), if save_at.is_some() && state.status == HarnessStatus::Idle && outbox.is_empty() => {
@@ -3524,5 +3764,254 @@ mod devin_acp_tests {
             "s2 should resume via session/load without reseeding: {:?}",
             s2.events
         );
+    }
+}
+
+#[cfg(test)]
+mod devinrel_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn known() -> Vec<String> {
+        ["bash", "change_files", "update_plan", "ask_user"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn normalise_read_aliases_become_bash() {
+        let k = known();
+        for name in ["read_file", "read", "view_file", "cat"] {
+            let (n, a) = normalise_call(name, json!({"path": "src/main.rs", "start_line": 3, "end_line": 9}), &k);
+            assert_eq!(n, "bash");
+            assert_eq!(a, json!({"command": "sed -n '3,9p' 'src/main.rs'"}));
+        }
+        let (n, a) = normalise_call("read_file", json!({"path": "a b.txt", "offset": 10, "limit": 5}), &k);
+        assert_eq!(n, "bash");
+        assert_eq!(a["command"], "sed -n '11,15p' 'a b.txt'");
+        let (n, a) = normalise_call("cat", json!({"path": "x"}), &k);
+        assert_eq!(n, "bash");
+        assert_eq!(a["command"], "cat -n 'x'");
+    }
+
+    #[test]
+    fn normalise_write_aliases_become_change_files_create() {
+        let k = known();
+        for name in ["write", "write_file", "create_file"] {
+            let (n, a) = normalise_call(name, json!({"path": "f.txt", "content": "hi"}), &k);
+            assert_eq!(n, "change_files");
+            assert_eq!(a["changes"][0]["action"], "create");
+            assert_eq!(a["changes"][0]["path"], "f.txt");
+            assert_eq!(a["changes"][0]["content"], "hi");
+            assert_eq!(a["changes"][0]["overwrite"], true);
+        }
+    }
+
+    #[test]
+    fn normalise_edit_aliases_become_change_files_replace() {
+        let k = known();
+        for name in ["edit", "edit_file", "str_replace", "replace"] {
+            let (n, a) = normalise_call(name, json!({"path": "f", "old_string": "a", "new_string": "b"}), &k);
+            assert_eq!(n, "change_files");
+            assert_eq!(a["changes"][0]["action"], "replace");
+            assert_eq!(a["changes"][0]["find"], "a");
+            assert_eq!(a["changes"][0]["with"], "b");
+        }
+        let (n, a) = normalise_call("edit", json!({"path": "f", "find": "x", "with": "y"}), &k);
+        assert_eq!(n, "change_files");
+        assert_eq!(a["changes"][0]["find"], "x");
+    }
+
+    #[test]
+    fn normalise_change_files_overwrite_action() {
+        let k = known();
+        let (n, a) = normalise_call(
+            "change_files",
+            json!({"changes": [{"action": "overwrite", "path": "f", "content": "x"}]}),
+            &k,
+        );
+        assert_eq!(n, "change_files");
+        assert_eq!(a["changes"][0]["action"], "create");
+        assert_eq!(a["changes"][0]["overwrite"], true);
+    }
+
+    #[test]
+    fn normalise_change_files_file_key_becomes_path() {
+        let k = known();
+        let (n, a) = normalise_call(
+            "change_files",
+            json!({"changes": [{"action": "delete", "file": "old.txt"}]}),
+            &k,
+        );
+        assert_eq!(n, "change_files");
+        assert_eq!(a["changes"][0]["path"], "old.txt");
+        assert!(a["changes"][0].get("file").is_none());
+    }
+
+    #[test]
+    fn normalise_bash_command_aliases() {
+        let k = known();
+        for key in ["cmd", "script", "shell"] {
+            let (n, a) = normalise_call("bash", json!({key: "ls -la"}), &k);
+            assert_eq!(n, "bash");
+            assert_eq!(a["command"], "ls -la");
+            assert!(a.get(key).is_none());
+        }
+        let (n, a) = normalise_call("bash", json!({}), &k);
+        assert_eq!(n, "bash");
+        assert_eq!(a, json!({}));
+    }
+
+    #[test]
+    fn normalise_list_dir_becomes_ls() {
+        let k = known();
+        for name in ["list_dir", "ls"] {
+            let (n, a) = normalise_call(name, json!({"path": "src"}), &k);
+            assert_eq!(n, "bash");
+            assert_eq!(a["command"], "ls -la 'src'");
+        }
+    }
+
+    #[test]
+    fn normalise_grep_becomes_rg() {
+        let k = known();
+        let (n, a) = normalise_call("grep", json!({"pattern": "foo bar", "path": "src"}), &k);
+        assert_eq!(n, "bash");
+        assert_eq!(a["command"], "rg -n 'foo bar' 'src'");
+        let (n, a) = normalise_call("search", json!({"pattern": "x"}), &k);
+        assert_eq!(n, "bash");
+        assert_eq!(a["command"], "rg -n 'x'");
+    }
+
+    #[test]
+    fn normalise_known_tool_untouched() {
+        let k = known();
+        let (n, a) = normalise_call("bash", json!({"command": "ls"}), &k);
+        assert_eq!(n, "bash");
+        assert_eq!(a, json!({"command": "ls"}));
+        let (n, a) = normalise_call("change_files", json!({"changes": [{"action": "delete", "path": "f"}]}), &k);
+        assert_eq!(n, "change_files");
+        assert_eq!(a["changes"][0]["action"], "delete");
+        let (n, a) = normalise_call("ask_user", json!({"question": "?"}), &k);
+        assert_eq!(n, "ask_user");
+        assert_eq!(a, json!({"question": "?"}));
+    }
+
+    fn test_mcp_state(token: &str) -> (McpState, mpsc::UnboundedReceiver<McpCall>) {
+        let (calls, rx) = mpsc::unbounded_channel();
+        (
+            McpState {
+                token: token.to_string(),
+                tools: vec![NativeToolDefinition {
+                    name: "bash".into(),
+                    description: String::new(),
+                    input_schema: json!({}),
+                }],
+                calls,
+                steers: Default::default(),
+                served: Default::default(),
+                late: Default::default(),
+                images: false,
+            },
+            rx,
+        )
+    }
+
+    fn call_request(id: u64) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "bash", "arguments": {"command": "sleep 999"}}})
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tools_call_clamps_at_sync_wait_and_delivers_late() {
+        let token = "tok".to_string();
+        let (state, mut calls) = test_mcp_state(&token);
+        let state = std::sync::Arc::new(state);
+
+        let st = state.clone();
+        let first = tokio::spawn(async move { mcp_dispatch(&st, call_request(1)).await });
+        let call = calls.recv().await.expect("dispatch sent the call");
+        tokio::time::advance(std::time::Duration::from_secs(201)).await;
+        let reply = first.await.expect("dispatch join").expect("dispatch reply");
+        let text = reply
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .expect("reply text");
+        assert!(text.contains("is still running after 200s"), "{text}");
+        assert!(text.contains("<late_tool_result name=\"bash\">"), "{text}");
+
+        call.reply
+            .send(json!({"schema_version": 1, "status": "success", "data": {"output": "late output"}}))
+            .expect("send late reply");
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+
+        let st = state.clone();
+        let second = tokio::spawn(async move { mcp_dispatch(&st, call_request(2)).await });
+        let call2 = calls.recv().await.expect("second dispatch sent the call");
+        call2
+            .reply
+            .send(json!({"schema_version": 1, "status": "success", "data": {"output": "ok"}}))
+            .expect("send second reply");
+        let reply2 = second.await.expect("dispatch2 join").expect("dispatch2 reply");
+        let content = reply2
+            .pointer("/result/content")
+            .and_then(Value::as_array)
+            .expect("content array");
+        let late_text = content
+            .iter()
+            .filter_map(|c| c.get("text").and_then(Value::as_str))
+            .find(|t| t.contains("<late_tool_result"))
+            .expect("late_tool_result block");
+        assert!(late_text.contains("name=\"bash\""), "{late_text}");
+        assert!(late_text.contains("late output"), "{late_text}");
+    }
+
+    fn get_request(method: &str, token: &str) -> Request {
+        Request::builder()
+            .method(method)
+            .uri(format!("/mcp/{token}"))
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn mcp_http_get_delete_and_session_id() {
+        let token = "0123456789abcdef0123456789abcdef".to_string();
+        let (state, _calls) = test_mcp_state(&token);
+
+        let res = mcp_get(AxState(state.clone()), AxPath(token.clone()), get_request("GET", &token)).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let content_type = res.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
+        assert!(content_type.starts_with("text/event-stream"), "{content_type}");
+        assert_eq!(res.headers().get("cache-control").unwrap(), "no-cache");
+        assert_eq!(res.headers().get("mcp-session-id").unwrap(), "snippet-01234567");
+
+        let res = mcp_get(AxState(state.clone()), AxPath("badtoken".into()), get_request("GET", "badtoken")).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+        let res = mcp_get(AxState(state.clone()), AxPath(token.clone()), get_request("HEAD", &token)).await;
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        let res = mcp_delete(AxState(state.clone()), AxPath(token.clone())).await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+        let res = mcp_handler(
+            AxState(state),
+            AxPath(token),
+            Json(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})),
+        )
+        .await;
+        assert_eq!(res.headers().get("mcp-session-id").unwrap(), "snippet-01234567");
+    }
+
+    #[test]
+    fn stall_action_restarts_devin_and_claude_once() {
+        assert_eq!(stall_action(0, CliKind::Devin), StallAction::Restart);
+        assert_eq!(stall_action(0, CliKind::ClaudeCode), StallAction::Restart);
+        assert_eq!(stall_action(1, CliKind::Devin), StallAction::Fail);
+        assert_eq!(stall_action(1, CliKind::ClaudeCode), StallAction::Fail);
+        assert_eq!(stall_action(0, CliKind::Antigravity), StallAction::Fail);
     }
 }
