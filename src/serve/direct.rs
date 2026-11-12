@@ -381,26 +381,82 @@ fn canonical_session_id(id: &str) -> Option<String> {
     Some(crate::session::session_id_for_state_path(&path))
 }
 
-/// Hand one accepted message to its recipient.
-///
-/// A human recipient has nothing to wake — clients read the thread — so it
-/// succeeds immediately and the delivery row records the hand-off.
-/// Hand a message to a session by its urgency. Urgent: end the current run,
-/// then deliver, so the recipient reads it next. Normal: held until the run
-/// ends when the recipient is busy, delivered straight away when it is idle.
+const STEER_NOTE_PREFIX: &str = "steer: the user wrote while you were working; let it shape your very next step and acknowledge it in one line. ";
+const STOP_NOTE_PREFIX: &str = "stop: the user asked you to stop; report where you stopped and what is left, then wait.";
+
+/// Whether a human message body asks the running session to stop right now.
+pub(crate) fn is_stop_command(body: &str) -> bool {
+    let trimmed = body
+        .trim()
+        .trim_end_matches(|c: char| c.is_ascii_punctuation() || matches!(c, '…' | '—' | '–'))
+        .trim()
+        .to_lowercase();
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    let normalized = words.join(" ");
+    matches!(
+        normalized.as_str(),
+        "stop"
+            | "stop now"
+            | "stop that"
+            | "hold on"
+            | "wait"
+            | "pause"
+            | "cancel that"
+            | "abort"
+    ) || (normalized.starts_with("stop ") && words.len() <= 6)
+}
+
+fn body_of<'a>(payload: &'a serde_json::Value, envelope: &'a str) -> &'a str {
+    if let Some(body) = payload.get("body").and_then(|v| v.as_str()) {
+        return body;
+    }
+    if let Some((_, rest)) = envelope.split_once("\nbody: ") {
+        return rest.strip_suffix("\n[/direct_message]").unwrap_or(rest);
+    }
+    envelope
+}
+
+fn prefix_envelope_note(envelope: String, prefix: &str) -> String {
+    let spaced = if prefix.ends_with(' ') {
+        prefix.to_string()
+    } else {
+        format!("{prefix} ")
+    };
+    if envelope.contains("\nnote: ") {
+        envelope.replacen("\nnote: ", &format!("\nnote: {spaced}"), 1)
+    } else if envelope.starts_with("note: ") {
+        envelope.replacen("note: ", &format!("note: {spaced}"), 1)
+    } else {
+        format!("note: {prefix}\n{envelope}")
+    }
+}
+
+/// Hand a message to a session by its urgency and sender. Urgent ends the
+/// current run, then delivers. Normal from the human steers a busy session (or
+/// interrupts first on a stop command); normal from an agent queues while busy.
 pub(super) async fn deliver_by_urgency(
     d: &Shared,
     session_id: &str,
     envelope: String,
     payload: &serde_json::Value,
+    from_human: bool,
 ) {
-    let busy = crate::session::state_path_for_id(session_id)
-        .and_then(|path| crate::session::read_session_meta(&path))
-        .is_some_and(|meta| {
-            matches!(
-                meta.status,
-                crate::harness::HarnessStatus::Running | crate::harness::HarnessStatus::WaitingForInput
-            )
+    let busy = d
+        .store
+        .get_session_row(session_id)
+        .ok()
+        .flatten()
+        .map(|row| matches!(row.status.as_str(), "running" | "waiting_for_input"))
+        .unwrap_or_else(|| {
+            crate::session::state_path_for_id(session_id)
+                .and_then(|path| crate::session::read_session_meta(&path))
+                .is_some_and(|meta| {
+                    matches!(
+                        meta.status,
+                        crate::harness::HarnessStatus::Running
+                            | crate::harness::HarnessStatus::WaitingForInput
+                    )
+                })
         });
     match crate::coordination::typed::urgency_of(payload) {
         crate::coordination::typed::Urgency::Urgent => {
@@ -408,6 +464,16 @@ pub(super) async fn deliver_by_urgency(
                 d.deliver(session_id, LoopInput::Interrupt).await;
             }
             d.deliver(session_id, LoopInput::UserMessage(envelope)).await;
+        }
+        crate::coordination::typed::Urgency::Normal if busy && from_human => {
+            if is_stop_command(body_of(payload, &envelope)) {
+                let envelope = prefix_envelope_note(envelope, STOP_NOTE_PREFIX);
+                d.deliver(session_id, LoopInput::Interrupt).await;
+                d.deliver(session_id, LoopInput::UserMessage(envelope)).await;
+            } else {
+                let envelope = prefix_envelope_note(envelope, STEER_NOTE_PREFIX);
+                d.deliver(session_id, LoopInput::UserMessage(envelope)).await;
+            }
         }
         crate::coordination::typed::Urgency::Normal if busy => {
             let item = crate::harness::QueuedInput { id: uuid::Uuid::new_v4().to_string(), text: envelope };
@@ -461,7 +527,7 @@ async fn route_to_working_task(
     drop(tx);
     let prefix = format!("note: about task {} ({}); routed to the session doing it. ", task.id, task.title);
     let envelope = direct_message_envelope(event, history).replacen("note: ", &prefix, 1);
-    deliver_by_urgency(d, &task.session_id, envelope, &event.payload).await;
+    deliver_by_urgency(d, &task.session_id, envelope, &event.payload, event.actor_kind == "human").await;
     let body = event.payload.get("body").and_then(|v| v.as_str()).unwrap_or_default();
     let quoted: String = body.chars().take(120).collect();
     let notice = format!(
@@ -523,7 +589,14 @@ async fn deliver_direct(
                 .filter(|prior| prior.sequence < event.sequence)
                 .collect();
             drop(tx);
-            deliver_by_urgency(d, &session_id, direct_message_envelope(event, &history), &event.payload).await;
+            deliver_by_urgency(
+                d,
+                &session_id,
+                direct_message_envelope(event, &history),
+                &event.payload,
+                event.actor_kind == "human",
+            )
+            .await;
             return Ok(());
         }
         let lane = reply_lane(d, event, &session_id);
@@ -565,7 +638,7 @@ async fn deliver_direct(
                 event.thread_id, event.actor_kind, event.actor_id,
                 tags = crate::coordination::typed::envelope_lines(&event.payload)
             );
-            deliver_by_urgency(d, &session_id, envelope, &event.payload).await;
+            deliver_by_urgency(d, &session_id, envelope, &event.payload, event.actor_kind == "human").await;
             return Ok(());
         }
         if crate::session::is_lane_session_id(&session_id)
@@ -610,8 +683,7 @@ async fn deliver_direct(
     // wait behind it, as an agent's reply already does.
     if event.actor_kind == "human" {
         if !route_to_working_task(d, event, &history, agent_id, &session_id).await {
-            crate::session::wake_settled(&session_id);
-            d.deliver(&session_id, LoopInput::UserMessage(envelope)).await;
+            deliver_by_urgency(d, &session_id, envelope, &event.payload, true).await;
         }
         if agent_id != crate::mission_control::SESSION_ID {
             tokio::spawn(ack_if_silent(
@@ -625,7 +697,7 @@ async fn deliver_direct(
             ));
         }
     } else {
-        deliver_by_urgency(d, &session_id, envelope, &event.payload).await;
+        deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
     }
     Ok(())
 }
@@ -1287,6 +1359,104 @@ mod tests {
         assert_eq!(sent.len(), 1, "reply goes out as the task's worker");
         assert_eq!(sent[0].payload["about_task"], "t1");
         assert_eq!(sent[0].payload["body"], "Almost done.");
+    }
+
+    #[test]
+    fn stop_commands_are_recognised() {
+        for cmd in [
+            "stop",
+            "Stop now.",
+            "hold on",
+            "stop the deploy",
+            "stop that",
+            "wait!",
+            "pause",
+            "cancel that.",
+            "abort",
+        ] {
+            assert!(super::is_stop_command(cmd), "expected stop command: {cmd}");
+        }
+        for non_stop in [
+            "stop words are tricky in this sentence and keep going anyway",
+            "please continue",
+            "stopping by to check status",
+            "",
+        ] {
+            assert!(!super::is_stop_command(non_stop), "expected non-stop: {non_stop}");
+        }
+    }
+
+    async fn fake_busy_session(
+        d: &super::Shared,
+        id: &str,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<LoopInput> {
+        let mut state = HarnessState::blank("/tmp", None);
+        state.status = crate::harness::HarnessStatus::Running;
+        d.store
+            .import_session(id, "ws", &state, &crate::conversations::SessionExtras::default())
+            .unwrap();
+        fake_session(d, id).await
+    }
+
+    #[tokio::test]
+    async fn deliver_by_urgency_steers_human_queues_agent_and_interrupts_on_stop() {
+        let d = test_daemon();
+        let mut rx = fake_busy_session(&d, "busy-s").await;
+
+        let human_ev = event(1, "local", "use sqlite instead", "agent:a");
+        let human_env = direct_message_envelope(&human_ev, &[]);
+        super::deliver_by_urgency(&d, "busy-s", human_env, &human_ev.payload, true).await;
+        match rx.try_recv().expect("human normal message delivered") {
+            LoopInput::UserMessage(text) => {
+                assert!(
+                    text.contains("note: steer: the user wrote while you were working; let it shape your very next step and acknowledge it in one line."),
+                    "{text}"
+                );
+            }
+            other => panic!("expected UserMessage steer, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+
+        let mut agent_ev = event(2, "peer", "status update", "agent:a");
+        agent_ev.actor_kind = "agent".into();
+        let agent_env = direct_message_envelope(&agent_ev, &[]);
+        super::deliver_by_urgency(&d, "busy-s", agent_env, &agent_ev.payload, false).await;
+        match rx.try_recv().expect("agent normal message queued") {
+            LoopInput::Queue(item) => {
+                assert!(item.text.contains("body: status update"), "{}", item.text);
+                assert!(!item.text.contains("note: steer:"));
+            }
+            other => panic!("expected Queue for agent normal message, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+
+        let stop_ev = event(3, "local", "stop now", "agent:a");
+        let stop_env = direct_message_envelope(&stop_ev, &[]);
+        super::deliver_by_urgency(&d, "busy-s", stop_env, &stop_ev.payload, true).await;
+        assert!(matches!(rx.try_recv().expect("interrupt first"), LoopInput::Interrupt));
+        match rx.try_recv().expect("stop message second") {
+            LoopInput::UserMessage(text) => {
+                assert!(
+                    text.contains("note: stop: the user asked you to stop; report where you stopped and what is left, then wait."),
+                    "{text}"
+                );
+            }
+            other => panic!("expected UserMessage after Interrupt, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+
+        d.store.create_agent(&agent("a")).unwrap();
+        working_task(&d.store, "t1", "busy-s");
+        let _desk_rx = fake_session(&d, "inbox-a").await;
+        let routed_ev = human_says(&d.store, "check edge cases too", "k-route");
+        assert!(super::route_to_working_task(&d, &routed_ev, &[], "a", "inbox-a").await);
+        match rx.try_recv().expect("busy task session steered") {
+            LoopInput::UserMessage(text) => {
+                assert!(text.contains("note: steer: the user wrote while you were working;"), "{text}");
+                assert!(text.contains("about task t1 (Task t1); routed to the session doing it."), "{text}");
+            }
+            other => panic!("expected UserMessage steer on busy task session, got {other:?}"),
+        }
     }
 
 }
