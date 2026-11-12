@@ -13,11 +13,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 
+use super::Shared;
 use super::session_routes::resolve_session_dir;
-use super::{Shared};
 
 const GH_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -44,13 +44,21 @@ async fn gh(dir: &Path, args: &[&str], stdin: Option<&str>) -> Result<String, St
         .env("GH_PROMPT_DISABLED", "1")
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("NO_COLOR", "1")
-        .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+        .stdin(if stdin.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut child = cmd.spawn().map_err(|e| format!("gh isn't available: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("gh isn't available: {e}"))?;
     if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
-        pipe.write_all(input.as_bytes()).await.map_err(|e| e.to_string())?;
+        pipe.write_all(input.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
     }
     let out = tokio::time::timeout(GH_TIMEOUT, child.wait_with_output())
         .await
@@ -60,7 +68,11 @@ async fn gh(dir: &Path, args: &[&str], stdin: Option<&str>) -> Result<String, St
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     } else {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if err.is_empty() { format!("gh exited with {}", out.status) } else { err })
+        Err(if err.is_empty() {
+            format!("gh exited with {}", out.status)
+        } else {
+            err
+        })
     }
 }
 
@@ -83,25 +95,42 @@ struct SessionQuery {
 async fn status(Query(q): Query<SessionQuery>) -> Response {
     let dir = match session_dir(&q.session) {
         Ok(dir) => dir,
-        Err(_) => return Json(json!({ "available": false, "reason": "no workspace" })).into_response(),
+        Err(_) => {
+            return Json(json!({ "available": false, "reason": "no workspace" })).into_response();
+        }
     };
     if gh(&dir, &["--version"], None).await.is_err() {
-        return Json(json!({ "available": false, "reason": "gh is not installed" })).into_response();
+        return Json(json!({ "available": false, "reason": "gh is not installed" }))
+            .into_response();
     }
     if gh(&dir, &["auth", "status"], None).await.is_err() {
-        return Json(json!({ "available": false, "reason": "gh is not logged in" })).into_response();
+        return Json(json!({ "available": false, "reason": "gh is not logged in" }))
+            .into_response();
     }
-    let repo = match gh_json(&dir, &["repo", "view", "--json", "nameWithOwner,url,viewerPermission"]).await {
+    let repo = match gh_json(
+        &dir,
+        &[
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner,url,viewerPermission",
+        ],
+    )
+    .await
+    {
         Ok(repo) => repo,
         Err(_) => {
-            return Json(json!({ "available": false, "reason": "not a GitHub repository" })).into_response();
+            return Json(json!({ "available": false, "reason": "not a GitHub repository" }))
+                .into_response();
         }
     };
     let viewer = gh(&dir, &["api", "user", "--jq", ".login"], None)
         .await
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    let settings = gh_json(&dir, &["api", "repos/{owner}/{repo}"]).await.unwrap_or(Value::Null);
+    let settings = gh_json(&dir, &["api", "repos/{owner}/{repo}"])
+        .await
+        .unwrap_or(Value::Null);
     let allowed = |key: &str| settings.get(key).and_then(Value::as_bool).unwrap_or(true);
     Json(json!({
         "available": true,
@@ -140,7 +169,10 @@ async fn list(Query(q): Query<ListQuery>) -> Response {
         Ok(dir) => dir,
         Err(r) => return r,
     };
-    let first = format!("first={}", q.limit.unwrap_or(LIST_PAGE).clamp(1, LIST_PAGE_MAX));
+    let first = format!(
+        "first={}",
+        q.limit.unwrap_or(LIST_PAGE).clamp(1, LIST_PAGE_MAX)
+    );
     let filter = q.filter.as_deref().unwrap_or("open");
     let search = match filter {
         "mine" => Some("author:@me"),
@@ -151,21 +183,49 @@ async fn list(Query(q): Query<ListQuery>) -> Response {
     let search_field;
     let mut args = vec!["api", "graphql", "-F", first.as_str()];
     let pointer = if let Some(clause) = search {
-        let repo = match gh(&dir, &["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], None).await {
+        let repo = match gh(
+            &dir,
+            &[
+                "repo",
+                "view",
+                "--json",
+                "nameWithOwner",
+                "-q",
+                ".nameWithOwner",
+            ],
+            None,
+        )
+        .await
+        {
             Ok(repo) => repo,
             Err(e) => return api_error(StatusCode::BAD_GATEWAY, e),
         };
-        search_field = format!("q=repo:{} is:pr is:open {clause} sort:created-desc", repo.trim());
-        query = format!("query=query($q:String!,$first:Int!,$after:String){{search(query:$q,type:ISSUE,first:$first,after:$after){{pageInfo{{hasNextPage endCursor}}nodes{{...on PullRequest{{{PR_ROW_FIELDS}}}}}}}}}");
+        search_field = format!(
+            "q=repo:{} is:pr is:open {clause} sort:created-desc",
+            repo.trim()
+        );
+        query = format!(
+            "query=query($q:String!,$first:Int!,$after:String){{search(query:$q,type:ISSUE,first:$first,after:$after){{pageInfo{{hasNextPage endCursor}}nodes{{...on PullRequest{{{PR_ROW_FIELDS}}}}}}}}}"
+        );
         args.extend(["-f", search_field.as_str()]);
         "/data/search"
     } else {
-        let states = if filter == "closed" { "[CLOSED,MERGED]" } else { "[OPEN]" };
-        query = format!("query=query($owner:String!,$repo:String!,$first:Int!,$after:String){{repository(owner:$owner,name:$repo){{pullRequests(states:{states},first:$first,after:$after,orderBy:{{field:CREATED_AT,direction:DESC}}){{pageInfo{{hasNextPage endCursor}}nodes{{{PR_ROW_FIELDS}}}}}}}}}");
+        let states = if filter == "closed" {
+            "[CLOSED,MERGED]"
+        } else {
+            "[OPEN]"
+        };
+        query = format!(
+            "query=query($owner:String!,$repo:String!,$first:Int!,$after:String){{repository(owner:$owner,name:$repo){{pullRequests(states:{states},first:$first,after:$after,orderBy:{{field:CREATED_AT,direction:DESC}}){{pageInfo{{hasNextPage endCursor}}nodes{{{PR_ROW_FIELDS}}}}}}}}}"
+        );
         args.extend(["-F", "owner={owner}", "-F", "repo={repo}"]);
         "/data/repository/pullRequests"
     };
-    let after = q.cursor.as_deref().filter(|c| !c.is_empty()).map(|c| format!("after={c}"));
+    let after = q
+        .cursor
+        .as_deref()
+        .filter(|c| !c.is_empty())
+        .map(|c| format!("after={c}"));
     if let Some(after) = &after {
         args.extend(["-f", after.as_str()]);
     }
@@ -180,7 +240,13 @@ async fn list(Query(q): Query<ListQuery>) -> Response {
     let prs: Vec<Value> = page
         .get("nodes")
         .and_then(Value::as_array)
-        .map(|nodes| nodes.iter().filter(|n| n.get("number").is_some()).map(pr_row).collect())
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter(|n| n.get("number").is_some())
+                .map(pr_row)
+                .collect()
+        })
         .unwrap_or_default();
     let next = page
         .pointer("/pageInfo/hasNextPage")
@@ -197,7 +263,12 @@ fn pr_row(node: &Value) -> Value {
     let reviewers: Vec<Value> = node
         .pointer("/reviewRequests/nodes")
         .and_then(Value::as_array)
-        .map(|nodes| nodes.iter().filter_map(|n| n.get("requestedReviewer").cloned()).collect())
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|n| n.get("requestedReviewer").cloned())
+                .collect()
+        })
         .unwrap_or_default();
     let checks: Vec<Value> = node
         .pointer("/commits/nodes/0/commit/statusCheckRollup/state")
@@ -293,7 +364,9 @@ async fn diff(Query(q): Query<PrQuery>) -> Response {
     };
     let number = q.number.to_string();
     let text = match gh(&dir, &["pr", "diff", &number], None).await {
-        Err(e) if e.contains("too_large") || e.contains("HTTP 406") => diff_from_files(&dir, &number).await,
+        Err(e) if e.contains("too_large") || e.contains("HTTP 406") => {
+            diff_from_files(&dir, &number).await
+        }
         other => other,
     };
     match text {
@@ -309,12 +382,18 @@ async fn diff_from_files(dir: &Path, number: &str) -> Result<String, String> {
     let lines = gh(dir, &["api", "--paginate", "--jq", ".[]", &path], None).await?;
     let mut diff = String::new();
     for line in lines.lines() {
-        let file: Value = serde_json::from_str(line).map_err(|e| format!("gh returned unreadable JSON: {e}"))?;
+        let file: Value =
+            serde_json::from_str(line).map_err(|e| format!("gh returned unreadable JSON: {e}"))?;
         let Some(name) = file.get("filename").and_then(Value::as_str) else {
             continue;
         };
-        let old = file.get("previous_filename").and_then(Value::as_str).unwrap_or(name);
-        diff.push_str(&format!("diff --git a/{old} b/{name}\n--- a/{old}\n+++ b/{name}\n"));
+        let old = file
+            .get("previous_filename")
+            .and_then(Value::as_str)
+            .unwrap_or(name);
+        diff.push_str(&format!(
+            "diff --git a/{old} b/{name}\n--- a/{old}\n+++ b/{name}\n"
+        ));
         if let Some(patch) = file.get("patch").and_then(Value::as_str) {
             diff.push_str(patch);
             diff.push('\n');
@@ -348,10 +427,16 @@ struct ReviewReq {
 async fn review(Json(req): Json<ReviewReq>) -> Response {
     let event = req.event.to_ascii_uppercase();
     if !matches!(event.as_str(), "APPROVE" | "REQUEST_CHANGES" | "COMMENT") {
-        return api_error(StatusCode::BAD_REQUEST, "event must be APPROVE, REQUEST_CHANGES or COMMENT");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "event must be APPROVE, REQUEST_CHANGES or COMMENT",
+        );
     }
     if event != "APPROVE" && req.body.trim().is_empty() && req.comments.is_empty() {
-        return api_error(StatusCode::BAD_REQUEST, "a comment or request for changes needs a summary or an inline comment");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "a comment or request for changes needs a summary or an inline comment",
+        );
     }
     let dir = match session_dir(&req.session) {
         Ok(dir) => dir,
@@ -378,7 +463,13 @@ async fn review(Json(req): Json<ReviewReq>) -> Response {
         .collect();
     let payload = json!({ "event": event, "body": req.body, "comments": comments }).to_string();
     let path = format!("repos/{{owner}}/{{repo}}/pulls/{}/reviews", req.number);
-    match gh(&dir, &["api", "-X", "POST", &path, "--input", "-"], Some(&payload)).await {
+    match gh(
+        &dir,
+        &["api", "-X", "POST", &path, "--input", "-"],
+        Some(&payload),
+    )
+    .await
+    {
         Ok(text) => {
             let reply: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
             Json(json!({ "submitted": true, "url": reply.get("html_url") })).into_response()
@@ -402,7 +493,13 @@ async fn comment(Json(req): Json<CommentReq>) -> Response {
         Ok(dir) => dir,
         Err(r) => return r,
     };
-    match gh(&dir, &["pr", "comment", &req.number.to_string(), "--body-file", "-"], Some(&req.body)).await {
+    match gh(
+        &dir,
+        &["pr", "comment", &req.number.to_string(), "--body-file", "-"],
+        Some(&req.body),
+    )
+    .await
+    {
         Ok(text) => Json(json!({ "posted": true, "url": text.trim() })).into_response(),
         Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
@@ -431,10 +528,19 @@ async fn create(Json(req): Json<CreateReq>) -> Response {
         .await;
     match push {
         Ok(o) if o.status.success() => {}
-        Ok(o) => return api_error(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&o.stderr).trim().to_string()),
+        Ok(o) => {
+            return api_error(
+                StatusCode::BAD_GATEWAY,
+                String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            );
+        }
         Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
-    let title = req.title.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    let title = req
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
     let mut args: Vec<&str> = vec!["pr", "create"];
     match title {
         Some(t) => {
@@ -447,7 +553,10 @@ async fn create(Json(req): Json<CreateReq>) -> Response {
     }
     let body = req.body.clone().unwrap_or_default();
     match gh(&dir, &args, title.map(|_| body.as_str())).await {
-        Ok(text) => Json(json!({ "created": true, "url": text.trim().lines().last().unwrap_or("") })).into_response(),
+        Ok(text) => {
+            Json(json!({ "created": true, "url": text.trim().lines().last().unwrap_or("") }))
+                .into_response()
+        }
         Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
@@ -499,13 +608,22 @@ async fn merge(Json(req): Json<MergeReq>) -> Response {
         _ => "--merge",
     };
     let mut args: Vec<String> = vec!["pr".into(), "merge".into(), number.clone(), flag.into()];
-    if let Some(subject) = req.subject.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(subject) = req
+        .subject
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         args.extend(["--subject".into(), subject.to_string()]);
     }
     if let Some(body) = req.body.as_deref() {
         args.extend(["--body".into(), body.to_string()]);
     }
-    if let Some(head) = req.head.as_deref().filter(|h| h.chars().all(|c| c.is_ascii_hexdigit()) && !h.is_empty()) {
+    if let Some(head) = req
+        .head
+        .as_deref()
+        .filter(|h| h.chars().all(|c| c.is_ascii_hexdigit()) && !h.is_empty())
+    {
         args.extend(["--match-head-commit".into(), head.to_string()]);
     }
     if req.auto {
@@ -522,10 +640,15 @@ async fn merge(Json(req): Json<MergeReq>) -> Response {
     }
     let mut deleted = false;
     if req.delete_branch
-        && let Some(branch) = req.branch.as_deref().filter(|b| !b.is_empty() && !b.contains(".."))
+        && let Some(branch) = req
+            .branch
+            .as_deref()
+            .filter(|b| !b.is_empty() && !b.contains(".."))
     {
         let path = format!("repos/{{owner}}/{{repo}}/git/refs/heads/{branch}");
-        deleted = gh(&dir, &["api", "-X", "DELETE", &path], None).await.is_ok();
+        deleted = gh(&dir, &["api", "-X", "DELETE", &path], None)
+            .await
+            .is_ok();
     }
     Json(json!({ "merged": true, "branch_deleted": deleted })).into_response()
 }
@@ -577,9 +700,18 @@ async fn reply(Json(req): Json<ReplyReq>) -> Response {
         Ok(dir) => dir,
         Err(r) => return r,
     };
-    let path = format!("repos/{{owner}}/{{repo}}/pulls/{}/comments/{}/replies", req.number, req.comment_id);
+    let path = format!(
+        "repos/{{owner}}/{{repo}}/pulls/{}/comments/{}/replies",
+        req.number, req.comment_id
+    );
     let payload = json!({ "body": req.body }).to_string();
-    match gh(&dir, &["api", "-X", "POST", &path, "--input", "-"], Some(&payload)).await {
+    match gh(
+        &dir,
+        &["api", "-X", "POST", &path, "--input", "-"],
+        Some(&payload),
+    )
+    .await
+    {
         Ok(_) => Json(json!({ "posted": true })).into_response(),
         Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
@@ -603,7 +735,20 @@ async fn resolve_thread(Json(req): Json<ThreadReq>) -> Response {
         "mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }"
     };
     let id_field = format!("id={}", req.thread_id);
-    match gh(&dir, &["api", "graphql", "-F", &id_field, "-f", &format!("query={mutation}")], None).await {
+    match gh(
+        &dir,
+        &[
+            "api",
+            "graphql",
+            "-F",
+            &id_field,
+            "-f",
+            &format!("query={mutation}"),
+        ],
+        None,
+    )
+    .await
+    {
         Ok(_) => Json(json!({ "resolved": req.resolved })).into_response(),
         Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
@@ -624,7 +769,13 @@ async fn commit_diff(Query(q): Query<CommitQuery>) -> Response {
         Err(r) => return r,
     };
     let path = format!("repos/{{owner}}/{{repo}}/commits/{}", q.sha);
-    match gh(&dir, &["api", "-H", "Accept: application/vnd.github.diff", &path], None).await {
+    match gh(
+        &dir,
+        &["api", "-H", "Accept: application/vnd.github.diff", &path],
+        None,
+    )
+    .await
+    {
         Ok(text) => Json(json!({ "diff": text })).into_response(),
         Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }

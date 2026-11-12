@@ -54,7 +54,11 @@ pub fn cached() -> Vec<RateLimitSnapshot> {
             out.extend(snaps.iter().cloned());
         }
     }
-    let mut rest: Vec<&String> = cache.accounts.keys().filter(|k| !seen.contains(*k)).collect();
+    let mut rest: Vec<&String> = cache
+        .accounts
+        .keys()
+        .filter(|k| !seen.contains(*k))
+        .collect();
     rest.sort();
     for id in rest {
         out.extend(cache.accounts[id].iter().cloned());
@@ -104,7 +108,10 @@ pub fn refresh_if_stale(max_age_secs: i64) {
             accounts.insert(id.clone(), snaps);
         }
         if !accounts.is_empty() {
-            store_cache(&UsageCache { fetched_at: chrono::Utc::now().timestamp(), accounts });
+            store_cache(&UsageCache {
+                fetched_at: chrono::Utc::now().timestamp(),
+                accounts,
+            });
         }
     });
 }
@@ -115,11 +122,16 @@ fn account_token(id: &str) -> Option<String> {
     }
     let raw = crate::accounts::read_credential("claude-code", id)?;
     let value: Value = serde_json::from_str(&raw).ok()?;
-    value.get("token").and_then(Value::as_str).map(str::to_string)
+    value
+        .get("token")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn main_token() -> Option<String> {
-    let path = crate::devin::real_home()?.join(".claude").join(".credentials.json");
+    let path = crate::devin::real_home()?
+        .join(".claude")
+        .join(".credentials.json");
     let value: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
     let oauth = value.get("claudeAiOauth")?;
     if let Some(expires_at) = oauth.get("expiresAt").and_then(Value::as_i64)
@@ -128,7 +140,10 @@ fn main_token() -> Option<String> {
     {
         return None;
     }
-    oauth.get("accessToken").and_then(Value::as_str).map(str::to_string)
+    oauth
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn cli_version() -> String {
@@ -147,7 +162,9 @@ fn probe_cli_version() -> String {
             .and_then(|text| text.split_whitespace().next().map(str::to_string))
             .filter(|v| !v.is_empty())
     };
-    if let Some(bin) = std::env::var_os("SNIPPET_CLAUDE_BIN").map(PathBuf::from).filter(|p| p.is_file())
+    if let Some(bin) = std::env::var_os("SNIPPET_CLAUDE_BIN")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
         && let Some(version) = probe(&bin)
     {
         return version;
@@ -220,8 +237,12 @@ fn scoped_label(account_label: Option<&str>, name: &str) -> String {
 /// `Some` when more than one claude-code account exists.
 pub fn parse_usage(body: &Value, account_label: Option<&str>) -> Vec<RateLimitSnapshot> {
     let mut out = Vec::new();
-    let five_hour = body.get("five_hour").and_then(|o| window(o, 300, &["utilization"]));
-    let seven_day = body.get("seven_day").and_then(|o| window(o, 10080, &["utilization"]));
+    let five_hour = body
+        .get("five_hour")
+        .and_then(|o| window(o, 300, &["utilization"]));
+    let seven_day = body
+        .get("seven_day")
+        .and_then(|o| window(o, 10080, &["utilization"]));
     if five_hour.is_some() || seven_day.is_some() {
         out.push(RateLimitSnapshot {
             primary: five_hour,
@@ -315,8 +336,16 @@ mod tests {
                 continue;
             };
             for snap in parse_usage(&body, None) {
-                let pct = |w: &Option<RateLimitWindow>| w.map(|w| format!("{}%/{}m", w.used_percent, w.window_minutes)).unwrap_or_else(|| "-".into());
-                println!("{id} {} primary={} secondary={}", snap.label.as_deref().unwrap_or("shared"), pct(&snap.primary), pct(&snap.secondary));
+                let pct = |w: &Option<RateLimitWindow>| {
+                    w.map(|w| format!("{}%/{}m", w.used_percent, w.window_minutes))
+                        .unwrap_or_else(|| "-".into())
+                };
+                println!(
+                    "{id} {} primary={} secondary={}",
+                    snap.label.as_deref().unwrap_or("shared"),
+                    pct(&snap.primary),
+                    pct(&snap.secondary)
+                );
             }
         }
     }

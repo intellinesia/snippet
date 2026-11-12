@@ -21,7 +21,13 @@ pub struct ReasoningSpec {
 }
 
 impl ReasoningSpec {
-    fn effort(label: &'static str, options: &[&'static str], can_disable: bool, visible: bool, note: impl Into<String>) -> Self {
+    fn effort(
+        label: &'static str,
+        options: &[&'static str],
+        can_disable: bool,
+        visible: bool,
+        note: impl Into<String>,
+    ) -> Self {
         Self {
             control: Control::Effort,
             label,
@@ -32,7 +38,12 @@ impl ReasoningSpec {
         }
     }
 
-    fn fixed(control: Control, label: &'static str, visible: bool, note: impl Into<String>) -> Self {
+    fn fixed(
+        control: Control,
+        label: &'static str,
+        visible: bool,
+        note: impl Into<String>,
+    ) -> Self {
         Self {
             control,
             label,
@@ -97,7 +108,12 @@ pub fn spec(provider: &str, model: &str) -> ReasoningSpec {
         "anthropic" | "anthropic-compatible" => {
             let legacy = m.starts_with("claude-3-") && !m.starts_with("claude-3-7");
             if legacy {
-                ReasoningSpec::fixed(Control::None, "Thinking", false, "This model has no extended thinking.")
+                ReasoningSpec::fixed(
+                    Control::None,
+                    "Thinking",
+                    false,
+                    "This model has no extended thinking.",
+                )
             } else {
                 ReasoningSpec::effort(
                     "Thinking",
@@ -123,9 +139,12 @@ pub fn spec(provider: &str, model: &str) -> ReasoningSpec {
                 true,
                 "Gemini 2.5 thinking budget, from 2k tokens (Low) to 32k (Max). Default is dynamic.",
             ),
-            crate::gemini::Thinking::None => {
-                ReasoningSpec::fixed(Control::None, "Thinking", false, "This model doesn't think.")
-            }
+            crate::gemini::Thinking::None => ReasoningSpec::fixed(
+                Control::None,
+                "Thinking",
+                false,
+                "This model doesn't think.",
+            ),
         },
         "chatgpt" => {
             let version = gpt_version(&m).unwrap_or(0.0);
@@ -154,12 +173,23 @@ pub fn spec(provider: &str, model: &str) -> ReasoningSpec {
                     "OpenAI reasoning effort. The API keeps the reasoning itself private, so nothing streams.",
                 )
             } else {
-                ReasoningSpec::fixed(Control::None, "Reasoning", false, "This model doesn't reason.")
+                ReasoningSpec::fixed(
+                    Control::None,
+                    "Reasoning",
+                    false,
+                    "This model doesn't reason.",
+                )
             }
         }
         "xai" | "grok" => {
             if m.contains("mini") {
-                ReasoningSpec::effort("Reasoning", &["low", "high"], false, true, "Grok mini reasons at a low or high level.")
+                ReasoningSpec::effort(
+                    "Reasoning",
+                    &["low", "high"],
+                    false,
+                    true,
+                    "Grok mini reasons at a low or high level.",
+                )
             } else {
                 ReasoningSpec::effort(
                     "Reasoning",
@@ -181,7 +211,10 @@ pub fn spec(provider: &str, model: &str) -> ReasoningSpec {
 }
 
 pub fn effective(provider: &str, model: &str, stored: Option<&str>) -> Option<String> {
-    let stored = stored.map(str::trim).filter(|s| !s.is_empty())?.to_ascii_lowercase();
+    let stored = stored
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_ascii_lowercase();
     let spec = spec(provider, model);
     if spec.control != Control::Effort {
         return None;

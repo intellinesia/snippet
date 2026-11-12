@@ -1,26 +1,50 @@
 use super::*;
 
 pub(super) fn tool_activity_text(name: &str, args: &Value) -> String {
-    let arg = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
-    let base = |p: &str| p.trim_end_matches('/').rsplit('/').next().unwrap_or(p).to_string();
+    let arg = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let base = |p: &str| {
+        p.trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(p)
+            .to_string()
+    };
     let detail = match name {
         "change_files" => {
             let paths: Vec<String> = args
                 .get("changes")
                 .and_then(Value::as_array)
-                .map(|cs| cs.iter().filter_map(|c| c.get("path").and_then(Value::as_str)).map(base).collect())
+                .map(|cs| {
+                    cs.iter()
+                        .filter_map(|c| c.get("path").and_then(Value::as_str))
+                        .map(base)
+                        .collect()
+                })
                 .unwrap_or_default();
             match paths.as_slice() {
                 [] => None,
                 [one] => Some(format!("Editing {one}")),
-                [first, rest @ ..] if rest.iter().all(|p| p == first) => Some(format!("Editing {first}")),
+                [first, rest @ ..] if rest.iter().all(|p| p == first) => {
+                    Some(format!("Editing {first}"))
+                }
                 many => Some(format!("Editing {} files", many.len())),
             }
         }
         "view_image" => arg("path").map(|p| format!("Viewing {}", base(p))),
         "web_search" => arg("query").map(|q| format!("Searching: {q}")),
         "web_read" => arg("url").map(|u| {
-            let host = u.split("://").nth(1).unwrap_or(u).split('/').next().unwrap_or(u);
+            let host = u
+                .split("://")
+                .nth(1)
+                .unwrap_or(u)
+                .split('/')
+                .next()
+                .unwrap_or(u);
             format!("Reading {host}")
         }),
         "skill" => arg("name").map(|n| format!("Loading skill {n}")),
@@ -33,7 +57,13 @@ pub(super) fn tool_activity_text(name: &str, args: &Value) -> String {
         "Glob" => arg("pattern").map(|q| format!("Finding {q}")),
         "WebSearch" => arg("query").map(|q| format!("Searching: {q}")),
         "WebFetch" => arg("url").map(|u| {
-            let host = u.split("://").nth(1).unwrap_or(u).split('/').next().unwrap_or(u);
+            let host = u
+                .split("://")
+                .nth(1)
+                .unwrap_or(u)
+                .split('/')
+                .next()
+                .unwrap_or(u);
             format!("Reading {host}")
         }),
         "Task" => arg("description").map(|t| format!("Delegating: {t}")),
@@ -83,17 +113,45 @@ fn tool_activity_uses_precise_labels_and_preserves_unknown_names() {
         assert_eq!(tool_activity_text(name, &none), expected);
     }
     let j = |v: &str| serde_json::from_str::<Value>(v).unwrap();
-    assert_eq!(tool_activity_text("bash", &j(r#"{"label":"Read listener.rs"}"#)), "Read listener.rs");
-    assert_eq!(tool_activity_text("bash", &j(r#"{"label":"  "}"#)), "Running command");
     assert_eq!(
-        tool_activity_text("change_files", &j(r#"{"changes":[{"path":"lib/a/transcript.dart"},{"path":"lib/a/transcript.dart"}]}"#)),
+        tool_activity_text("bash", &j(r#"{"label":"Read listener.rs"}"#)),
+        "Read listener.rs"
+    );
+    assert_eq!(
+        tool_activity_text("bash", &j(r#"{"label":"  "}"#)),
+        "Running command"
+    );
+    assert_eq!(
+        tool_activity_text(
+            "change_files",
+            &j(
+                r#"{"changes":[{"path":"lib/a/transcript.dart"},{"path":"lib/a/transcript.dart"}]}"#
+            )
+        ),
         "Editing transcript.dart"
     );
-    assert_eq!(tool_activity_text("change_files", &j(r#"{"changes":[{"path":"a.rs"},{"path":"b.rs"}]}"#)), "Editing 2 files");
-    assert_eq!(tool_activity_text("web_read", &j(r#"{"url":"https://docs.rs/tokio/latest"}"#)), "Reading docs.rs");
-    assert_eq!(tool_activity_text("update_plan", &j(r#"{"label":"x"}"#)), "Updating plan");
+    assert_eq!(
+        tool_activity_text(
+            "change_files",
+            &j(r#"{"changes":[{"path":"a.rs"},{"path":"b.rs"}]}"#)
+        ),
+        "Editing 2 files"
+    );
+    assert_eq!(
+        tool_activity_text("web_read", &j(r#"{"url":"https://docs.rs/tokio/latest"}"#)),
+        "Reading docs.rs"
+    );
+    assert_eq!(
+        tool_activity_text("update_plan", &j(r#"{"label":"x"}"#)),
+        "Updating plan"
+    );
     let long = "x".repeat(200);
-    assert_eq!(tool_activity_text("bash", &serde_json::json!({ "label": long })).chars().count(), 90);
+    assert_eq!(
+        tool_activity_text("bash", &serde_json::json!({ "label": long }))
+            .chars()
+            .count(),
+        90
+    );
 }
 
 /// Read-only tools with no side effects on the workspace or the session, so a
@@ -119,20 +177,40 @@ fn collapse_repeated_output(vars: &mut LoopVars, command: String, result: &mut V
     let Some(data) = result.get_mut("data").and_then(Value::as_object_mut) else {
         return;
     };
-    let log_path = data.get("saved_output_path").and_then(Value::as_str).unwrap_or("").to_string();
+    let log_path = data
+        .get("saved_output_path")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let text = |key: &str| {
         let text = data.get(key).and_then(Value::as_str).unwrap_or("");
-        if log_path.is_empty() { text.to_string() } else { text.replace(&log_path, "") }
+        if log_path.is_empty() {
+            text.to_string()
+        } else {
+            text.replace(&log_path, "")
+        }
     };
     let (stdout, stderr) = (text("stdout"), text("stderr"));
     if stdout.len() + stderr.len() < MIN_CHARS {
         return;
     }
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (&stdout, &stderr, data.get("exit_code").map(Value::to_string)).hash(&mut hasher);
+    (
+        &stdout,
+        &stderr,
+        data.get("exit_code").map(Value::to_string),
+    )
+        .hash(&mut hasher);
     let fingerprint = hasher.finish();
     if vars.bash_outputs.insert(command, fingerprint) == Some(fingerprint) {
-        for key in ["stdout", "stderr", "hint", "truncated", "total_lines", "total_bytes"] {
+        for key in [
+            "stdout",
+            "stderr",
+            "hint",
+            "truncated",
+            "total_lines",
+            "total_bytes",
+        ] {
             data.remove(key);
         }
         data.insert(
@@ -152,7 +230,10 @@ fn is_error_result(result: &Value) -> bool {
 fn speak_asks(call: &GeneratedToolCall) -> bool {
     (call.tool_name == "speak" || call.tool_name.ends_with("__speak"))
         && crate::speech::asks_aloud(
-            call.arguments.get("text").and_then(Value::as_str).unwrap_or(""),
+            call.arguments
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
             call.arguments.get("expecting").and_then(Value::as_str),
         )
 }
@@ -222,7 +303,11 @@ impl CodingHarness {
             if let Some(0) = self.desk_budget_left(state) {
                 let call = &calls[i];
                 i += 1;
-                let text = if refused_this_turn { DESK_BUDGET_SHORT } else { DESK_BUDGET_MESSAGE };
+                let text = if refused_this_turn {
+                    DESK_BUDGET_SHORT
+                } else {
+                    DESK_BUDGET_MESSAGE
+                };
                 refused_this_turn = true;
                 state.events.push(HarnessEvent::ToolCall {
                     tool_name: call.tool_name.clone(),
@@ -322,8 +407,14 @@ impl CodingHarness {
     ) {
         stats.only_delegations = false;
         for call in calls {
-            self.lane_progress("tool_call", tool_activity_text(&call.tool_name, &call.arguments));
-            self.presence("tool", &super::presence::tool_detail(&call.tool_name, &call.arguments));
+            self.lane_progress(
+                "tool_call",
+                tool_activity_text(&call.tool_name, &call.arguments),
+            );
+            self.presence(
+                "tool",
+                &super::presence::tool_detail(&call.tool_name, &call.arguments),
+            );
         }
         let results = futures_util::future::join_all(calls.iter().map(|call| {
             self.tools
@@ -379,7 +470,10 @@ impl CodingHarness {
             arguments: call.arguments.clone(),
         });
         self.lane_progress("tool_call", tool_activity_text(&tool_name, &call.arguments));
-        self.presence("tool", &super::presence::tool_detail(&tool_name, &call.arguments));
+        self.presence(
+            "tool",
+            &super::presence::tool_detail(&tool_name, &call.arguments),
+        );
 
         // Headless explicit completion: a lane / one-shot run ends with a
         // structured `summary` (folded back into the caller). Not advertised to
@@ -497,9 +591,10 @@ impl CodingHarness {
 
         if tool_name == "bash"
             && let Some(command) = call.arguments.get("command").and_then(Value::as_str)
-                && note_shell_command(vars, command) {
-                    stats.shell_nudged = true;
-                }
+            && note_shell_command(vars, command)
+        {
+            stats.shell_nudged = true;
+        }
 
         // A bash command that references a vault secret ($NAME) ALWAYS requires
         // explicit user confirmation, regardless of approval mode or a prior
@@ -659,7 +754,12 @@ impl CodingHarness {
             })
             .flatten();
         let bash_command = (tool_name == "bash")
-            .then(|| call.arguments.get("command").and_then(Value::as_str).map(str::to_string))
+            .then(|| {
+                call.arguments
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .flatten();
         let background = call.arguments.get("background").and_then(Value::as_bool) == Some(true);
         let change_args = (tool_name == "change_files").then(|| call.arguments.clone());

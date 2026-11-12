@@ -86,12 +86,19 @@ pub fn configured(cfg: &SnippetConfig, route: Route) -> Vec<String> {
 }
 
 pub fn candidates(cfg: &SnippetConfig, route: Route) -> Vec<String> {
-    configured(cfg, route).into_iter().filter(|n| limited_until(n).is_none()).collect()
+    configured(cfg, route)
+        .into_iter()
+        .filter(|n| limited_until(n).is_none())
+        .collect()
 }
 
 pub fn next_after(cfg: &SnippetConfig, route: Route, current: &str) -> Option<String> {
     let all = configured(cfg, route);
-    let start = all.iter().position(|n| n == current).map(|i| i + 1).unwrap_or(0);
+    let start = all
+        .iter()
+        .position(|n| n == current)
+        .map(|i| i + 1)
+        .unwrap_or(0);
     all.into_iter()
         .skip(start)
         .find(|n| n != current && limited_until(n).is_none())
@@ -100,7 +107,12 @@ pub fn next_after(cfg: &SnippetConfig, route: Route, current: &str) -> Option<St
 pub fn alternatives(cfg: &SnippetConfig, current: &str) -> Vec<String> {
     cfg.setups
         .as_ref()
-        .map(|s| s.keys().filter(|n| n.as_str() != current && limited_until(n).is_none()).cloned().collect())
+        .map(|s| {
+            s.keys()
+                .filter(|n| n.as_str() != current && limited_until(n).is_none())
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -142,7 +154,9 @@ pub fn limited_now() -> HashMap<String, i64> {
     map.clone()
 }
 
-pub fn limit_in(result: &Result<crate::harness::HarnessOutcome, crate::tools::ToolError>) -> Option<String> {
+pub fn limit_in(
+    result: &Result<crate::harness::HarnessOutcome, crate::tools::ToolError>,
+) -> Option<String> {
     let message = match result {
         Err(e) => e.to_string(),
         Ok(outcome) => match outcome.events.last() {

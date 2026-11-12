@@ -73,7 +73,10 @@ pub fn image_for_model(bytes: &[u8]) -> Option<(&'static str, Vec<u8>)> {
         return Some((mime, bytes.to_vec()));
     }
     let scale = scale.min(1.0);
-    let (nw, nh) = (((w as f64 * scale).round() as u32).max(1), ((h as f64 * scale).round() as u32).max(1));
+    let (nw, nh) = (
+        ((w as f64 * scale).round() as u32).max(1),
+        ((h as f64 * scale).round() as u32).max(1),
+    );
     let small = img.resize_exact(nw, nh, image::imageops::FilterType::Triangle);
     let mut out = std::io::Cursor::new(Vec::new());
     let (format, out_mime) = if mime == "image/jpeg" {
@@ -99,11 +102,14 @@ pub struct ChangeFilesTool;
 /// missing `action` (inferred from the fields present), or a shared top-level
 /// `path`. A well-formed call passes through unchanged.
 fn normalize_changes(arguments: Value) -> Value {
-    let Value::Object(mut top) = arguments else { return arguments };
+    let Value::Object(mut top) = arguments else {
+        return arguments;
+    };
     if let Some(Value::String(raw)) = top.get("changes")
-        && let Ok(parsed) = serde_json::from_str::<Value>(raw) {
-            top.insert("changes".into(), parsed);
-        }
+        && let Ok(parsed) = serde_json::from_str::<Value>(raw)
+    {
+        top.insert("changes".into(), parsed);
+    }
     if !top.contains_key("changes") && top.contains_key("path") {
         let single: serde_json::Map<String, Value> = top.clone();
         top = serde_json::Map::new();
@@ -113,11 +119,14 @@ fn normalize_changes(arguments: Value) -> Value {
     if let Some(Value::Array(changes)) = top.get_mut("changes") {
         changes.retain(|c| c.is_object());
         for change in changes.iter_mut() {
-            let Value::Object(fields) = change else { continue };
+            let Value::Object(fields) = change else {
+                continue;
+            };
             if !fields.contains_key("path")
-                && let Some(path) = shared_path.clone() {
-                    fields.insert("path".into(), path);
-                }
+                && let Some(path) = shared_path.clone()
+            {
+                fields.insert("path".into(), path);
+            }
             if !fields.contains_key("action") {
                 let has = |keys: &[&str]| keys.iter().any(|k| fields.contains_key(*k));
                 let action = if has(&["find", "old_string", "old", "search"]) {
@@ -157,7 +166,12 @@ enum Change {
         path: String,
         #[serde(alias = "old_string", alias = "old", alias = "search")]
         find: String,
-        #[serde(alias = "new_string", alias = "new", alias = "replace", alias = "replacement")]
+        #[serde(
+            alias = "new_string",
+            alias = "new",
+            alias = "replace",
+            alias = "replacement"
+        )]
         with: String,
         #[serde(default, alias = "replace_all")]
         all: bool,
@@ -265,7 +279,10 @@ impl Tool for ChangeFilesTool {
             }
         }
         commit(ctx, &staged, &order).await?;
-        crate::task_state_tools::note_changed_files(ctx, &applied.iter().map(|a| a.path.clone()).collect::<Vec<_>>());
+        crate::task_state_tools::note_changed_files(
+            ctx,
+            &applied.iter().map(|a| a.path.clone()).collect::<Vec<_>>(),
+        );
 
         let notes: Vec<String> = applied
             .iter()
@@ -363,18 +380,28 @@ fn load<'a>(
 }
 
 fn line_count(text: &str) -> usize {
-    if text.is_empty() { 0 } else { text.lines().count() }
+    if text.is_empty() {
+        0
+    } else {
+        text.lines().count()
+    }
 }
 
 /// Numbered view of the lines a change touched, plus a little context.
 fn numbered_preview(content: &str, first_line: usize, changed_lines: usize) -> String {
     let lines: Vec<&str> = content.lines().collect();
-    let start = first_line.saturating_sub(1 + PREVIEW_CONTEXT).min(lines.len());
-    let end = (first_line.saturating_sub(1) + changed_lines.max(1) + PREVIEW_CONTEXT).min(lines.len());
+    let start = first_line
+        .saturating_sub(1 + PREVIEW_CONTEXT)
+        .min(lines.len());
+    let end =
+        (first_line.saturating_sub(1) + changed_lines.max(1) + PREVIEW_CONTEXT).min(lines.len());
     let mut out = Vec::new();
     for (i, line) in lines[start..end].iter().enumerate() {
         if out.len() >= PREVIEW_MAX_LINES {
-            out.push(format!("… ({} more lines)", end - start - PREVIEW_MAX_LINES));
+            out.push(format!(
+                "… ({} more lines)",
+                end - start - PREVIEW_MAX_LINES
+            ));
             break;
         }
         out.push(format!("{:>6}\t{line}", start + i + 1));
@@ -458,7 +485,9 @@ fn stage_change(
         } => {
             let entry = load(ctx, staged, order, &path)?;
             let Some(current) = entry.after.clone() else {
-                return Err(format!("`{path}` does not exist. Use create for a new file."));
+                return Err(format!(
+                    "`{path}` does not exist. Use create for a new file."
+                ));
             };
             if find.is_empty() {
                 return Err("`find` is empty: copy the exact text to change.".to_string());
@@ -532,7 +561,9 @@ fn stage_change(
             let removed = line_count(&matched) * replacements;
             let added = line_count(&with) * replacements;
             let touched = if replacements == 1 {
-                let resolved = ctx.resolve_workspace_path(&path).map_err(|e| e.to_string())?;
+                let resolved = ctx
+                    .resolve_workspace_path(&path)
+                    .map_err(|e| e.to_string())?;
                 Some((resolved, first_line, line_count(&with)))
             } else {
                 note = Some(format!("replaced {replacements} occurrences"));
@@ -568,7 +599,9 @@ fn stage_change(
             };
             let target = load(ctx, staged, order, &to)?;
             if target.after.is_some() {
-                return Err(format!("`{to}` already exists; move will not overwrite it."));
+                return Err(format!(
+                    "`{to}` already exists; move will not overwrite it."
+                ));
             }
             target.after = Some(content);
             load(ctx, staged, order, &path)?.after = None;
@@ -773,9 +806,11 @@ fn normalize_source(source: &str) -> NormalizedSource {
         }
 
         if let Some((ws_start, ws_end)) = pending_ws.take()
-            && previous_word && current_word {
-                emit(' ', ws_start, ws_end);
-            }
+            && previous_word
+            && current_word
+        {
+            emit(' ', ws_start, ws_end);
+        }
         emit(ch, start, end);
         previous_word = current_word;
     }

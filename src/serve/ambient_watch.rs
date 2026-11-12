@@ -24,7 +24,9 @@ pub(crate) struct Verdict {
 
 impl Verdict {
     pub fn kept(&self) -> bool {
-        !matches!(self.kind.as_str(), "media" | "background" | "noise") && self.intent != "ignore" && self.echo < 0.7
+        !matches!(self.kind.as_str(), "media" | "background" | "noise")
+            && self.intent != "ignore"
+            && self.echo < 0.7
     }
 
     pub fn veto(&self) -> f64 {
@@ -56,8 +58,8 @@ impl Verdict {
 const POSSESSIVE: &[&str] = &["my", "his", "her", "their", "our", "its"];
 
 const NOUN_LEAD: &[&str] = &[
-    "a", "an", "the", "this", "that", "these", "those", "code", "of", "my", "his", "her", "their", "our", "each", "every", "some", "any",
-    "another",
+    "a", "an", "the", "this", "that", "these", "those", "code", "of", "my", "his", "her", "their",
+    "our", "each", "every", "some", "any", "another",
 ];
 
 fn words_of(text: &str) -> Vec<String> {
@@ -70,7 +72,8 @@ fn words_of(text: &str) -> Vec<String> {
 
 fn as_call(words: &[String], at: usize, len: usize) -> bool {
     at == 0
-        || (!POSSESSIVE.contains(&words[at - 1].as_str()) && (at + len >= words.len() || !NOUN_LEAD.contains(&words[at - 1].as_str())))
+        || (!POSSESSIVE.contains(&words[at - 1].as_str())
+            && (at + len >= words.len() || !NOUN_LEAD.contains(&words[at - 1].as_str())))
 }
 
 fn in_call_position(words: &[String], at: usize) -> bool {
@@ -79,8 +82,14 @@ fn in_call_position(words: &[String], at: usize) -> bool {
 
 pub(super) fn wake_word(text: &str, phrases: &[String]) -> bool {
     let words = words_of(text);
-    let near = words.iter().take(3).any(|w| w == "snipit" || w == "snippit")
-        || words.windows(2).take(2).any(|w| w[0] == "snip" && matches!(w[1].as_str(), "it" | "but" | "bit" | "pet"));
+    let near = words
+        .iter()
+        .take(3)
+        .any(|w| w == "snipit" || w == "snippit")
+        || words
+            .windows(2)
+            .take(2)
+            .any(|w| w[0] == "snip" && matches!(w[1].as_str(), "it" | "but" | "bit" | "pet"));
     if near && phrases.iter().any(|p| p == "snippet") {
         return true;
     }
@@ -88,7 +97,9 @@ pub(super) fn wake_word(text: &str, phrases: &[String]) -> bool {
         let parts: Vec<&str> = p.split_whitespace().collect();
         !parts.is_empty()
             && words.windows(parts.len()).enumerate().any(|(at, w)| {
-                in_call_position(&words, at) && w.iter().zip(&parts).all(|(a, b)| a == b) && as_call(&words, at, parts.len())
+                in_call_position(&words, at)
+                    && w.iter().zip(&parts).all(|(a, b)| a == b)
+                    && as_call(&words, at, parts.len())
             })
     })
 }
@@ -101,7 +112,9 @@ fn edits(a: &str, b: &str) -> usize {
         row[0] = i + 1;
         for j in 0..b.len() {
             let cur = row[j + 1];
-            row[j + 1] = (prev + usize::from(ca != b[j])).min(row[j] + 1).min(cur + 1);
+            row[j + 1] = (prev + usize::from(ca != b[j]))
+                .min(row[j] + 1)
+                .min(cur + 1);
             prev = cur;
         }
     }
@@ -111,15 +124,23 @@ fn edits(a: &str, b: &str) -> usize {
 pub(super) fn near_wake(text: &str, phrases: &[String]) -> bool {
     let words = words_of(text);
     let short = words.len() <= 3;
-    phrases.iter().filter(|p| !p.contains(' ') && p.len() >= 5).any(|p| {
-        let close = |w: &str| {
-            let d = edits(w, p);
-            w != p.as_str() && w.len() >= 4 && (d <= 2 || (short && d <= 3))
-        };
-        (0..words.len()).filter(|&at| in_call_position(&words, at) && as_call(&words, at, 1)).any(|at| {
-            close(&words[at]) || words.get(at + 1).is_some_and(|next| close(&format!("{}{}", words[at], next)))
+    phrases
+        .iter()
+        .filter(|p| !p.contains(' ') && p.len() >= 5)
+        .any(|p| {
+            let close = |w: &str| {
+                let d = edits(w, p);
+                w != p.as_str() && w.len() >= 4 && (d <= 2 || (short && d <= 3))
+            };
+            (0..words.len())
+                .filter(|&at| in_call_position(&words, at) && as_call(&words, at, 1))
+                .any(|at| {
+                    close(&words[at])
+                        || words
+                            .get(at + 1)
+                            .is_some_and(|next| close(&format!("{}{}", words[at], next)))
+                })
         })
-    })
 }
 
 fn shared_words(utterance: &str, said: &str) -> &'static str {
@@ -169,7 +190,11 @@ fn rule(text: &str, phrases: &[String]) -> Verdict {
     let wake = wake_word(text, phrases);
     Verdict {
         kind: "unjudged".into(),
-        intent: if wake { "for_assistant".into() } else { "unjudged".into() },
+        intent: if wake {
+            "for_assistant".into()
+        } else {
+            "unjudged".into()
+        },
         addressed: if wake { 1.0 } else { 0.0 },
         judge: "rule",
         ..Verdict::inherited()
@@ -278,7 +303,12 @@ fn classifier_questions(with_pending: bool, expecting: bool) -> Value {
     questions
 }
 
-async fn ask_classifier(key: &str, state: Value, with_pending: bool, expecting: bool) -> Result<Verdict, String> {
+async fn ask_classifier(
+    key: &str,
+    state: Value,
+    with_pending: bool,
+    expecting: bool,
+) -> Result<Verdict, String> {
     let body = json!({
         "model": "jev-latest",
         "state": state,
@@ -306,7 +336,10 @@ pub(super) fn inner_turn(content: &str) -> Option<String> {
         return None;
     }
     let mut inner = content[open_end..close].to_string();
-    if let (Some(a), Some(b)) = (inner.find("<recent_speech>"), inner.find("</recent_speech>")) {
+    if let (Some(a), Some(b)) = (
+        inner.find("<recent_speech>"),
+        inner.find("</recent_speech>"),
+    ) {
         inner.replace_range(a..b + "</recent_speech>".len(), "");
     }
     Some(
@@ -354,13 +387,19 @@ pub(super) struct Moment {
 
 pub(super) fn with_tuning(rules: Option<Value>, device: &str) -> Option<Value> {
     let mut out = rules.unwrap_or_else(|| json!({}));
-    if let (Some(o), Value::Object(extra)) = (out.as_object_mut(), crate::ambient_tuning::classifier_json(device)) {
+    if let (Some(o), Value::Object(extra)) = (
+        out.as_object_mut(),
+        crate::ambient_tuning::classifier_json(device),
+    ) {
         o.extend(extra);
     }
     Some(out)
 }
 
-pub(super) fn policy_rules_json(policy: &crate::recording_policy::RecordingPolicy, now_ms: i64) -> Option<Value> {
+pub(super) fn policy_rules_json(
+    policy: &crate::recording_policy::RecordingPolicy,
+    now_ms: i64,
+) -> Option<Value> {
     let local = crate::recording_policy::local_at(now_ms);
     let active = policy.active_rules(now_ms, local);
     let mut include = Vec::new();
@@ -384,7 +423,9 @@ pub(super) fn policy_rules_json(policy: &crate::recording_policy::RecordingPolic
     if include.is_empty() && ignore.is_empty() && address.is_empty() && meeting.is_empty() {
         None
     } else {
-        Some(json!({ "include": include, "ignore": ignore, "address": address, "meeting": meeting }))
+        Some(
+            json!({ "include": include, "ignore": ignore, "address": address, "meeting": meeting }),
+        )
     }
 }
 
@@ -441,7 +482,10 @@ pub(super) fn classifier_state(m: &Moment) -> Value {
         recent.push((-u.ago, json!({"from": "microphone", "when": ended_ago(u.ago), "text": u.text, "handled_as": handled_as(u)})));
     }
     for a in &m.assistant {
-        recent.push((-a.ago, json!({"from": "assistant", "when": ended_ago(a.ago), "text": a.text})));
+        recent.push((
+            -a.ago,
+            json!({"from": "assistant", "when": ended_ago(a.ago), "text": a.text}),
+        ));
     }
     recent.sort_by_key(|(at, _)| *at);
     let last = m.assistant.iter().min_by_key(|a| a.ago);
@@ -450,7 +494,17 @@ pub(super) fn classifier_state(m: &Moment) -> Value {
         .assistant
         .iter()
         .map(|a| shared_words(&m.text, &a.text))
-        .min_by_key(|s| ["almost all", "about half", "a few", "none", "too short to compare"].iter().position(|x| x == s))
+        .min_by_key(|s| {
+            [
+                "almost all",
+                "about half",
+                "a few",
+                "none",
+                "too short to compare",
+            ]
+            .iter()
+            .position(|x| x == s)
+        })
         .unwrap_or("none");
     let length = match m.duration_ms {
         ms if ms < 2500 => "short",
@@ -509,7 +563,10 @@ pub(super) fn classifier_state(m: &Moment) -> Value {
 
 pub(super) fn verdict_from(value: &Value) -> Result<Verdict, String> {
     let a = &value["answers"];
-    let kind = a["kind"]["choice"].as_str().ok_or("typesafe answer had no kind")?.to_string();
+    let kind = a["kind"]["choice"]
+        .as_str()
+        .ok_or("typesafe answer had no kind")?
+        .to_string();
     let noul = |k: &str| a[k]["noul"].as_f64().unwrap_or(0.0);
     Ok(Verdict {
         kind,
@@ -520,7 +577,8 @@ pub(super) fn verdict_from(value: &Value) -> Result<Verdict, String> {
         memorable: noul("worth_remembering"),
         echo: noul("assistant_echo"),
         other: noul("other_party"),
-        played: noul("played_audio").max(a["kind"]["probabilities"]["media"].as_f64().unwrap_or(0.0)),
+        played: noul("played_audio")
+            .max(a["kind"]["probabilities"]["media"].as_f64().unwrap_or(0.0)),
         out_of_context: noul("out_of_context"),
         judge: "classifier",
         voice: None,
@@ -528,15 +586,22 @@ pub(super) fn verdict_from(value: &Value) -> Result<Verdict, String> {
 }
 
 const FILLERS: &[&str] = &[
-    "hmm", "hm", "mm", "mmm", "uh", "uhh", "um", "umm", "ah", "oh", "er", "erm", "so", "huh", "eh", "ooh", "aah", "and", "but", "the", "a",
+    "hmm", "hm", "mm", "mmm", "uh", "uhh", "um", "umm", "ah", "oh", "er", "erm", "so", "huh", "eh",
+    "ooh", "aah", "and", "but", "the", "a",
 ];
 
 const OTHER_ASSISTANTS: &[&str] = &["alexa", "siri", "google", "gemini", "cortana", "bixby"];
 
 fn other_assistant(text: &str) -> bool {
     let words = words_of(text);
-    words.iter().take(3).any(|w| OTHER_ASSISTANTS.contains(&w.as_str()))
-        && !words.iter().take(3).any(|w| matches!(w.as_str(), "is" | "was" | "the" | "my" | "use" | "using"))
+    words
+        .iter()
+        .take(3)
+        .any(|w| OTHER_ASSISTANTS.contains(&w.as_str()))
+        && !words
+            .iter()
+            .take(3)
+            .any(|w| matches!(w.as_str(), "is" | "was" | "the" | "my" | "use" | "using"))
 }
 
 pub(super) fn filler(text: &str) -> bool {
@@ -544,8 +609,15 @@ pub(super) fn filler(text: &str) -> bool {
 }
 
 /// Strong cap only for a confident different speaker on enough neural audio (when not mixed with speaker playback); otherwise a bounded nudge.
-pub(super) fn apply_voice(verdict: &mut Verdict, voice: &VoiceScore, wake: bool, during_playback: bool) {
-    let Some(likelihood) = voice.likelihood else { return };
+pub(super) fn apply_voice(
+    verdict: &mut Verdict,
+    voice: &VoiceScore,
+    wake: bool,
+    during_playback: bool,
+) {
+    let Some(likelihood) = voice.likelihood else {
+        return;
+    };
     if wake {
         return;
     }
@@ -554,16 +626,28 @@ pub(super) fn apply_voice(verdict: &mut Verdict, voice: &VoiceScore, wake: bool,
         verdict.addressed = verdict.addressed.min(0.38);
         return;
     }
-    let weight = if voice.neural { VOICE_NUDGE } else { VOICE_NUDGE / 2.0 };
+    let weight = if voice.neural {
+        VOICE_NUDGE
+    } else {
+        VOICE_NUDGE / 2.0
+    };
     let delta = (likelihood - 0.5) * 2.0 * weight;
-    let clean = verdict.echo < 0.45 && verdict.played < 0.45 && verdict.other < 0.45 && verdict.out_of_context < 0.60;
+    let clean = verdict.echo < 0.45
+        && verdict.played < 0.45
+        && verdict.other < 0.45
+        && verdict.out_of_context < 0.60;
     if delta < 0.0 || clean {
         verdict.addressed = (verdict.addressed + delta).clamp(0.0, 1.0);
     }
 }
 
 #[cfg(test)]
-pub(super) fn settle(verdict: Verdict, text: &str, phrases: &[String], voice: Option<std::sync::Arc<VoiceScore>>) -> Verdict {
+pub(super) fn settle(
+    verdict: Verdict,
+    text: &str,
+    phrases: &[String],
+    voice: Option<std::sync::Arc<VoiceScore>>,
+) -> Verdict {
     settle_with(verdict, text, phrases, voice, false)
 }
 
@@ -593,7 +677,11 @@ pub(super) fn settle_with(
             verdict.intent = "for_assistant".into();
         }
     }
-    if wake_word(text, phrases) && verdict.kind == "conversation" && verdict.played < 0.7 && verdict.other < 0.8 {
+    if wake_word(text, phrases)
+        && verdict.kind == "conversation"
+        && verdict.played < 0.7
+        && verdict.other < 0.8
+    {
         verdict.intent = "for_assistant".into();
         verdict.addressed = verdict.addressed.max(0.9);
     }
@@ -601,7 +689,9 @@ pub(super) fn settle_with(
         verdict.intent = "for_assistant".into();
         verdict.addressed = verdict.addressed.max(0.85);
     }
-    if matches!(verdict.intent.as_str(), "meeting" | "note") || matches!(verdict.kind.as_str(), "background" | "media") {
+    if matches!(verdict.intent.as_str(), "meeting" | "note")
+        || matches!(verdict.kind.as_str(), "background" | "media")
+    {
         verdict.other = verdict.other.max(0.75);
     }
     if !wake_word(text, phrases) && verdict.out_of_context >= 0.65 && verdict.matches < 0.7 {
@@ -610,7 +700,11 @@ pub(super) fn settle_with(
             verdict.intent = "note".into();
         }
     }
-    if verdict.addressed >= 0.5 && verdict.veto() < 0.5 && verdict.out_of_context < 0.65 && verdict.kind == "conversation" {
+    if verdict.addressed >= 0.5
+        && verdict.veto() < 0.5
+        && verdict.out_of_context < 0.65
+        && verdict.kind == "conversation"
+    {
         verdict.intent = "for_assistant".into();
     }
     verdict
@@ -620,7 +714,9 @@ fn ready_voice(voices: &[VoiceHandle]) -> Option<std::sync::Arc<VoiceScore>> {
     best_voice(voices.iter().filter_map(VoiceHandle::ready))
 }
 
-fn best_voice(scores: impl Iterator<Item = std::sync::Arc<VoiceScore>>) -> Option<std::sync::Arc<VoiceScore>> {
+fn best_voice(
+    scores: impl Iterator<Item = std::sync::Arc<VoiceScore>>,
+) -> Option<std::sync::Arc<VoiceScore>> {
     scores
         .filter(|s| s.likelihood.is_some() || s.embedding.is_some())
         .max_by(|a, b| a.voiced_secs.total_cmp(&b.voiced_secs))
@@ -637,7 +733,12 @@ async fn wait_voice(id: &str, voices: &[VoiceHandle]) -> Option<std::sync::Arc<V
     best_voice(got.into_iter())
 }
 
-pub(crate) async fn classify(d: &Shared, ids: &[String], text: &str, voices: Vec<VoiceHandle>) -> Verdict {
+pub(crate) async fn classify(
+    d: &Shared,
+    ids: &[String],
+    text: &str,
+    voices: Vec<VoiceHandle>,
+) -> Verdict {
     let id = ids.last().map(String::as_str).unwrap_or("");
     let excluded = serde_json::to_string(ids).unwrap_or_else(|_| "[]".into());
     let (key, watcher, phrases, chat_context, policy) = {
@@ -652,7 +753,9 @@ pub(crate) async fn classify(d: &Shared, ids: &[String], text: &str, voices: Vec
     };
     let now = chrono::Utc::now().timestamp();
     let now_ms = now * 1000;
-    if !wake_word(text, &phrases) && policy.matches_never(now_ms, crate::recording_policy::local_at(now_ms), text) {
+    if !wake_word(text, &phrases)
+        && policy.matches_never(now_ms, crate::recording_policy::local_at(now_ms), text)
+    {
         return Verdict {
             kind: "conversation".into(),
             intent: "ignore".into(),
@@ -664,7 +767,10 @@ pub(crate) async fn classify(d: &Shared, ids: &[String], text: &str, voices: Vec
         };
     }
     let Some(key) = key.filter(|_| watcher == "classifier" || watcher == "jev") else {
-        let mut v = Verdict { voice: ready_voice(&voices), ..rule(text, &phrases) };
+        let mut v = Verdict {
+            voice: ready_voice(&voices),
+            ..rule(text, &phrases)
+        };
         apply_policy(&mut v, text, &phrases, &policy, now_ms);
         return v;
     };
@@ -736,7 +842,13 @@ pub(crate) async fn classify(d: &Shared, ids: &[String], text: &str, voices: Vec
         })
         .unwrap_or((false, false));
     if media_playing && !wake_word(text, &phrases) {
-        return Verdict { kind: "media".into(), intent: "ignore".into(), judge: "rule", voice: ready_voice(&voices), ..Verdict::inherited() };
+        return Verdict {
+            kind: "media".into(),
+            intent: "ignore".into(),
+            judge: "rule",
+            voice: ready_voice(&voices),
+            ..Verdict::inherited()
+        };
     }
     let early_voice = match ready_voice(&voices) {
         Some(v) => Some(v),
@@ -761,7 +873,10 @@ pub(crate) async fn classify(d: &Shared, ids: &[String], text: &str, voices: Vec
         mc_tools,
         media_playing,
         during_playback,
-        user_voice: early_voice.as_ref().filter(|v| v.neural).and_then(|v| v.likelihood),
+        user_voice: early_voice
+            .as_ref()
+            .filter(|v| v.neural)
+            .and_then(|v| v.likelihood),
         speakers_present: present,
         classifier_rules: with_tuning(policy_rules_json(&policy, now_ms), &device),
         live_conversation: super::call_track::holds(&device),
@@ -777,7 +892,10 @@ pub(crate) async fn classify(d: &Shared, ids: &[String], text: &str, voices: Vec
         Ok(verdict) => settle_with(verdict, text, &phrases, late_voice, during_playback),
         Err(e) => {
             eprintln!("[ambient] voice classifier failed: {e}");
-            Verdict { voice: late_voice, ..rule(text, &phrases) }
+            Verdict {
+                voice: late_voice,
+                ..rule(text, &phrases)
+            }
         }
     };
     apply_policy(&mut v, text, &phrases, &policy, now_ms);
@@ -786,7 +904,13 @@ pub(crate) async fn classify(d: &Shared, ids: &[String], text: &str, voices: Vec
 
 /// Real-time parallel classification on partial streaming transcripts while the user
 /// is still speaking, enabling fast classifier-driven barge-in/interruption.
-pub(crate) async fn classify_live(d: &Shared, device: &str, text: &str, during_playback: bool, user_voice: Option<f64>) -> Verdict {
+pub(crate) async fn classify_live(
+    d: &Shared,
+    device: &str,
+    text: &str,
+    during_playback: bool,
+    user_voice: Option<f64>,
+) -> Verdict {
     let (key, watcher, phrases, chat_context, policy) = {
         let c = d.config.lock().unwrap();
         (
@@ -799,7 +923,9 @@ pub(crate) async fn classify_live(d: &Shared, device: &str, text: &str, during_p
     };
     let now = chrono::Utc::now().timestamp();
     let now_ms = now * 1000;
-    if !wake_word(text, &phrases) && policy.matches_never(now_ms, crate::recording_policy::local_at(now_ms), text) {
+    if !wake_word(text, &phrases)
+        && policy.matches_never(now_ms, crate::recording_policy::local_at(now_ms), text)
+    {
         return Verdict {
             kind: "conversation".into(),
             intent: "ignore".into(),
@@ -858,7 +984,14 @@ pub(crate) async fn classify_live(d: &Shared, device: &str, text: &str, during_p
         .unwrap_or_default();
     for live_txt in crate::tts_stream::live_texts(device) {
         if !assistant.iter().any(|a| a.text.trim() == live_txt.trim()) {
-            assistant.insert(0, Said { text: live_txt, ago: 0, cut: false });
+            assistant.insert(
+                0,
+                Said {
+                    text: live_txt,
+                    ago: 0,
+                    cut: false,
+                },
+            );
         }
     }
     let (pending, mc_chat, mc_tools) = if chat_context {
@@ -893,9 +1026,17 @@ pub(crate) async fn classify_live(d: &Shared, device: &str, text: &str, during_p
         live_conversation: super::call_track::holds(&device),
     };
     let legacy = user_voice.map(|l| {
-        std::sync::Arc::new(VoiceScore { neural: false, similarity: None, likelihood: Some(l), voiced_secs: 0.0, embedding: None, ms: 0 })
+        std::sync::Arc::new(VoiceScore {
+            neural: false,
+            similarity: None,
+            likelihood: Some(l),
+            voiced_secs: 0.0,
+            embedding: None,
+            ms: 0,
+        })
     });
-    let mut v = match ask_classifier(&key, classifier_state(&moment), with_pending, expecting).await {
+    let mut v = match ask_classifier(&key, classifier_state(&moment), with_pending, expecting).await
+    {
         Ok(verdict) => settle_with(verdict, text, &phrases, legacy, during_playback),
         Err(_) => rule(text, &phrases),
     };
@@ -921,7 +1062,13 @@ mod voice_tests {
     }
 
     fn classified(addressed: f64) -> Verdict {
-        Verdict { kind: "conversation".into(), intent: "for_assistant".into(), addressed, judge: "classifier", ..Verdict::inherited() }
+        Verdict {
+            kind: "conversation".into(),
+            intent: "for_assistant".into(),
+            addressed,
+            judge: "classifier",
+            ..Verdict::inherited()
+        }
     }
 
     fn phrases() -> Vec<String> {
@@ -930,47 +1077,94 @@ mod voice_tests {
 
     #[test]
     fn confident_other_speaker_is_capped() {
-        let v = settle(classified(0.8), "what time is the meeting tomorrow", &phrases(), Some(score(true, 0.05, 2.5)));
+        let v = settle(
+            classified(0.8),
+            "what time is the meeting tomorrow",
+            &phrases(),
+            Some(score(true, 0.05, 2.5)),
+        );
         assert!(v.addressed <= 0.38 && v.other >= 0.72);
         assert_eq!(v.user_voice(), Some(crate::voiceprint::likelihood(0.05)));
     }
 
     #[test]
     fn short_or_uncertain_audio_only_nudges() {
-        let v = settle(classified(0.8), "how are you this beautiful evening", &phrases(), Some(score(true, 0.05, 1.5)));
+        let v = settle(
+            classified(0.8),
+            "how are you this beautiful evening",
+            &phrases(),
+            Some(score(true, 0.05, 1.5)),
+        );
         assert!(v.addressed >= 0.70 && v.addressed < 0.8, "{}", v.addressed);
         assert_eq!(v.intent, "for_assistant");
-        let v = settle(classified(0.8), "how are you this beautiful evening", &phrases(), Some(score(true, 0.30, 4.0)));
+        let v = settle(
+            classified(0.8),
+            "how are you this beautiful evening",
+            &phrases(),
+            Some(score(true, 0.30, 4.0)),
+        );
         assert!(v.addressed > 0.7 && v.other < 0.5);
     }
 
     #[test]
     fn legacy_score_never_vetoes() {
-        let v = settle(classified(0.8), "listened to my last two messages", &phrases(), Some(score(false, 0.0, 0.0)));
+        let v = settle(
+            classified(0.8),
+            "listened to my last two messages",
+            &phrases(),
+            Some(score(false, 0.0, 0.0)),
+        );
         assert!(v.addressed >= 0.75, "{}", v.addressed);
         assert_eq!(v.intent, "for_assistant");
     }
 
     #[test]
     fn wake_word_ignores_voice() {
-        let v = settle(classified(0.6), "snippet do you hear me", &phrases(), Some(score(true, 0.0, 3.0)));
+        let v = settle(
+            classified(0.6),
+            "snippet do you hear me",
+            &phrases(),
+            Some(score(true, 0.0, 3.0)),
+        );
         assert!(v.addressed >= 0.9 && v.other < 0.5);
     }
 
     #[test]
     fn matching_voice_boosts_only_clean_verdicts() {
-        let v = settle(classified(0.55), "can you check the build", &phrases(), Some(score(true, 0.8, 3.0)));
+        let v = settle(
+            classified(0.55),
+            "can you check the build",
+            &phrases(),
+            Some(score(true, 0.8, 3.0)),
+        );
         assert!((v.addressed - 0.63).abs() < 0.01, "{}", v.addressed);
         let mut dirty = classified(0.55);
         dirty.echo = 0.5;
-        let v = settle(dirty, "can you check the build", &phrases(), Some(score(true, 0.8, 3.0)));
+        let v = settle(
+            dirty,
+            "can you check the build",
+            &phrases(),
+            Some(score(true, 0.8, 3.0)),
+        );
         assert!((v.addressed - 0.55).abs() < 1e-9);
     }
 
     #[test]
     fn no_score_leaves_verdict_alone() {
-        let none = Arc::new(VoiceScore { neural: false, similarity: None, likelihood: None, voiced_secs: 0.4, embedding: None, ms: 0 });
-        let v = settle(classified(0.8), "thank you for that", &phrases(), Some(none));
+        let none = Arc::new(VoiceScore {
+            neural: false,
+            similarity: None,
+            likelihood: None,
+            voiced_secs: 0.4,
+            embedding: None,
+            ms: 0,
+        });
+        let v = settle(
+            classified(0.8),
+            "thank you for that",
+            &phrases(),
+            Some(none),
+        );
         assert!((v.addressed - 0.8).abs() < 1e-9 && v.user_voice().is_none());
         let v = settle(classified(0.8), "thank you for that", &phrases(), None);
         assert!((v.addressed - 0.8).abs() < 1e-9);
@@ -988,7 +1182,9 @@ mod voice_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore]
     async fn sim_end_to_deliver() {
-        let Ok(path) = std::env::var("VP_BENCH_WAV") else { return };
+        let Ok(path) = std::env::var("VP_BENCH_WAV") else {
+            return;
+        };
         let pcm = crate::voiceprint::pcm_from_audio(&std::fs::read(path).unwrap()).unwrap();
         let (enrol, rest) = pcm.split_at(pcm.len() / 2);
         let (vector, _) = crate::voiceprint::embed_enrolment(enrol).await.unwrap();
@@ -1005,14 +1201,25 @@ mod voice_tests {
             for with_voice in [false, true, false, true] {
                 crate::ambient::mark("sim-utt", "end");
                 let t0 = Instant::now();
-                let voices: Vec<_> = if with_voice { crate::voiceprint::start("sim-utt", "sim", utterance, &samples).into_iter().collect() } else { Vec::new() };
+                let voices: Vec<_> = if with_voice {
+                    crate::voiceprint::start("sim-utt", "sim", utterance, &samples)
+                        .into_iter()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 tokio::time::sleep(Duration::from_millis(150)).await;
                 let classifier = async {
                     tokio::time::sleep(Duration::from_millis(classifier_ms)).await;
                     classified(0.7)
                 };
                 let (verdict, voice) = tokio::join!(classifier, wait_voice("sim-utt", &voices));
-                let v = settle(verdict, "can you check the build", &phrases(), voice.clone());
+                let v = settle(
+                    verdict,
+                    "can you check the build",
+                    &phrases(),
+                    voice.clone(),
+                );
                 println!(
                     "classifier {classifier_ms}ms voice={with_voice}: end->deliver {}ms (voice {:?}ms, user_voice {:?}, addressed {:.2})",
                     t0.elapsed().as_millis(),
@@ -1027,10 +1234,18 @@ mod voice_tests {
     #[test]
     fn interruption_attrs_mark_nothing_heard_and_unsaid() {
         use crate::speech::Interruption;
-        let none = interruption_attrs(&Interruption { heard: String::new(), unsaid: "All of it.".into() });
+        let none = interruption_attrs(&Interruption {
+            heard: String::new(),
+            unsaid: "All of it.".into(),
+        });
         assert!(none.contains("heard_none=\"true\"") && none.contains("unsaid=\"All of it.\""));
-        let part = interruption_attrs(&Interruption { heard: "The build passed".into(), unsaid: "two tests skipped".into() });
-        assert!(!part.contains("heard_none") && part.contains("interrupted_reply=\"The build passed\""));
+        let part = interruption_attrs(&Interruption {
+            heard: "The build passed".into(),
+            unsaid: "two tests skipped".into(),
+        });
+        assert!(
+            !part.contains("heard_none") && part.contains("interrupted_reply=\"The build passed\"")
+        );
     }
 
     #[test]
@@ -1041,7 +1256,10 @@ mod voice_tests {
             "YC pitch takes",
             "ignore",
             "Rehearsing YC founder pitch video takes",
-            crate::recording_policy::When { keywords: vec!["hey yc".into(), "solo founder".into()], ..Default::default() },
+            crate::recording_policy::When {
+                keywords: vec!["hey yc".into(), "solo founder".into()],
+                ..Default::default()
+            },
             Some(now + 60_000),
             "user: stop recording pitch rehearsal",
             now,
@@ -1051,7 +1269,10 @@ mod voice_tests {
             "Architecture notes",
             "include",
             "Notes about Cisco Secure Access",
-            crate::recording_policy::When { keywords: vec!["secure access".into()], ..Default::default() },
+            crate::recording_policy::When {
+                keywords: vec!["secure access".into()],
+                ..Default::default()
+            },
             None,
             "user: keep notes on secure access",
             now,
@@ -1062,17 +1283,48 @@ mod voice_tests {
         assert_eq!(rules_json["ignore"][0]["label"], "YC pitch takes");
         assert_eq!(rules_json["include"][0]["label"], "Architecture notes");
 
-        let mut v = Verdict { memorable: 0.9, ..classified(0.8) };
-        apply_policy(&mut v, "Hey YC, my name is Sam, solo founder", &phrases(), &p, now);
-        assert_eq!((v.intent.as_str(), v.addressed, v.memorable), ("ignore", 0.0, 0.0));
+        let mut v = Verdict {
+            memorable: 0.9,
+            ..classified(0.8)
+        };
+        apply_policy(
+            &mut v,
+            "Hey YC, my name is Sam, solo founder",
+            &phrases(),
+            &p,
+            now,
+        );
+        assert_eq!(
+            (v.intent.as_str(), v.addressed, v.memorable),
+            ("ignore", 0.0, 0.0)
+        );
 
-        let mut v_wake = Verdict { memorable: 0.9, ..classified(0.95) };
-        apply_policy(&mut v_wake, "Snippet, how was my Hey YC take?", &phrases(), &p, now);
+        let mut v_wake = Verdict {
+            memorable: 0.9,
+            ..classified(0.95)
+        };
+        apply_policy(
+            &mut v_wake,
+            "Snippet, how was my Hey YC take?",
+            &phrases(),
+            &p,
+            now,
+        );
         assert_eq!(v_wake.intent, "for_assistant");
         assert!(v_wake.addressed >= 0.9);
 
-        let mut v_inc = Verdict { intent: "ignore".into(), memorable: 0.2, ..classified(0.1) };
-        apply_policy(&mut v_inc, "We should migrate Secure Access tomorrow", &phrases(), &p, now);
+        let mut v_inc = Verdict {
+            intent: "ignore".into(),
+            memorable: 0.2,
+            ..classified(0.1)
+        };
+        apply_policy(
+            &mut v_inc,
+            "We should migrate Secure Access tomorrow",
+            &phrases(),
+            &p,
+            now,
+        );
         assert_eq!(v_inc.intent, "note");
         assert!(v_inc.memorable >= 0.85);
     }

@@ -3,25 +3,62 @@ use crate::harness::HarnessEvent;
 use serde_json::json;
 
 fn persist_wait(store: &crate::store::Store, question: bool, stamp: &str) {
-    let scalar = if question { json!({"pending_question":{"questions":["same question"]}}) } else { json!({}) };
-    store.save_session_scalar("worker", "workspace", "/workspace", None,
-        "waiting_for_input", &scalar.to_string(), stamp, stamp).unwrap();
-    let event = if question {
-        HarnessEvent::UserQuestion { questions: scalar["pending_question"].clone() }
+    let scalar = if question {
+        json!({"pending_question":{"questions":["same question"]}})
     } else {
-        HarnessEvent::ApprovalRequest { tool_name: "bash".into(), summary: "action".into(), index: 1, total: 1 }
+        json!({})
     };
-    store.append_conversation_events("worker", &[event], stamp).unwrap();
+    store
+        .save_session_scalar(
+            "worker",
+            "workspace",
+            "/workspace",
+            None,
+            "waiting_for_input",
+            &scalar.to_string(),
+            stamp,
+            stamp,
+        )
+        .unwrap();
+    let event = if question {
+        HarnessEvent::UserQuestion {
+            questions: scalar["pending_question"].clone(),
+        }
+    } else {
+        HarnessEvent::ApprovalRequest {
+            tool_name: "bash".into(),
+            summary: "action".into(),
+            index: 1,
+            total: 1,
+        }
+    };
+    store
+        .append_conversation_events("worker", &[event], stamp)
+        .unwrap();
 }
 
 fn resolve(store: &crate::store::Store) {
-    store.save_session_scalar("worker", "workspace", "/workspace", None,
-        "running", "{}", "created", "updated").unwrap();
+    store
+        .save_session_scalar(
+            "worker",
+            "workspace",
+            "/workspace",
+            None,
+            "running",
+            "{}",
+            "created",
+            "updated",
+        )
+        .unwrap();
 }
 
 fn send_wait(store: &crate::store::Store) -> serde_json::Value {
     let (events, mut receiver) = broadcast::channel(8);
-    emit_device_event_with_store(json!({"kind":"waiting","session":"worker"}), Some(store), &events);
+    emit_device_event_with_store(
+        json!({"kind":"waiting","session":"worker"}),
+        Some(store),
+        &events,
+    );
     let frame = receiver.try_recv().unwrap();
     assert_eq!(frame["kind"], "notification");
     assert_eq!(receiver.try_recv().unwrap()["kind"], "waiting");
@@ -34,7 +71,12 @@ fn assert_replay(store: &crate::store::Store, expected: &[serde_json::Value]) {
     let time = notification_tuple_page(store, &settings, 0, 0, 100).unwrap();
     assert_eq!(legacy["events"], json!(expected));
     assert_eq!(time["events"], json!(expected));
-    let last = store.notification_events_since(0, 501).unwrap().last().unwrap().clone();
+    let last = store
+        .notification_events_since(0, 501)
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
     assert_eq!(legacy["next_cursor"], last["event_id"]);
     assert_eq!(time["next_cursor"]["event_id"], last["event_id"]);
 }
@@ -94,8 +136,13 @@ fn notification_resolved_attention_scan_is_bounded_and_advances_both_cursors() {
     persist_wait(&store, true, "old");
     let attention = store.current_attention("worker").unwrap().unwrap();
     for _ in 0..501 {
-        store.append_notification_event(json!({"kind":"waiting","session":"worker",
-            "destination":{"type":"session","id":"worker"},"attention":attention}), 86400).unwrap();
+        store
+            .append_notification_event(
+                json!({"kind":"waiting","session":"worker",
+            "destination":{"type":"session","id":"worker"},"attention":attention}),
+                86400,
+            )
+            .unwrap();
     }
     resolve(&store);
     persist_wait(&store, false, "new");
@@ -109,13 +156,32 @@ fn notification_resolved_attention_scan_is_bounded_and_advances_both_cursors() {
     assert_eq!(legacy["next_cursor"], 500);
     assert_eq!(time["next_cursor"]["event_id"], 500);
     let legacy = notification_page_from_store(&store, &settings, 500, 1).unwrap();
-    let time = notification_tuple_page(&store, &settings,
-        time["next_cursor"]["created_at"].as_i64().unwrap(), 500, 1).unwrap();
+    let time = notification_tuple_page(
+        &store,
+        &settings,
+        time["next_cursor"]["created_at"].as_i64().unwrap(),
+        500,
+        1,
+    )
+    .unwrap();
     assert_eq!(legacy["events"], json!([active.clone()]));
     assert_eq!(time["events"], json!([active]));
-    store.append_notification_event(json!({"kind":"waiting","session":"worker"}), 86400).unwrap();
-    assert!(notification_page_from_store(&store, &settings, 502, 1).unwrap()["events"].as_array().unwrap().is_empty());
-    assert!(notification_tuple_page(&store, &settings, 0, 502, 500).unwrap()["events"].as_array().unwrap().iter().all(|event| event["attention"].is_object()));
+    store
+        .append_notification_event(json!({"kind":"waiting","session":"worker"}), 86400)
+        .unwrap();
+    assert!(
+        notification_page_from_store(&store, &settings, 502, 1).unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        notification_tuple_page(&store, &settings, 0, 502, 500).unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["attention"].is_object())
+    );
 }
 
 #[test]
@@ -127,11 +193,26 @@ fn notification_waiting_carries_question_text_and_choices() {
     store.save_control_settings(&settings).unwrap();
     let questions = json!({"questions":[{"id":"q0","text":"Ship it now?","answer_kind":{"kind":"single_choice",
         "choices":[{"value":"now","label":"Ship now"},{"value":"later","label":"Wait"}]}}]});
-    store.save_session_scalar("worker", "workspace", "/workspace", None, "waiting_for_input",
-        &json!({"pending_question": questions}).to_string(), "s", "s").unwrap();
-    store.append_conversation_events("worker", &[HarnessEvent::UserQuestion { questions }], "s").unwrap();
+    store
+        .save_session_scalar(
+            "worker",
+            "workspace",
+            "/workspace",
+            None,
+            "waiting_for_input",
+            &json!({"pending_question": questions}).to_string(),
+            "s",
+            "s",
+        )
+        .unwrap();
+    store
+        .append_conversation_events("worker", &[HarnessEvent::UserQuestion { questions }], "s")
+        .unwrap();
     let sent = send_wait(&store);
     assert_eq!(sent["body"], "Ship it now?");
     assert_eq!(sent["attention"]["text"], "Ship it now?");
-    assert_eq!(sent["attention"]["choices"][0], json!({"label":"Ship now","value":"now"}));
+    assert_eq!(
+        sent["attention"]["choices"][0],
+        json!({"label":"Ship now","value":"now"})
+    );
 }

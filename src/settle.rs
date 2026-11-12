@@ -73,17 +73,28 @@ pub fn profile_cache_ttls() -> std::collections::HashMap<String, i64> {
     };
     for (name, p) in config.setups.iter().flatten() {
         let one_hour = p.cache_prompt && p.cache_ttl.as_deref().map(str::trim) == Some("1h");
-        let ttl = p.cache_ttl.as_deref().and_then(parse_ttl).unwrap_or_else(|| cache_ttl_secs(&p.provider, one_hour));
+        let ttl = p
+            .cache_ttl
+            .as_deref()
+            .and_then(parse_ttl)
+            .unwrap_or_else(|| cache_ttl_secs(&p.provider, one_hour));
         out.insert(name.clone(), ttl);
     }
-    if let Some(default) = config.active_setup.as_ref().and_then(|n| out.get(n).copied()) {
+    if let Some(default) = config
+        .active_setup
+        .as_ref()
+        .and_then(|n| out.get(n).copied())
+    {
         out.insert(String::new(), default);
     }
     out
 }
 
 pub fn ttl_for(ttls: &std::collections::HashMap<String, i64>, profile: Option<&str>) -> i64 {
-    ttls.get(profile.unwrap_or("")).or_else(|| ttls.get("")).copied().unwrap_or(COLD_AFTER_SECS)
+    ttls.get(profile.unwrap_or(""))
+        .or_else(|| ttls.get(""))
+        .copied()
+        .unwrap_or(COLD_AFTER_SECS)
 }
 
 /// What decides whether a session may be settled.
@@ -106,7 +117,10 @@ pub struct SettleFacts {
 /// Why a session must not be settled, or `None` when it may.
 pub fn refusal(f: &SettleFacts) -> Option<String> {
     let no = |why: &str| Some(format!("not settled: {why}"));
-    if crate::mission_control::is_session_id(&f.id) || f.role == "mission_control" || f.kind == "mission_control" {
+    if crate::mission_control::is_session_id(&f.id)
+        || f.role == "mission_control"
+        || f.kind == "mission_control"
+    {
         return no("it is the Mission Control session");
     }
     if crate::session::is_inbox_session_id(&f.id) || f.kind == "inbox" {
@@ -174,14 +188,22 @@ pub fn sweep_stuck_lanes(store: &Store, now: i64) -> Vec<String> {
         }
         let seen = row
             .last_active
-            .or_else(|| chrono::DateTime::parse_from_rfc3339(&row.updated_at).ok().map(|t| t.timestamp()))
+            .or_else(|| {
+                chrono::DateTime::parse_from_rfc3339(&row.updated_at)
+                    .ok()
+                    .map(|t| t.timestamp())
+            })
             .unwrap_or(0);
         let idle = idle_secs(now, seen);
         let orphaned = row.id.rsplit_once("/lanes/").is_some_and(|(parent, lane)| {
             if idle < LANE_GRACE_SECS {
                 return false;
             }
-            match store.session_lane_record_status(parent, lane).ok().flatten() {
+            match store
+                .session_lane_record_status(parent, lane)
+                .ok()
+                .flatten()
+            {
                 Some(status) => status != "running",
                 None => store
                     .get_session_row(parent)
@@ -193,8 +215,14 @@ pub fn sweep_stuck_lanes(store: &Store, now: i64) -> Vec<String> {
         if idle < STUCK_LANE_SECS && !orphaned {
             continue;
         }
-        if store.set_session_status(&row.id, "interrupted").unwrap_or(false) {
-            eprintln!("settle: lane session {} was running with nothing behind it (idle {idle}s); marked interrupted", row.id);
+        if store
+            .set_session_status(&row.id, "interrupted")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "settle: lane session {} was running with nothing behind it (idle {idle}s); marked interrupted",
+                row.id
+            );
             fixed.push(row.id);
         }
     }
@@ -269,9 +297,15 @@ mod tests {
         let f = facts();
         assert!(!due_for_auto_settle(&f, AUTO_SETTLE_AFTER_SECS - 1));
         assert!(due_for_auto_settle(&f, AUTO_SETTLE_AFTER_SECS));
-        let settled = SettleFacts { settled: true, ..facts() };
+        let settled = SettleFacts {
+            settled: true,
+            ..facts()
+        };
         assert!(!due_for_auto_settle(&settled, AUTO_SETTLE_AFTER_SECS * 5));
-        let kept = SettleFacts { keep_awake: true, ..facts() };
+        let kept = SettleFacts {
+            keep_awake: true,
+            ..facts()
+        };
         assert!(!due_for_auto_settle(&kept, AUTO_SETTLE_AFTER_SECS * 5));
         assert!(refusal(&kept).is_none(), "manual settle stays allowed");
     }
@@ -303,27 +337,67 @@ mod tests {
         let db = Store::open_in_memory().unwrap();
         let now = 100_000_000;
         let mk = |id: &str, status: &str, active: i64, state: &str| {
-            db.save_session_scalar(id, "wk", "/w", None, status, state, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z").unwrap();
+            db.save_session_scalar(
+                id,
+                "wk",
+                "/w",
+                None,
+                status,
+                state,
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
             db.set_session_last_active(id, active).unwrap();
         };
-        mk("p/lanes/lane-1", "running", now - STUCK_LANE_SECS - 1, "{\"lanes\":[]}");
+        mk(
+            "p/lanes/lane-1",
+            "running",
+            now - STUCK_LANE_SECS - 1,
+            "{\"lanes\":[]}",
+        );
         mk("p", "idle", now - 5000, "{\"lanes\":[]}");
         mk("p/lanes/lane-2", "running", now - 3000, "{\"lanes\":[]}");
         // A running parent that cancelled lane-1 and still runs lane-2.
-        mk("q", "running", now - 5000, "{\"lanes\":[{\"id\":\"lane-1\",\"status\":\"cancelled\"},{\"id\":\"lane-2\",\"status\":\"running\"}]}");
+        mk(
+            "q",
+            "running",
+            now - 5000,
+            "{\"lanes\":[{\"id\":\"lane-1\",\"status\":\"cancelled\"},{\"id\":\"lane-2\",\"status\":\"running\"}]}",
+        );
         mk("q/lanes/lane-1", "running", now - 3000, "{\"lanes\":[]}");
         mk("q/lanes/lane-2", "running", now - 3000, "{\"lanes\":[]}");
         mk("q/lanes/lane-3", "running", now - 3000, "{\"lanes\":[]}");
         mk("p/lanes/lane-3", "running", now - 60, "{\"lanes\":[]}");
-        mk("p/lanes/lane-4", "completed", now - STUCK_LANE_SECS - 1, "{\"lanes\":[]}");
+        mk(
+            "p/lanes/lane-4",
+            "completed",
+            now - STUCK_LANE_SECS - 1,
+            "{\"lanes\":[]}",
+        );
         let mut fixed = sweep_stuck_lanes(&db, now);
         fixed.sort();
-        assert_eq!(fixed, vec!["p/lanes/lane-1".to_string(), "p/lanes/lane-2".to_string(), "q/lanes/lane-1".to_string()]);
+        assert_eq!(
+            fixed,
+            vec![
+                "p/lanes/lane-1".to_string(),
+                "p/lanes/lane-2".to_string(),
+                "q/lanes/lane-1".to_string()
+            ]
+        );
         let status = |id: &str| db.get_session_row(id).unwrap().unwrap().status;
         assert_eq!(status("p/lanes/lane-1"), "interrupted");
-        assert_eq!(status("q/lanes/lane-1"), "interrupted", "the parent's record says cancelled");
+        assert_eq!(
+            status("q/lanes/lane-1"),
+            "interrupted",
+            "the parent's record says cancelled"
+        );
         assert_eq!(status("q/lanes/lane-2"), "running");
-        assert_eq!(status("q/lanes/lane-3"), "running", "unknown to a running parent: left alone");
+        assert_eq!(
+            status("q/lanes/lane-3"),
+            "running",
+            "unknown to a running parent: left alone"
+        );
         assert_eq!(status("p/lanes/lane-3"), "running");
         assert_eq!(status("p/lanes/lane-4"), "completed");
         assert!(sweep_stuck_lanes(&db, now).is_empty());
@@ -336,14 +410,34 @@ mod tests {
             db.create_conversation(&row(id), &[], "[]").unwrap();
         }
         let now = 10_000_000;
-        db.set_session_settled("old", Some(now - DELETE_AFTER_SECS - 1)).unwrap();
-        db.set_session_settled("recent", Some(now - DELETE_AFTER_SECS + 1)).unwrap();
+        db.set_session_settled("old", Some(now - DELETE_AFTER_SECS - 1))
+            .unwrap();
+        db.set_session_settled("recent", Some(now - DELETE_AFTER_SECS + 1))
+            .unwrap();
         assert_eq!(expired_settled(&db, now), vec!["old".to_string()]);
-        assert!(db.get_session_row("recent").unwrap().unwrap().settled_at.is_some());
-        assert!(db.get_session_row("awake").unwrap().unwrap().settled_at.is_none());
+        assert!(
+            db.get_session_row("recent")
+                .unwrap()
+                .unwrap()
+                .settled_at
+                .is_some()
+        );
+        assert!(
+            db.get_session_row("awake")
+                .unwrap()
+                .unwrap()
+                .settled_at
+                .is_none()
+        );
 
         db.set_session_last_active("old", now).unwrap();
-        assert!(db.get_session_row("old").unwrap().unwrap().settled_at.is_none());
+        assert!(
+            db.get_session_row("old")
+                .unwrap()
+                .unwrap()
+                .settled_at
+                .is_none()
+        );
         assert!(expired_settled(&db, now).is_empty());
     }
 
@@ -351,15 +445,29 @@ mod tests {
     fn last_changes_is_stored_on_the_row_and_survives_settling() {
         let db = Store::open_in_memory().unwrap();
         db.create_conversation(&row("c1"), &[], "[]").unwrap();
-        assert_eq!(db.get_session_row("c1").unwrap().unwrap().last_changes, None);
+        assert_eq!(
+            db.get_session_row("c1").unwrap().unwrap().last_changes,
+            None
+        );
         db.record_turn_changes("c1", 2, 5, 1).unwrap();
         db.record_turn_changes("c1", 1, 10, 4).unwrap();
         db.set_session_settled("c1", Some(9)).unwrap();
         db.set_session_last_active("c1", 99).unwrap();
-        let total: crate::session_stats::Changes =
-            serde_json::from_str(&db.get_session_row("c1").unwrap().unwrap().total_changes.unwrap()).unwrap();
+        let total: crate::session_stats::Changes = serde_json::from_str(
+            &db.get_session_row("c1")
+                .unwrap()
+                .unwrap()
+                .total_changes
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!((total.files, total.added, total.removed), (3, 15, 5));
-        let stored = db.get_session_row("c1").unwrap().unwrap().last_changes.unwrap();
+        let stored = db
+            .get_session_row("c1")
+            .unwrap()
+            .unwrap()
+            .last_changes
+            .unwrap();
         let c: crate::session_stats::Changes = serde_json::from_str(&stored).unwrap();
         assert_eq!((c.files, c.added, c.removed), (1, 10, 4), "last turn only");
     }
@@ -380,13 +488,19 @@ mod tests {
         let row = db.get_session_row("legacy").unwrap().unwrap();
         assert_eq!(row.settled_at, None);
         assert!(db.set_session_settled("legacy", Some(5)).unwrap());
-        assert_eq!(db.get_session_row("legacy").unwrap().unwrap().settled_at, Some(5));
+        assert_eq!(
+            db.get_session_row("legacy").unwrap().unwrap().settled_at,
+            Some(5)
+        );
         assert!(!row.keep_awake);
         assert!(db.set_session_keep_awake("legacy", true).unwrap());
         assert!(db.get_session_row("legacy").unwrap().unwrap().keep_awake);
         assert!(!db.set_session_keep_awake("missing", true).unwrap());
         db.set_session_last_active("legacy", 9).unwrap();
-        assert!(db.get_session_row("legacy").unwrap().unwrap().keep_awake, "waking keeps the flag");
+        assert!(
+            db.get_session_row("legacy").unwrap().unwrap().keep_awake,
+            "waking keeps the flag"
+        );
     }
 
     #[test]
@@ -405,12 +519,21 @@ mod tests {
         let row = db.get_session_row("s1").unwrap().unwrap();
         assert_eq!(row.resume_mode, "ask");
         assert!(db.set_session_resume_mode("s1", "lean").unwrap());
-        assert_eq!(db.get_session_row("s1").unwrap().unwrap().resume_mode, "lean");
+        assert_eq!(
+            db.get_session_row("s1").unwrap().unwrap().resume_mode,
+            "lean"
+        );
         assert!(db.set_session_resume_mode("s1", "full").unwrap());
-        assert_eq!(db.get_session_row("s1").unwrap().unwrap().resume_mode, "full");
+        assert_eq!(
+            db.get_session_row("s1").unwrap().unwrap().resume_mode,
+            "full"
+        );
         assert!(!db.set_session_resume_mode("missing", "lean").unwrap());
         assert!(db.set_session_resume_mode("s1", "bogus").is_err());
-        assert_eq!(db.get_session_row("s1").unwrap().unwrap().resume_mode, "full");
+        assert_eq!(
+            db.get_session_row("s1").unwrap().unwrap().resume_mode,
+            "full"
+        );
     }
 
     #[test]
@@ -442,10 +565,25 @@ mod tests {
     #[test]
     fn sweep_waits_twelve_hours_not_one() {
         assert!(!sweep_eligible(false, false, COLD_AFTER_SECS + 60, "idle"));
-        assert!(!sweep_eligible(false, false, AUTO_SETTLE_AFTER_SECS - 1, "idle"));
+        assert!(!sweep_eligible(
+            false,
+            false,
+            AUTO_SETTLE_AFTER_SECS - 1,
+            "idle"
+        ));
         assert!(sweep_eligible(false, false, AUTO_SETTLE_AFTER_SECS, "idle"));
-        assert!(!sweep_eligible(false, true, AUTO_SETTLE_AFTER_SECS * 2, "idle"));
-        assert!(!sweep_eligible(false, false, AUTO_SETTLE_AFTER_SECS * 2, "running"));
+        assert!(!sweep_eligible(
+            false,
+            true,
+            AUTO_SETTLE_AFTER_SECS * 2,
+            "idle"
+        ));
+        assert!(!sweep_eligible(
+            false,
+            false,
+            AUTO_SETTLE_AFTER_SECS * 2,
+            "running"
+        ));
     }
 
     #[test]

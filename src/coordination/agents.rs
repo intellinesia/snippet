@@ -2,7 +2,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, types::Type};
 
-use super::{Store, StoreError, types::{Agent, AgentKind, AgentStatus}};
+use super::{
+    Store, StoreError,
+    types::{Agent, AgentKind, AgentStatus},
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AgentRemoval {
@@ -115,9 +118,11 @@ impl Store {
     pub fn delete_agent(&self, id: &str) -> Result<AgentRemoval, StoreError> {
         self.with_connection(|conn| {
             let kind: Option<String> = conn
-                .query_row("SELECT kind FROM agents WHERE id = ?1", params![id], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT kind FROM agents WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
                 .map(Some)
                 .or_else(|e| match e {
                     rusqlite::Error::QueryReturnedNoRows => Ok(None),
@@ -152,12 +157,30 @@ impl Store {
             )?;
             tx.execute("DELETE FROM agent_colors WHERE agent_id = ?1", params![id])?;
             tx.execute("DELETE FROM agent_shapes WHERE agent_id = ?1", params![id])?;
-            tx.execute("DELETE FROM agent_nicknames WHERE agent_id = ?1", params![id])?;
-            tx.execute("DELETE FROM agent_profiles WHERE agent_id = ?1", params![id])?;
-            tx.execute("DELETE FROM agent_desk_profiles WHERE agent_id = ?1", params![id])?;
-            tx.execute("DELETE FROM agent_context_limits WHERE agent_id = ?1", params![id])?;
-            tx.execute("DELETE FROM agent_channels WHERE agent_id = ?1", params![id])?;
-            tx.execute("DELETE FROM agent_reach_policy WHERE agent_id = ?1", params![id])?;
+            tx.execute(
+                "DELETE FROM agent_nicknames WHERE agent_id = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "DELETE FROM agent_profiles WHERE agent_id = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "DELETE FROM agent_desk_profiles WHERE agent_id = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "DELETE FROM agent_context_limits WHERE agent_id = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "DELETE FROM agent_channels WHERE agent_id = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "DELETE FROM agent_reach_policy WHERE agent_id = ?1",
+                params![id],
+            )?;
             tx.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
             tx.commit()?;
             Ok(AgentRemoval::Removed)
@@ -188,7 +211,10 @@ impl Store {
                      ON CONFLICT(agent_id) DO UPDATE SET nickname = excluded.nickname",
                     params![id, nickname],
                 )?,
-                None => conn.execute("DELETE FROM agent_nicknames WHERE agent_id = ?1", params![id])?,
+                None => conn.execute(
+                    "DELETE FROM agent_nicknames WHERE agent_id = ?1",
+                    params![id],
+                )?,
             };
             Ok(true)
         })
@@ -224,7 +250,9 @@ impl Store {
         self.set_profile_in("agent_profiles", id, profile)
     }
 
-    pub fn agent_desk_profiles(&self) -> Result<std::collections::HashMap<String, String>, StoreError> {
+    pub fn agent_desk_profiles(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
         self.profiles_in("agent_desk_profiles")
     }
 
@@ -234,11 +262,18 @@ impl Store {
     }
 
     /// Set or clear (`None`) the agent's separate desk profile. Returns whether the agent exists.
-    pub fn set_agent_desk_profile(&self, id: &str, profile: Option<&str>) -> Result<bool, StoreError> {
+    pub fn set_agent_desk_profile(
+        &self,
+        id: &str,
+        profile: Option<&str>,
+    ) -> Result<bool, StoreError> {
         self.set_profile_in("agent_desk_profiles", id, profile)
     }
 
-    fn profiles_in(&self, table: &'static str) -> Result<std::collections::HashMap<String, String>, StoreError> {
+    fn profiles_in(
+        &self,
+        table: &'static str,
+    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(&format!("SELECT agent_id, profile FROM {table}"))?;
             let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
@@ -260,7 +295,12 @@ impl Store {
         })
     }
 
-    fn set_profile_in(&self, table: &'static str, id: &str, profile: Option<&str>) -> Result<bool, StoreError> {
+    fn set_profile_in(
+        &self,
+        table: &'static str,
+        id: &str,
+        profile: Option<&str>,
+    ) -> Result<bool, StoreError> {
         self.with_connection(|conn| {
             let exists: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM agents WHERE id = ?1)",
@@ -278,18 +318,26 @@ impl Store {
                     ),
                     params![id, profile],
                 )?,
-                None => conn.execute(&format!("DELETE FROM {table} WHERE agent_id = ?1"), params![id])?,
+                None => conn.execute(
+                    &format!("DELETE FROM {table} WHERE agent_id = ?1"),
+                    params![id],
+                )?,
             };
             Ok(true)
         })
     }
 
-    pub fn agent_context_limits(&self) -> Result<std::collections::HashMap<String, u64>, StoreError> {
+    pub fn agent_context_limits(
+        &self,
+    ) -> Result<std::collections::HashMap<String, u64>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt =
                 conn.prepare("SELECT agent_id, max_context_tokens FROM agent_context_limits")?;
             let rows = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?.max(0) as u64))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?.max(0) as u64,
+                ))
             })?;
             rows.collect::<Result<_, _>>()
         })
@@ -311,7 +359,11 @@ impl Store {
     }
 
     /// Set or clear (`None`) the agent's context ceiling. Returns whether the agent exists.
-    pub fn set_agent_context_limit(&self, id: &str, tokens: Option<u64>) -> Result<bool, StoreError> {
+    pub fn set_agent_context_limit(
+        &self,
+        id: &str,
+        tokens: Option<u64>,
+    ) -> Result<bool, StoreError> {
         self.with_connection(|conn| {
             let exists: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM agents WHERE id = ?1)",
@@ -352,7 +404,9 @@ impl Store {
                      ON CONFLICT(agent_id) DO UPDATE SET color = excluded.color",
                     params![id, color],
                 )?,
-                None => conn.execute("DELETE FROM agent_colors WHERE agent_id = ?1", params![id])?,
+                None => {
+                    conn.execute("DELETE FROM agent_colors WHERE agent_id = ?1", params![id])?
+                }
             };
             Ok(true)
         })
@@ -374,7 +428,9 @@ impl Store {
                      ON CONFLICT(agent_id) DO UPDATE SET shape = excluded.shape",
                     params![id, shape],
                 )?,
-                None => conn.execute("DELETE FROM agent_shapes WHERE agent_id = ?1", params![id])?,
+                None => {
+                    conn.execute("DELETE FROM agent_shapes WHERE agent_id = ?1", params![id])?
+                }
             };
             Ok(true)
         })
@@ -494,10 +550,16 @@ mod tests {
     fn agent_shape_is_set_cleared_and_removed_with_the_agent() {
         let db = Store::open_in_memory().unwrap();
         db.create_agent(&agent("a1", "A")).unwrap();
-        assert!(!db.set_agent_shape("ghost-agent", Some("cat")).unwrap(), "unknown agent");
+        assert!(
+            !db.set_agent_shape("ghost-agent", Some("cat")).unwrap(),
+            "unknown agent"
+        );
         assert!(db.set_agent_shape("a1", Some("cat")).unwrap());
         assert!(db.set_agent_shape("a1", Some("onigiri")).unwrap());
-        assert_eq!(db.agent_shapes().unwrap().get("a1").map(String::as_str), Some("onigiri"));
+        assert_eq!(
+            db.agent_shapes().unwrap().get("a1").map(String::as_str),
+            Some("onigiri")
+        );
         assert!(db.set_agent_shape("a1", None).unwrap());
         assert!(db.agent_shapes().unwrap().is_empty());
         db.set_agent_shape("a1", Some("bear")).unwrap();
@@ -529,7 +591,8 @@ mod tests {
         assert_eq!(stored.display_name, "Coordinator");
 
         // A boot or rebuild must not resume a paused agent.
-        db.set_agent_status("mission-control", &AgentStatus::Paused).unwrap();
+        db.set_agent_status("mission-control", &AgentStatus::Paused)
+            .unwrap();
         db.upsert_agent(&renamed).unwrap();
         assert!(!db.agent_takes_work("mission-control").unwrap());
         assert_eq!(stored.kind, AgentKind::MissionControl);

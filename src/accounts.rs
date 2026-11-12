@@ -37,7 +37,9 @@ fn now() -> i64 {
 }
 
 fn dir(provider: &str) -> PathBuf {
-    crate::config::snippet_home().join("accounts").join(provider)
+    crate::config::snippet_home()
+        .join("accounts")
+        .join(provider)
 }
 
 fn pool_path(provider: &str) -> PathBuf {
@@ -111,7 +113,12 @@ fn ids_in(provider: &str, pool: &Pool) -> Vec<String> {
         extra.sort();
         found.extend(extra);
     }
-    let mut ordered: Vec<String> = pool.order.iter().filter(|id| found.contains(id)).cloned().collect();
+    let mut ordered: Vec<String> = pool
+        .order
+        .iter()
+        .filter(|id| found.contains(id))
+        .cloned()
+        .collect();
     for id in found {
         if !ordered.contains(&id) {
             ordered.push(id);
@@ -133,7 +140,10 @@ pub fn active(provider: &str) -> Option<String> {
     let ids = ids_in(provider, &pool);
     ids.iter()
         .find(|id| limited_in(&pool, id).is_none())
-        .or_else(|| ids.iter().min_by_key(|id| limited_in(&pool, id).unwrap_or(0)))
+        .or_else(|| {
+            ids.iter()
+                .min_by_key(|id| limited_in(&pool, id).unwrap_or(0))
+        })
         .cloned()
 }
 
@@ -177,7 +187,8 @@ pub fn rotate(provider: &str, from: &str, until: i64) -> Option<String> {
         let slot = pool.limited.entry(from.to_string()).or_insert(until);
         *slot = (*slot).max(until);
         let ids = ids_in(provider, pool);
-        ids.into_iter().find(|id| id != from && limited_in(pool, id).is_none())
+        ids.into_iter()
+            .find(|id| id != from && limited_in(pool, id).is_none())
     });
     if let Some(next) = &next {
         eprintln!("accounts: {provider} {from} is limited; switching to {next}");
@@ -198,7 +209,11 @@ pub fn label(provider: &str, id: &str) -> String {
     if let Some(email) = email {
         return email;
     }
-    let position = ids_in(provider, &pool).iter().position(|x| x == id).map(|i| i + 1).unwrap_or(1);
+    let position = ids_in(provider, &pool)
+        .iter()
+        .position(|x| x == id)
+        .map(|i| i + 1)
+        .unwrap_or(1);
     format!("Account {position}")
 }
 
@@ -250,9 +265,19 @@ pub fn remove(provider: &str, id: &str) -> Result<(), String> {
             Err(e) => return Err(e.to_string()),
         }
     } else {
-        let cli = if provider == "devin" { "devin" } else { "claude" };
-        let label = if provider == "devin" { "Devin" } else { "Claude Code" };
-        return Err(format!("the signed-in {label} account is managed by `{cli}` itself"));
+        let cli = if provider == "devin" {
+            "devin"
+        } else {
+            "claude"
+        };
+        let label = if provider == "devin" {
+            "Devin"
+        } else {
+            "Claude Code"
+        };
+        return Err(format!(
+            "the signed-in {label} account is managed by `{cli}` itself"
+        ));
     }
     edit(provider, |pool| {
         pool.order.retain(|x| x != id);
@@ -312,7 +337,11 @@ pub fn is_limit_response(
     if let Some(code) = error_code(body) {
         return matches!(
             code.as_str(),
-            "usage_limit_reached" | "usage_not_included" | "insufficient_quota" | "quota_exceeded" | "resource_exhausted"
+            "usage_limit_reached"
+                | "usage_not_included"
+                | "insufficient_quota"
+                | "quota_exceeded"
+                | "resource_exhausted"
         );
     }
     retry_after.is_none_or(|delay| delay.as_secs() > 300)
@@ -326,7 +355,11 @@ mod tests {
     fn devin_is_pooled_with_cli_managed_main_account() {
         assert!(is_pooled("devin"));
         assert_eq!(credential_path("devin", MAIN), None);
-        assert!(credential_path("devin", "slot1").unwrap().ends_with("accounts/devin/slot1.json"));
+        assert!(
+            credential_path("devin", "slot1")
+                .unwrap()
+                .ends_with("accounts/devin/slot1.json")
+        );
         let id = new_id("devin");
         assert_ne!(id, MAIN);
         assert_eq!(id.len(), 8);

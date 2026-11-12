@@ -32,7 +32,11 @@ pub fn snippet_text(raw: &str) -> String {
         .lines()
         .filter(|line| !line.trim_start().starts_with("```"))
         .collect();
-    let collapsed = kept.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = kept
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if collapsed.chars().count() <= MAX_CHARS {
         return collapsed;
     }
@@ -131,7 +135,10 @@ impl Store {
         }
     }
 
-    fn backfill_agent_last_message(&self, agent_id: &str) -> Result<Option<LastMessage>, StoreError> {
+    fn backfill_agent_last_message(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<LastMessage>, StoreError> {
         let mut best: Option<(i64, String, &'static str)> = None;
 
         let thread = direct_thread_id(("agent", agent_id), ("human", LOCAL_HUMAN_ID));
@@ -167,7 +174,11 @@ impl Store {
                      ORDER BY updated_at DESC LIMIT ?3",
                 )?;
                 let rows = stmt.query_map(
-                    params![agent_id, crate::mission_control::SESSION_ID, BACKFILL_SESSIONS],
+                    params![
+                        agent_id,
+                        crate::mission_control::SESSION_ID,
+                        BACKFILL_SESSIONS
+                    ],
                     |row| row.get::<_, String>(0),
                 )?;
                 rows.collect::<Result<_, _>>()
@@ -199,7 +210,11 @@ impl Store {
                     )?;
                     Ok(())
                 })?;
-                Ok(Some(LastMessage { text, at: rfc3339_of(ms), from: from.into() }))
+                Ok(Some(LastMessage {
+                    text,
+                    at: rfc3339_of(ms),
+                    from: from.into(),
+                }))
             }
             None => {
                 self.with_connection(|conn| {
@@ -266,7 +281,8 @@ mod tests {
         assert_eq!(got["a"].from, "agent");
 
         // An older write never replaces a newer preview.
-        db.note_agent_last_message("a", "stale", "2026-01-01T00:01:00Z", "user").unwrap();
+        db.note_agent_last_message("a", "stale", "2026-01-01T00:01:00Z", "user")
+            .unwrap();
         assert_eq!(db.agent_last_messages().unwrap()["a"].text, "Build fixed.");
 
         db.send_direct_message(
@@ -285,8 +301,14 @@ mod tests {
     #[test]
     fn agent_to_agent_dm_does_not_count() {
         let db = Store::open_in_memory().unwrap();
-        db.send_direct_message(("agent", "a"), ("agent", "b"), "hi", "k", "2026-01-01T00:00:00Z")
-            .unwrap();
+        db.send_direct_message(
+            ("agent", "a"),
+            ("agent", "b"),
+            "hi",
+            "k",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
         assert!(db.agent_last_messages().unwrap().is_empty());
     }
 
@@ -296,18 +318,33 @@ mod tests {
         let mc = crate::mission_control::SESSION_ID;
         db.note_agent_last_message(mc, "Routed it to Snippet.", "2026-01-01T00:00:00Z", "agent")
             .unwrap();
-        assert_eq!(db.agent_last_messages().unwrap()[mc].text, "Routed it to Snippet.");
+        assert_eq!(
+            db.agent_last_messages().unwrap()[mc].text,
+            "Routed it to Snippet."
+        );
     }
 
     #[test]
     fn mission_control_backfills_from_its_own_session() {
         let db = Store::open_in_memory().unwrap();
         let mc = crate::mission_control::SESSION_ID;
-        db.save_session_scalar(mc, "k", "/w", None, "idle", "{}", "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z")
-            .unwrap();
+        db.save_session_scalar(
+            mc,
+            "k",
+            "/w",
+            None,
+            "idle",
+            "{}",
+            "2026-01-02T00:00:00Z",
+            "2026-01-02T00:00:00Z",
+        )
+        .unwrap();
         db.append_conversation_messages(
             mc,
-            &[HarnessMessage::Assistant { content: "Filed the review task.".into(), tool_calls: vec![] }],
+            &[HarnessMessage::Assistant {
+                content: "Filed the review task.".into(),
+                tool_calls: vec![],
+            }],
             "2026-01-02T00:00:00Z",
         )
         .unwrap();
@@ -321,8 +358,14 @@ mod tests {
         let db = Store::open_in_memory().unwrap();
         db.create_agent(&worker("a")).unwrap();
         // Written before the feature existed: drop the row the hook created.
-        db.send_direct_message(("human", LOCAL_HUMAN_ID), ("agent", "a"), "old ask", "k", "2026-01-01T00:00:00Z")
-            .unwrap();
+        db.send_direct_message(
+            ("human", LOCAL_HUMAN_ID),
+            ("agent", "a"),
+            "old ask",
+            "k",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
         db.with_connection(|c| {
             c.execute("DELETE FROM agent_last_message", [])?;
             Ok(())
@@ -333,7 +376,11 @@ mod tests {
         assert_eq!(db.agent_last_messages().unwrap()["a"].text, "old ask");
 
         // An agent with nothing gets a marker and no preview.
-        assert!(db.agent_last_message_or_backfill("nobody").unwrap().is_none());
+        assert!(
+            db.agent_last_message_or_backfill("nobody")
+                .unwrap()
+                .is_none()
+        );
         assert!(db.agent_last_messages().unwrap().get("nobody").is_none());
     }
 
@@ -341,8 +388,17 @@ mod tests {
     fn backfill_reads_a_session_turn_when_newer() {
         let db = Store::open_in_memory().unwrap();
         db.create_agent(&worker("a")).unwrap();
-        db.save_session_scalar("s1", "k", "/w", None, "idle", "{}", "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z")
-            .unwrap();
+        db.save_session_scalar(
+            "s1",
+            "k",
+            "/w",
+            None,
+            "idle",
+            "{}",
+            "2026-01-02T00:00:00Z",
+            "2026-01-02T00:00:00Z",
+        )
+        .unwrap();
         db.with_connection(|c| {
             c.execute("UPDATE sessions SET agent_id = 'a' WHERE id = 's1'", [])?;
             Ok(())
@@ -350,12 +406,21 @@ mod tests {
         .unwrap();
         db.append_conversation_messages(
             "s1",
-            &[HarnessMessage::Assistant { content: "From the desk".into(), tool_calls: vec![] }],
+            &[HarnessMessage::Assistant {
+                content: "From the desk".into(),
+                tool_calls: vec![],
+            }],
             "2026-01-02T00:00:00Z",
         )
         .unwrap();
-        db.send_direct_message(("human", LOCAL_HUMAN_ID), ("agent", "a"), "older", "k", "2026-01-01T00:00:00Z")
-            .unwrap();
+        db.send_direct_message(
+            ("human", LOCAL_HUMAN_ID),
+            ("agent", "a"),
+            "older",
+            "k",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
         db.with_connection(|c| {
             c.execute("DELETE FROM agent_last_message", [])?;
             Ok(())
@@ -369,7 +434,8 @@ mod tests {
     #[test]
     fn schema_ensure_is_idempotent() {
         let db = Store::open_in_memory().unwrap();
-        db.note_agent_last_message("a", "x", "2026-01-01T00:00:00Z", "agent").unwrap();
+        db.note_agent_last_message("a", "x", "2026-01-01T00:00:00Z", "agent")
+            .unwrap();
         db.with_connection(|c| {
             crate::coordination::schema::ensure(c)?;
             crate::coordination::schema::ensure(c)?;

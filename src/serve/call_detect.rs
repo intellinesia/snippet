@@ -18,11 +18,15 @@ const OTHER_PARTY: f64 = 0.6;
 const PLAYED: f64 = 0.8;
 
 const FILLERS: &[&str] = &[
-    "hmm", "hm", "mm", "mmm", "mhmm", "uh", "uhh", "um", "umm", "ah", "oh", "er", "erm", "so", "huh", "eh", "ooh", "aah", "and", "but", "the", "a",
+    "hmm", "hm", "mm", "mmm", "mhmm", "uh", "uhh", "um", "umm", "ah", "oh", "er", "erm", "so",
+    "huh", "eh", "ooh", "aah", "and", "but", "the", "a",
 ];
 
 pub(crate) fn meaningful_words(text: &str) -> usize {
-    text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty() && !FILLERS.contains(w)).count()
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty() && !FILLERS.contains(w))
+        .count()
 }
 
 #[derive(Clone, Debug, Default)]
@@ -57,7 +61,9 @@ fn party(s: &Signal) -> Party {
         Some(Speaker::You) => Party::You,
         Some(Speaker::Voice(n)) => Party::Voice(n),
         // settle() lifts other_party for every note, so a remark alone is not evidence of a second person.
-        _ if s.other >= OTHER_PARTY && s.user_voice.map_or(s.intent == "meeting", |v| v < 0.5) => Party::Other,
+        _ if s.other >= OTHER_PARTY && s.user_voice.map_or(s.intent == "meeting", |v| v < 0.5) => {
+            Party::Other
+        }
         _ => Party::Unknown,
     }
 }
@@ -80,13 +86,20 @@ impl Class {
 
 pub(crate) fn classify(s: &Signal) -> Class {
     let conversation = s.kind == "conversation";
-    if s.wake || s.delivered || (conversation && s.intent == "for_assistant" && s.addressed >= 0.6) {
+    if s.wake || s.delivered || (conversation && s.intent == "for_assistant" && s.addressed >= 0.6)
+    {
         return Class::Assistant;
     }
     if s.kind == "media" || s.media || s.played >= PLAYED {
         return Class::Played;
     }
-    if s.kind == "noise" || s.kind == "background" || s.intent == "ignore" || s.words == 0 || s.during_playback || s.echo >= 0.5 {
+    if s.kind == "noise"
+        || s.kind == "background"
+        || s.intent == "ignore"
+        || s.words == 0
+        || s.during_playback
+        || s.echo >= 0.5
+    {
         return Class::Neutral;
     }
     match s.intent.as_str() {
@@ -128,9 +141,18 @@ impl Detector {
         }
         if class == Class::Assistant {
             self.window.clear();
-            return Observed { class, trigger: None };
+            return Observed {
+                class,
+                trigger: None,
+            };
         }
-        self.window.push_back(Seen { at, class, voice: s.user_voice, party: party(s), long: s.dur_ms > ALT_MAX_TURN_MS });
+        self.window.push_back(Seen {
+            at,
+            class,
+            voice: s.user_voice,
+            party: party(s),
+            long: s.dur_ms > ALT_MAX_TURN_MS,
+        });
         while self.window.front().is_some_and(|w| at - w.at > WINDOW_MS) {
             self.window.pop_front();
         }
@@ -141,7 +163,10 @@ impl Detector {
             self.last_call_like = Some(at);
         }
         if self.cooling || self.last_played.is_some_and(|t| at - t < MEDIA_QUIET_MS) {
-            return Observed { class, trigger: None };
+            return Observed {
+                class,
+                trigger: None,
+            };
         }
         let trigger = self.qualifies().or_else(|| self.alternates());
         if trigger.is_some() {
@@ -164,13 +189,21 @@ impl Detector {
     fn qualifies(&self) -> Option<i64> {
         let calls: Vec<&Seen> = self.window.iter().filter(|w| w.class.call_like()).collect();
         let meeting = calls.iter().filter(|w| w.class == Class::Meeting).count();
-        let against = self.window.iter().filter(|w| matches!(w.class, Class::Played | Class::Unclear)).count();
+        let against = self
+            .window
+            .iter()
+            .filter(|w| matches!(w.class, Class::Played | Class::Unclear))
+            .count();
         let (first, last) = (calls.first()?.at, calls.last()?.at);
         let share = calls.len() as f64 / (calls.len() + against) as f64;
         let scored: Vec<f64> = self.window.iter().filter_map(|w| w.voice).collect();
         // Played dialogue has many voices but never the user's; a call always has the user in it.
         let user_absent = scored.len() >= MIN_SCORED && scored.iter().all(|v| *v < 0.5);
-        (calls.len() >= MIN_LINES && meeting >= MIN_MEETING && share >= MIN_SHARE && last - first >= MIN_SPAN_MS && !user_absent)
+        (calls.len() >= MIN_LINES
+            && meeting >= MIN_MEETING
+            && share >= MIN_SHARE
+            && last - first >= MIN_SPAN_MS
+            && !user_absent)
             .then_some(first)
     }
 
@@ -179,10 +212,17 @@ impl Detector {
         let turns: Vec<&Seen> = self
             .window
             .iter()
-            .filter(|w| matches!(w.class, Class::Meeting | Class::Note | Class::Unclear) && !w.long && w.party != Party::Unknown)
+            .filter(|w| {
+                matches!(w.class, Class::Meeting | Class::Note | Class::Unclear)
+                    && !w.long
+                    && w.party != Party::Unknown
+            })
             .collect();
         let parties: HashSet<Party> = turns.iter().map(|w| w.party).collect();
-        let switches = turns.windows(2).filter(|p| p[0].party != p[1].party).count();
+        let switches = turns
+            .windows(2)
+            .filter(|p| p[0].party != p[1].party)
+            .count();
         let (first, last) = (turns.first()?.at, turns.last()?.at);
         (parties.contains(&Party::You)
             && parties.len() >= 2
@@ -198,7 +238,14 @@ mod tests {
     use super::*;
 
     fn line(at_s: i64, intent: &str) -> Signal {
-        Signal { at_ms: at_s * 1000, kind: "conversation".into(), intent: intent.into(), addressed: 0.2, words: 4, ..Signal::default() }
+        Signal {
+            at_ms: at_s * 1000,
+            kind: "conversation".into(),
+            intent: intent.into(),
+            addressed: 0.2,
+            words: 4,
+            ..Signal::default()
+        }
     }
 
     fn run(d: &mut Detector, lines: &[Signal]) -> Option<i64> {
@@ -208,7 +255,9 @@ mod tests {
     #[test]
     fn exchange_triggers_from_first_line() {
         let mut d = Detector::default();
-        let lines: Vec<Signal> = (0..5).map(|i| line(i * 8, if i % 2 == 0 { "meeting" } else { "note" })).collect();
+        let lines: Vec<Signal> = (0..5)
+            .map(|i| line(i * 8, if i % 2 == 0 { "meeting" } else { "note" }))
+            .collect();
         assert_eq!(run(&mut d, &lines), Some(0));
     }
 
@@ -217,27 +266,52 @@ mod tests {
         let mut d = Detector::default();
         assert!(run(&mut d, &[line(0, "meeting")]).is_none());
         let mut d = Detector::default();
-        assert!(run(&mut d, &[line(0, "meeting"), line(5, "meeting"), line(30, "meeting")]).is_none());
+        assert!(
+            run(
+                &mut d,
+                &[line(0, "meeting"), line(5, "meeting"), line(30, "meeting")]
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn played_audio_never_triggers() {
         let mut d = Detector::default();
-        let played: Vec<Signal> = (0..30).map(|i| Signal { kind: "media".into(), ..line(i * 5, "meeting") }).collect();
+        let played: Vec<Signal> = (0..30)
+            .map(|i| Signal {
+                kind: "media".into(),
+                ..line(i * 5, "meeting")
+            })
+            .collect();
         assert!(run(&mut d, &played).is_none());
         let mut d = Detector::default();
-        let scored: Vec<Signal> = (0..30).map(|i| Signal { played: 0.9, ..line(i * 5, "meeting") }).collect();
+        let scored: Vec<Signal> = (0..30)
+            .map(|i| Signal {
+                played: 0.9,
+                ..line(i * 5, "meeting")
+            })
+            .collect();
         assert!(run(&mut d, &scored).is_none());
     }
 
     #[test]
     fn dialogue_without_the_user_is_not_a_call() {
         let mut d = Detector::default();
-        let tv: Vec<Signal> = (0..12).map(|i| Signal { user_voice: Some(0.05), ..line(i * 6, "meeting") }).collect();
+        let tv: Vec<Signal> = (0..12)
+            .map(|i| Signal {
+                user_voice: Some(0.05),
+                ..line(i * 6, "meeting")
+            })
+            .collect();
         assert!(run(&mut d, &tv).is_none());
         let mut d = Detector::default();
-        let call: Vec<Signal> =
-            (0..12).map(|i| Signal { user_voice: Some(if i % 2 == 0 { 0.9 } else { 0.05 }), ..line(i * 6, "meeting") }).collect();
+        let call: Vec<Signal> = (0..12)
+            .map(|i| Signal {
+                user_voice: Some(if i % 2 == 0 { 0.9 } else { 0.05 }),
+                ..line(i * 6, "meeting")
+            })
+            .collect();
         assert!(run(&mut d, &call).is_some());
     }
 
@@ -245,7 +319,10 @@ mod tests {
     fn talking_to_the_assistant_resets_the_window() {
         let mut d = Detector::default();
         let mut lines: Vec<Signal> = (0..3).map(|i| line(i * 8, "meeting")).collect();
-        lines.push(Signal { delivered: true, ..line(30, "for_assistant") });
+        lines.push(Signal {
+            delivered: true,
+            ..line(30, "for_assistant")
+        });
         lines.extend((0..3).map(|i| line(40 + i * 8, "meeting")));
         assert!(run(&mut d, &lines).is_none());
     }
@@ -253,12 +330,21 @@ mod tests {
     #[test]
     fn recent_media_holds_off_and_prompt_does_not_repeat() {
         let mut d = Detector::default();
-        let mut lines = vec![Signal { kind: "media".into(), ..line(0, "note") }];
+        let mut lines = vec![Signal {
+            kind: "media".into(),
+            ..line(0, "note")
+        }];
         lines.extend((0..6).map(|i| line(10 + i * 8, "meeting")));
         assert!(run(&mut d, &lines).is_none());
         let mut d = Detector::default();
         let first: Vec<Signal> = (0..20).map(|i| line(i * 8, "meeting")).collect();
-        assert_eq!(first.iter().filter(|l| d.observe(l).trigger.is_some()).count(), 1);
+        assert_eq!(
+            first
+                .iter()
+                .filter(|l| d.observe(l).trigger.is_some())
+                .count(),
+            1
+        );
         let later: Vec<Signal> = (0..6).map(|i| line(160 + 200 + i * 8, "meeting")).collect();
         assert_eq!(run(&mut d, &later), Some(360 * 1000));
     }
@@ -275,9 +361,17 @@ mod replay {
     #[test]
     fn replay_eval_on_history() {
         let mut labels: Vec<(String, String, i64, i64)> = Vec::new();
-        for row in LABELS.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
+        for row in LABELS
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        {
             let f: Vec<&str> = row.split('\t').collect();
-            labels.push((f[0].into(), f[1].into(), f[2].parse().unwrap(), f[3].parse().unwrap()));
+            labels.push((
+                f[0].into(),
+                f[1].into(),
+                f[2].parse().unwrap(),
+                f[3].parse().unwrap(),
+            ));
         }
         let mut detectors: std::collections::HashMap<String, Detector> = Default::default();
         let (mut first, mut last) = (i64::MAX, i64::MIN);
@@ -298,13 +392,21 @@ mod replay {
             };
             first = first.min(s.at_ms);
             last = last.max(s.at_ms);
-            if detectors.entry(f[0].to_string()).or_default().observe(&s).trigger.is_some() {
+            if detectors
+                .entry(f[0].to_string())
+                .or_default()
+                .observe(&s)
+                .trigger
+                .is_some()
+            {
                 triggers.push((f[0].to_string(), s.at_ms));
             }
         }
         let slack = 30_000;
         let inside = |kind: &str, dev: &str, t: i64| {
-            labels.iter().position(|(k, d, a, b)| k == kind && d == dev && *a - slack <= t && t <= *b + slack)
+            labels.iter().position(|(k, d, a, b)| {
+                k == kind && d == dev && *a - slack <= t && t <= *b + slack
+            })
         };
         let positives = labels.iter().filter(|l| l.0 == "pos").count();
         let mut caught = std::collections::HashSet::new();
@@ -317,7 +419,11 @@ mod replay {
             }
         }
         let days = ((last - first) as f64 / 86_400_000.0).ceil();
-        let scored = triggers.len() - triggers.iter().filter(|(d, t)| inside("pos", d, *t).is_none() && inside("amb", d, *t).is_some()).count();
+        let scored = triggers.len()
+            - triggers
+                .iter()
+                .filter(|(d, t)| inside("pos", d, *t).is_none() && inside("amb", d, *t).is_some())
+                .count();
         let precision = (scored - false_prompts) as f64 / scored.max(1) as f64;
         println!(
             "call replay: {} prompts over {days} days, recall {}/{positives} ({:.0}%), precision {:.0}%, false prompts {false_prompts} ({:.2}/day)",
@@ -327,8 +433,15 @@ mod replay {
             100.0 * precision,
             false_prompts as f64 / days
         );
-        assert!(caught.len() >= 12, "recall regressed: {}/{positives}", caught.len());
-        assert!(false_prompts <= 1, "false prompts regressed: {false_prompts}");
+        assert!(
+            caught.len() >= 12,
+            "recall regressed: {}/{positives}",
+            caught.len()
+        );
+        assert!(
+            false_prompts <= 1,
+            "false prompts regressed: {false_prompts}"
+        );
     }
 }
 
@@ -360,36 +473,65 @@ mod scenarios {
     }
 
     fn turns(who: &[Option<Speaker>], intent: &str, gap_s: i64) -> Vec<Signal> {
-        who.iter().enumerate().map(|(i, w)| say(i as i64 * gap_s, *w, intent)).collect()
+        who.iter()
+            .enumerate()
+            .map(|(i, w)| say(i as i64 * gap_s, *w, intent))
+            .collect()
     }
 
     fn prompts(lines: &[Signal]) -> usize {
         let mut d = Detector::default();
-        lines.iter().filter(|l| d.observe(l).trigger.is_some()).count()
+        lines
+            .iter()
+            .filter(|l| d.observe(l).trigger.is_some())
+            .count()
     }
 
     fn quieter(at_s: i64) -> Signal {
-        Signal { user_voice: Some(0.2), other: 0.75, dur_ms: 900, speaker: None, ..say(at_s, None, "chat") }
+        Signal {
+            user_voice: Some(0.2),
+            other: 0.75,
+            dur_ms: 900,
+            speaker: None,
+            ..say(at_s, None, "chat")
+        }
     }
 
     // One row per line of the edge-case matrix; the expected outcome is what the detector must do today.
     fn matrix() -> Vec<(&'static str, Vec<Signal>, usize)> {
         let mut rows = Vec::new();
-        rows.push(("phone call, both sides audible", turns(&[YOU, V1, YOU, V1, YOU, V1, YOU, V1], "meeting", 6), 1));
+        rows.push((
+            "phone call, both sides audible",
+            turns(&[YOU, V1, YOU, V1, YOU, V1, YOU, V1], "meeting", 6),
+            1,
+        ));
         rows.push((
             "phone call, both sides, text unclear",
             turns(&[YOU, V1, YOU, V1, YOU, V1], "chat", 5),
             1,
         ));
-        rows.push(("headset call, only the user heard", turns(&[YOU; 7], "meeting", 7), 1));
+        rows.push((
+            "headset call, only the user heard",
+            turns(&[YOU; 7], "meeting", 7),
+            1,
+        ));
         let mut in_person = Vec::new();
         for i in 0..4 {
             in_person.push(say(i * 10, YOU, "chat"));
             in_person.push(quieter(i * 10 + 5));
         }
-        rows.push(("in person one to one, other voice short and quiet", in_person, 1));
-        let unenrolled: Vec<Signal> =
-            (0..6).map(|i| Signal { user_voice: None, speaker: None, ..say(i * 6, None, "meeting") }).collect();
+        rows.push((
+            "in person one to one, other voice short and quiet",
+            in_person,
+            1,
+        ));
+        let unenrolled: Vec<Signal> = (0..6)
+            .map(|i| Signal {
+                user_voice: None,
+                speaker: None,
+                ..say(i * 6, None, "meeting")
+            })
+            .collect();
         rows.push(("in person one to one, user not enrolled", unenrolled, 1));
         rows.push((
             "small meeting with cross-talk",
@@ -401,16 +543,27 @@ mod scenarios {
             turns(&[V1, V2, YOU, V1, V2, YOU, V1], "chat", 4),
             1,
         ));
-        rows.push(("tv drama, two voices, never the user", turns(&[V1, V2, V1, V2, V1, V2, V1, V2, V1, V2], "meeting", 6), 0));
-        let played: Vec<Signal> =
-            turns(&[V1, YOU, V1, YOU, V1, YOU], "meeting", 6).into_iter().map(|l| Signal { played: 0.9, ..l }).collect();
+        rows.push((
+            "tv drama, two voices, never the user",
+            turns(&[V1, V2, V1, V2, V1, V2, V1, V2, V1, V2], "meeting", 6),
+            0,
+        ));
+        let played: Vec<Signal> = turns(&[V1, YOU, V1, YOU, V1, YOU], "meeting", 6)
+            .into_iter()
+            .map(|l| Signal { played: 0.9, ..l })
+            .collect();
         rows.push(("played audio scored as played", played, 0));
-        let media: Vec<Signal> =
-            turns(&[V1, V2, V1, V2, V1], "meeting", 6).into_iter().map(|l| Signal { media: true, ..l }).collect();
+        let media: Vec<Signal> = turns(&[V1, V2, V1, V2, V1], "meeting", 6)
+            .into_iter()
+            .map(|l| Signal { media: true, ..l })
+            .collect();
         rows.push(("media flag from the device", media, 0));
         let mut podcast = Vec::new();
         for i in 0..6 {
-            podcast.push(Signal { dur_ms: 40_000, ..say(i * 45, V1, "chat") });
+            podcast.push(Signal {
+                dur_ms: 40_000,
+                ..say(i * 45, V1, "chat")
+            });
             if i % 2 == 0 {
                 podcast.push(say(i * 45 + 41, YOU, "note"));
             }
@@ -419,7 +572,10 @@ mod scenarios {
         rows.push(("thinking aloud alone", turns(&[YOU; 8], "note", 8), 0));
         let mut agent = Vec::new();
         for i in 0..5 {
-            agent.push(Signal { wake: true, ..say(i * 12, YOU, "for_assistant") });
+            agent.push(Signal {
+                wake: true,
+                ..say(i * 12, YOU, "for_assistant")
+            });
             agent.push(say(i * 12 + 4, YOU, "meeting"));
         }
         rows.push(("talking to the assistant", agent, 0));
@@ -427,9 +583,14 @@ mod scenarios {
         stray.insert(2, say(12, V1, "chat"));
         rows.push(("one stray other voice", stray, 0));
         let mut long_call = turns(&[YOU, V1, YOU, V1, YOU, V1], "meeting", 6);
-        long_call.extend((0..30).map(|i| say(40 + i * 6, if i % 2 == 0 { YOU } else { V1 }, "meeting")));
+        long_call
+            .extend((0..30).map(|i| say(40 + i * 6, if i % 2 == 0 { YOU } else { V1 }, "meeting")));
         rows.push(("a long call prompts once", long_call, 1));
-        rows.push(("meeting where the user stays silent (known miss)", turns(&[V1, V2, V1, V2, V1, V2, V1], "meeting", 5), 0));
+        rows.push((
+            "meeting where the user stays silent (known miss)",
+            turns(&[V1, V2, V1, V2, V1, V2, V1], "meeting", 5),
+            0,
+        ));
         rows
     }
 

@@ -1,10 +1,10 @@
-use std::io::{Read, Write};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::{Read, Write};
 
 use crate::llm::HarnessMessage;
 use crate::store::{Store, StoreError};
@@ -399,7 +399,9 @@ pub fn render_turn(turn: &ArchivedTurnDetail) -> String {
             text
         }
         Ok(HarnessMessage::ToolResult { content, .. }) => crate::llm::render_tool_result(&content),
-        Ok(HarnessMessage::System { content }) | Ok(HarnessMessage::Summary { content, .. }) => content,
+        Ok(HarnessMessage::System { content }) | Ok(HarnessMessage::Summary { content, .. }) => {
+            content
+        }
         Err(_) => turn.summary.clone(),
     };
     format!("{heading}\n{}\n", body.trim_end())
@@ -410,7 +412,14 @@ pub fn render_turn(turn: &ArchivedTurnDetail) -> String {
 pub fn render_micro_pointers(goal: &str, turns: &[ArchivedTurnSummary]) -> String {
     let mut out = String::from("[archived_history]\n");
     if !goal.trim().is_empty() {
-        let g = goal.trim().lines().next().unwrap_or("").chars().take(120).collect::<String>();
+        let g = goal
+            .trim()
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(120)
+            .collect::<String>();
         out.push_str(&format!("Initial Goal: {g}\n"));
     }
     out.push_str("#id|tool|summary|paths|status\n");
@@ -436,7 +445,10 @@ fn sanitize_fts5_query(raw: &str) -> String {
     let tokens: Vec<String> = raw
         .split_whitespace()
         .filter_map(|w| {
-            let cleaned: String = w.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
+            let cleaned: String = w
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .collect();
             if cleaned.is_empty() {
                 None
             } else {
@@ -458,9 +470,19 @@ fn extract_message_metadata(
             } else {
                 first_line.to_string()
             };
-            ("user".to_string(), None, summary, String::new(), "ok".to_string(), content.clone())
+            (
+                "user".to_string(),
+                None,
+                summary,
+                String::new(),
+                "ok".to_string(),
+                content.clone(),
+            )
         }
-        HarnessMessage::Assistant { content, tool_calls } => {
+        HarnessMessage::Assistant {
+            content,
+            tool_calls,
+        } => {
             if tool_calls.is_empty() {
                 let first_line = content.lines().next().unwrap_or("").trim();
                 let summary = if first_line.chars().count() > 80 {
@@ -468,7 +490,14 @@ fn extract_message_metadata(
                 } else {
                     first_line.to_string()
                 };
-                ("assistant".to_string(), None, summary, String::new(), "ok".to_string(), content.clone())
+                (
+                    "assistant".to_string(),
+                    None,
+                    summary,
+                    String::new(),
+                    "ok".to_string(),
+                    content.clone(),
+                )
             } else {
                 let tool_names = tool_calls
                     .iter()
@@ -478,9 +507,19 @@ fn extract_message_metadata(
                 let paths = tool_calls
                     .iter()
                     .flat_map(|tc| {
-                        let mut found: Vec<&str> = tc.arguments.get("path").and_then(Value::as_str).into_iter().collect();
-                        if let Some(changes) = tc.arguments.get("changes").and_then(Value::as_array) {
-                            found.extend(changes.iter().filter_map(|c| c.get("path").and_then(Value::as_str)));
+                        let mut found: Vec<&str> = tc
+                            .arguments
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .into_iter()
+                            .collect();
+                        if let Some(changes) = tc.arguments.get("changes").and_then(Value::as_array)
+                        {
+                            found.extend(
+                                changes
+                                    .iter()
+                                    .filter_map(|c| c.get("path").and_then(Value::as_str)),
+                            );
                         }
                         found
                     })
@@ -488,21 +527,42 @@ fn extract_message_metadata(
                     .join(",");
                 let summary = if let Some(first_tc) = tool_calls.first() {
                     if first_tc.name == "bash" {
-                        if let Some(lbl) = first_tc.arguments.get("label").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+                        if let Some(lbl) = first_tc
+                            .arguments
+                            .get("label")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.trim().is_empty())
+                        {
                             let trimmed = lbl.trim();
                             if trimmed.chars().count() > 80 {
                                 trimmed.chars().take(80).collect::<String>() + "…"
                             } else {
                                 trimmed.to_string()
                             }
-                        } else if let Some(cmd) = first_tc.arguments.get("command").and_then(Value::as_str) {
-                            let c = cmd.lines().next().unwrap_or("").chars().take(50).collect::<String>();
+                        } else if let Some(cmd) =
+                            first_tc.arguments.get("command").and_then(Value::as_str)
+                        {
+                            let c = cmd
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                                .chars()
+                                .take(50)
+                                .collect::<String>();
                             format!("run: {c}")
                         } else {
                             "run bash".to_string()
                         }
-                    } else if let Some(cmd) = first_tc.arguments.get("command").and_then(Value::as_str) {
-                        let c = cmd.lines().next().unwrap_or("").chars().take(60).collect::<String>();
+                    } else if let Some(cmd) =
+                        first_tc.arguments.get("command").and_then(Value::as_str)
+                    {
+                        let c = cmd
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .chars()
+                            .take(60)
+                            .collect::<String>();
                         format!("run: {c}")
                     } else if let Some(p) = first_tc.arguments.get("path").and_then(Value::as_str) {
                         format!("{}: {p}", first_tc.name)
@@ -519,13 +579,18 @@ fn extract_message_metadata(
                     searchable.push(' ');
                     searchable.push_str(&tc.arguments.to_string());
                 }
-                ("assistant".to_string(), Some(tool_names), summary, paths, "ok".to_string(), searchable)
+                (
+                    "assistant".to_string(),
+                    Some(tool_names),
+                    summary,
+                    paths,
+                    "ok".to_string(),
+                    searchable,
+                )
             }
         }
         HarnessMessage::ToolResult {
-            tool_name,
-            content,
-            ..
+            tool_name, content, ..
         } => {
             let data = content.get("data").unwrap_or(content);
             let paths = if let Some(p) = data.get("path").and_then(Value::as_str) {
@@ -537,7 +602,11 @@ fn extract_message_metadata(
             };
 
             let status = if let Some(exit) = data.get("exit_code").and_then(Value::as_i64) {
-                if exit == 0 { "ok".to_string() } else { format!("exit {exit}") }
+                if exit == 0 {
+                    "ok".to_string()
+                } else {
+                    format!("exit {exit}")
+                }
             } else if content.get("status").and_then(Value::as_str) == Some("error") {
                 "error".to_string()
             } else {
@@ -560,28 +629,57 @@ fn extract_message_metadata(
                 format!("{tool_name} failed: {}", clip(message, 70))
             } else {
                 match tool_name.as_str() {
-                    "bash" => match data.get("label").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+                    "bash" => match data
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.trim().is_empty())
+                    {
                         Some(label) => clip(label, 80),
                         None => format!(
                             "bash: {}",
-                            clip(data.get("command").and_then(Value::as_str).unwrap_or(""), 45)
+                            clip(
+                                data.get("command").and_then(Value::as_str).unwrap_or(""),
+                                45
+                            )
                         ),
                     },
-                    "change_files" => clip(data.get("summary").and_then(Value::as_str).unwrap_or("changed files"), 80),
+                    "change_files" => clip(
+                        data.get("summary")
+                            .and_then(Value::as_str)
+                            .unwrap_or("changed files"),
+                        80,
+                    ),
                     "view_image" => format!("viewed {paths}"),
                     _ => format!("{tool_name} completed"),
                 }
             };
 
             let searchable = content.to_string();
-            ("tool".to_string(), Some(tool_name.clone()), summary, paths, status, searchable)
+            (
+                "tool".to_string(),
+                Some(tool_name.clone()),
+                summary,
+                paths,
+                status,
+                searchable,
+            )
         }
-        HarnessMessage::Summary { kind, content } => {
-            ("summary".to_string(), Some(kind.clone()), format!("summary ({kind})"), String::new(), "ok".to_string(), content.clone())
-        }
-        HarnessMessage::System { content } => {
-            ("system".to_string(), None, "system prompt".to_string(), String::new(), "ok".to_string(), content.clone())
-        }
+        HarnessMessage::Summary { kind, content } => (
+            "summary".to_string(),
+            Some(kind.clone()),
+            format!("summary ({kind})"),
+            String::new(),
+            "ok".to_string(),
+            content.clone(),
+        ),
+        HarnessMessage::System { content } => (
+            "system".to_string(),
+            None,
+            "system prompt".to_string(),
+            String::new(),
+            "ok".to_string(),
+            content.clone(),
+        ),
     }
 }
 
@@ -592,7 +690,8 @@ mod tests {
 
     #[test]
     fn compress_and_decompress_roundtrip() {
-        let original = b"Lorem ipsum dolor sit amet, consectetur adipiscing elit. Exact error code E0308!";
+        let original =
+            b"Lorem ipsum dolor sit amet, consectetur adipiscing elit. Exact error code E0308!";
         let compressed = compress_payload(original).expect("compress");
         assert!(compressed.len() > 0);
         let decompressed = decompress_payload(&compressed).expect("decompress");
@@ -658,12 +757,24 @@ mod tests {
         // FTS search for exact error code E0308
         let results = search_history(&store, "session-1", "E0308", 5).expect("search");
         assert!(!results.is_empty());
-        assert!(results.iter().any(|r| r.archive_id == summaries[0].archive_id));
-        assert!(results.iter().any(|r| r.archive_id == summaries[1].archive_id));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.archive_id == summaries[0].archive_id)
+        );
+        assert!(
+            results
+                .iter()
+                .any(|r| r.archive_id == summaries[1].archive_id)
+        );
 
         // Batch recall
-        let batch = recall_turns(&store, "session-1", &[summaries[0].archive_id, summaries[2].archive_id])
-            .expect("batch recall");
+        let batch = recall_turns(
+            &store,
+            "session-1",
+            &[summaries[0].archive_id, summaries[2].archive_id],
+        )
+        .expect("batch recall");
         assert_eq!(batch.len(), 2);
         assert_eq!(batch[0].archive_id, summaries[0].archive_id);
         assert_eq!(batch[1].archive_id, summaries[2].archive_id);

@@ -84,7 +84,11 @@ fn parse_codex_rate_limits(
     if primary.is_none() && secondary.is_none() {
         return None;
     }
-    Some(RateLimitSnapshot { primary, secondary, label: None })
+    Some(RateLimitSnapshot {
+        primary,
+        secondary,
+        label: None,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -146,18 +150,17 @@ impl ChatGptModel {
             .as_ref()
             .map(ChatGptTokens::is_stale)
             .unwrap_or(false);
-        if stale
-            && let Some(prior) = self.tokens.clone() {
-                match chatgpt_auth::refresh(&prior).await {
-                    Ok(fresh) => {
-                        self.tokens = Some(fresh);
-                        self.save_tokens();
-                    }
-                    // A failed refresh isn't necessarily fatal — the existing token
-                    // may still have a few seconds; let the request try and 401 if not.
-                    Err(_) => {}
+        if stale && let Some(prior) = self.tokens.clone() {
+            match chatgpt_auth::refresh(&prior).await {
+                Ok(fresh) => {
+                    self.tokens = Some(fresh);
+                    self.save_tokens();
                 }
+                // A failed refresh isn't necessarily fatal — the existing token
+                // may still have a few seconds; let the request try and 401 if not.
+                Err(_) => {}
             }
+        }
         self.tokens.as_ref().ok_or_else(|| {
             ToolError::model_request(
                 "not signed in to ChatGPT — open the model picker and choose “Sign in with ChatGPT”."
@@ -301,13 +304,21 @@ impl AgentModel for ChatGptModel {
                     let limit_snapshot = parse_codex_rate_limits(response.headers());
                     let text = response.text().await.unwrap_or_default();
                     last_error = crate::llm::humanize_http_error(status, &text);
-                    if crate::accounts::is_limit_response(status, &text, limit_snapshot.as_ref(), retry_after)
-                        && let Some(from) = self.account.clone()
+                    if crate::accounts::is_limit_response(
+                        status,
+                        &text,
+                        limit_snapshot.as_ref(),
+                        retry_after,
+                    ) && let Some(from) = self.account.clone()
                     {
                         if let Some(snap) = &limit_snapshot {
                             crate::accounts::record_usage("chatgpt", &from, snap);
                         }
-                        let until = crate::accounts::reset_for("chatgpt", &from, crate::accounts::reset_hint(&text));
+                        let until = crate::accounts::reset_for(
+                            "chatgpt",
+                            &from,
+                            crate::accounts::reset_hint(&text),
+                        );
                         if let Some(next) = crate::accounts::rotate("chatgpt", &from, until) {
                             self.use_account(Some(next));
                             self.ensure_fresh().await?;
@@ -479,8 +490,7 @@ fn build_responses_request(
                 content,
             } => {
                 let (cleaned, image) = crate::llm::split_inlined_image(content);
-                let output =
-                    crate::llm::render_tool_result(&cleaned);
+                let output = crate::llm::render_tool_result(&cleaned);
                 if !seen_calls.contains(tool_call_id) {
                     // Orphaned result (call was compacted away) — send as plain text.
                     input.push(message_item(
@@ -494,16 +504,17 @@ fn build_responses_request(
                         "output": output,
                     }));
                     if let Some((mime, base64)) = image
-                        && config.supports_images {
-                            input.push(json!({
-                                "type": "message",
-                                "role": "user",
-                                "content": [{
-                                    "type": "input_image",
-                                    "image_url": format!("data:{mime};base64,{base64}"),
-                                }],
-                            }));
-                        }
+                        && config.supports_images
+                    {
+                        input.push(json!({
+                            "type": "message",
+                            "role": "user",
+                            "content": [{
+                                "type": "input_image",
+                                "image_url": format!("data:{mime};base64,{base64}"),
+                            }],
+                        }));
+                    }
                 }
             }
             HarnessMessage::Summary { kind, content } => {
@@ -650,28 +661,66 @@ async fn parse_responses_sse(
                 }
             }
             "response.output_item.added" => {
-                if let Some(item) = chunk.get("item").filter(|i| i.get("type").and_then(Value::as_str) == Some("function_call")) {
+                if let Some(item) = chunk
+                    .get("item")
+                    .filter(|i| i.get("type").and_then(Value::as_str) == Some("function_call"))
+                {
                     let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
-                    let id = item.get("id").or_else(|| item.get("call_id")).and_then(Value::as_str).unwrap_or("0").to_string();
+                    let id = item
+                        .get("id")
+                        .or_else(|| item.get("call_id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("0")
+                        .to_string();
                     if !name.is_empty() {
                         streamed.insert(id.clone(), false);
-                        StreamBuffer::tool_event(sink, crate::llm::ToolArgEvent::Start { call_id: id, name: name.to_string() });
+                        StreamBuffer::tool_event(
+                            sink,
+                            crate::llm::ToolArgEvent::Start {
+                                call_id: id,
+                                name: name.to_string(),
+                            },
+                        );
                     }
                 }
             }
             "response.function_call_arguments.delta" => {
-                let id = chunk.get("item_id").or_else(|| chunk.get("call_id")).and_then(Value::as_str).unwrap_or("");
-                if let Some(delta) = chunk.get("delta").and_then(Value::as_str).filter(|_| streamed.contains_key(id)) {
-                    StreamBuffer::tool_event(sink, crate::llm::ToolArgEvent::Delta { call_id: id.to_string(), chunk: delta.to_string() });
+                let id = chunk
+                    .get("item_id")
+                    .or_else(|| chunk.get("call_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if let Some(delta) = chunk
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .filter(|_| streamed.contains_key(id))
+                {
+                    StreamBuffer::tool_event(
+                        sink,
+                        crate::llm::ToolArgEvent::Delta {
+                            call_id: id.to_string(),
+                            chunk: delta.to_string(),
+                        },
+                    );
                 }
             }
             "response.function_call_arguments.done" => {
-                let id = chunk.get("item_id").or_else(|| chunk.get("call_id")).and_then(Value::as_str).unwrap_or("");
+                let id = chunk
+                    .get("item_id")
+                    .or_else(|| chunk.get("call_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
                 if let Some(ended) = streamed.get_mut(id)
-                    && !*ended {
-                        *ended = true;
-                        StreamBuffer::tool_event(sink, crate::llm::ToolArgEvent::End { call_id: id.to_string() });
-                    }
+                    && !*ended
+                {
+                    *ended = true;
+                    StreamBuffer::tool_event(
+                        sink,
+                        crate::llm::ToolArgEvent::End {
+                            call_id: id.to_string(),
+                        },
+                    );
+                }
             }
             "response.output_item.done" => {
                 let item = chunk.get("item");
@@ -679,10 +728,21 @@ async fn parse_responses_sse(
                 {
                     let item = item.expect("checked");
                     let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
-                    let call_id = item.get("id").or_else(|| item.get("call_id")).and_then(Value::as_str).unwrap_or("0").to_string();
+                    let call_id = item
+                        .get("id")
+                        .or_else(|| item.get("call_id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("0")
+                        .to_string();
                     let already = streamed.get(&call_id).copied();
                     if already.is_none() {
-                        StreamBuffer::tool_event(sink, crate::llm::ToolArgEvent::Start { call_id: call_id.clone(), name: name.to_string() });
+                        StreamBuffer::tool_event(
+                            sink,
+                            crate::llm::ToolArgEvent::Start {
+                                call_id: call_id.clone(),
+                                name: name.to_string(),
+                            },
+                        );
                     }
                     if !name.is_empty() {
                         let args_str = item
@@ -690,10 +750,19 @@ async fn parse_responses_sse(
                             .and_then(Value::as_str)
                             .unwrap_or("{}");
                         if already.is_none() {
-                            StreamBuffer::tool_event(sink, crate::llm::ToolArgEvent::Delta { call_id: call_id.clone(), chunk: args_str.to_string() });
+                            StreamBuffer::tool_event(
+                                sink,
+                                crate::llm::ToolArgEvent::Delta {
+                                    call_id: call_id.clone(),
+                                    chunk: args_str.to_string(),
+                                },
+                            );
                         }
                         if already != Some(true) {
-                            StreamBuffer::tool_event(sink, crate::llm::ToolArgEvent::End { call_id });
+                            StreamBuffer::tool_event(
+                                sink,
+                                crate::llm::ToolArgEvent::End { call_id },
+                            );
                         }
                         let arguments = serde_json::from_str::<Value>(args_str)
                             .unwrap_or_else(|_| Value::String(args_str.to_string()));
@@ -747,12 +816,14 @@ async fn parse_responses_sse(
     .map_err(|e| ToolError::model_request(format!("chatgpt stream error: {e}"), true))?;
 
     if let Some(err) = failure
-        && text.is_empty() && calls.is_empty() {
-            let fatal = err.contains("context_length")
-                || err.contains("insufficient_quota")
-                || err.contains("usage_not_included");
-            return Err(ToolError::model_request(format!("chatgpt: {err}"), !fatal));
-        }
+        && text.is_empty()
+        && calls.is_empty()
+    {
+        let fatal = err.contains("context_length")
+            || err.contains("insufficient_quota")
+            || err.contains("usage_not_included");
+        return Err(ToolError::model_request(format!("chatgpt: {err}"), !fatal));
+    }
 
     Ok(ModelOutput {
         calls,

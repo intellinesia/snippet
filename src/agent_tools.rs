@@ -41,12 +41,16 @@ pub fn tools_dir(agent_id: &str) -> Option<PathBuf> {
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
-        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
         && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
 }
 
 pub fn load(dir: &Path) -> Vec<CustomTool> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut tools: Vec<CustomTool> = entries
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
@@ -118,7 +122,10 @@ pub fn expand(tool: &CustomTool, arguments: &Value) -> Result<String, String> {
         .filter(|name| args.get(*name).is_none_or(Value::is_null))
         .collect();
     if !missing.is_empty() {
-        return Err(format!("missing required argument(s): {}", missing.join(", ")));
+        return Err(format!(
+            "missing required argument(s): {}",
+            missing.join(", ")
+        ));
     }
     let mut out = String::with_capacity(tool.command.len());
     let mut rest = tool.command.as_str();

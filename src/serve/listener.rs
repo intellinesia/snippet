@@ -89,7 +89,13 @@ fn get(d: &Shared, device: &str) -> Arc<Listener> {
         .lock()
         .unwrap()
         .entry(device.to_string())
-        .or_insert_with(|| Arc::new(Listener { device: device.to_string(), d: d.clone(), inner: Mutex::new(Inner::default()) }))
+        .or_insert_with(|| {
+            Arc::new(Listener {
+                device: device.to_string(),
+                d: d.clone(),
+                inner: Mutex::new(Inner::default()),
+            })
+        })
         .clone()
 }
 
@@ -129,7 +135,11 @@ struct Creds {
 fn credentials(d: &Shared) -> Option<Creds> {
     let c = d.config.lock().unwrap();
     let flux = c.ambient.stt == "flux";
-    let key = if flux { &c.deepgram_api_key } else { &c.assemblyai_api_key };
+    let key = if flux {
+        &c.deepgram_api_key
+    } else {
+        &c.assemblyai_api_key
+    };
     let key = key.clone().filter(|k| !k.trim().is_empty())?;
     let mut terms = c.ambient.wake_phrases.clone();
     for extra in ["Snippet", "Mission Control"] {
@@ -138,7 +148,16 @@ fn credentials(d: &Shared) -> Option<Creds> {
         }
     }
     let host = c.ambient.deepgram_host.trim().to_string();
-    Some(Creds { flux, key, terms, host: if host.is_empty() { "api.deepgram.com".into() } else { host } })
+    Some(Creds {
+        flux,
+        key,
+        terms,
+        host: if host.is_empty() {
+            "api.deepgram.com".into()
+        } else {
+            host
+        },
+    })
 }
 
 fn active_mode() -> bool {
@@ -169,12 +188,23 @@ const CAPTION_EVERY: Duration = Duration::from_millis(200);
 const CAPTION_CHARS: usize = 240;
 
 /// The words being heard right now, for the on-screen caption. Never stored; the assistant's own voice and played media stay out.
-fn live_caption(words: &[Heard], mask: &[bool], transcript: &str, echo_all: bool) -> Option<String> {
+fn live_caption(
+    words: &[Heard],
+    mask: &[bool],
+    transcript: &str,
+    echo_all: bool,
+) -> Option<String> {
     if echo_all || (!words.is_empty() && words.iter().all(|w| w.media)) {
         return None;
     }
     let text = if mask.iter().any(|echo| *echo) {
-        words.iter().zip(mask).filter(|(_, echo)| !**echo).map(|(w, _)| w.text.as_str()).collect::<Vec<_>>().join(" ")
+        words
+            .iter()
+            .zip(mask)
+            .filter(|(_, echo)| !**echo)
+            .map(|(w, _)| w.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
     } else {
         transcript.to_string()
     };
@@ -188,7 +218,11 @@ fn live_caption(words: &[Heard], mask: &[bool], transcript: &str, echo_all: bool
 
 fn flux_turn(v: &serde_json::Value) -> Option<serde_json::Value> {
     let event = v.get("event")?.as_str()?;
-    let event = if event == "EagerEndOfTurn" { "EndOfTurn" } else { event };
+    let event = if event == "EagerEndOfTurn" {
+        "EndOfTurn"
+    } else {
+        event
+    };
     let words: Vec<serde_json::Value> = v
         .get("words")
         .and_then(|w| w.as_array())
@@ -209,11 +243,18 @@ fn flux_turn(v: &serde_json::Value) -> Option<serde_json::Value> {
     if !ended && words.is_empty() && transcript.trim().is_empty() {
         return None;
     }
-    Some(serde_json::json!({"turn_order": v.get("turn_index")?, "end_of_turn": ended, "transcript": transcript, "words": words}))
+    Some(
+        serde_json::json!({"turn_order": v.get("turn_index")?, "end_of_turn": ended, "transcript": transcript, "words": words}),
+    )
 }
 
 fn at(marks: &VecDeque<(u64, bool)>, g: u64) -> bool {
-    marks.iter().rev().find(|(m, _)| *m <= g).map(|(_, v)| *v).unwrap_or(false)
+    marks
+        .iter()
+        .rev()
+        .find(|(m, _)| *m <= g)
+        .map(|(_, v)| *v)
+        .unwrap_or(false)
 }
 
 fn trim(marks: &mut VecDeque<(u64, bool)>, from: u64) {
@@ -235,7 +276,12 @@ pub(super) fn wav(pcm: &[u8]) -> Vec<u8> {
     crate::voiceprint::wav(pcm)
 }
 
-pub(super) async fn open(d: &Shared, device: &str, h: u32, started_at: Option<&str>) -> Result<(), u16> {
+pub(super) async fn open(
+    d: &Shared,
+    device: &str,
+    h: u32,
+    started_at: Option<&str>,
+) -> Result<(), u16> {
     d.reload_config().await;
     if !d.config.lock().unwrap().ambient.enabled {
         return Err(403);
@@ -277,7 +323,9 @@ pub(super) fn warm(d: &Shared, device: &str) {
 }
 
 pub(super) fn audio(device: &str, h: u32, pcm: &[u8]) -> bool {
-    let Some(l) = hub().lock().unwrap().get(device).cloned() else { return false };
+    let Some(l) = hub().lock().unwrap().get(device).cloned() else {
+        return false;
+    };
     {
         let mut s = l.inner.lock().unwrap();
         if s.stream != Some(h) {
@@ -316,14 +364,18 @@ pub(super) fn restart_all() {
 }
 
 pub(super) fn close(device: &str, h: Option<u32>) {
-    let Some(l) = hub().lock().unwrap().get(device).cloned() else { return };
+    let Some(l) = hub().lock().unwrap().get(device).cloned() else {
+        return;
+    };
     if h.is_none() || l.inner.lock().unwrap().stream == h {
         l.finish_stream(true);
     }
 }
 
 pub(super) fn flag(device: &str, kind: &str, on: bool) {
-    let Some(l) = hub().lock().unwrap().get(device).cloned() else { return };
+    let Some(l) = hub().lock().unwrap().get(device).cloned() else {
+        return;
+    };
     let mut s = l.inner.lock().unwrap();
     let g = s.g;
     match kind {
@@ -355,9 +407,16 @@ impl Listener {
         drop(s);
         self.pump(true);
         if force
-            && let Some(tx) = self.inner.lock().unwrap().conn.as_ref().and_then(|c| c.tx.clone()) {
-                let _ = tx.send(Cmd::Force);
-            }
+            && let Some(tx) = self
+                .inner
+                .lock()
+                .unwrap()
+                .conn
+                .as_ref()
+                .and_then(|c| c.tx.clone())
+        {
+            let _ = tx.send(Cmd::Force);
+        }
     }
 
     fn sample(&self) {
@@ -392,15 +451,27 @@ impl Listener {
     fn connect_if_needed(self: &Arc<Self>, warm: bool) {
         static IDS: AtomicU64 = AtomicU64::new(1);
         let mut s = self.inner.lock().unwrap();
-        if s.conn.is_some() || (s.stream.is_none() && !warm) || s.retry_at.is_some_and(|t| t > Instant::now()) {
+        if s.conn.is_some()
+            || (s.stream.is_none() && !warm)
+            || s.retry_at.is_some_and(|t| t > Instant::now())
+        {
             return;
         }
-        let Some(creds) = credentials(&self.d) else { return };
+        let Some(creds) = credentials(&self.d) else {
+            return;
+        };
         let id = IDS.fetch_add(1, Ordering::SeqCst);
         let base = s.pending_from.max(s.ring_start).min(s.g);
         let active = active_mode();
         let flux = creds.flux;
-        s.conn = Some(Conn { id, flux, tx: None, base, sent: base, active });
+        s.conn = Some(Conn {
+            id,
+            flux,
+            tx: None,
+            base,
+            sent: base,
+            active,
+        });
         drop(s);
         let me = self.clone();
         tokio::spawn(async move {
@@ -436,7 +507,9 @@ impl Listener {
 
     fn dropped(self: &Arc<Self>, id: u64, idle: bool) {
         let mut s = self.inner.lock().unwrap();
-        let Some(c) = s.conn.take_if(|c| c.id == id) else { return };
+        let Some(c) = s.conn.take_if(|c| c.id == id) else {
+            return;
+        };
         if idle {
             s.pending_from = c.sent;
         } else {
@@ -475,9 +548,19 @@ impl Listener {
     }
 
     fn on_turn(&self, conn: u64, v: &serde_json::Value) {
-        let Some(order) = v.get("turn_order").and_then(|x| x.as_i64()) else { return };
-        let ended = v.get("end_of_turn").and_then(|x| x.as_bool()).unwrap_or(false);
-        let transcript = v.get("transcript").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+        let Some(order) = v.get("turn_order").and_then(|x| x.as_i64()) else {
+            return;
+        };
+        let ended = v
+            .get("end_of_turn")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        let transcript = v
+            .get("transcript")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let live_audible = crate::speech::is_audible(&self.device);
         let mut s = self.inner.lock().unwrap();
         if live_audible && !s.audible {
@@ -485,12 +568,18 @@ impl Listener {
             let g = s.g;
             set(&mut s.playing, g, true);
         }
-        let Some(base) = s.conn.as_ref().filter(|c| c.id == conn).map(|c| c.base) else { return };
+        let Some(base) = s.conn.as_ref().filter(|c| c.id == conn).map(|c| c.base) else {
+            return;
+        };
         let turn_speaker = v
             .get("speaker_label")
             .and_then(|x| x.as_str())
             .map(str::trim)
-            .filter(|sp| !sp.is_empty() && !sp.eq_ignore_ascii_case("PENDING") && !sp.eq_ignore_ascii_case("UNKNOWN"))
+            .filter(|sp| {
+                !sp.is_empty()
+                    && !sp.eq_ignore_ascii_case("PENDING")
+                    && !sp.eq_ignore_ascii_case("UNKNOWN")
+            })
             .map(str::to_string);
         let words: Vec<Heard> = v
             .get("words")
@@ -505,20 +594,47 @@ impl Listener {
                             .get("speaker")
                             .and_then(|x| x.as_str())
                             .map(str::trim)
-                            .filter(|sp| !sp.is_empty() && !sp.eq_ignore_ascii_case("PENDING") && !sp.eq_ignore_ascii_case("UNKNOWN"))
+                            .filter(|sp| {
+                                !sp.is_empty()
+                                    && !sp.eq_ignore_ascii_case("PENDING")
+                                    && !sp.eq_ignore_ascii_case("UNKNOWN")
+                            })
                             .map(str::to_string);
                         let mid = (start + end) / 2;
-                        Some(Heard { key: norm(&text), text, start, end, playing: at(&s.playing, mid), media: at(&s.media, mid), speaker })
+                        Some(Heard {
+                            key: norm(&text),
+                            text,
+                            start,
+                            end,
+                            playing: at(&s.playing, mid),
+                            media: at(&s.media, mid),
+                            speaker,
+                        })
                     })
                     .collect()
             })
             .unwrap_or_default();
-        let fresh = s.live.as_ref().is_none_or(|l| l.conn != conn || l.turn != order);
+        let fresh = s
+            .live
+            .as_ref()
+            .is_none_or(|l| l.conn != conn || l.turn != order);
         if fresh {
             if ended && words.is_empty() && transcript.is_empty() {
                 return;
             }
-            s.live = Some(Live { conn, turn: order, seq: next_seq(), announced: false, caption: String::new(), caption_at: None, interrupted: false, classifying: false, classified_words: 0, event_id: None, done: false });
+            s.live = Some(Live {
+                conn,
+                turn: order,
+                seq: next_seq(),
+                announced: false,
+                caption: String::new(),
+                caption_at: None,
+                interrupted: false,
+                classifying: false,
+                classified_words: 0,
+                event_id: None,
+                done: false,
+            });
         }
         let audible = s.audible || s.play_flag || live_audible;
         let during_playback = words.iter().any(|w| w.playing) || audible;
@@ -531,7 +647,8 @@ impl Listener {
         }
         let replies = super::ambient_routes::recent_replies(&self.device);
         let mask = echo_mask(&words, &replies, during_playback);
-        let (real, _filtered, tail_real, max_real_run, echo_all) = echo_stats(&words, &mask, during_playback);
+        let (real, _filtered, tail_real, max_real_run, echo_all) =
+            echo_stats(&words, &mask, during_playback);
         if !echo_all {
             super::autonomy::note_heard();
             if !ended {
@@ -545,20 +662,30 @@ impl Listener {
             let now = chrono::Utc::now().timestamp_millis();
             let policy = crate::recording_policy::live_or(&self.d.config.lock().unwrap().recording);
             if !policy.matches_never(now, crate::recording_policy::local_at(now), &text) {
-                crate::session::emit_device_event(serde_json::json!({"kind": "ambient_live", "device": self.device, "text": text, "final": ended}));
+                crate::session::emit_device_event(
+                    serde_json::json!({"kind": "ambient_live", "device": self.device, "text": text, "final": ended}),
+                );
             }
             live.caption = text;
             live.caption_at = Some(Instant::now());
         }
-        let busy = crate::ambient::conversation().is_some() && super::autonomy::mission_control_busy();
-        let instant_barge = !echo_all && (audible || busy) && !live.interrupted && has_barge_command(&words);
+        let busy =
+            crate::ambient::conversation().is_some() && super::autonomy::mission_control_busy();
+        let instant_barge =
+            !echo_all && (audible || busy) && !live.interrupted && has_barge_command(&words);
         if instant_barge {
             live.interrupted = true;
             let d = self.d.clone();
             let device = self.device.clone();
             let sent = super::autonomy::mission_control_inputs();
             tokio::spawn(async move {
-                super::attention::interrupt_since(&d, &device, super::attention::Trigger::Barge, sent).await;
+                super::attention::interrupt_since(
+                    &d,
+                    &device,
+                    super::attention::Trigger::Barge,
+                    sent,
+                )
+                .await;
             });
         }
         let barge_ready = if during_playback {
@@ -571,7 +698,11 @@ impl Listener {
             && !live.interrupted
             && (!live.classifying || ended)
             && barge_ready
-            && (ended || real >= live.classified_words.saturating_add(if live.classified_words == 0 { 0 } else { 2 }));
+            && (ended
+                || real
+                    >= live
+                        .classified_words
+                        .saturating_add(if live.classified_words == 0 { 0 } else { 2 }));
         let probe_text = if should_probe {
             live.classifying = true;
             live.classified_words = real;
@@ -603,13 +734,24 @@ impl Listener {
             let probe_seq = crate::tts_stream::probe_begin(&device);
             tokio::spawn(async move {
                 let _guard = guard;
-                let verdict = super::ambient_watch::classify_live(&d, &device, &clean_text, during_playback, live_vp).await;
+                let verdict = super::ambient_watch::classify_live(
+                    &d,
+                    &device,
+                    &clean_text,
+                    during_playback,
+                    live_vp,
+                )
+                .await;
                 let go = super::ambient_router::should_interrupt(&d, &verdict, &clean_text);
                 crate::tts_stream::probe_verdict(&device, probe_seq, go);
                 let mut do_interrupt = false;
                 {
                     let mut s = me.inner.lock().unwrap();
-                    if let Some(l) = s.live.as_mut().filter(|l| l.conn == conn && l.turn == order) {
+                    if let Some(l) = s
+                        .live
+                        .as_mut()
+                        .filter(|l| l.conn == conn && l.turn == order)
+                    {
                         l.classifying = false;
                         if go && !l.interrupted {
                             l.interrupted = true;
@@ -618,7 +760,13 @@ impl Listener {
                     }
                 }
                 if do_interrupt {
-                    super::attention::interrupt_since(&d, &device, super::attention::Trigger::LiveVerdict, sent).await;
+                    super::attention::interrupt_since(
+                        &d,
+                        &device,
+                        super::attention::Trigger::LiveVerdict,
+                        sent,
+                    )
+                    .await;
                 }
             });
         }
@@ -636,7 +784,12 @@ impl Listener {
         if let Some(last) = words.last() {
             s.last_final = s.last_final.max(last.end);
         }
-        let clean_words: Vec<&Heard> = words.iter().zip(&mask).filter(|(_, e)| !**e).map(|(w, _)| w).collect();
+        let clean_words: Vec<&Heard> = words
+            .iter()
+            .zip(&mask)
+            .filter(|(_, e)| !**e)
+            .map(|(w, _)| w)
+            .collect();
         let segments = if echo_all || clean_words.is_empty() {
             let (first_g, last_g) = match (words.first(), words.last()) {
                 (Some(f), Some(l)) => (f.start, l.end),
@@ -644,7 +797,12 @@ impl Listener {
             };
             vec![(first_g, last_g, transcript.clone(), turn_speaker.clone())]
         } else {
-            split_segments(&clean_words, &transcript, real == words.len(), turn_speaker.as_deref())
+            split_segments(
+                &clean_words,
+                &transcript,
+                real == words.len(),
+                turn_speaker.as_deref(),
+            )
         };
         let vps = self.d.config.lock().unwrap().ambient.voiceprints.clone();
         let mut events = Vec::with_capacity(segments.len());
@@ -657,7 +815,13 @@ impl Listener {
                 live.event_id.clone()
             });
         for (idx, (raw_first, last_g, raw_text, stt_speaker)) in segments.into_iter().enumerate() {
-            let opened = s.anchors.iter().rev().find(|(a, _)| *a <= last_g).map(|(a, _)| *a).unwrap_or(0);
+            let opened = s
+                .anchors
+                .iter()
+                .rev()
+                .find(|(a, _)| *a <= last_g)
+                .map(|(a, _)| *a)
+                .unwrap_or(0);
             let first_g = raw_first.max(opened).min(last_g);
             let wall = s
                 .anchors
@@ -669,36 +833,49 @@ impl Listener {
             let from = first_g.saturating_sub(PAD).max(s.ring_start);
             let to = (last_g + PAD).min(s.g);
             let pcm: Vec<u8> = if to > from {
-                s.ring.range((from - s.ring_start) as usize..(to - s.ring_start) as usize).copied().collect()
+                s.ring
+                    .range((from - s.ring_start) as usize..(to - s.ring_start) as usize)
+                    .copied()
+                    .collect()
             } else {
                 Vec::new()
             };
-            let media = !words.is_empty() && words.iter().filter(|w| w.media).count() * 2 > words.len();
+            let media =
+                !words.is_empty() && words.iter().filter(|w| w.media).count() * 2 > words.len();
             let (status, text) = if echo_all {
                 ("echo", raw_text)
             } else if media {
                 ("media", raw_text)
             } else {
                 let spoken = super::transcribe::finish_text(&raw_text).text;
-                if spoken.is_empty() { ("empty", String::new()) } else { ("done", spoken) }
+                if spoken.is_empty() {
+                    ("empty", String::new())
+                } else {
+                    ("done", spoken)
+                }
             };
-            let started = wall.unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as f64 / 1000.0);
+            let started =
+                wall.unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as f64 / 1000.0);
             let duration_ms = ((last_g.saturating_sub(first_g)) as f64 / BPS * 1000.0) as i64;
             let id = uuid::Uuid::new_v4().to_string();
             let revises = if idx == 0 { previous.clone() } else { None };
             if idx == 0
                 && previous.is_none()
-                && let Some(live) = s.live.as_mut().filter(|live| live.conn == conn && live.turn == order)
+                && let Some(live) = s
+                    .live
+                    .as_mut()
+                    .filter(|live| live.conn == conn && live.turn == order)
             {
                 live.event_id = Some(id.clone());
             }
-            let part_seq = if status != "done" && idx == 0 && !s.live.as_ref().is_some_and(|l| l.announced) {
-                0
-            } else if idx == 0 {
-                seq
-            } else {
-                next_seq()
-            };
+            let part_seq =
+                if status != "done" && idx == 0 && !s.live.as_ref().is_some_and(|l| l.announced) {
+                    0
+                } else if idx == 0 {
+                    seq
+                } else {
+                    next_seq()
+                };
             if idx > 0 && status == "done" {
                 super::ambient_routes::announce(&self.d, &self.device, part_seq, false);
             }
@@ -772,7 +949,8 @@ fn split_segments(
         cur.push(w);
     }
     if !cur.is_empty() {
-        if groups.len() >= 1 && cur.len() < MIN_SEG_WORDS && cur.iter().all(|w| w.speaker.is_none()) {
+        if groups.len() >= 1 && cur.len() < MIN_SEG_WORDS && cur.iter().all(|w| w.speaker.is_none())
+        {
             groups.last_mut().unwrap().extend(cur);
         } else {
             groups.push(cur);
@@ -783,16 +961,29 @@ fn split_segments(
         let text = if unfiltered && !transcript.is_empty() {
             transcript.to_string()
         } else {
-            g.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ")
+            g.iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
         };
-        let sp = g.iter().find_map(|w| w.speaker.clone()).or_else(|| turn_speaker.map(str::to_string));
+        let sp = g
+            .iter()
+            .find_map(|w| w.speaker.clone())
+            .or_else(|| turn_speaker.map(str::to_string));
         return vec![(g.first().unwrap().start, g.last().unwrap().end, text, sp)];
     }
     groups
         .into_iter()
         .map(|g| {
-            let text = g.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
-            let sp = g.iter().find_map(|w| w.speaker.clone()).or_else(|| turn_speaker.map(str::to_string));
+            let text = g
+                .iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let sp = g
+                .iter()
+                .find_map(|w| w.speaker.clone())
+                .or_else(|| turn_speaker.map(str::to_string));
             (g.first().unwrap().start, g.last().unwrap().end, text, sp)
         })
         .collect()
@@ -824,7 +1015,10 @@ struct Heard {
 }
 
 fn norm(w: &str) -> String {
-    w.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+    w.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn lev(a: &str, b: &str) -> usize {
@@ -835,7 +1029,9 @@ fn lev(a: &str, b: &str) -> usize {
         row[0] = i;
         for j in 1..=b.len() {
             let cur = row[j];
-            row[j] = (row[j] + 1).min(row[j - 1] + 1).min(prev + usize::from(a[i - 1] != b[j - 1]));
+            row[j] = (row[j] + 1)
+                .min(row[j - 1] + 1)
+                .min(prev + usize::from(a[i - 1] != b[j - 1]));
             prev = cur;
         }
     }
@@ -893,12 +1089,26 @@ fn similar(a: &str, b: &str) -> bool {
 fn is_quick_barge(key: &str) -> bool {
     matches!(
         key,
-        "snippet" | "snipit" | "snippit" | "stop" | "wait" | "hold" | "pause" | "cancel" | "quiet" | "enough" | "shutup" | "hush"
+        "snippet"
+            | "snipit"
+            | "snippit"
+            | "stop"
+            | "wait"
+            | "hold"
+            | "pause"
+            | "cancel"
+            | "quiet"
+            | "enough"
+            | "shutup"
+            | "hush"
     )
 }
 
 fn has_barge_command(words: &[Heard]) -> bool {
-    has_barge_command_with(words, &crate::ambient_tuning::current_for_lease().barge_words)
+    has_barge_command_with(
+        words,
+        &crate::ambient_tuning::current_for_lease().barge_words,
+    )
 }
 
 fn has_barge_command_with(words: &[Heard], extra: &[String]) -> bool {
@@ -907,7 +1117,11 @@ fn has_barge_command_with(words: &[Heard], extra: &[String]) -> bool {
     }
     if !extra.is_empty() {
         let hit = |k: &str| extra.iter().any(|e| e == k);
-        if words.iter().any(|w| hit(&w.key)) || words.windows(2).any(|w| hit(&format!("{} {}", w[0].key, w[1].key))) {
+        if words.iter().any(|w| hit(&w.key))
+            || words
+                .windows(2)
+                .any(|w| hit(&format!("{} {}", w[0].key, w[1].key)))
+        {
             return true;
         }
     }
@@ -950,10 +1164,19 @@ fn unmutes_barge_pairs(words: &[Heard], mask: &mut [bool]) {
     }
 }
 
-fn echo_stats(words: &[Heard], mask: &[bool], during_playback: bool) -> (usize, usize, usize, usize, bool) {
+fn echo_stats(
+    words: &[Heard],
+    mask: &[bool],
+    during_playback: bool,
+) -> (usize, usize, usize, usize, bool) {
     let real = words.iter().zip(mask).filter(|(_, e)| !**e).count();
     let filtered = words.len().saturating_sub(real);
-    let tail_real = words.iter().zip(mask).rev().take_while(|(_, e)| !**e).count();
+    let tail_real = words
+        .iter()
+        .zip(mask)
+        .rev()
+        .take_while(|(_, e)| !**e)
+        .count();
     let mut max_real_run = 0usize;
     let mut cur = 0usize;
     for &e in mask {
@@ -964,11 +1187,10 @@ fn echo_stats(words: &[Heard], mask: &[bool], during_playback: bool) -> (usize, 
             cur = 0;
         }
     }
-    let has_user_barge = tail_real >= 2
-        || max_real_run >= 3
-        || has_barge_command(words);
+    let has_user_barge = tail_real >= 2 || max_real_run >= 3 || has_barge_command(words);
     let echo_all = !words.is_empty()
-        && (real == 0 || (during_playback && filtered >= 2 && !has_user_barge && real * 3 <= words.len()));
+        && (real == 0
+            || (during_playback && filtered >= 2 && !has_user_barge && real * 3 <= words.len()));
     (real, filtered, tail_real, max_real_run, echo_all)
 }
 
@@ -978,22 +1200,33 @@ fn echo_mask(words: &[Heard], replies: &[String], during_playback: bool) -> Vec<
         return mask;
     }
     for reply in replies {
-        let said: Vec<String> = reply.split_whitespace().map(norm).filter(|w| !w.is_empty()).collect();
+        let said: Vec<String> = reply
+            .split_whitespace()
+            .map(norm)
+            .filter(|w| !w.is_empty())
+            .collect();
         let mut i = 0;
         let mut min_j = 0usize;
         while i < words.len() {
             let mut best: Option<(usize, usize, usize)> = None;
             for j in min_j..said.len() {
-                let (mut k, mut skipped, mut matched, mut last_match, mut end_j) = (0usize, 0usize, 0usize, 0usize, j);
+                let (mut k, mut skipped, mut matched, mut last_match, mut end_j) =
+                    (0usize, 0usize, 0usize, 0usize, j);
                 while i + k < words.len() && j + k + skipped < said.len() {
                     if similar(&words[i + k].key, &said[j + k + skipped]) {
                         matched += 1;
                         last_match = k + 1;
                         end_j = j + k + skipped + 1;
                         k += 1;
-                    } else if skipped < 2 && j + k + skipped + 1 < said.len() && similar(&words[i + k].key, &said[j + k + skipped + 1]) {
+                    } else if skipped < 2
+                        && j + k + skipped + 1 < said.len()
+                        && similar(&words[i + k].key, &said[j + k + skipped + 1])
+                    {
                         skipped += 1;
-                    } else if k + 1 < words.len() - i && matched >= 2 && (words[i + k].playing || during_playback) {
+                    } else if k + 1 < words.len() - i
+                        && matched >= 2
+                        && (words[i + k].playing || during_playback)
+                    {
                         k += 1;
                         if k - last_match > 1 {
                             break;
@@ -1009,9 +1242,15 @@ fn echo_mask(words: &[Heard], replies: &[String], during_playback: bool) -> Vec<
             match best {
                 Some((matched, len, end_j))
                     if matched >= 2
-                        || (matched == 1 && len == 1 && words.len() == 1 && (words[i].playing || during_playback)) =>
+                        || (matched == 1
+                            && len == 1
+                            && words.len() == 1
+                            && (words[i].playing || during_playback)) =>
                 {
-                    let playing = words[i..i + len].iter().filter(|w| w.playing || during_playback).count();
+                    let playing = words[i..i + len]
+                        .iter()
+                        .filter(|w| w.playing || during_playback)
+                        .count();
                     if playing * 2 >= len {
                         mask[i..i + len].iter_mut().for_each(|m| *m = true);
                         if matched >= 3 {
@@ -1030,7 +1269,11 @@ fn echo_mask(words: &[Heard], replies: &[String], during_playback: bool) -> Vec<
             if end < words.len()
                 && mask[i - 1]
                 && mask[end]
-                && (i..end).all(|k| !mask[k] && (words[k].playing || during_playback) && !is_quick_barge(&words[k].key))
+                && (i..end).all(|k| {
+                    !mask[k]
+                        && (words[k].playing || during_playback)
+                        && !is_quick_barge(&words[k].key)
+                })
             {
                 (i..end).for_each(|k| mask[k] = true);
             }
@@ -1045,7 +1288,11 @@ fn echo_mask(words: &[Heard], replies: &[String], during_playback: bool) -> Vec<
                 while i < words.len() && !mask[i] {
                     i += 1;
                 }
-                if i - start == 1 && start > 0 && i < words.len() && !is_quick_barge(&words[start].key) {
+                if i - start == 1
+                    && start > 0
+                    && i < words.len()
+                    && !is_quick_barge(&words[start].key)
+                {
                     mask[start] = true;
                 }
             } else {
@@ -1057,7 +1304,8 @@ fn echo_mask(words: &[Heard], replies: &[String], during_playback: bool) -> Vec<
     mask
 }
 
-type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn connect(creds: &Creds, active: bool) -> Result<Ws, String> {
     if creds.flux {
@@ -1072,11 +1320,19 @@ async fn connect(creds: &Creds, active: bool) -> Result<Ws, String> {
         urlencoding::encode(&keyterms)
     );
     let mut request = url.into_client_request().map_err(|e| e.to_string())?;
-    request.headers_mut().insert("Authorization", key.trim().parse().map_err(|_| "invalid AssemblyAI key".to_string())?);
-    let (ws, _) = tokio::time::timeout(Duration::from_secs(6), tokio_tungstenite::connect_async_with_config(request, None, true))
-        .await
-        .map_err(|_| "AssemblyAI connect timed out".to_string())?
-        .map_err(|e| format!("AssemblyAI connect failed: {e}"))?;
+    request.headers_mut().insert(
+        "Authorization",
+        key.trim()
+            .parse()
+            .map_err(|_| "invalid AssemblyAI key".to_string())?,
+    );
+    let (ws, _) = tokio::time::timeout(
+        Duration::from_secs(6),
+        tokio_tungstenite::connect_async_with_config(request, None, true),
+    )
+    .await
+    .map_err(|_| "AssemblyAI connect timed out".to_string())?
+    .map_err(|e| format!("AssemblyAI connect failed: {e}"))?;
     Ok(ws)
 }
 
@@ -1091,25 +1347,46 @@ async fn connect_flux(creds: &Creds, active: bool) -> Result<Ws, String> {
         url.push_str(&urlencoding::encode(term));
     }
     let mut request = url.into_client_request().map_err(|e| e.to_string())?;
-    request
-        .headers_mut()
-        .insert("Authorization", format!("Token {}", creds.key.trim()).parse().map_err(|_| "invalid Deepgram key".to_string())?);
-    let (ws, _) = tokio::time::timeout(Duration::from_secs(6), tokio_tungstenite::connect_async_with_config(request, None, true))
-        .await
-        .map_err(|_| "Deepgram Flux connect timed out".to_string())?
-        .map_err(|e| format!("Deepgram Flux connect failed: {e}"))?;
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Token {}", creds.key.trim())
+            .parse()
+            .map_err(|_| "invalid Deepgram key".to_string())?,
+    );
+    let (ws, _) = tokio::time::timeout(
+        Duration::from_secs(6),
+        tokio_tungstenite::connect_async_with_config(request, None, true),
+    )
+    .await
+    .map_err(|_| "Deepgram Flux connect timed out".to_string())?
+    .map_err(|e| format!("Deepgram Flux connect failed: {e}"))?;
     Ok(ws)
 }
 
-fn on_message(l: &Arc<Listener>, id: u64, flux: bool, v: &serde_json::Value, raw: &str) -> Result<bool, String> {
+fn on_message(
+    l: &Arc<Listener>,
+    id: u64,
+    flux: bool,
+    v: &serde_json::Value,
+    raw: &str,
+) -> Result<bool, String> {
     let name = if flux { "Deepgram Flux" } else { "AssemblyAI" };
     match v.get("type").and_then(|x| x.as_str()) {
         Some("Turn") if !flux => l.on_turn(id, v),
         Some("TurnInfo") if flux => {
             let event = v.get("event").and_then(|x| x.as_str()).unwrap_or("");
             let index = v.get("turn_index").and_then(|x| x.as_i64()).unwrap_or(-1);
-            let words = v.get("words").and_then(|x| x.as_array()).map_or(0, |w| w.len());
-            let active = l.inner.lock().unwrap().conn.as_ref().is_some_and(|c| c.id == id && c.active);
+            let words = v
+                .get("words")
+                .and_then(|x| x.as_array())
+                .map_or(0, |w| w.len());
+            let active = l
+                .inner
+                .lock()
+                .unwrap()
+                .conn
+                .as_ref()
+                .is_some_and(|c| c.id == id && c.active);
             match event {
                 "TurnResumed" => {
                     let mut s = l.inner.lock().unwrap();
@@ -1123,14 +1400,18 @@ fn on_message(l: &Arc<Listener>, id: u64, flux: bool, v: &serde_json::Value, raw
                         crate::tts_stream::prewarm(&l.device);
                     }
                     let mut s = l.inner.lock().unwrap();
-                    if s.delivered.is_some_and(|(c, t, n)| c == id && t == index && words <= n) {
+                    if s.delivered
+                        .is_some_and(|(c, t, n)| c == id && t == index && words <= n)
+                    {
                         return Ok(false);
                     }
                     s.delivered = Some((id, index, words));
                 }
                 _ => {
                     let s = l.inner.lock().unwrap();
-                    if s.delivered.is_some_and(|(c, t, n)| c == id && t == index && words <= n) {
+                    if s.delivered
+                        .is_some_and(|(c, t, n)| c == id && t == index && words <= n)
+                    {
                         return Ok(false);
                     }
                 }
@@ -1140,14 +1421,26 @@ fn on_message(l: &Arc<Listener>, id: u64, flux: bool, v: &serde_json::Value, raw
             }
         }
         Some("Termination") => return Ok(true),
-        Some("ConfigureFailure") | Some("Warning") => eprintln!("[listener] {} {name}: {}", l.device, raw.chars().take(300).collect::<String>()),
-        Some(other) if other.eq_ignore_ascii_case("error") || other == "FatalError" => return Err(format!("{name} error: {raw}")),
+        Some("ConfigureFailure") | Some("Warning") => eprintln!(
+            "[listener] {} {name}: {}",
+            l.device,
+            raw.chars().take(300).collect::<String>()
+        ),
+        Some(other) if other.eq_ignore_ascii_case("error") || other == "FatalError" => {
+            return Err(format!("{name} error: {raw}"));
+        }
         _ => {}
     }
     Ok(false)
 }
 
-async fn run(l: &Arc<Listener>, id: u64, ws: Ws, mut cmd: mpsc::UnboundedReceiver<Cmd>, flux: bool) -> Result<(), String> {
+async fn run(
+    l: &Arc<Listener>,
+    id: u64,
+    ws: Ws,
+    mut cmd: mpsc::UnboundedReceiver<Cmd>,
+    flux: bool,
+) -> Result<(), String> {
     let name = if flux { "Deepgram Flux" } else { "AssemblyAI" };
     let (force, terminate) = if flux {
         ("{\"type\":\"ForceEndTurn\"}", "{\"type\":\"CloseStream\"}")
@@ -1205,7 +1498,9 @@ async fn run(l: &Arc<Listener>, id: u64, ws: Ws, mut cmd: mpsc::UnboundedReceive
     while let Ok(Some(Ok(m))) = tokio::time::timeout_at(deadline, rx.next()).await {
         match m {
             Message::Text(t) => {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) else { continue };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) else {
+                    continue;
+                };
                 if !matches!(on_message(l, id, flux, &v, &t), Ok(false)) {
                     break;
                 }
@@ -1243,15 +1538,40 @@ mod tests {
             "Keyboard control works, but I still can't grab the screen.".to_string(),
         ];
         let words = heard_words("stop the build now", false);
-        assert_eq!(live_caption(&words, &[false; 4], "Stop the build now.", false).as_deref(), Some("Stop the build now."));
-        assert_eq!(live_caption(&words, &[true, true, false, false], "Stop the build now.", false).as_deref(), Some("build now"));
-        assert_eq!(live_caption(&words, &[true; 4], "Stop the build now.", true), None);
-        assert_eq!(live_caption(&[], &[], "x".repeat(300).as_str(), false).map(|t| t.chars().count()), Some(CAPTION_CHARS));
-        for partial in ["I've got key control over", "Screen capture is", "Keyboard control work."] {
+        assert_eq!(
+            live_caption(&words, &[false; 4], "Stop the build now.", false).as_deref(),
+            Some("Stop the build now.")
+        );
+        assert_eq!(
+            live_caption(
+                &words,
+                &[true, true, false, false],
+                "Stop the build now.",
+                false
+            )
+            .as_deref(),
+            Some("build now")
+        );
+        assert_eq!(
+            live_caption(&words, &[true; 4], "Stop the build now.", true),
+            None
+        );
+        assert_eq!(
+            live_caption(&[], &[], "x".repeat(300).as_str(), false).map(|t| t.chars().count()),
+            Some(CAPTION_CHARS)
+        );
+        for partial in [
+            "I've got key control over",
+            "Screen capture is",
+            "Keyboard control work.",
+        ] {
             let words = heard_words(partial, false);
             let mask = echo_mask(&words, &replies, true);
             let (real, _, tail_real, _, echo_all) = echo_stats(&words, &mask, true);
-            assert!(echo_all, "partial `{partial}` should be echo_all (real={real}, tail={tail_real})");
+            assert!(
+                echo_all,
+                "partial `{partial}` should be echo_all (real={real}, tail={tail_real})"
+            );
             assert_eq!(real, 0, "partial `{partial}` should have 0 real words");
         }
     }
@@ -1266,9 +1586,20 @@ mod tests {
         let mask = echo_mask(&words, &replies, true);
         let (real, filtered, tail_real, max_real_run, echo_all) = echo_stats(&words, &mask, true);
         assert!(!echo_all, "barge-in at tail must not be marked echo_all");
-        assert!(filtered >= 30 && tail_real >= 7 && max_real_run >= 7, "real={real} filtered={filtered} tail={tail_real}");
-        let clean: Vec<&str> = words.iter().zip(&mask).filter(|(_, e)| !**e).map(|(w, _)| w.text.as_str()).collect();
-        assert_eq!(clean.join(" "), "It is on the same tailscale network. Okay?");
+        assert!(
+            filtered >= 30 && tail_real >= 7 && max_real_run >= 7,
+            "real={real} filtered={filtered} tail={tail_real}"
+        );
+        let clean: Vec<&str> = words
+            .iter()
+            .zip(&mask)
+            .filter(|(_, e)| !**e)
+            .map(|(w, _)| w.text.as_str())
+            .collect();
+        assert_eq!(
+            clean.join(" "),
+            "It is on the same tailscale network. Okay?"
+        );
     }
 
     #[test]
@@ -1281,7 +1612,12 @@ mod tests {
         let mask = echo_mask(&words, &replies, true);
         let (_, _, tail_real, _, echo_all) = echo_stats(&words, &mask, true);
         assert!(!echo_all && tail_real == 2);
-        let clean: Vec<&str> = words.iter().zip(&mask).filter(|(_, e)| !**e).map(|(w, _)| w.text.as_str()).collect();
+        let clean: Vec<&str> = words
+            .iter()
+            .zip(&mask)
+            .filter(|(_, e)| !**e)
+            .map(|(w, _)| w.text.as_str())
+            .collect();
         assert_eq!(clean.join(" "), "Yes, please.");
     }
 }

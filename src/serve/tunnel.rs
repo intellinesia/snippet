@@ -5,7 +5,11 @@ pub const FUNNEL_PORTS: [u16; 3] = [443, 8443, 10000];
 
 pub(super) enum Running {
     Process(tokio::process::Child),
-    Tailscale { bin: PathBuf, funnel: bool, port: u16 },
+    Tailscale {
+        bin: PathBuf,
+        funnel: bool,
+        port: u16,
+    },
     Nothing,
 }
 
@@ -48,7 +52,10 @@ pub(super) async fn open(tunnel: Tunnel, port: u16) -> Result<(String, Running),
             )?;
             start_cloudflared_quick(&bin, port).await
         }
-        Tunnel::Tailscale { funnel, port: ts_port } => {
+        Tunnel::Tailscale {
+            funnel,
+            port: ts_port,
+        } => {
             let bin = find_tailscale().ok_or(
                 "Tailscale is not installed. Install it from https://tailscale.com/download, run `tailscale up`, and try again.",
             )?;
@@ -60,17 +67,18 @@ pub(super) async fn open(tunnel: Tunnel, port: u16) -> Result<(String, Running),
         }
         Tunnel::Auto { ts_port } => {
             if let Some(bin) = find_tailscale()
-                && let Some(dns) = tailscale_dns_name(&bin).await {
-                    // A taken port must not silently become a public trycloudflare link.
-                    if let Some(taken) = tailscale_conflict(&bin, &dns, port, ts_port, false).await {
-                        println!("tailscale serve did not start: {taken}. Staying local.");
-                        return Ok((local, Running::Nothing));
-                    }
-                    match start_tailscale(&bin, &dns, port, ts_port, false).await {
-                        Ok(up) => return Ok(up),
-                        Err(e) => println!("tailscale serve did not start: {e}"),
-                    }
+                && let Some(dns) = tailscale_dns_name(&bin).await
+            {
+                // A taken port must not silently become a public trycloudflare link.
+                if let Some(taken) = tailscale_conflict(&bin, &dns, port, ts_port, false).await {
+                    println!("tailscale serve did not start: {taken}. Staying local.");
+                    return Ok((local, Running::Nothing));
                 }
+                match start_tailscale(&bin, &dns, port, ts_port, false).await {
+                    Ok(up) => return Ok(up),
+                    Err(e) => println!("tailscale serve did not start: {e}"),
+                }
+            }
             if let Some(bin) = find_cloudflared() {
                 return start_cloudflared_quick(&bin, port).await;
             }
@@ -248,7 +256,9 @@ fn serve_conflict(
     let key = ts_port.to_string();
     let tcp = status.pointer(&format!("/TCP/{key}"))?;
     if tcp.get("TCPForward").is_some() || tcp.get("TerminateTLS").is_some() {
-        return Some(format!("Tailscale port {ts_port} already forwards raw TCP for another service"));
+        return Some(format!(
+            "Tailscale port {ts_port} already forwards raw TCP for another service"
+        ));
     }
     let host = format!("{dns}:{ts_port}");
     let handlers = status
@@ -284,7 +294,11 @@ fn serve_conflict(
     if !others.is_empty() && public && !funnel {
         return Some(format!(
             "Tailscale port {ts_port} is public through Funnel, and serving here would make {} private",
-            others.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(", ")
+            others
+                .iter()
+                .map(|p| p.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     None
@@ -317,9 +331,10 @@ async fn start_cloudflared_quick(
 
     for _ in 0..100 {
         if let Ok(content) = std::fs::read_to_string(&log)
-            && let Some(url) = extract_trycloudflare_url(&content) {
-                return Ok((url, Running::Process(child)));
-            }
+            && let Some(url) = extract_trycloudflare_url(&content)
+        {
+            return Ok((url, Running::Process(child)));
+        }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     let _ = child.start_kill();
@@ -357,29 +372,57 @@ mod tests {
 
     #[test]
     fn free_or_already_ours_is_not_a_conflict() {
-        assert_eq!(serve_conflict(&serde_json::json!({}), DNS, 8443, OURS, false), None);
+        assert_eq!(
+            serve_conflict(&serde_json::json!({}), DNS, 8443, OURS, false),
+            None
+        );
         let ours = web(8443, serde_json::json!({ "/": { "Proxy": OURS } }));
         assert_eq!(serve_conflict(&ours, DNS, 8443, OURS, false), None);
-        let elsewhere = web(443, serde_json::json!({ "/": { "Proxy": "http://127.0.0.1:3000" } }));
+        let elsewhere = web(
+            443,
+            serde_json::json!({ "/": { "Proxy": "http://127.0.0.1:3000" } }),
+        );
         assert_eq!(serve_conflict(&elsewhere, DNS, 8443, OURS, false), None);
     }
 
     #[test]
     fn another_service_at_root_or_raw_tcp_is_a_conflict() {
-        let taken = web(8443, serde_json::json!({ "/": { "Proxy": "http://127.0.0.1:3000" } }));
-        assert!(serve_conflict(&taken, DNS, 8443, OURS, false).unwrap().contains("127.0.0.1:3000"));
+        let taken = web(
+            8443,
+            serde_json::json!({ "/": { "Proxy": "http://127.0.0.1:3000" } }),
+        );
+        assert!(
+            serve_conflict(&taken, DNS, 8443, OURS, false)
+                .unwrap()
+                .contains("127.0.0.1:3000")
+        );
         let tcp = serde_json::json!({ "TCP": { "8443": { "TCPForward": "127.0.0.1:22" } } });
-        assert!(serve_conflict(&tcp, DNS, 8443, OURS, false).unwrap().contains("raw TCP"));
+        assert!(
+            serve_conflict(&tcp, DNS, 8443, OURS, false)
+                .unwrap()
+                .contains("raw TCP")
+        );
     }
 
     #[test]
     fn other_paths_can_share_the_port_unless_exposure_changes() {
-        let shared = web(8443, serde_json::json!({ "/grafana": { "Proxy": "http://127.0.0.1:3000" } }));
+        let shared = web(
+            8443,
+            serde_json::json!({ "/grafana": { "Proxy": "http://127.0.0.1:3000" } }),
+        );
         assert_eq!(serve_conflict(&shared, DNS, 8443, OURS, false), None);
-        assert!(serve_conflict(&shared, DNS, 8443, OURS, true).unwrap().contains("public"));
+        assert!(
+            serve_conflict(&shared, DNS, 8443, OURS, true)
+                .unwrap()
+                .contains("public")
+        );
         let mut public = shared.clone();
         public["AllowFunnel"] = serde_json::json!({ format!("{DNS}:8443"): true });
-        assert!(serve_conflict(&public, DNS, 8443, OURS, false).unwrap().contains("Funnel"));
+        assert!(
+            serve_conflict(&public, DNS, 8443, OURS, false)
+                .unwrap()
+                .contains("Funnel")
+        );
         assert_eq!(serve_conflict(&public, DNS, 8443, OURS, true), None);
         let mut stale_funnel = web(8443, serde_json::json!({ "/": { "Proxy": OURS } }));
         stale_funnel["AllowFunnel"] = serde_json::json!({ format!("{DNS}:8443"): true });
@@ -391,9 +434,20 @@ mod tests {
     async fn live_tailscale_claims_free_ports_and_releases_only_its_root() {
         let bin = find_tailscale().expect("tailscale");
         let dns = tailscale_dns_name(&bin).await.expect("tailscale up");
-        let ts = |args: &[&str]| std::process::Command::new(&bin).args(args).output().unwrap();
+        let ts = |args: &[&str]| {
+            std::process::Command::new(&bin)
+                .args(args)
+                .output()
+                .unwrap()
+        };
         ts(&["serve", "--bg", "--https=8448", "http://127.0.0.1:3999"]);
-        ts(&["serve", "--bg", "--https=8447", "--set-path=/other", "http://127.0.0.1:3999"]);
+        ts(&[
+            "serve",
+            "--bg",
+            "--https=8447",
+            "--set-path=/other",
+            "http://127.0.0.1:3999",
+        ]);
 
         let refused = start_tailscale(&bin, &dns, 8787, 8448, false).await.err();
         let shared = start_tailscale(&bin, &dns, 8787, 8447, false).await;

@@ -1,11 +1,11 @@
 use super::*;
-use std::process::Stdio;
-use tokio::process::Command;
+use crate::llm::NativeToolDefinition;
+use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use crate::llm::NativeToolDefinition;
-use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
+use std::process::Stdio;
+use tokio::process::Command;
 
 pub struct BashTool;
 
@@ -59,7 +59,11 @@ impl Tool for BashTool {
         // scrubbed at the harness choke point).
         let vault_env = crate::vault::Vault::load().env_for_command(&args.command);
 
-        let label = args.label.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let label = args
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
 
         if args.background {
             let id = crate::bg::new_id();
@@ -245,12 +249,8 @@ impl Tool for BashTool {
             byte_budget - stderr_budget,
             &rel_log_path,
         );
-        let (stderr_display, stderr_truncated) = format_output_preview(
-            &stderr_str,
-            args.max_lines,
-            stderr_budget,
-            &rel_log_path,
-        );
+        let (stderr_display, stderr_truncated) =
+            format_output_preview(&stderr_str, args.max_lines, stderr_budget, &rel_log_path);
         let is_truncated = stdout_truncated || stderr_truncated;
 
         let mut value = json!({
@@ -304,7 +304,10 @@ fn agent_env(ctx: &ToolContext) -> Vec<(String, String)> {
     if let Some(id) = ctx.durable_session_id() {
         env.push(("SNIPPET_SESSION_ID".to_string(), id.to_string()));
     }
-    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
         env.push(("SNIPPET_BIN_DIR".to_string(), dir.display().to_string()));
     }
     env
@@ -312,7 +315,8 @@ fn agent_env(ctx: &ToolContext) -> Vec<(String, String)> {
 
 /// Prepended to every command. `sh -l` sources the login profile, which may
 /// reset PATH, so the snippet binary is put first after that has run.
-const PATH_PRELUDE: &str = "[ -n \"$SNIPPET_BIN_DIR\" ] && export PATH=\"$SNIPPET_BIN_DIR:$PATH\"\n";
+const PATH_PRELUDE: &str =
+    "[ -n \"$SNIPPET_BIN_DIR\" ] && export PATH=\"$SNIPPET_BIN_DIR:$PATH\"\n";
 
 fn format_output_preview(
     text: &str,
@@ -378,4 +382,3 @@ fn clip_tail(text: &str, max: usize) -> String {
     }
     format!("…{}", &text[start..])
 }
-

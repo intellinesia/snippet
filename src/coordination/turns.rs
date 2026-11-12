@@ -19,7 +19,8 @@ pub struct Turn {
     pub commits: Vec<String>,
 }
 
-const TURN_COLUMNS: &str = "id, agent_id, session_id, started_at, ended_at, snapshot, files_json, commits_json";
+const TURN_COLUMNS: &str =
+    "id, agent_id, session_id, started_at, ended_at, snapshot, files_json, commits_json";
 
 fn turn_from_row(row: &rusqlite::Row<'_>) -> Result<Turn, rusqlite::Error> {
     let list = |raw: String| serde_json::from_str(&raw).unwrap_or_default();
@@ -36,7 +37,14 @@ fn turn_from_row(row: &rusqlite::Row<'_>) -> Result<Turn, rusqlite::Error> {
 }
 
 impl Store {
-    pub fn open_turn(&self, task_id: &str, agent_id: &str, session_id: &str, snapshot: &str, now: &str) -> Result<i64, StoreError> {
+    pub fn open_turn(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        session_id: &str,
+        snapshot: &str,
+        now: &str,
+    ) -> Result<i64, StoreError> {
         self.with_connection(|c| {
             c.execute(
                 "INSERT INTO task_turns (task_id, agent_id, session_id, started_at, snapshot) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -46,7 +54,13 @@ impl Store {
         })
     }
 
-    pub fn close_turn(&self, id: i64, files: &[String], commits: &[String], now: &str) -> Result<(), StoreError> {
+    pub fn close_turn(
+        &self,
+        id: i64,
+        files: &[String],
+        commits: &[String],
+        now: &str,
+    ) -> Result<(), StoreError> {
         let json = |list: &[String]| serde_json::to_string(list).unwrap_or_else(|_| "[]".into());
         self.with_connection(|c| {
             c.execute(
@@ -71,13 +85,20 @@ impl Store {
     /// Oldest first.
     pub fn list_turns(&self, task_id: &str) -> Result<Vec<Turn>, StoreError> {
         self.with_connection(|c| {
-            let mut stmt = c.prepare(&format!("SELECT {TURN_COLUMNS} FROM task_turns WHERE task_id = ?1 ORDER BY id"))?;
+            let mut stmt = c.prepare(&format!(
+                "SELECT {TURN_COLUMNS} FROM task_turns WHERE task_id = ?1 ORDER BY id"
+            ))?;
             let rows = stmt.query_map(params![task_id], turn_from_row)?;
             rows.collect()
         })
     }
 
-    pub fn set_member_session(&self, task_id: &str, agent_id: &str, session_id: &str) -> Result<(), StoreError> {
+    pub fn set_member_session(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        session_id: &str,
+    ) -> Result<(), StoreError> {
         self.with_connection(|c| {
             c.execute(
                 "UPDATE task_agents SET work_session_id = ?3 WHERE task_id = ?1 AND agent_id = ?2 AND removed_at IS NULL",
@@ -115,7 +136,11 @@ impl Store {
     }
 
     /// Tasks a conversation works: dispatched to it, or seated in it.
-    pub fn tasks_worked_in(&self, session_id: &str, status: Option<&TaskStatus>) -> Result<Vec<Task>, StoreError> {
+    pub fn tasks_worked_in(
+        &self,
+        session_id: &str,
+        status: Option<&TaskStatus>,
+    ) -> Result<Vec<Task>, StoreError> {
         let status = status.map(|s| s.as_str().to_string());
         self.with_connection(|c| {
             let mut stmt = c.prepare(&format!(
@@ -133,7 +158,18 @@ impl Store {
     /// Seating records across all tasks, ordered active first, then newest.
     pub fn task_seating_records(
         &self,
-    ) -> Result<Vec<(String, String, String, Option<String>, Option<String>, Option<String>, Option<String>)>, StoreError> {
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )>,
+        StoreError,
+    > {
         self.with_connection(|c| {
             let mut stmt = c.prepare(
                 "SELECT t.id, t.session_id, t.status, ta.agent_id, ta.role, ta.status, ta.work_session_id

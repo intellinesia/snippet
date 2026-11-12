@@ -26,25 +26,24 @@ use crate::config::{InferenceProfileConfig, SnippetConfig, save_config, workspac
 use crate::harness::{HarnessEvent, LoopInput};
 use crate::mission_control as mc;
 use crate::session::{
-    list_device_sessions,
-    read_session_profile, read_session_sidecar, read_session_meta, read_session_state, read_session_state_tail, replay_notification_events,
-    session_id_for_state_path, start_session,
-    state_path_for_id, subscribe_device_events, write_session_profile,
-    SessionRole,
+    SessionRole, list_device_sessions, read_session_meta, read_session_profile,
+    read_session_sidecar, read_session_state, read_session_state_tail, replay_notification_events,
+    session_id_for_state_path, start_session, state_path_for_id, subscribe_device_events,
+    write_session_profile,
 };
 
-pub mod agent_routes;
 mod account_routes;
-mod ambient_routes;
+pub mod agent_routes;
 mod ambient_context;
-mod ambient_router;
-mod ambient_stream;
-mod assembly;
-mod listener;
-mod ambient_watch;
-mod call_detect;
 pub(crate) mod ambient_room;
+mod ambient_router;
+mod ambient_routes;
+mod ambient_stream;
+mod ambient_watch;
+mod assembly;
+mod call_detect;
 pub(crate) mod call_track;
+mod listener;
 mod recording_routes;
 mod speakers;
 pub(crate) use agent_routes::*;
@@ -53,31 +52,33 @@ pub(crate) use config_routes::*;
 mod coordination;
 pub use coordination::{COORDINATION_THREAD, queue_coordination_wake};
 mod direct;
-pub(crate) use direct::{human_dm_thread, post_to_human, relay_desk_reply, relay_question, relay_restart};
+pub(crate) use direct::{
+    human_dm_thread, post_to_human, relay_desk_reply, relay_question, relay_restart,
+};
+mod artifact_routes;
 pub(crate) mod attention;
 mod autonomy;
 mod fs;
 mod git;
-mod lifecycle;
-mod memory_routes;
-mod artifact_routes;
 mod github_routes;
+mod lifecycle;
 pub mod maintenance;
+mod memory_routes;
 pub(crate) use maintenance::*;
 mod mission_control;
 pub use mission_control::{mission_error, validated_owned_paths};
+mod agent_wakes;
+mod goals;
+mod groups;
+mod keep_warm;
 mod recurring;
 mod review;
-mod groups;
-mod stall;
-mod goals;
-mod agent_wakes;
-mod keep_warm;
 mod routing_routes;
-mod settle_routes;
 pub mod session_routes;
-pub(crate) use session_routes::*;
+mod settle_routes;
+mod stall;
 use crate::term::SessionTerms;
+pub(crate) use session_routes::*;
 pub mod sidecar;
 mod transcribe;
 mod tunnel;
@@ -110,7 +111,10 @@ pub(crate) fn is_agent_desk(id: &str) -> bool {
     id.starts_with("inbox-") && crate::session::is_inbox_session_id(id)
 }
 
-pub(crate) fn live_from_handle(handle: crate::session::SessionHandle, profile: Option<String>) -> LiveSession {
+pub(crate) fn live_from_handle(
+    handle: crate::session::SessionHandle,
+    profile: Option<String>,
+) -> LiveSession {
     let cwd = {
         let from_state = read_session_meta(&handle.state_path)
             .map(|s| PathBuf::from(s.workspace))
@@ -135,10 +139,11 @@ pub(crate) fn live_from_handle(handle: crate::session::SessionHandle, profile: O
 /// known setup). Shared by the session open / resume / attach paths.
 pub(crate) fn apply_profile(cfg: &mut SnippetConfig, profile: &Option<String>) {
     if let Some(name) = profile.as_ref()
-        && let Some(m) = cfg.setups.as_ref().and_then(|s| s.get(name)).cloned() {
-            cfg.model = m;
-            cfg.active_setup = Some(name.clone());
-        }
+        && let Some(m) = cfg.setups.as_ref().and_then(|s| s.get(name)).cloned()
+    {
+        cfg.model = m;
+        cfg.active_setup = Some(name.clone());
+    }
 }
 
 /// Resolve a session id to its (state_path, workspace_dir), reading and validating
@@ -154,7 +159,10 @@ fn load_session_workspace(session: &str) -> Result<(PathBuf, PathBuf), Response>
     };
     let folder = PathBuf::from(&state.workspace);
     if state.workspace.is_empty() || !folder.is_dir() {
-        return Err(api_error(StatusCode::BAD_REQUEST, "session workspace missing"));
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "session workspace missing",
+        ));
     }
     Ok((sp, folder))
 }
@@ -398,7 +406,13 @@ impl Daemon {
                 }
             });
             return crate::session::start_inbox_session(
-                cfg, sp, initial, true, stream(), &agent_id, identity,
+                cfg,
+                sp,
+                initial,
+                true,
+                stream(),
+                &agent_id,
+                identity,
             );
         }
         if let Some(agent_id) = sidecar.as_ref().and_then(|s| s.agent_id.as_deref()) {
@@ -427,13 +441,7 @@ impl Daemon {
                 Err(_) => {}
             }
         }
-        start_session(
-            cfg,
-            sp,
-            initial,
-            true,
-            stream(),
-        )
+        start_session(cfg, sp, initial, true, stream())
     }
 
     /// Run a session on a named inference profile, restarting its loop.
@@ -468,7 +476,11 @@ impl Daemon {
                     .find_map(|t| self.task_profile(&t))
             })
             // A desk runs on its agent's profile and keeps no pin of its own.
-            .or_else(|| (!is_agent_desk(id)).then(|| read_session_profile(sp)).flatten())
+            .or_else(|| {
+                (!is_agent_desk(id))
+                    .then(|| read_session_profile(sp))
+                    .flatten()
+            })
             .or_else(|| self.routed_profile(id))
     }
 
@@ -483,14 +495,18 @@ impl Daemon {
                     Some(live) => live.profile.clone(),
                     None => return,
                 };
-                let Some(target) = d.routed_profile(&desk) else { return };
+                let Some(target) = d.routed_profile(&desk) else {
+                    return;
+                };
                 if current.as_deref() == Some(target.as_str()) {
                     return;
                 }
                 if !recurring::session_busy_for_recurring(&desk) {
                     match d.run_session_on_profile(&desk, &target, false).await {
                         Ok(()) => config_routes::notify_models(Some(&desk)),
-                        Err(error) => eprintln!("[agents] desk `{desk}` stayed on its model: {error}"),
+                        Err(error) => {
+                            eprintln!("[agents] desk `{desk}` stayed on its model: {error}")
+                        }
                     }
                     return;
                 }
@@ -541,7 +557,12 @@ impl Daemon {
     /// The profile a task runs on: its own override first, then the profile of
     /// the agent doing the work.
     pub(crate) fn task_profile(&self, task: &crate::coordination::Task) -> Option<String> {
-        if let Some(profile) = task.profile.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        if let Some(profile) = task
+            .profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
             return Some(profile.to_string());
         }
         let roster = self.store.list_task_agents(&task.id).ok()?;
@@ -553,9 +574,12 @@ impl Daemon {
 
     pub(crate) fn routed_profile(&self, id: &str) -> Option<String> {
         if let Some(agent_id) = id.strip_prefix("inbox-")
-            && let Some(profile) = self.agent_desk_profile(agent_id).or_else(|| self.agent_profile(agent_id)) {
-                return Some(profile);
-            }
+            && let Some(profile) = self
+                .agent_desk_profile(agent_id)
+                .or_else(|| self.agent_profile(agent_id))
+        {
+            return Some(profile);
+        }
         let route = if id == crate::mission_control::SESSION_ID {
             crate::routing::Route::Mission
         } else if crate::session::is_inbox_session_id(id) {
@@ -621,9 +645,10 @@ impl Daemon {
             .and_then(|s| s.profile.clone());
         let c = self.config.lock().unwrap();
         if let Some(name) = profile
-            && let Some(m) = c.setups.as_ref().and_then(|s| s.get(&name)) {
-                return m.provider.clone();
-            }
+            && let Some(m) = c.setups.as_ref().and_then(|s| s.get(&name))
+        {
+            return m.provider.clone();
+        }
         c.model.provider.clone()
     }
 
@@ -756,10 +781,11 @@ impl Daemon {
         };
         let mut sessions = self.sessions.lock().await;
         if let Some(s) = sessions.get(id)
-            && !s.join.is_finished() {
-                let _ = s.input_tx.send(input);
-                return;
-            }
+            && !s.join.is_finished()
+        {
+            let _ = s.input_tx.send(input);
+            return;
+        }
         // The resident loop isn't alive — e.g. after a daemon restart, before this
         // session has been activated this run. Revive it, then deliver the input.
         // A text message starts the loop WITH that message as the first turn; any
@@ -850,7 +876,10 @@ pub fn resolve_tunnel(
     match kind.as_deref() {
         None | Some("") | Some("auto") => Ok(Tunnel::Auto { ts_port: port }),
         Some("cloudflare" | "cloudflared" | "cf") => Ok(Tunnel::Cloudflare),
-        Some("tailscale" | "ts") => Ok(Tunnel::Tailscale { funnel: false, port }),
+        Some("tailscale" | "ts") => Ok(Tunnel::Tailscale {
+            funnel: false,
+            port,
+        }),
         Some("funnel" | "tailscale-funnel") => {
             if !tunnel::FUNNEL_PORTS.contains(&port) {
                 return Err(format!(
@@ -860,11 +889,14 @@ pub fn resolve_tunnel(
             Ok(Tunnel::Tailscale { funnel: true, port })
         }
         Some("none" | "local") => Ok(Tunnel::None),
-        Some(other) => Err(format!("unknown tunnel `{other}` (use one of: {TUNNEL_KINDS})")),
+        Some(other) => Err(format!(
+            "unknown tunnel `{other}` (use one of: {TUNNEL_KINDS})"
+        )),
     }
 }
 
-fn compression() -> tower_http::compression::CompressionLayer<impl tower_http::compression::Predicate> {
+fn compression()
+-> tower_http::compression::CompressionLayer<impl tower_http::compression::Predicate> {
     use tower_http::compression::predicate::{NotForContentType, Predicate, SizeAbove};
     tower_http::compression::CompressionLayer::new().compress_when(
         SizeAbove::new(1024)
@@ -918,7 +950,8 @@ pub async fn run_serve(
     call_track::sweep_loop(daemon.clone());
     ambient_routes::warm_voice(daemon.clone());
     {
-        static RESUME: std::sync::OnceLock<(Shared, tokio::runtime::Handle)> = std::sync::OnceLock::new();
+        static RESUME: std::sync::OnceLock<(Shared, tokio::runtime::Handle)> =
+            std::sync::OnceLock::new();
         let _ = RESUME.set((daemon.clone(), tokio::runtime::Handle::current()));
         crate::speech::set_resume_hook(|| {
             if let Some((d, handle)) = RESUME.get() {
@@ -934,7 +967,14 @@ pub async fn run_serve(
             let d = d.clone();
             let body = format!("Ambient mode is now {mode} ({reason}).");
             handle.spawn(async move {
-                agent_routes::record_agent_message(&d, crate::mission_control::SESSION_ID, "ambient mode", &body, false).await;
+                agent_routes::record_agent_message(
+                    &d,
+                    crate::mission_control::SESSION_ID,
+                    "ambient mode",
+                    &body,
+                    false,
+                )
+                .await;
             });
         }));
     }
@@ -1022,9 +1062,18 @@ pub async fn run_serve(
         .route("/agents/{agent_id}/shape", post(set_agent_shape))
         .route("/agents/{agent_id}/nickname", post(set_agent_nickname))
         .route("/agents/{agent_id}/profile", post(set_agent_profile))
-        .route("/agents/{agent_id}/desk-profile", post(set_agent_desk_profile))
-        .route("/agents/{agent_id}/context", post(agent_routes::set_agent_context))
-        .route("/agents/{agent_id}/reach", get(get_agent_reach).put(put_agent_reach))
+        .route(
+            "/agents/{agent_id}/desk-profile",
+            post(set_agent_desk_profile),
+        )
+        .route(
+            "/agents/{agent_id}/context",
+            post(agent_routes::set_agent_context),
+        )
+        .route(
+            "/agents/{agent_id}/reach",
+            get(get_agent_reach).put(put_agent_reach),
+        )
         .route("/agents/{agent_id}", axum::routing::delete(delete_agent))
         .merge(coordination::router())
         .merge(groups::router())
@@ -1032,7 +1081,10 @@ pub async fn run_serve(
             "/coordination/direct/messages",
             get(direct::direct_list_messages).post(direct::direct_send_message),
         )
-        .route("/coordination/direct/threads", get(direct::direct_list_threads))
+        .route(
+            "/coordination/direct/threads",
+            get(direct::direct_list_threads),
+        )
         .route("/coordination/direct/read", post(direct::direct_mark_read))
         .route("/coordination/direct/answer", post(direct::direct_answer))
         .route("/sessions", get(list_sessions).post(open_session))
@@ -1078,12 +1130,21 @@ pub async fn run_serve(
         .route("/ambient/stream", get(ambient_stream::stream))
         .route("/ambient/stats", get(ambient_routes::stats))
         .route("/ambient/lease", post(ambient_routes::lease))
-        .route("/ambient/recording", get(recording_routes::get).post(recording_routes::set))
+        .route(
+            "/ambient/recording",
+            get(recording_routes::get).post(recording_routes::set),
+        )
         .route("/ambient/recordings/delete", post(recording_routes::delete))
         .route("/ambient/call", get(call_track::status))
         .route("/ambient/call/{call_id}/track", post(call_track::track))
         .route("/ambient/call/{call_id}/ignore", post(call_track::ignore))
         .route("/ambient/call/{call_id}/stop", post(call_track::stop))
+        .route(
+            "/ambient/tuning",
+            get(ambient_routes::get_tuning)
+                .post(ambient_routes::set_tuning)
+                .delete(ambient_routes::clear_tuning),
+        )
         .route(
             "/ambient/settings",
             get(ambient_routes::get_settings).post(ambient_routes::set_settings),
@@ -1113,10 +1174,16 @@ pub async fn run_serve(
         .route("/session/delete", post(delete_session))
         .route("/session/settle", post(settle_routes::settle_route))
         .route("/session/keep_awake", post(settle_routes::keep_awake_route))
-        .route("/session/resume_mode", post(settle_routes::resume_mode_route))
+        .route(
+            "/session/resume_mode",
+            post(settle_routes::resume_mode_route),
+        )
         .route("/session/cache", get(settle_routes::cache_route))
         .route("/session/unsettle", post(settle_routes::unsettle_route))
-        .route("/session/interrupt", post(session_routes::interrupt_session))
+        .route(
+            "/session/interrupt",
+            post(session_routes::interrupt_session),
+        )
         .route("/session/rename", post(rename_session))
         .route("/git/worktrees", get(git_worktrees))
         .route("/git/status", get(git_status))
@@ -1137,7 +1204,10 @@ pub async fn run_serve(
         .route("/session/checkpoint-stats", post(checkpoint_stats))
         .route("/session/lane", get(session_routes::lane_detail))
         .route("/git/init", post(git_init))
-        .layer(axum::middleware::from_fn_with_state(daemon.clone(), require_token))
+        .layer(axum::middleware::from_fn_with_state(
+            daemon.clone(),
+            require_token,
+        ))
         .layer(compression())
         .with_state(daemon.clone());
     let addr: SocketAddr = format!("{host}:{port}")
@@ -1198,7 +1268,9 @@ async fn announce_restart(d: &Shared) {
         .map(|(id, l)| (id.clone(), l.state_path.clone()))
         .collect();
     for (id, path) in live {
-        let Some(meta) = read_session_meta(&path) else { continue };
+        let Some(meta) = read_session_meta(&path) else {
+            continue;
+        };
         if meta.status != crate::harness::HarnessStatus::Running && meta.human_waiting.is_empty() {
             continue;
         }
@@ -1206,7 +1278,9 @@ async fn announce_restart(d: &Shared) {
             step: "daemon_restart".to_string(),
             reasoning: "Snippet restarted while this turn was running; continuing is up to the next message".to_string(),
         };
-        let _ = d.store.append_conversation_events(&id, &[event], &chrono::Utc::now().to_rfc3339());
+        let _ = d
+            .store
+            .append_conversation_events(&id, &[event], &chrono::Utc::now().to_rfc3339());
         relay_restart(&d.store, &id, &meta);
     }
 }
@@ -1217,7 +1291,11 @@ fn unauthorized() -> Response {
 
 /// The one error shape every route returns: `{"error": "..."}` with a real status.
 pub(crate) fn api_error(status: StatusCode, message: impl std::fmt::Display) -> Response {
-    (status, Json(serde_json::json!({ "error": message.to_string() }))).into_response()
+    (
+        status,
+        Json(serde_json::json!({ "error": message.to_string() })),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -1234,7 +1312,9 @@ async fn require_token(
 ) -> Response {
     let path = request.uri().path();
     let open = path == "/health" || path.starts_with("/a/");
-    let token = Query::<TokenQuery>::try_from_uri(request.uri()).ok().and_then(|q| q.0.token);
+    let token = Query::<TokenQuery>::try_from_uri(request.uri())
+        .ok()
+        .and_then(|q| q.0.token);
     if open || d.authed(&token) {
         next.run(request).await
     } else {
@@ -1260,7 +1340,10 @@ pub(crate) async fn settle_stale_running(d: &Shared) {
         .collect();
     let _ = tokio::task::spawn_blocking(move || {
         for s in list_device_sessions() {
-            if s.status != "running" || now - s.last_active <= STALE_RUNNING_SECS || live.contains(&s.id) {
+            if s.status != "running"
+                || now - s.last_active <= STALE_RUNNING_SECS
+                || live.contains(&s.id)
+            {
                 continue;
             }
             if let Some(sp) = state_path_for_id(&s.id)
@@ -1387,7 +1470,9 @@ async fn usage_summary(State(d): State<Shared>, Query(q): Query<UsageQuery>) -> 
             let snaps = labelled_accounts("claude-code");
             if snaps.is_empty() {
                 pooled("claude-code")
-                    .or_else(|| crate::harness::claude_rate_limits().filter(|rate| rate.is_reported()))
+                    .or_else(|| {
+                        crate::harness::claude_rate_limits().filter(|rate| rate.is_reported())
+                    })
                     .into_iter()
                     .collect()
             } else {
@@ -1398,7 +1483,9 @@ async fn usage_summary(State(d): State<Shared>, Query(q): Query<UsageQuery>) -> 
         }
     };
     let devin_rates = crate::devin_usage::cached();
-    let agy_quota = crate::antigravity::cached_quota().map(|(_, groups)| groups).unwrap_or_default();
+    let agy_quota = crate::antigravity::cached_quota()
+        .map(|(_, groups)| groups)
+        .unwrap_or_default();
     let mut order: Vec<String> = Vec::new();
     let mut providers: HashMap<String, serde_json::Value> = HashMap::new();
     for row in totals {
@@ -1489,10 +1576,7 @@ fn default_true() -> bool {
 }
 
 // POST /sessions {folder, resume?} — open a folder, start/resume its session.
-async fn open_session(
-    State(d): State<Shared>,
-    Json(req): Json<OpenReq>,
-) -> Response {
+async fn open_session(State(d): State<Shared>, Json(req): Json<OpenReq>) -> Response {
     let folder = PathBuf::from(&req.folder);
     if !folder.is_dir() {
         return api_error(StatusCode::BAD_REQUEST, "not a directory");
@@ -1513,8 +1597,7 @@ async fn open_session(
     };
     // Canonical (filename stripped) so this matches `session_id_for_state_path`.
     let id = crate::conversations::canonical_session_id(
-        &sp
-            .strip_prefix(workspaces_root())
+        &sp.strip_prefix(workspaces_root())
             .unwrap_or(&sp)
             .display()
             .to_string(),
@@ -1639,7 +1722,6 @@ async fn get_config(State(d): State<Shared>) -> Response {
     .into_response()
 }
 
-
 fn skip_lean_for_voice(text: &str) -> bool {
     text.contains("<ambient_turn")
 }
@@ -1658,15 +1740,13 @@ fn resume_lean(id: &str, attended: bool) -> bool {
         return false;
     };
     let ttl = crate::settle::ttl_for(&crate::settle::profile_cache_ttls(), row.profile.as_deref());
-    let lapsed = context > 0
-        && crate::settle::idle_secs(chrono::Utc::now().timestamp(), touched) >= ttl;
+    let lapsed =
+        context > 0 && crate::settle::idle_secs(chrono::Utc::now().timestamp(), touched) >= ttl;
     crate::settle::resume_action(&row.resume_mode, lapsed, attended)
 }
 
 #[cfg(test)]
 mod tests;
-
-
 
 #[cfg(test)]
 mod wake_tests {
@@ -1682,8 +1762,12 @@ mod wake_tests {
 
     #[test]
     fn voice_turns_skip_the_lean_handover() {
-        assert!(skip_lean_for_voice("<ambient_turn mode=\"active\" ids=\"a\">hi</ambient_turn>"));
+        assert!(skip_lean_for_voice(
+            "<ambient_turn mode=\"active\" ids=\"a\">hi</ambient_turn>"
+        ));
         assert!(!skip_lean_for_voice("hello there"));
-        assert!(!skip_lean_for_voice("<ambient_resume>back</ambient_resume>"));
+        assert!(!skip_lean_for_voice(
+            "<ambient_resume>back</ambient_resume>"
+        ));
     }
 }

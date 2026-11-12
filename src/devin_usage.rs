@@ -54,7 +54,11 @@ pub fn cached() -> Vec<RateLimitSnapshot> {
             out.push(snap.clone());
         }
     }
-    let mut rest: Vec<&String> = cache.accounts.keys().filter(|k| !seen.contains(*k)).collect();
+    let mut rest: Vec<&String> = cache
+        .accounts
+        .keys()
+        .filter(|k| !seen.contains(*k))
+        .collect();
     rest.sort();
     for id in rest {
         out.push(cache.accounts[id].clone());
@@ -92,7 +96,10 @@ pub fn refresh_if_stale(max_age_secs: i64) {
             accounts.insert(id.clone(), snap);
         }
         if !accounts.is_empty() {
-            store_cache(&UsageCache { fetched_at: chrono::Utc::now().timestamp(), accounts });
+            store_cache(&UsageCache {
+                fetched_at: chrono::Utc::now().timestamp(),
+                accounts,
+            });
         }
         REFRESHING.store(false, Ordering::SeqCst);
     });
@@ -100,7 +107,13 @@ pub fn refresh_if_stale(max_age_secs: i64) {
 
 fn slot(id: &str) -> String {
     id.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -202,9 +215,7 @@ pub fn parse_user_status(body: &Value, account_label: Option<&str>) -> Option<Ra
     let weekly_reset = unix(status.get("weeklyQuotaResetAtUnix"));
 
     let mut primary = None;
-    if !hide_daily
-        && let Some(remaining) = daily_remaining
-    {
+    if !hide_daily && let Some(remaining) = daily_remaining {
         primary = Some(RateLimitWindow {
             used_percent: (100.0 - remaining).clamp(0.0, 100.0),
             window_minutes: 1440,
@@ -236,7 +247,11 @@ pub fn parse_user_status(body: &Value, account_label: Option<&str>) -> Option<Ra
         label = format!("{account} · {label}");
     }
 
-    Some(RateLimitSnapshot { primary, secondary, label: Some(label) })
+    Some(RateLimitSnapshot {
+        primary,
+        secondary,
+        label: Some(label),
+    })
 }
 
 #[cfg(test)]
@@ -280,8 +295,16 @@ mod tests {
             };
             match parse_user_status(&body, None) {
                 Some(snap) => {
-                    let pct = |w: &Option<RateLimitWindow>| w.map(|w| format!("{}%/{}m", w.used_percent, w.window_minutes)).unwrap_or_else(|| "-".into());
-                    println!("{id} {} primary={} secondary={}", snap.label.as_deref().unwrap_or("-"), pct(&snap.primary), pct(&snap.secondary));
+                    let pct = |w: &Option<RateLimitWindow>| {
+                        w.map(|w| format!("{}%/{}m", w.used_percent, w.window_minutes))
+                            .unwrap_or_else(|| "-".into())
+                    };
+                    println!(
+                        "{id} {} primary={} secondary={}",
+                        snap.label.as_deref().unwrap_or("-"),
+                        pct(&snap.primary),
+                        pct(&snap.secondary)
+                    );
                 }
                 None => println!("{id}: no plan status"),
             }

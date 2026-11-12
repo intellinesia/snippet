@@ -17,8 +17,12 @@ fn redact(text: &str) -> String {
     scrubbed
         .split_whitespace()
         .map(|w| {
-            let long = w.len() >= 24 && w.chars().any(|c| c.is_ascii_digit()) && w.chars().any(|c| c.is_ascii_alphabetic());
-            let known = ["sk-", "ghp_", "gho_", "xox", "AIza", "AKIA", "eyJ"].iter().any(|p| w.starts_with(p));
+            let long = w.len() >= 24
+                && w.chars().any(|c| c.is_ascii_digit())
+                && w.chars().any(|c| c.is_ascii_alphabetic());
+            let known = ["sk-", "ghp_", "gho_", "xox", "AIza", "AKIA", "eyJ"]
+                .iter()
+                .any(|p| w.starts_with(p));
             if long || known { "[redacted]" } else { w }
         })
         .collect::<Vec<_>>()
@@ -58,18 +62,47 @@ fn plain_text(content: &str) -> String {
 }
 
 fn summarize_tool(tc: &crate::llm::ToolCallRecord) -> Option<String> {
-    let s = |k: &str| tc.arguments.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
+    let s = |k: &str| {
+        tc.arguments
+            .get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    };
     let summary = match tc.name.as_str() {
         "speak" => return None,
         "create_mission_task" | "update_mission_task" => {
-            format!("{}: {}", tc.name, clip(s("title").or_else(|| s("task_id")).unwrap_or("task"), 80, false))
+            format!(
+                "{}: {}",
+                tc.name,
+                clip(
+                    s("title").or_else(|| s("task_id")).unwrap_or("task"),
+                    80,
+                    false
+                )
+            )
         }
         "inspect_session" | "stop_session" | "create_mission_session" => {
-            format!("{}: {}", tc.name, clip(s("session_id").or_else(|| s("title")).unwrap_or("session"), 80, false))
+            format!(
+                "{}: {}",
+                tc.name,
+                clip(
+                    s("session_id").or_else(|| s("title")).unwrap_or("session"),
+                    80,
+                    false
+                )
+            )
         }
         "ambient_mode" => format!("ambient_mode: {}", s("mode").unwrap_or("")),
-        "ambient_expect" => format!("ambient_expect: {} ({})", s("kind").unwrap_or(""), clip(s("about").unwrap_or(""), 60, false)),
-        "schedule_wake" => format!("schedule_wake: {}", clip(s("note").unwrap_or(""), 70, false)),
+        "ambient_expect" => format!(
+            "ambient_expect: {} ({})",
+            s("kind").unwrap_or(""),
+            clip(s("about").unwrap_or(""), 60, false)
+        ),
+        "schedule_wake" => format!(
+            "schedule_wake: {}",
+            clip(s("note").unwrap_or(""), 70, false)
+        ),
         "ping_user" => format!("ping_user: {}", clip(s("title").unwrap_or(""), 70, false)),
         "list_mission_tasks" | "list_sessions" | "ambient_search" => tc.name.clone(),
         other => format!("{other}"),
@@ -81,8 +114,14 @@ fn summarize_tool(tc: &crate::llm::ToolCallRecord) -> Option<String> {
 fn quiet_voice_reply(before: &[crate::conversations::StoredMessage]) -> bool {
     for row in before.iter().rev() {
         match &row.message {
-            crate::llm::HarnessMessage::User { content } => return content.contains("<ambient_turn"),
-            crate::llm::HarnessMessage::Assistant { tool_calls, .. } if tool_calls.iter().any(|c| c.name == "speak") => return false,
+            crate::llm::HarnessMessage::User { content } => {
+                return content.contains("<ambient_turn");
+            }
+            crate::llm::HarnessMessage::Assistant { tool_calls, .. }
+                if tool_calls.iter().any(|c| c.name == "speak") =>
+            {
+                return false;
+            }
             _ => {}
         }
     }
@@ -128,13 +167,18 @@ pub(crate) fn mission_control(d: &Shared) -> Value {
                     chat.push(json!({"who": "user", "via": via, "when": when, "text": text}));
                 }
             }
-            crate::llm::HarnessMessage::Assistant { content, tool_calls } => {
+            crate::llm::HarnessMessage::Assistant {
+                content,
+                tool_calls,
+            } => {
                 // Skip internal assistant replies to daemon wakes/board envelopes when no speak tool was called
                 let prev_user_is_daemon = rows[..idx]
                     .iter()
                     .rev()
                     .find_map(|r| match &r.message {
-                        crate::llm::HarnessMessage::User { content } => Some(crate::harness::is_daemon_envelope(content)),
+                        crate::llm::HarnessMessage::User { content } => {
+                            Some(crate::harness::is_daemon_envelope(content))
+                        }
                         _ => None,
                     })
                     .unwrap_or(false);
@@ -156,15 +200,18 @@ pub(crate) fn mission_control(d: &Shared) -> Value {
                             }
                         }
                     } else if tools.len() < 5
-                        && let Some(summary) = summarize_tool(tc) {
-                            tools.push(json!({"when": when, "action": summary}));
-                        }
+                        && let Some(summary) = summarize_tool(tc)
+                    {
+                        tools.push(json!({"when": when, "action": summary}));
+                    }
                 }
                 if !content.trim().is_empty() && !has_speak && chat.len() < 8 && budget >= 80 {
                     let text = redact(&clip(&plain_text(content), 280, true));
                     if !text.is_empty() {
                         budget = budget.saturating_sub(text.len());
-                        chat.push(json!({"who": "assistant", "via": "chat", "when": when, "text": text}));
+                        chat.push(
+                            json!({"who": "assistant", "via": "chat", "when": when, "text": text}),
+                        );
                     }
                 }
             }

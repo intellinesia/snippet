@@ -236,7 +236,12 @@ impl SessionTerms {
 
     fn should_watch(&self) -> bool {
         let panes = self.terms.lock().map(|g| !g.is_empty()).unwrap_or(false);
-        panes && self.fanout.lock().map(|g| !g.clients.is_empty()).unwrap_or(false)
+        panes
+            && self
+                .fanout
+                .lock()
+                .map(|g| !g.clients.is_empty())
+                .unwrap_or(false)
     }
 
     /// Runs a pty watcher thread while panes and subscribers both exist, so
@@ -268,10 +273,8 @@ impl SessionTerms {
             Ok(g) => g,
             Err(_) => return Vec::new(),
         };
-        let mut out: Vec<(String, bool)> = g
-            .iter()
-            .map(|(id, t)| (id.clone(), t.is_alive()))
-            .collect();
+        let mut out: Vec<(String, bool)> =
+            g.iter().map(|(id, t)| (id.clone(), t.is_alive())).collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
@@ -288,9 +291,10 @@ impl SessionTerms {
 
     pub fn close(&self, id: &str) {
         if let Ok(mut g) = self.terms.lock()
-            && let Some(t) = g.remove(id) {
-                t.kill();
-            }
+            && let Some(t) = g.remove(id)
+        {
+            t.kill();
+        }
         if let Some(waker) = &self.waker {
             waker.wake();
         }
@@ -376,7 +380,6 @@ impl SessionTerms {
             })
             .collect()
     }
-
 }
 
 struct TermChangeSignal<'a>(&'a tokio::sync::watch::Sender<()>);
@@ -410,7 +413,11 @@ fn watch_ptys(me: Weak<SessionTerms>, waker: Arc<Waker>) {
         };
         let mut pfds: Vec<libc::pollfd> = std::iter::once(waker.rx.as_raw_fd())
             .chain(fds.iter().map(|fd| fd.as_raw_fd()))
-            .map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 })
+            .map(|fd| libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            })
             .collect();
         // The timeout only bounds how long a closed pane or departed client keeps the thread.
         let r = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, 1000) };
@@ -429,7 +436,10 @@ fn watch_ptys(me: Weak<SessionTerms>, waker: Arc<Waker>) {
             terms.pump();
         }
         // A hung-up pane polls ready until pump notices; don't spin on it.
-        if pfds[1..].iter().any(|p| p.revents & libc::POLLIN == 0 && p.revents != 0) {
+        if pfds[1..]
+            .iter()
+            .any(|p| p.revents & libc::POLLIN == 0 && p.revents != 0)
+        {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
@@ -564,10 +574,11 @@ impl SessionTerm {
             }
         }
         if let Some(pid) = g.child_pid
-            && reap_if_exited(pid) {
-                g.alive = false;
-                g.child_pid = None;
-            }
+            && reap_if_exited(pid)
+        {
+            g.alive = false;
+            g.child_pid = None;
+        }
         if !out.is_empty() {
             for b in &out {
                 if g.scrollback.len() >= SCROLLBACK_CAP {
@@ -582,10 +593,11 @@ impl SessionTerm {
             let mut replies = Vec::new();
             g.dsr.feed(&out, &mut replies, row, col);
             if !replies.is_empty()
-                && let Some(m) = g.master.as_mut() {
-                    let _ = m.write_all(&replies);
-                    let _ = m.flush();
-                }
+                && let Some(m) = g.master.as_mut()
+            {
+                let _ = m.write_all(&replies);
+                let _ = m.flush();
+            }
         }
         out
     }
@@ -1082,8 +1094,13 @@ mod tests {
         changes.borrow_and_update();
         let pane = terms.get_or_create("0").expect("pane");
         pane.ensure(80, 24).expect("spawn");
-        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
-        let woke = rt.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(3), changes.changed()).await });
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let woke = rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(3), changes.changed()).await
+        });
         let got: usize = terms.poll_client(&client).iter().map(|f| f.1.len()).sum();
         pane.kill();
         assert!(woke.is_ok(), "watcher thread must signal pty output");

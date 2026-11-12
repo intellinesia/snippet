@@ -25,7 +25,11 @@ fn normalise(t: &str) -> String {
 }
 
 fn spoken_directly(text: &str) -> bool {
-    DIRECT.lock().unwrap().as_ref().is_some_and(|(at, t)| at.elapsed().as_secs() < 20 && *t == normalise(text))
+    DIRECT
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|(at, t)| at.elapsed().as_secs() < 20 && *t == normalise(text))
 }
 
 pub fn pending() -> bool {
@@ -73,7 +77,12 @@ pub fn cut_view(text: &str) -> Option<(String, &'static str)> {
 }
 
 pub fn take_interruption() -> Option<Interruption> {
-    STREAM_INTERRUPTED.lock().unwrap().take().filter(|(at, _)| at.elapsed() < INTERRUPTION_FRESH).map(|(_, cut)| cut)
+    STREAM_INTERRUPTED
+        .lock()
+        .unwrap()
+        .take()
+        .filter(|(at, _)| at.elapsed() < INTERRUPTION_FRESH)
+        .map(|(_, cut)| cut)
 }
 
 pub(crate) fn clear_interruption() {
@@ -111,21 +120,27 @@ async fn prepare() -> Result<(String, crate::ambient::Conversation), String> {
             .unwrap_or(90);
         TTL.store(ttl.max(1), Ordering::Relaxed);
     }
-    let conversation = crate::ambient::open_conversation("mission-control", TTL.load(Ordering::Relaxed));
+    let conversation =
+        crate::ambient::open_conversation("mission-control", TTL.load(Ordering::Relaxed));
     Ok((device, conversation))
 }
 
 fn finalise_text(turn: i64, text: &str) {
     if let Ok(store) = crate::ambient::store() {
         store.write(|c| {
-            c.execute("UPDATE ambient_turns SET text = ?2 WHERE id = ?1", rusqlite::params![turn, text])?;
+            c.execute(
+                "UPDATE ambient_turns SET text = ?2 WHERE id = ?1",
+                rusqlite::params![turn, text],
+            )?;
             Ok(())
         });
     }
 }
 
 pub fn asks_aloud(text: &str, expecting: Option<&str>) -> bool {
-    text.contains('?') && expecting.is_some_and(|k| matches!(k, "answer" | "confirmation" | "choice" | "dictation"))
+    text.contains('?')
+        && expecting
+            .is_some_and(|k| matches!(k, "answer" | "confirmation" | "choice" | "dictation"))
 }
 
 enum Reuse {
@@ -145,7 +160,13 @@ fn reuse_flux_turn(p: &FluxProvisional, text: &str) -> Reuse {
             Some(r) => r.to_string(),
             None => {
                 let skip = sent.split_whitespace().count();
-                format!(" {}", text.split_whitespace().skip(skip).collect::<Vec<_>>().join(" "))
+                format!(
+                    " {}",
+                    text.split_whitespace()
+                        .skip(skip)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
             }
         };
         if p.turn.is_stopped() || rest.trim().is_empty() || p.turn.push(&rest) {
@@ -157,11 +178,20 @@ fn reuse_flux_turn(p: &FluxProvisional, text: &str) -> Reuse {
     }
     let said: Vec<&str> = sent.split_whitespace().collect();
     let want: Vec<&str> = text.split_whitespace().collect();
-    let common = said.iter().zip(&want).take_while(|(a, b)| a.eq_ignore_ascii_case(b)).count();
+    let common = said
+        .iter()
+        .zip(&want)
+        .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+        .count();
     if p.turn.is_stopped() || said.is_empty() || common < said.len().min(3) {
         return Reuse::Unrelated;
     }
-    let extra = want.iter().skip(said.len()).copied().collect::<Vec<_>>().join(" ");
+    let extra = want
+        .iter()
+        .skip(said.len())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
     if !extra.is_empty() {
         p.turn.push(&format!(" {extra}"));
     }
@@ -170,7 +200,13 @@ fn reuse_flux_turn(p: &FluxProvisional, text: &str) -> Reuse {
     Reuse::Done
 }
 
-pub async fn speak(text: &str, expecting: Option<&str>, about: Option<&str>, replace: bool, urgent: bool) -> Result<Value, String> {
+pub async fn speak(
+    text: &str,
+    expecting: Option<&str>,
+    about: Option<&str>,
+    replace: bool,
+    urgent: bool,
+) -> Result<Value, String> {
     let clean = speakable(text);
     let text = clean.trim();
     if text.is_empty() {
@@ -287,7 +323,11 @@ pub fn set_resume_hook(f: fn()) {
 }
 
 pub fn interruption_pending() -> bool {
-    STREAM_INTERRUPTED.lock().unwrap().as_ref().is_some_and(|(at, cut)| at.elapsed() < INTERRUPTION_FRESH && !cut.unsaid.trim().is_empty())
+    STREAM_INTERRUPTED
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|(at, cut)| at.elapsed() < INTERRUPTION_FRESH && !cut.unsaid.trim().is_empty())
 }
 
 fn fire_resume_hook() {
@@ -333,7 +373,9 @@ fn read_string(b: &[char], mut i: usize) -> (String, usize, bool) {
                                 let Some(low) = hex(i + 8) else {
                                     return (out, i, false);
                                 };
-                                let code = 0x10000 + ((high - 0xD800) << 10) + (low.wrapping_sub(0xDC00) & 0x3FF);
+                                let code = 0x10000
+                                    + ((high - 0xD800) << 10)
+                                    + (low.wrapping_sub(0xDC00) & 0x3FF);
                                 out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
                                 i += 12;
                                 continue;
@@ -483,17 +525,32 @@ fn fresh_route() -> Route {
     let t = crate::ambient_tuning::current_for_lease();
     let forward = t.chattiness == crate::ambient_tuning::Chattiness::Forward;
     let busy = !forward && crate::ambient::room_busy();
-    if crate::tts_stream::enabled() && !crate::ambient::call_quiet() && !busy && !floor && !quiet_hold(&t) { Route::Pending } else { Route::Off }
+    if crate::tts_stream::enabled()
+        && !crate::ambient::call_quiet()
+        && !busy
+        && !floor
+        && !quiet_hold(&t)
+    {
+        Route::Pending
+    } else {
+        Route::Off
+    }
 }
 
 fn direct_claims(text: &str, done: bool) -> Option<Route> {
     let guard = DIRECT.lock().unwrap();
-    let (_, said) = guard.as_ref().filter(|(at, _)| at.elapsed().as_secs() < 20)?;
+    let (_, said) = guard
+        .as_ref()
+        .filter(|(at, _)| at.elapsed().as_secs() < 20)?;
     let n = normalise(text);
     if !said.starts_with(&n) {
         return None;
     }
-    Some(if done || n.len() >= 24 || *said == n { Route::Off } else { Route::Pending })
+    Some(if done || n.len() >= 24 || *said == n {
+        Route::Off
+    } else {
+        Route::Pending
+    })
 }
 
 async fn open_flux(text: &str, done: bool) -> Route {
@@ -513,7 +570,10 @@ async fn open_flux(text: &str, done: bool) -> Route {
     match crate::tts_stream::start_turn(&session, &device, &conversation.id) {
         Ok(turn) => {
             let token = TOKEN.fetch_add(1, Ordering::SeqCst);
-            *guard = Some(FluxProvisional { turn: turn.clone(), token });
+            *guard = Some(FluxProvisional {
+                turn: turn.clone(),
+                token,
+            });
             Route::Flux(turn, token)
         }
         Err(e) => {
@@ -526,9 +586,10 @@ async fn open_flux(text: &str, done: bool) -> Route {
 fn drop_flux_provisional(token: u64) {
     let mut guard = FLUX_STREAMING.lock().unwrap();
     if guard.as_ref().is_some_and(|p| p.token == token)
-        && let Some(p) = guard.take() {
-            p.turn.flush();
-        }
+        && let Some(p) = guard.take()
+    {
+        p.turn.flush();
+    }
 }
 
 fn push_suffix(turn: &Arc<crate::tts_stream::StreamTurn>, text: &str, pushed: &mut usize) {
@@ -539,7 +600,9 @@ fn push_suffix(turn: &Arc<crate::tts_stream::StreamTurn>, text: &str, pushed: &m
     }
 }
 
-pub async fn consume_tool_stream(mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::llm::ToolArgEvent>) {
+pub async fn consume_tool_stream(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::llm::ToolArgEvent>,
+) {
     use crate::llm::ToolArgEvent;
     let mut call: Option<String> = None;
     let mut raw = String::new();
@@ -590,7 +653,12 @@ pub async fn consume_tool_stream(mut rx: tokio::sync::mpsc::UnboundedReceiver<cr
                     turn.flush();
                 }
                 if voice_prof.is_some() {
-                    match provisional(true, Some(name.as_str()), crate::ambient::call_quiet(), crate::ambient::room_busy()) {
+                    match provisional(
+                        true,
+                        Some(name.as_str()),
+                        crate::ambient::call_quiet(),
+                        crate::ambient::room_busy(),
+                    ) {
                         Provisional::Start => {
                             crate::ambient::mark_last("speak_call");
                             call = None;
@@ -622,7 +690,9 @@ pub async fn consume_tool_stream(mut rx: tokio::sync::mpsc::UnboundedReceiver<cr
                     continue;
                 }
                 raw.push_str(&chunk);
-                let Some((text, done)) = extract_text(&raw) else { continue };
+                let Some((text, done)) = extract_text(&raw) else {
+                    continue;
+                };
                 let text = speakable(&text);
                 if matches!(route, Route::Pending) && !text.trim().is_empty() {
                     route = open_flux(&text, done).await;
@@ -637,7 +707,10 @@ pub async fn consume_tool_stream(mut rx: tokio::sync::mpsc::UnboundedReceiver<cr
                 }
                 let text = extract_text(&raw).map(|(t, _)| speakable(&t));
                 if matches!(route, Route::Pending) {
-                    route = match text.as_deref().filter(|t| !t.trim().is_empty() && !spoken_directly(t)) {
+                    route = match text
+                        .as_deref()
+                        .filter(|t| !t.trim().is_empty() && !spoken_directly(t))
+                    {
                         Some(t) => open_flux(t, true).await,
                         None => Route::Off,
                     };
@@ -670,7 +743,15 @@ pub async fn consume_tool_stream(mut rx: tokio::sync::mpsc::UnboundedReceiver<cr
                 pushed = 0;
                 if let Some((turn, token)) = voice_prof.take() {
                     if !any_call
-                        && matches!(provisional(true, None, crate::ambient::call_quiet(), crate::ambient::room_busy()), Provisional::Flush)
+                        && matches!(
+                            provisional(
+                                true,
+                                None,
+                                crate::ambient::call_quiet(),
+                                crate::ambient::room_busy()
+                            ),
+                            Provisional::Flush
+                        )
                         && !turn.is_stopped()
                         && !turn.text().trim().is_empty()
                         && crate::sanitize::clean_user_text(&model_text).is_some()
@@ -720,18 +801,39 @@ mod tests {
     fn provisional_decision() {
         assert_eq!(provisional(false, None, false, false), Provisional::Off);
         assert_eq!(provisional(true, None, false, false), Provisional::Flush);
-        assert_eq!(provisional(true, Some("speak"), false, false), Provisional::Start);
-        assert_eq!(provisional(true, Some("ambient__speak"), false, false), Provisional::Start);
-        assert_eq!(provisional(true, Some("bash"), false, false), Provisional::Abandon);
+        assert_eq!(
+            provisional(true, Some("speak"), false, false),
+            Provisional::Start
+        );
+        assert_eq!(
+            provisional(true, Some("ambient__speak"), false, false),
+            Provisional::Start
+        );
+        assert_eq!(
+            provisional(true, Some("bash"), false, false),
+            Provisional::Abandon
+        );
         assert_eq!(provisional(true, None, true, false), Provisional::Abandon);
-        assert_eq!(provisional(true, Some("speak"), false, true), Provisional::Abandon);
-        assert_eq!(provisional(true, Some("bash"), true, true), Provisional::Abandon);
+        assert_eq!(
+            provisional(true, Some("speak"), false, true),
+            Provisional::Abandon
+        );
+        assert_eq!(
+            provisional(true, Some("bash"), true, true),
+            Provisional::Abandon
+        );
     }
 
     #[test]
     fn bracketed_notes_are_never_spoken() {
-        assert_eq!(speakable("[the user interrupted before any of this was spoken]").trim(), "");
-        assert_eq!(speakable("Got it [cut off by the user; the rest was never spoken]").trim(), "Got it");
+        assert_eq!(
+            speakable("[the user interrupted before any of this was spoken]").trim(),
+            ""
+        );
+        assert_eq!(
+            speakable("Got it [cut off by the user; the rest was never spoken]").trim(),
+            "Got it"
+        );
         assert_eq!(speakable("Hello [unfinished"), "Hello ");
         assert_eq!(speakable("Plain reply."), "Plain reply.");
     }
@@ -752,10 +854,16 @@ mod resume_hook_tests {
         clear_interruption();
         fire_resume_hook();
         assert_eq!(CALLS.load(Ordering::SeqCst), 0);
-        note_stream_interruption(Interruption { heard: "a".into(), unsaid: "  ".into() });
+        note_stream_interruption(Interruption {
+            heard: "a".into(),
+            unsaid: "  ".into(),
+        });
         fire_resume_hook();
         assert_eq!(CALLS.load(Ordering::SeqCst), 0);
-        note_stream_interruption(Interruption { heard: "a".into(), unsaid: "b".into() });
+        note_stream_interruption(Interruption {
+            heard: "a".into(),
+            unsaid: "b".into(),
+        });
         fire_resume_hook();
         assert_eq!(CALLS.load(Ordering::SeqCst), 1);
         clear_interruption();

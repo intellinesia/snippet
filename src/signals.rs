@@ -45,10 +45,11 @@ pub enum RuntimeSignal {
 impl RuntimeSignal {
     pub fn message(&self) -> String {
         match self {
-            Self::EmptyResponse =>
+            Self::EmptyResponse => {
                 "Your previous turn was empty (no text, no tool call). Reply to the user, or take \
                  the next concrete step with a tool call."
-                    .to_string(),
+                    .to_string()
+            }
             Self::ToolCallLoop { count } => format!(
                 "You have issued the same tool call {count} times; its result will not change. \
                  Use the result you already have, change the inputs, or finish and deliver your \
@@ -58,10 +59,11 @@ impl RuntimeSignal {
                 "`{name}` is not an available tool. Use one of these by exact name: [{available}]. \
                  If none fit, reply in plain text."
             ),
-            Self::ResponseTruncated =>
+            Self::ResponseTruncated => {
                 "Your previous response was cut off at the output-token limit and was not treated \
                  as final. Continue with a tool call, or keep the next reply shorter."
-                    .to_string(),
+                    .to_string()
+            }
             Self::ShellDiscipline { message } => message.clone(),
             Self::RepeatedRead { path, count } => format!(
                 "You have read `{path}` {count} times this task and it hasn't changed; its \
@@ -95,7 +97,10 @@ impl RuntimeSignal {
                 "You issued {batch_size} tool calls in one turn. Large fan-outs are hard to verify \
                  and recover from — prefer a few focused calls, read the results, then continue."
             ),
-            Self::StuckEscalation { failed_turns, can_ask_user } => {
+            Self::StuckEscalation {
+                failed_turns,
+                can_ask_user,
+            } => {
                 let escape = if *can_ask_user {
                     "if you genuinely cannot proceed (missing access, credentials, information, or \
                      permission), call `ask_user` and ask for help instead of spinning"

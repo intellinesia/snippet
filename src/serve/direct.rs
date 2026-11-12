@@ -8,7 +8,6 @@
 //! handler, so a message accepted just before a restart is still delivered after
 //! it, and a reconnecting client cannot cause a second delivery.
 
-
 use super::api_error;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -17,11 +16,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::harness::{HarnessState, LoopInput};
-use crate::session::{
-    SessionRole, SessionSidecar, state_path_for_id, write_session_sidecar,
-};
+use crate::session::{SessionRole, SessionSidecar, state_path_for_id, write_session_sidecar};
 
-use super::{Shared};
+use super::Shared;
 
 /// Recent messages included when a recipient is woken. Enough to read the
 /// current exchange, small enough to keep the wake cheap.
@@ -123,7 +120,8 @@ fn direct_message_envelope(
             history.len()
         ));
         for prior in history {
-            let prior_body = if let Some(r) = prior.payload.get("reaction").and_then(|v| v.as_str()) {
+            let prior_body = if let Some(r) = prior.payload.get("reaction").and_then(|v| v.as_str())
+            {
                 let target = prior
                     .payload
                     .get("reply_to")
@@ -156,7 +154,11 @@ fn direct_message_envelope(
         event_id_line = event_id_line,
         thread = event.thread_id,
         sender = sender,
-        who = if event.actor_kind == "human" { "The user" } else { "A colleague" },
+        who = if event.actor_kind == "human" {
+            "The user"
+        } else {
+            "A colleague"
+        },
         answer = if reply_to == "human" {
             "Your plain reply text is delivered to them automatically; use send_agent_message \
              only for extra messages."
@@ -201,22 +203,30 @@ fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool 
     use crate::harness::HarnessEvent as E;
     let mut sent = false;
     for (i, event) in turn.iter().enumerate().skip(from) {
-        if let E::ToolCall { tool_name, arguments } = event
+        if let E::ToolCall {
+            tool_name,
+            arguments,
+        } = event
             && tool_name == "send_agent_message"
             && arguments
                 .get("reaction")
                 .and_then(|v| v.as_str())
                 .is_none_or(|r| r.trim().is_empty())
             && matches!(
-                arguments.get("recipient_agent_id").and_then(|v| v.as_str()).map(str::trim),
+                arguments
+                    .get("recipient_agent_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim),
                 Some("human" | "local" | "human:local")
             )
         {
             let failed = turn[i + 1..].iter().find_map(|e| match e {
-                E::ToolResult { tool_name, result } if tool_name == "send_agent_message" => {
-                    Some(result.get("error").is_some() || result.get("is_error") == Some(&json!(true)))
+                E::ToolResult { tool_name, result } if tool_name == "send_agent_message" => Some(
+                    result.get("error").is_some() || result.get("is_error") == Some(&json!(true)),
+                ),
+                E::InvalidToolCall { tool_name, .. } if tool_name == "send_agent_message" => {
+                    Some(true)
                 }
-                E::InvalidToolCall { tool_name, .. } if tool_name == "send_agent_message" => Some(true),
                 _ => None,
             });
             if failed == Some(false) {
@@ -238,7 +248,10 @@ pub(crate) fn turn_end_relay(
     if waiting == 0 {
         return None;
     }
-    let start = events.iter().rposition(|e| matches!(e, E::UserInput { .. })).unwrap_or(0);
+    let start = events
+        .iter()
+        .rposition(|e| matches!(e, E::UserInput { .. }))
+        .unwrap_or(0);
     let turn = events.get(start + 1..).unwrap_or(&[]);
     // A reply sent before the latest human message does not answer it.
     let last_dm = turn
@@ -287,7 +300,11 @@ pub(crate) fn post_to_human(
     text: &str,
     extra: serde_json::Map<String, serde_json::Value>,
 ) {
-    let mut fields = crate::coordination::typed::payload_fields(None, crate::coordination::typed::Urgency::Normal, None);
+    let mut fields = crate::coordination::typed::payload_fields(
+        None,
+        crate::coordination::typed::Urgency::Normal,
+        None,
+    );
     fields.insert("channel".into(), json!("chat"));
     fields.extend(extra);
     match store.send_direct_message_typed(
@@ -542,7 +559,11 @@ pub(super) fn record_question_answer(
 }
 
 /// Shutdown notice for a session that was mid-turn or had a human waiting.
-pub(crate) fn relay_restart(store: &crate::store::Store, session_id: &str, state: &crate::harness::HarnessState) {
+pub(crate) fn relay_restart(
+    store: &crate::store::Store,
+    session_id: &str,
+    state: &crate::harness::HarnessState,
+) {
     if state.human_waiting.is_empty() {
         return;
     }
@@ -550,7 +571,16 @@ pub(crate) fn relay_restart(store: &crate::store::Store, session_id: &str, state
     let text = format!("Snippet restarted while {name} was answering; it will pick this up.");
     let key = format!("restart-relay:{session_id}:{}", state.events.len());
     let origin = session_id.starts_with("inbox-").then_some(session_id);
-    post_to_human(store, &agent_id, session_id, origin, None, &key, &text, Default::default());
+    post_to_human(
+        store,
+        &agent_id,
+        session_id,
+        origin,
+        None,
+        &key,
+        &text,
+        Default::default(),
+    );
 }
 
 /// Create (or re-bind) an agent's durable inbox session.
@@ -615,7 +645,8 @@ fn canonical_session_id(id: &str) -> Option<String> {
 }
 
 const STEER_NOTE_PREFIX: &str = "steer: the user wrote while you were working; let it shape your very next step and acknowledge it in one line. ";
-const STOP_NOTE_PREFIX: &str = "stop: the user asked you to stop; report where you stopped and what is left, then wait.";
+const STOP_NOTE_PREFIX: &str =
+    "stop: the user asked you to stop; report where you stopped and what is left, then wait.";
 
 /// Whether a human message body asks the running session to stop right now.
 pub(crate) fn is_stop_command(body: &str) -> bool {
@@ -628,14 +659,7 @@ pub(crate) fn is_stop_command(body: &str) -> bool {
     let normalized = words.join(" ");
     matches!(
         normalized.as_str(),
-        "stop"
-            | "stop now"
-            | "stop that"
-            | "hold on"
-            | "wait"
-            | "pause"
-            | "cancel that"
-            | "abort"
+        "stop" | "stop now" | "stop that" | "hold on" | "wait" | "pause" | "cancel that" | "abort"
     ) || (normalized.starts_with("stop ") && words.len() <= 6)
 }
 
@@ -699,25 +723,32 @@ pub(super) async fn deliver_by_urgency(
             if busy {
                 d.deliver(session_id, LoopInput::Interrupt).await;
             }
-            d.deliver(session_id, LoopInput::UserMessage(envelope)).await;
+            d.deliver(session_id, LoopInput::UserMessage(envelope))
+                .await;
         }
         crate::coordination::typed::Urgency::Normal if busy && from_human => {
             if is_stop_command(body_of(payload, &envelope)) {
                 let envelope = prefix_envelope_note(envelope, STOP_NOTE_PREFIX);
                 d.deliver(session_id, LoopInput::Interrupt).await;
-                d.deliver(session_id, LoopInput::UserMessage(envelope)).await;
+                d.deliver(session_id, LoopInput::UserMessage(envelope))
+                    .await;
             } else {
                 let envelope = prefix_envelope_note(envelope, STEER_NOTE_PREFIX);
-                d.deliver(session_id, LoopInput::UserMessage(envelope)).await;
+                d.deliver(session_id, LoopInput::UserMessage(envelope))
+                    .await;
             }
         }
         crate::coordination::typed::Urgency::Normal if busy => {
-            let item = crate::harness::QueuedInput { id: uuid::Uuid::new_v4().to_string(), text: envelope };
+            let item = crate::harness::QueuedInput {
+                id: uuid::Uuid::new_v4().to_string(),
+                text: envelope,
+            };
             d.deliver(session_id, LoopInput::Queue(item)).await;
         }
         crate::coordination::typed::Urgency::Normal => {
             crate::session::wake_settled(session_id);
-            d.deliver(session_id, LoopInput::UserMessage(envelope)).await;
+            d.deliver(session_id, LoopInput::UserMessage(envelope))
+                .await;
         }
     }
 }
@@ -739,10 +770,24 @@ async fn route_to_working_task(
         return false;
     };
     drop(tx);
-    let prefix = format!("note: about task {} ({}); routed to the session doing it. ", task.id, task.title);
+    let prefix = format!(
+        "note: about task {} ({}); routed to the session doing it. ",
+        task.id, task.title
+    );
     let envelope = direct_message_envelope(event, history).replacen("note: ", &prefix, 1);
-    deliver_by_urgency(d, &task.session_id, envelope, &event.payload, event.actor_kind == "human").await;
-    let body = event.payload.get("body").and_then(|v| v.as_str()).unwrap_or_default();
+    deliver_by_urgency(
+        d,
+        &task.session_id,
+        envelope,
+        &event.payload,
+        event.actor_kind == "human",
+    )
+    .await;
+    let body = event
+        .payload
+        .get("body")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     let quoted: String = body.chars().take(120).collect();
     let notice = format!(
         "{quoted}  routed to task {}'s session; its reply goes to the user directly.",
@@ -786,7 +831,8 @@ async fn deliver_direct(
             .unwrap_or_default();
         match event.payload.get("notice").and_then(|v| v.as_str()) {
             Some("task_brief") => {
-                d.deliver(&session_id, LoopInput::UserMessage(body.to_string())).await;
+                d.deliver(&session_id, LoopInput::UserMessage(body.to_string()))
+                    .await;
                 return Ok(());
             }
             Some(_) => {
@@ -805,7 +851,12 @@ async fn deliver_direct(
             deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
             return Ok(());
         }
-        if event.payload.get("about_task").and_then(|v| v.as_str()).is_some() {
+        if event
+            .payload
+            .get("about_task")
+            .and_then(|v| v.as_str())
+            .is_some()
+        {
             let Some((tx, _path, _stream)) = d.ensure_live(&session_id).await else {
                 return Err(format!("could not start session `{session_id}`"));
             };
@@ -848,7 +899,8 @@ async fn deliver_direct(
                 "[agent_reply]\nfrom: {}:{}\nthread_id: {}\nnote: {note}\nbody: {body}\n[/agent_reply]",
                 event.actor_kind, event.actor_id, event.thread_id
             );
-            d.deliver(&session_id, LoopInput::UserMessage(envelope)).await;
+            d.deliver(&session_id, LoopInput::UserMessage(envelope))
+                .await;
             return Ok(());
         }
         // By the session it came from, not the actor's name: agent `snippet`
@@ -858,30 +910,50 @@ async fn deliver_direct(
             .get("origin_session")
             .and_then(|v| v.as_str())
             .or((event.actor_kind == "session").then_some(event.actor_id.as_str()));
-        let from_self = from.is_some_and(|from| session_id.starts_with(from) || from.starts_with(session_id.as_str()));
+        let from_self = from.is_some_and(|from| {
+            session_id.starts_with(from) || from.starts_with(session_id.as_str())
+        });
         if !from_self && !crate::session::is_lane_session_id(&session_id) {
-            let reply_to = if event.actor_kind == "agent" { event.actor_id.clone() } else { "human".to_string() };
+            let reply_to = if event.actor_kind == "agent" {
+                event.actor_id.clone()
+            } else {
+                "human".to_string()
+            };
             let envelope = format!(
                 "[direct_message]\nthread_id: {}\nfrom: {}:{}\nreply_to: {reply_to}\n{tags}note: this was sent to this session directly; act on it or answer it with send_agent_message to reply_to.\nbody: {body}\n[/direct_message]",
-                event.thread_id, event.actor_kind, event.actor_id,
+                event.thread_id,
+                event.actor_kind,
+                event.actor_id,
                 tags = crate::coordination::typed::envelope_lines(&event.payload)
             );
-            deliver_by_urgency(d, &session_id, envelope, &event.payload, event.actor_kind == "human").await;
+            deliver_by_urgency(
+                d,
+                &session_id,
+                envelope,
+                &event.payload,
+                event.actor_kind == "human",
+            )
+            .await;
             return Ok(());
         }
         if crate::session::is_lane_session_id(&session_id)
-            && let Some((parent, lane)) = session_id.rsplit_once("/lanes/") {
-                let envelope = format!(
-                    "[direct_message]\nthread_id: {}\nfrom: {}:{}\n{tags}note: sent to this lane while it runs; act on it now.\nbody: {body}\n[/direct_message]",
-                    event.thread_id, event.actor_kind, event.actor_id,
-                    tags = crate::coordination::typed::envelope_lines(&event.payload)
-                );
-                let reached = crate::lanes::deliver_to_lane(parent, lane, envelope);
-                eprintln!("[coordination] message to lane {lane} of {parent}: live mailbox reached = {reached}");
-                if reached {
-                    return Ok(());
-                }
+            && let Some((parent, lane)) = session_id.rsplit_once("/lanes/")
+        {
+            let envelope = format!(
+                "[direct_message]\nthread_id: {}\nfrom: {}:{}\n{tags}note: sent to this lane while it runs; act on it now.\nbody: {body}\n[/direct_message]",
+                event.thread_id,
+                event.actor_kind,
+                event.actor_id,
+                tags = crate::coordination::typed::envelope_lines(&event.payload)
+            );
+            let reached = crate::lanes::deliver_to_lane(parent, lane, envelope);
+            eprintln!(
+                "[coordination] message to lane {lane} of {parent}: live mailbox reached = {reached}"
+            );
+            if reached {
+                return Ok(());
             }
+        }
         super::record_agent_message(d, &session_id, &event.actor_id, body, false).await;
         return Ok(());
     }
@@ -927,7 +999,11 @@ async fn deliver_direct(
 
 /// The lane that sent the latest message from this session on the thread, when
 /// a lane rather than the session itself is the one waiting for the answer.
-fn reply_lane(d: &crate::serve::Daemon, event: &crate::coordination::types::CoordinationEvent, session_id: &str) -> Option<String> {
+fn reply_lane(
+    d: &crate::serve::Daemon,
+    event: &crate::coordination::types::CoordinationEvent,
+    session_id: &str,
+) -> Option<String> {
     asked_from_session(d, event, session_id)?
         .payload
         .get("origin_lane")
@@ -951,7 +1027,11 @@ fn asked_from_session(
 
 /// Whether this session's own agent started the conversation being answered,
 /// as opposed to a person writing from the session.
-fn answers_own_message(d: &crate::serve::Daemon, event: &crate::coordination::types::CoordinationEvent, session_id: &str) -> bool {
+fn answers_own_message(
+    d: &crate::serve::Daemon,
+    event: &crate::coordination::types::CoordinationEvent,
+    session_id: &str,
+) -> bool {
     if asked_from_session(d, event, session_id).is_some() {
         return true;
     }
@@ -981,8 +1061,7 @@ pub(super) async fn direct_dispatch_loop(d: Shared) {
                     let at = chrono::Utc::now().to_rfc3339();
                     match deliver_direct(&d, &message).await {
                         Ok(()) => {
-                            if d
-                                .store
+                            if d.store
                                 .mark_direct_delivered(
                                     &message.event.event_id,
                                     &message.recipient_kind,
@@ -1110,13 +1189,19 @@ pub(super) async fn direct_send_message(
                 return api_error(StatusCode::NOT_FOUND, "unknown sender agent");
             }
             Err(error) => {
-                return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("look up sender: {error}"));
+                return api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("look up sender: {error}"),
+                );
             }
         },
         _ => return api_error(StatusCode::BAD_REQUEST, "from_kind must be human or agent"),
     }
     if to.0 != "agent" && to.0 != "human" && to.0 != "session" {
-        return api_error(StatusCode::BAD_REQUEST, "to_kind must be agent, human, or session");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "to_kind must be agent, human, or session",
+        );
     }
     // A human recipient is the local operator — the only human this device knows.
     // An agent replying to the person who messaged it is the same direct-message
@@ -1143,7 +1228,10 @@ pub(super) async fn direct_send_message(
             Ok(Some(_)) => {}
             Ok(None) => return api_error(StatusCode::NOT_FOUND, "unknown recipient agent"),
             Err(error) => {
-                return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("look up recipient: {error}"));
+                return api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("look up recipient: {error}"),
+                );
             }
         },
     }
@@ -1172,7 +1260,12 @@ pub(super) async fn direct_send_message(
     if to.0 == "human" {
         extra.insert("channel".into(), json!("chat"));
         if from.0 == "agent" && reaction.is_none() && from.1 != crate::mission_control::SESSION_ID {
-            crate::coordination::reach::apply_outbound_human(&d.store, from.1, &prepared_body, &mut extra);
+            crate::coordination::reach::apply_outbound_human(
+                &d.store,
+                from.1,
+                &prepared_body,
+                &mut extra,
+            );
         }
     }
     match d.store.send_direct_message_typed(
@@ -1202,7 +1295,10 @@ pub(super) async fn direct_send_message(
             }
             (StatusCode::ACCEPTED, Json(saved)).into_response()
         }
-        Err(error) => api_error(StatusCode::CONFLICT, format!("send direct message: {error}")),
+        Err(error) => api_error(
+            StatusCode::CONFLICT,
+            format!("send direct message: {error}"),
+        ),
     }
 }
 
@@ -1220,7 +1316,10 @@ pub(super) async fn direct_list_threads(
 ) -> Response {
     match d.store.list_direct_threads(&q.actor_kind, &q.actor_id) {
         Ok(threads) => Json(threads).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("list direct threads: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("list direct threads: {error}"),
+        ),
     }
 }
 
@@ -1270,7 +1369,7 @@ pub(super) async fn direct_list_messages(
                     return api_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("read direct deliveries: {error}"),
-                    )
+                    );
                 }
             };
             Json(json!({
@@ -1280,7 +1379,10 @@ pub(super) async fn direct_list_messages(
             }))
             .into_response()
         }
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read direct messages: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("read direct messages: {error}"),
+        ),
     }
 }
 
@@ -1302,14 +1404,15 @@ pub(super) async fn direct_mark_read(
         (req.peer_kind.as_str(), req.peer_id.as_str()),
     );
     let at = chrono::Utc::now().to_rfc3339();
-    match d.store.mark_direct_read(
-        &req.actor_kind,
-        &req.actor_id,
-        &thread_id,
-        &at,
-    ) {
+    match d
+        .store
+        .mark_direct_read(&req.actor_kind, &req.actor_id, &thread_id, &at)
+    {
         Ok(()) => Json(json!({"thread_id": thread_id, "read_at": at})).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("mark read: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("mark read: {error}"),
+        ),
     }
 }
 
@@ -1331,10 +1434,7 @@ pub(super) async fn direct_answer(
     Json(req): Json<DirectAnswerReq>,
 ) -> Response {
     let session = req.session.trim();
-    if session.is_empty()
-        || req.question_event_id.trim().is_empty()
-        || req.text.trim().is_empty()
-    {
+    if session.is_empty() || req.question_event_id.trim().is_empty() || req.text.trim().is_empty() {
         return api_error(
             StatusCode::BAD_REQUEST,
             "session, question_event_id and text are required",
@@ -1346,17 +1446,12 @@ pub(super) async fn direct_answer(
         .ok()
         .flatten()
         .is_some_and(|row| row.status == "waiting_for_input")
-        && d
-            .store
+        && d.store
             .load_session_scalar(session)
             .ok()
             .flatten()
             .and_then(|scalar| serde_json::from_str::<serde_json::Value>(&scalar).ok())
-            .is_some_and(|state| {
-                state
-                    .get("pending_question")
-                    .is_some_and(|q| !q.is_null())
-            });
+            .is_some_and(|state| state.get("pending_question").is_some_and(|q| !q.is_null()));
     if !waiting {
         return api_error(
             StatusCode::CONFLICT,
@@ -1395,18 +1490,30 @@ mod tests {
 
     fn dm(reply_to: &str) -> E {
         E::UserInput {
-            text: format!("[direct_message]\nthread_id: t\nfrom: human:local\nfrom_kind: human\nto: agent:a\nreply_to: {reply_to}\nbody: hi\n[/direct_message]"),
+            text: format!(
+                "[direct_message]\nthread_id: t\nfrom: human:local\nfrom_kind: human\nto: agent:a\nreply_to: {reply_to}\nbody: hi\n[/direct_message]"
+            ),
         }
     }
     fn say(text: &str) -> E {
-        E::AssistantText { text: text.into(), quiet: false }
+        E::AssistantText {
+            text: text.into(),
+            quiet: false,
+        }
     }
     fn send(to: &str, ok: bool) -> Vec<E> {
         vec![
-            E::ToolCall { tool_name: "send_agent_message".into(), arguments: serde_json::json!({"recipient_agent_id": to, "body": "x"}) },
+            E::ToolCall {
+                tool_name: "send_agent_message".into(),
+                arguments: serde_json::json!({"recipient_agent_id": to, "body": "x"}),
+            },
             E::ToolResult {
                 tool_name: "send_agent_message".into(),
-                result: if ok { serde_json::json!({"to": "human:local"}) } else { serde_json::json!({"error": "no"}) },
+                result: if ok {
+                    serde_json::json!({"to": "human:local"})
+                } else {
+                    serde_json::json!({"error": "no"})
+                },
             },
         ]
     }
@@ -1414,7 +1521,10 @@ mod tests {
     #[test]
     fn relays_plain_reply_to_human_dm() {
         let events = vec![dm("human"), say("draft"), say("Yes, boss.")];
-        assert_eq!(super::turn_end_relay(1, "Scout", &events), Some((0, "Yes, boss.".into())));
+        assert_eq!(
+            super::turn_end_relay(1, "Scout", &events),
+            Some((0, "Yes, boss.".into()))
+        );
     }
 
     #[test]
@@ -1441,17 +1551,33 @@ mod tests {
 
     #[test]
     fn tool_call_only_turn_gets_fixed_line() {
-        let events = vec![dm("human"), E::ToolCall { tool_name: "bash".into(), arguments: serde_json::json!({}) }];
+        let events = vec![
+            dm("human"),
+            E::ToolCall {
+                tool_name: "bash".into(),
+                arguments: serde_json::json!({}),
+            },
+        ];
         assert_eq!(
             super::turn_end_relay(1, "Scout", &events),
-            Some((0, "Scout finished this turn without a reply; its last step was bash.".into()))
+            Some((
+                0,
+                "Scout finished this turn without a reply; its last step was bash.".into()
+            ))
         );
-        assert_eq!(super::turn_end_relay(1, "Scout", &[dm("human"), say("  ")]).map(|r| r.1.contains("without a reply")), Some(true));
+        assert_eq!(
+            super::turn_end_relay(1, "Scout", &[dm("human"), say("  ")])
+                .map(|r| r.1.contains("without a reply")),
+            Some(true)
+        );
     }
 
     #[test]
     fn nothing_waiting_means_no_relay() {
-        assert_eq!(super::turn_end_relay(0, "Scout", &[dm("human"), say("x")]), None);
+        assert_eq!(
+            super::turn_end_relay(0, "Scout", &[dm("human"), say("x")]),
+            None
+        );
     }
 
     #[test]
@@ -1476,14 +1602,26 @@ mod tests {
 
     #[test]
     fn parses_human_dm_envelope() {
-        assert_eq!(super::human_dm_thread(&match dm("human") { E::UserInput { text } => text, _ => unreachable!() }), Some("t".into()));
-        assert_eq!(super::human_dm_thread("[direct_message]\nfrom_kind: human\nreply_to: session:x\n[/direct_message]"), None);
+        assert_eq!(
+            super::human_dm_thread(&match dm("human") {
+                E::UserInput { text } => text,
+                _ => unreachable!(),
+            }),
+            Some("t".into())
+        );
+        assert_eq!(
+            super::human_dm_thread(
+                "[direct_message]\nfrom_kind: human\nreply_to: session:x\n[/direct_message]"
+            ),
+            None
+        );
         assert_eq!(super::human_dm_thread("hello"), None);
     }
 
     #[test]
     fn old_state_json_loads_without_human_waiting() {
-        let w: crate::harness::HumanWait = serde_json::from_str(r#"{"thread_id":"t","since":"s"}"#).unwrap();
+        let w: crate::harness::HumanWait =
+            serde_json::from_str(r#"{"thread_id":"t","since":"s"}"#).unwrap();
         assert!(!w.steered);
     }
 
@@ -1491,9 +1629,14 @@ mod tests {
     fn only_latest_turn_counts() {
         let mut events = vec![dm("human")];
         events.extend(send("human", true));
-        events.push(E::UserInput { text: "other".into() });
+        events.push(E::UserInput {
+            text: "other".into(),
+        });
         events.push(say("x"));
-        assert_eq!(super::turn_end_relay(1, "Scout", &events), Some((3, "x".into())));
+        assert_eq!(
+            super::turn_end_relay(1, "Scout", &events),
+            Some((3, "x".into()))
+        );
     }
     use super::*;
     use crate::coordination::types::CoordinationEvent;
@@ -1552,7 +1695,10 @@ mod tests {
         assert!(envelope.contains("from: human:local"));
         assert!(envelope.contains("to: agent:a"));
         assert!(envelope.contains("send_agent_message"));
-        assert!(!envelope.contains("Workspace work requires a task"), "the desk layer teaches that, not every message");
+        assert!(
+            !envelope.contains("Workspace work requires a task"),
+            "the desk layer teaches that, not every message"
+        );
         assert!(envelope.contains("plain reply text is delivered to them automatically"));
         assert!(envelope.ends_with("body: please review this\n[/direct_message]"));
     }
@@ -1588,7 +1734,10 @@ mod tests {
         reply.payload["reply_to"] = json!("e1");
         let env = direct_message_envelope(&reply, std::slice::from_ref(&prior));
         assert!(env.contains("reply_to_message: e1\n"), "{env}");
-        let quoted_line = env.lines().find(|l| l.starts_with("quoted: ")).expect("quoted line");
+        let quoted_line = env
+            .lines()
+            .find(|l| l.starts_with("quoted: "))
+            .expect("quoted line");
         assert_eq!(quoted_line, format!("quoted: {}", "x".repeat(160)));
 
         let env_missing = direct_message_envelope(&reply, &[]);
@@ -1600,7 +1749,10 @@ mod tests {
         react.payload["reaction"] = json!("check");
         react.payload["kind"] = json!("reaction");
         let react_env = direct_message_envelope(&react, &[prior]);
-        assert_eq!(react_env, "[reaction] human:local reacted check to your message e1");
+        assert_eq!(
+            react_env,
+            "[reaction] human:local reacted check to your message e1"
+        );
         assert!(!react_env.contains("history:"));
     }
 
@@ -1706,7 +1858,10 @@ mod tests {
             LoopInput::Queue(item) => {
                 assert_eq!(
                     item.text,
-                    format!("[reaction] human:local reacted eyes to your message {}", target.event_id)
+                    format!(
+                        "[reaction] human:local reacted eyes to your message {}",
+                        target.event_id
+                    )
                 );
             }
             other => panic!("expected Queue for reaction on busy session, got {other:?}"),
@@ -1767,7 +1922,10 @@ mod tests {
         })
     }
 
-    async fn fake_session(d: &super::Shared, id: &str) -> tokio::sync::mpsc::UnboundedReceiver<LoopInput> {
+    async fn fake_session(
+        d: &super::Shared,
+        id: &str,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<LoopInput> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let live = crate::serve::LiveSession {
             input_tx: tx,
@@ -1783,18 +1941,44 @@ mod tests {
 
     fn agent(id: &str) -> crate::coordination::types::Agent {
         use crate::coordination::types::{Agent, AgentKind, AgentStatus};
-        Agent { id: id.into(), display_name: "Scout".into(), handle: id.into(), kind: AgentKind::Worker, status: AgentStatus::Active, capabilities: vec![] }
+        Agent {
+            id: id.into(),
+            display_name: "Scout".into(),
+            handle: id.into(),
+            kind: AgentKind::Worker,
+            status: AgentStatus::Active,
+            capabilities: vec![],
+        }
     }
 
-    fn human_says(store: &crate::store::Store, body: &str, key: &str) -> crate::coordination::types::CoordinationEvent {
+    fn human_says(
+        store: &crate::store::Store,
+        body: &str,
+        key: &str,
+    ) -> crate::coordination::types::CoordinationEvent {
         store
-            .send_direct_message_typed(("human", "local"), ("agent", "a"), body, key, "2026-01-01T00:00:00Z", None, None, None, Default::default())
+            .send_direct_message_typed(
+                ("human", "local"),
+                ("agent", "a"),
+                body,
+                key,
+                "2026-01-01T00:00:00Z",
+                None,
+                None,
+                None,
+                Default::default(),
+            )
             .unwrap()
     }
 
     #[test]
     fn the_ack_is_not_the_model_replying_and_stays_out_of_history() {
-        let mut ack = event(2, "a", "Scout has your message and is working on it.", "human:local");
+        let mut ack = event(
+            2,
+            "a",
+            "Scout has your message and is working on it.",
+            "human:local",
+        );
         ack.payload["auto"] = json!("ack");
         let envelope = direct_message_envelope(&event(3, "local", "and?", "agent:a"), &[ack]);
         assert!(envelope.contains("first message in this conversation"));
@@ -1807,11 +1991,28 @@ mod tests {
     }
 
     fn working_task(store: &crate::store::Store, id: &str, session: &str) {
-        let mut task = crate::coordination::Task::filed_by_human(id.into(), format!("Task {id}"), "d".into(), "s1".into(), 0, "2026-01-01T00:00:00Z".into());
+        let mut task = crate::coordination::Task::filed_by_human(
+            id.into(),
+            format!("Task {id}"),
+            "d".into(),
+            "s1".into(),
+            0,
+            "2026-01-01T00:00:00Z".into(),
+        );
         task.status = crate::coordination::TaskStatus::InProgress;
         task.session_id = session.into();
         store.create_task(&task).unwrap();
-        store.add_task_agent_full(id, "a", "implementer", Some(session), "", "active", "2026-01-01T00:00:00Z").unwrap();
+        store
+            .add_task_agent_full(
+                id,
+                "a",
+                "implementer",
+                Some(session),
+                "",
+                "active",
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1826,16 +2027,24 @@ mod tests {
         assert!(super::route_to_working_task(&d, &event, &[], "a", "inbox-a").await);
 
         match task_rx.try_recv().expect("task session got the message") {
-            LoopInput::UserMessage(text) | LoopInput::Queue(crate::harness::QueuedInput { text, .. }) => {
+            LoopInput::UserMessage(text)
+            | LoopInput::Queue(crate::harness::QueuedInput { text, .. }) => {
                 assert!(text.contains("note: about task t1 (Task t1); routed to the session doing it. The user wrote directly"), "{text}");
                 assert!(text.contains("from_kind: human") && text.contains("reply_to: human"));
-                assert_eq!(crate::serve::human_dm_thread(&text), Some(event.thread_id.clone()));
+                assert_eq!(
+                    crate::serve::human_dm_thread(&text),
+                    Some(event.thread_id.clone())
+                );
             }
             _ => panic!("unexpected input"),
         }
         match desk_rx.try_recv().expect("desk got a notice") {
             LoopInput::Notice(crate::harness::HarnessEvent::AgentMessage { body, .. }) => {
-                assert!(body.contains("how is it going") && body.contains("routed to task t1's session"), "{body}");
+                assert!(
+                    body.contains("how is it going")
+                        && body.contains("routed to task t1's session"),
+                    "{body}"
+                );
             }
             _ => panic!("desk should only get a notice"),
         }
@@ -1859,12 +2068,21 @@ mod tests {
         store.create_agent(&agent("a")).unwrap();
         working_task(&store, "t1", "task-session");
         let mut state = crate::harness::HarnessState::blank("/tmp", None);
-        state.human_waiting.push(crate::harness::HumanWait { thread_id: "t".into(), since: "s".into(), steered: true, event_index: 0 });
+        state.human_waiting.push(crate::harness::HumanWait {
+            thread_id: "t".into(),
+            since: "s".into(),
+            steered: true,
+            event_index: 0,
+        });
         state.events.push(E::UserInput { text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: hi\n[/direct_message]".into() });
-        state.events.push(E::AssistantText { text: "Almost done.".into(), quiet: false });
+        state.events.push(E::AssistantText {
+            text: "Almost done.".into(),
+            quiet: false,
+        });
         super::relay_desk_reply(&store, "task-session", &mut state);
         // No session row: the identity comes from the task's roster, not the fallback.
-        let thread = crate::coordination::direct::direct_thread_id(("agent", "a"), ("human", "local"));
+        let thread =
+            crate::coordination::direct::direct_thread_id(("agent", "a"), ("human", "local"));
         let sent = store.recent_direct_thread_events(&thread, 5).unwrap();
         assert_eq!(sent.len(), 1, "reply goes out as the task's worker");
         assert_eq!(sent[0].payload["about_task"], "t1");
@@ -1892,7 +2110,10 @@ mod tests {
             "stopping by to check status",
             "",
         ] {
-            assert!(!super::is_stop_command(non_stop), "expected non-stop: {non_stop}");
+            assert!(
+                !super::is_stop_command(non_stop),
+                "expected non-stop: {non_stop}"
+            );
         }
     }
 
@@ -1903,7 +2124,12 @@ mod tests {
         let mut state = HarnessState::blank("/tmp", None);
         state.status = crate::harness::HarnessStatus::Running;
         d.store
-            .import_session(id, "ws", &state, &crate::conversations::SessionExtras::default())
+            .import_session(
+                id,
+                "ws",
+                &state,
+                &crate::conversations::SessionExtras::default(),
+            )
             .unwrap();
         fake_session(d, id).await
     }
@@ -1943,7 +2169,10 @@ mod tests {
         let stop_ev = event(3, "local", "stop now", "agent:a");
         let stop_env = direct_message_envelope(&stop_ev, &[]);
         super::deliver_by_urgency(&d, "busy-s", stop_env, &stop_ev.payload, true).await;
-        assert!(matches!(rx.try_recv().expect("interrupt first"), LoopInput::Interrupt));
+        assert!(matches!(
+            rx.try_recv().expect("interrupt first"),
+            LoopInput::Interrupt
+        ));
         match rx.try_recv().expect("stop message second") {
             LoopInput::UserMessage(text) => {
                 assert!(
@@ -1962,8 +2191,14 @@ mod tests {
         assert!(super::route_to_working_task(&d, &routed_ev, &[], "a", "inbox-a").await);
         match rx.try_recv().expect("busy task session steered") {
             LoopInput::UserMessage(text) => {
-                assert!(text.contains("note: steer: the user wrote while you were working;"), "{text}");
-                assert!(text.contains("about task t1 (Task t1); routed to the session doing it."), "{text}");
+                assert!(
+                    text.contains("note: steer: the user wrote while you were working;"),
+                    "{text}"
+                );
+                assert!(
+                    text.contains("about task t1 (Task t1); routed to the session doing it."),
+                    "{text}"
+                );
             }
             other => panic!("expected UserMessage steer on busy task session, got {other:?}"),
         }
@@ -2026,7 +2261,10 @@ mod tests {
             .unwrap();
 
         force_quiet_hours(&store, true);
-        assert_eq!(crate::mission_autonomy::quiet_and_call_in(&store), (true, false));
+        assert_eq!(
+            crate::mission_autonomy::quiet_and_call_in(&store),
+            (true, false)
+        );
 
         let mut dev_rx = crate::session::subscribe_device_events();
         let mut state = crate::harness::HarnessState::blank("/tmp", None);
@@ -2066,13 +2304,25 @@ mod tests {
                 chat_events += 1;
             }
         }
-        assert_eq!(chat_events, 1, "expected exactly one chat coordination_event");
-        assert_eq!(ping_events, 0, "expected no ping device event in quiet hours");
-        assert_eq!(crate::mission_autonomy::load_from(&store).held_pings.len(), 1);
+        assert_eq!(
+            chat_events, 1,
+            "expected exactly one chat coordination_event"
+        );
+        assert_eq!(
+            ping_events, 0,
+            "expected no ping device event in quiet hours"
+        );
+        assert_eq!(
+            crate::mission_autonomy::load_from(&store).held_pings.len(),
+            1
+        );
 
         // Outside quiet hours, a worker question emits both chat and a tagged ping event.
         force_quiet_hours(&store, false);
-        assert_eq!(crate::mission_autonomy::quiet_and_call_in(&store), (false, false));
+        assert_eq!(
+            crate::mission_autonomy::quiet_and_call_in(&store),
+            (false, false)
+        );
         state.human_waiting.push(crate::harness::HumanWait {
             thread_id: "t".into(),
             since: "s2".into(),
@@ -2101,8 +2351,8 @@ mod tests {
 
     #[tokio::test]
     async fn agent_reach_routes_tool_and_non_mc_ping_user_work_end_to_end() {
-        use axum::body::to_bytes;
         use crate::tools::{Tool, ToolContext};
+        use axum::body::to_bytes;
 
         let d = test_daemon();
         let agent_id = "reach-route-worker";
@@ -2206,7 +2456,11 @@ mod tests {
         }
 
         let desk_id = crate::session::minimal_inbox_identity(agent_id);
-        assert!(desk_id.contains("Your channels and the kinds of message each carries are in reach_policy;"));
+        assert!(
+            desk_id.contains(
+                "Your channels and the kinds of message each carries are in reach_policy;"
+            )
+        );
     }
 
     fn waiting_question_state() -> crate::harness::HarnessState {
@@ -2270,7 +2524,10 @@ mod tests {
         assert_eq!(asks.len(), 1);
         let ask = &asks[0];
         assert_eq!(ask.payload["kind"], "question");
-        assert_eq!(ask.payload["body"], "Deploy: Ship now or wait for review?\nWhich channel?");
+        assert_eq!(
+            ask.payload["body"],
+            "Deploy: Ship now or wait for review?\nWhich channel?"
+        );
         assert_eq!(ask.payload["question"]["session"], "sess-1");
         assert_eq!(
             ask.payload["question"]["questions"],
@@ -2293,10 +2550,12 @@ mod tests {
             ("agent", "snippet"),
             ("human", crate::coordination::LOCAL_HUMAN_ID),
         );
-        assert!(store
-            .recent_direct_thread_events(&snippet_thread, 50)
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .recent_direct_thread_events(&snippet_thread, 50)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -2382,5 +2641,4 @@ mod tests {
         assert_eq!(answers[0].payload["answer_to"], ask.event_id);
         assert_eq!(answers[0].payload["body"], "ship it");
     }
-
 }

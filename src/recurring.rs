@@ -108,7 +108,9 @@ impl Schedule {
                 }
             }
             Self::Daily { hour, minute } => format!("daily {hour:02}:{minute:02}"),
-            Self::Weekly { days, hour, minute } => format!("{} {hour:02}:{minute:02}", display_days(*days)),
+            Self::Weekly { days, hour, minute } => {
+                format!("{} {hour:02}:{minute:02}", display_days(*days))
+            }
             Self::Once { at } => format!("once {}", fmt_hhmm(*at)),
         }
     }
@@ -132,7 +134,9 @@ impl Schedule {
         match self {
             Self::Interval { every_secs } => from.saturating_add(*every_secs),
             Self::Daily { hour, minute } => next_time_after(from, *hour, *minute, ALL_DAYS, offset),
-            Self::Weekly { days, hour, minute } => next_time_after(from, *hour, *minute, *days, offset),
+            Self::Weekly { days, hour, minute } => {
+                next_time_after(from, *hour, *minute, *days, offset)
+            }
             Self::Once { at } => *at,
         }
     }
@@ -149,7 +153,9 @@ fn parse_days(raw: &str) -> Option<u8> {
     }
     let mut mask = 0u8;
     for part in raw.split(',') {
-        let i = DAY_NAMES.iter().position(|d| part.trim().starts_with(d) && part.trim().len() >= 3)?;
+        let i = DAY_NAMES
+            .iter()
+            .position(|d| part.trim().starts_with(d) && part.trim().len() >= 3)?;
         mask |= 1 << i;
     }
     (mask != 0).then_some(mask)
@@ -394,7 +400,11 @@ impl RecurringJob {
         out.push_str("\n---\n\n");
         out.push_str(&body);
         if let Some(wake) = &self.wake {
-            out.push_str(&crate::agent_wakes::goal_addendum(wake, self.last_result.as_deref(), self.last_run_at));
+            out.push_str(&crate::agent_wakes::goal_addendum(
+                wake,
+                self.last_result.as_deref(),
+                self.last_run_at,
+            ));
         }
         let playbook = self.playbook_topic();
         out.push_str(&format!("\n\n---\n\nThis job runs again, and each run should go better than the last. Before you start, read its playbook in project memory (`playbooks/{playbook}`) if it exists, and follow it. Before you finish, update that playbook: what worked and should stay the approach, what went wrong and what to do instead next time (situation → approach → why), and any entry this run proved wrong. Keep it short: a proven rule replaces the run notes that led to it."));
@@ -412,9 +422,12 @@ impl RecurringJob {
             }
         }
         let slug = slug.trim_end_matches('-');
-        if slug.is_empty() { self.id.clone() } else { slug.to_string() }
+        if slug.is_empty() {
+            self.id.clone()
+        } else {
+            slug.to_string()
+        }
     }
-
 }
 
 /// "YYYY-MM-DD HH:MM" in the user's time for a unix timestamp (fire header).
@@ -474,7 +487,9 @@ fn read_plan(path: &str, workspace: Option<&Path>) -> Result<String, String> {
 }
 
 pub fn list_jobs(root: &Path) -> Result<Vec<RecurringJob>, String> {
-    let mut jobs = store_for(root)?.list_recurring_jobs().map_err(|e| e.to_string())?;
+    let mut jobs = store_for(root)?
+        .list_recurring_jobs()
+        .map_err(|e| e.to_string())?;
     jobs.sort_by(|a, b| a.next_run_at.cmp(&b.next_run_at).then(a.id.cmp(&b.id)));
     Ok(jobs)
 }
@@ -964,10 +979,30 @@ mod tests {
 
     #[test]
     fn weekly_schedules_parse_and_display() {
-        assert_eq!(Schedule::parse("weekdays 09:00").unwrap(), Schedule::Weekly { days: 0x1f, hour: 9, minute: 0 });
-        assert_eq!(Schedule::parse("Mon,Thu 18:30").unwrap(), Schedule::Weekly { days: 0b1001, hour: 18, minute: 30 });
-        assert_eq!(Schedule::parse("weekends 10:00").unwrap().display(), "weekends 10:00");
-        assert_eq!(Schedule::parse("mon,wed 07:05").unwrap().display(), "mon,wed 07:05");
+        assert_eq!(
+            Schedule::parse("weekdays 09:00").unwrap(),
+            Schedule::Weekly {
+                days: 0x1f,
+                hour: 9,
+                minute: 0
+            }
+        );
+        assert_eq!(
+            Schedule::parse("Mon,Thu 18:30").unwrap(),
+            Schedule::Weekly {
+                days: 0b1001,
+                hour: 18,
+                minute: 30
+            }
+        );
+        assert_eq!(
+            Schedule::parse("weekends 10:00").unwrap().display(),
+            "weekends 10:00"
+        );
+        assert_eq!(
+            Schedule::parse("mon,wed 07:05").unwrap().display(),
+            "mon,wed 07:05"
+        );
         assert!(Schedule::parse("mon,xyz 09:00").is_err());
         assert!(Schedule::parse("weekdays 25:00").is_err());
     }
@@ -981,11 +1016,21 @@ mod tests {
         let daily = Schedule::Daily { hour: 9, minute: 0 };
         assert_eq!(daily.next_after_in(from, ist), 1_793_503_800);
         assert_eq!(daily.next_after_in(from, utc), 1_793_523_600);
-        let weekdays = Schedule::Weekly { days: 0x1f, hour: 9, minute: 0 };
+        let weekdays = Schedule::Weekly {
+            days: 0x1f,
+            hour: 9,
+            minute: 0,
+        };
         assert_eq!(weekdays.next_after_in(from, ist), 1_793_503_800 + 86_400);
-        let sat = Schedule::Weekly { days: 1 << 5, hour: 20, minute: 0 };
+        let sat = Schedule::Weekly {
+            days: 1 << 5,
+            hour: 20,
+            minute: 0,
+        };
         assert_eq!(sat.next_after_in(from, ist), from + 5400);
-        assert_eq!(sat.next_after_in(from + 5400, ist), from + 5400 + 7 * 86_400);
+        assert_eq!(
+            sat.next_after_in(from + 5400, ist),
+            from + 5400 + 7 * 86_400
+        );
     }
-
 }

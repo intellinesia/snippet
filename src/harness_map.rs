@@ -14,15 +14,7 @@ use crate::store::Store;
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 
 pub const SECTIONS: [&str; 9] = [
-    "sessions",
-    "desk",
-    "board",
-    "reach",
-    "memory",
-    "wakes",
-    "tools",
-    "profiles",
-    "limits",
+    "sessions", "desk", "board", "reach", "memory", "wakes", "tools", "profiles", "limits",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,17 +206,23 @@ pub(crate) fn build_with(
     };
     let desk_exists = all_sessions.iter().any(|s| s.id == desk_session_id);
     let mc_root = crate::config::snippet_home().join("mission-control");
-    let home = crate::coordination::AgentHome::new(crate::coordination::agents_root(&mc_root), agent_id).ok();
+    let home =
+        crate::coordination::AgentHome::new(crate::coordination::agents_root(&mc_root), agent_id)
+            .ok();
     let (identity_source, identity_path) = if agent_id == crate::mission_control::SESSION_ID {
         ("mission_control".to_string(), None)
     } else if let Some(ref h) = home
         && h.read_identity().is_ok_and(|t| !t.trim().is_empty())
     {
-        ("agent_home".to_string(), Some(h.identity_path().display().to_string()))
+        (
+            "agent_home".to_string(),
+            Some(h.identity_path().display().to_string()),
+        )
     } else {
         (
             "minimal_inbox".to_string(),
-            home.as_ref().map(|h| h.identity_path().display().to_string()),
+            home.as_ref()
+                .map(|h| h.identity_path().display().to_string()),
         )
     };
     let desk = DeskInfo {
@@ -317,7 +315,11 @@ pub(crate) fn build_with(
         .flatten()
         .or_else(|| {
             (!session_id.trim().is_empty())
-                .then(|| crate::agent_wakes::get(&wake_root, session_id).ok().flatten())
+                .then(|| {
+                    crate::agent_wakes::get(&wake_root, session_id)
+                        .ok()
+                        .flatten()
+                })
                 .flatten()
         })
         .and_then(|job| {
@@ -355,7 +357,10 @@ pub(crate) fn build_with(
             skipped_reason: kw.skipped_reason,
             provider_reason: kw.provider_reason,
         });
-    let wakes = WakesInfo { schedule, keep_warm };
+    let wakes = WakesInfo {
+        schedule,
+        keep_warm,
+    };
 
     let mut role_budgets = BTreeMap::new();
     for r in ["work", "mission_control", "desk", "lane"] {
@@ -371,11 +376,16 @@ pub(crate) fn build_with(
             );
         }
     }
-    let custom_dir = (role == "work").then(|| crate::agent_tools::tools_dir(agent_id)).flatten();
+    let custom_dir = (role == "work")
+        .then(|| crate::agent_tools::tools_dir(agent_id))
+        .flatten();
     let (role_defs, cap_bytes) = crate::lanes::role_tool_definitions(role, custom_dir)
         .or_else(|| crate::lanes::role_tool_definitions("work", None))
         .unwrap_or_default();
-    let measured_bytes = role_defs.iter().map(crate::lanes::definition_byte_size).sum();
+    let measured_bytes = role_defs
+        .iter()
+        .map(crate::lanes::definition_byte_size)
+        .sum();
     let mut names: Vec<String> = role_defs.iter().map(|d| d.name.clone()).collect();
     names.sort();
     let tools = ToolsInfo {

@@ -6,7 +6,7 @@ use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 
-use super::{Shared};
+use super::Shared;
 use crate::tts_stream::PhoneFrame;
 
 const MAX_SEGMENT_PCM: usize = 16_000 * 2 * 120;
@@ -18,7 +18,11 @@ pub(crate) struct StreamQuery {
     device: String,
 }
 
-pub(crate) async fn stream(ws: WebSocketUpgrade, State(d): State<Shared>, Query(q): Query<StreamQuery>) -> Response {
+pub(crate) async fn stream(
+    ws: WebSocketUpgrade,
+    State(d): State<Shared>,
+    Query(q): Query<StreamQuery>,
+) -> Response {
     let device = q.device.trim().to_string();
     ws.max_message_size(1 << 20)
         .on_upgrade(move |socket| run(socket, d, device))
@@ -63,7 +67,9 @@ async fn run(socket: WebSocket, d: Shared, device: String) {
                 }
             }
             Message::Text(t) => {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) else { continue };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) else {
+                    continue;
+                };
                 let h = v.get("h").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
                 match v.get("t").and_then(|x| x.as_str()) {
                     Some("start") => {
@@ -74,15 +80,25 @@ async fn run(socket: WebSocket, d: Shared, device: String) {
                         if let Some(seq) = v.get("seq").and_then(|x| x.as_i64()) {
                             super::ambient_routes::announce(&d, &device, seq, false);
                         }
-                        open.insert(h, Open { meta: v, pcm: Vec::new() });
+                        open.insert(
+                            h,
+                            Open {
+                                meta: v,
+                                pcm: Vec::new(),
+                            },
+                        );
                     }
                     Some("open") => {
                         opened = Some(h);
-                        let started = v.get("started_at").and_then(|x| x.as_str()).map(str::to_string);
-                        let answer = match super::listener::open(&d, &device, h, started.as_deref()).await {
-                            Ok(()) => serde_json::json!({"t":"opened","h":h}),
-                            Err(code) => serde_json::json!({"t":"err","h":h,"code":code}),
-                        };
+                        let started = v
+                            .get("started_at")
+                            .and_then(|x| x.as_str())
+                            .map(str::to_string);
+                        let answer =
+                            match super::listener::open(&d, &device, h, started.as_deref()).await {
+                                Ok(()) => serde_json::json!({"t":"opened","h":h}),
+                                Err(code) => serde_json::json!({"t":"err","h":h,"code":code}),
+                            };
                         reply(&out_tx, answer);
                     }
                     Some("close") => {
@@ -115,15 +131,21 @@ async fn run(socket: WebSocket, d: Shared, device: String) {
                         tokio::spawn(async move {
                             let (code, status) = finish(d, device, seg).await;
                             let id = v.get("id").cloned().unwrap_or_default();
-                            reply(&out, serde_json::json!({"t":"done","h":h,"id":id,"code":code,"status":status}));
+                            reply(
+                                &out,
+                                serde_json::json!({"t":"done","h":h,"id":id,"code":code,"status":status}),
+                            );
                         });
                     }
                     Some("caps") => {
-                        if !device.is_empty() && v.get("tts_stream").and_then(|x| x.as_i64()).unwrap_or(0) > 0 {
+                        if !device.is_empty()
+                            && v.get("tts_stream").and_then(|x| x.as_i64()).unwrap_or(0) > 0
+                        {
                             if let Some(old) = phone.take() {
                                 crate::tts_stream::unregister_phone(&device, old);
                             }
-                            phone = Some(crate::tts_stream::register_phone(&device, out_tx.clone()));
+                            phone =
+                                Some(crate::tts_stream::register_phone(&device, out_tx.clone()));
                         }
                     }
                     Some("tts_pos") => {

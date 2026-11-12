@@ -174,7 +174,12 @@ impl Store {
             tx.execute(
                 "INSERT INTO group_meta (thread_id, lead_agent, created_by, created_at)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![thread_id, lead, actor_ref(created_by.0, created_by.1), created_at],
+                params![
+                    thread_id,
+                    lead,
+                    actor_ref(created_by.0, created_by.1),
+                    created_at
+                ],
             )?;
             tx.commit()?;
             Ok(())
@@ -533,16 +538,13 @@ impl Store {
                  ORDER BY e.created_at, e.sequence
                  LIMIT ?1"
             ))?;
-            let rows = stmt.query_map(
-                params![limit, MAX_GROUP_DELIVERY_ATTEMPTS, now],
-                |row| {
-                    Ok(PendingDirectMessage {
-                        event: event_from_row(row)?,
-                        recipient_kind: row.get(13)?,
-                        recipient_id: row.get(14)?,
-                    })
-                },
-            )?;
+            let rows = stmt.query_map(params![limit, MAX_GROUP_DELIVERY_ATTEMPTS, now], |row| {
+                Ok(PendingDirectMessage {
+                    event: event_from_row(row)?,
+                    recipient_kind: row.get(13)?,
+                    recipient_id: row.get(14)?,
+                })
+            })?;
             rows.collect()
         })
     }
@@ -594,7 +596,13 @@ mod tests {
             db.create_agent(&worker(id)).unwrap();
         }
         let group = db
-            .create_group("build", ("human", "human"), &["a".into(), "b".into(), "c".into()], None, T0)
+            .create_group(
+                "build",
+                ("human", "human"),
+                &["a".into(), "b".into(), "c".into()],
+                None,
+                T0,
+            )
             .unwrap();
         (db, group.id)
     }
@@ -617,10 +625,12 @@ mod tests {
         assert_eq!(group.title, "build");
         assert_eq!(group.lead, None);
         assert_eq!(group.members.len(), 4);
-        assert!(group
-            .members
-            .iter()
-            .any(|m| m.kind == "human" && m.id == "human"));
+        assert!(
+            group
+                .members
+                .iter()
+                .any(|m| m.kind == "human" && m.id == "human")
+        );
         assert!(db.is_group_member(&id, "agent", "a").unwrap());
         assert_eq!(db.list_groups().unwrap().len(), 1);
         assert!(db.get_group("direct:x").unwrap().is_none());
@@ -629,8 +639,16 @@ mod tests {
     #[test]
     fn a_mention_wakes_only_the_mentioned_agent_immediately() {
         let (db, id) = three_agent_group();
-        db.post_group_message(&id, ("human", "human"), "@b status?", &["b".into()], None, "k1", T0)
-            .unwrap();
+        db.post_group_message(
+            &id,
+            ("human", "human"),
+            "@b status?",
+            &["b".into()],
+            None,
+            "k1",
+            T0,
+        )
+        .unwrap();
         let now = pending(&db, T0);
         assert_eq!(kinds(&now), vec![("group".to_string(), "b".to_string())]);
         let later = pending(&db, T2);
@@ -657,8 +675,16 @@ mod tests {
             vec![("group".to_string(), "a".to_string())]
         );
         // The human addresses b; the next unmentioned post goes to b.
-        db.post_group_message(&id, ("human", "human"), "@b hi", &["b".into()], None, "k2", T1)
-            .unwrap();
+        db.post_group_message(
+            &id,
+            ("human", "human"),
+            "@b hi",
+            &["b".into()],
+            None,
+            "k2",
+            T1,
+        )
+        .unwrap();
         let p3 = db
             .post_group_message(&id, ("human", "human"), "and?", &[], None, "k3", T1)
             .unwrap();
@@ -673,18 +699,37 @@ mod tests {
     #[test]
     fn an_everyone_mention_wakes_every_agent_member() {
         let (db, id) = three_agent_group();
-        db.post_group_message(&id, ("human", "human"), "@everyone ship it", &["everyone".into()], None, "k1", T0)
-            .unwrap();
+        db.post_group_message(
+            &id,
+            ("human", "human"),
+            "@everyone ship it",
+            &["everyone".into()],
+            None,
+            "k1",
+            T0,
+        )
+        .unwrap();
         let mut immediate: Vec<_> = pending(&db, T0)
             .into_iter()
             .filter(|p| p.recipient_kind == "group")
             .map(|p| p.recipient_id)
             .collect();
         immediate.sort();
-        assert_eq!(immediate, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(
+            immediate,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
         // Unknown ids are ignored, not an error.
-        db.post_group_message(&id, ("human", "human"), "@ghost hi", &["ghost".into(), "b".into()], None, "k2", T1)
-            .unwrap();
+        db.post_group_message(
+            &id,
+            ("human", "human"),
+            "@ghost hi",
+            &["ghost".into(), "b".into()],
+            None,
+            "k2",
+            T1,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -695,22 +740,58 @@ mod tests {
             .unwrap();
         assert!(pending(&db, T0).is_empty());
         assert!(pending(&db, T2).is_empty());
-        db.post_group_message(&id, ("agent", "a"), "@c over to you", &["c".into()], None, "k2", T1)
-            .unwrap();
+        db.post_group_message(
+            &id,
+            ("agent", "a"),
+            "@c over to you",
+            &["c".into()],
+            None,
+            "k2",
+            T1,
+        )
+        .unwrap();
         assert_eq!(kinds(&pending(&db, T2)), vec![("group".into(), "c".into())]);
-        db.post_group_message(&id, ("agent", "b"), "@b note to self", &["b".into()], None, "k3", T2)
-            .unwrap();
-        assert_eq!(kinds(&pending(&db, T2)), vec![("group".into(), "c".into())], "an agent never wakes itself");
+        db.post_group_message(
+            &id,
+            ("agent", "b"),
+            "@b note to self",
+            &["b".into()],
+            None,
+            "k3",
+            T2,
+        )
+        .unwrap();
+        assert_eq!(
+            kinds(&pending(&db, T2)),
+            vec![("group".into(), "c".into())],
+            "an agent never wakes itself"
+        );
     }
 
     #[test]
     fn a_reply_claims_the_post_and_a_second_reply_is_refused() {
         let (db, id) = three_agent_group();
         let post = db
-            .post_group_message(&id, ("human", "human"), "status?", &["a".into()], None, "k1", T0)
+            .post_group_message(
+                &id,
+                ("human", "human"),
+                "status?",
+                &["a".into()],
+                None,
+                "k1",
+                T0,
+            )
             .unwrap();
         let reply = db
-            .post_group_message(&id, ("agent", "a"), "done", &[], Some(&post.event_id), "k2", T1)
+            .post_group_message(
+                &id,
+                ("agent", "a"),
+                "done",
+                &[],
+                Some(&post.event_id),
+                "k2",
+                T1,
+            )
             .unwrap();
         assert_eq!(reply.payload["in_reply_to"], post.event_id);
         assert!(db.group_has_replies(&post.event_id).unwrap());
@@ -725,8 +806,16 @@ mod tests {
         );
         assert!(second.is_err(), "one reply per agent per post");
         // A different agent may still reply to the same post.
-        db.post_group_message(&id, ("agent", "b"), "same", &[], Some(&post.event_id), "k4", T1)
-            .unwrap();
+        db.post_group_message(
+            &id,
+            ("agent", "b"),
+            "same",
+            &[],
+            Some(&post.event_id),
+            "k4",
+            T1,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -789,14 +878,30 @@ mod tests {
         );
 
         // b answers the mention.
-        db.post_group_message(&id, ("agent", "b"), "green", &[], Some(&p1.event_id), "k2", T1)
-            .unwrap();
+        db.post_group_message(
+            &id,
+            ("agent", "b"),
+            "green",
+            &[],
+            Some(&p1.event_id),
+            "k2",
+            T1,
+        )
+        .unwrap();
         deliver(&db, T1, &mut delivered);
 
         // An unmentioned follow-up: the lead — b, last addressed — is woken;
         // a and c wait out the claim window.
         let p2 = db
-            .post_group_message(&id, ("human", "human"), "and the tests?", &[], None, "k3", T2)
+            .post_group_message(
+                &id,
+                ("human", "human"),
+                "and the tests?",
+                &[],
+                None,
+                "k3",
+                T2,
+            )
             .unwrap();
         deliver(&db, T2, &mut delivered);
         assert!(
@@ -808,8 +913,16 @@ mod tests {
 
         // b replies inside the window; when it closes, a's and c's deferred
         // wakes find a reply and are skipped.
-        db.post_group_message(&id, ("agent", "b"), "they pass", &[], Some(&p2.event_id), "k4", T2)
-            .unwrap();
+        db.post_group_message(
+            &id,
+            ("agent", "b"),
+            "they pass",
+            &[],
+            Some(&p2.event_id),
+            "k4",
+            T2,
+        )
+        .unwrap();
         deliver(&db, "2026-01-01T00:00:31+00:00", &mut delivered);
         assert!(
             !delivered

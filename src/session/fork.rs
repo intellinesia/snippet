@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
 use crate::harness::HarnessState;
 use crate::session::*;
+use std::path::{Path, PathBuf};
 
 /// Where a fork cuts the source conversation. Both ends are exclusive lengths
 /// (`events[..event_end]`, `messages[..message_end]`).
@@ -282,4 +282,3 @@ pub fn write_forked_conversation_in(
         message_end: point.message_end.min(source.messages.len()),
     })
 }
-

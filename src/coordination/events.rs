@@ -6,10 +6,7 @@ use super::{Store, StoreError, types::CoordinationEvent};
 impl Store {
     /// Append an event atomically. Repeating an idempotency
     /// key returns the original event without creating a duplicate sequence.
-    pub fn append_event(
-        &self,
-        event: &CoordinationEvent,
-    ) -> Result<CoordinationEvent, StoreError> {
+    pub fn append_event(&self, event: &CoordinationEvent) -> Result<CoordinationEvent, StoreError> {
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             if let Some(existing) = tx

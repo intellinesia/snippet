@@ -19,8 +19,6 @@ pub(crate) struct TermPane {
     pub(crate) fresh: bool,
 }
 
-
-
 impl App {
     pub(crate) fn open_term(&mut self) {
         if self.term_panes.is_empty() {
@@ -267,6 +265,4 @@ impl App {
             _ => None,
         }
     }
-
-
 }

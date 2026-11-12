@@ -18,7 +18,9 @@ pub enum StoreError {
     AlreadyTerminal { id: String, status: String },
     #[error("task {id} is {status}; finished work cannot be retried")]
     NotRetryable { id: String, status: String },
-    #[error("task {id} is still being worked in session {session}; message it, or wait for it to stop")]
+    #[error(
+        "task {id} is still being worked in session {session}; message it, or wait for it to stop"
+    )]
     WorkerBusy { id: String, session: String },
     #[error("task {id} is {status}; only a done task can be revised")]
     NotRevisable { id: String, status: String },
@@ -30,8 +32,14 @@ pub enum StoreError {
     NotTerminal(String),
     #[error("could not encode session state: {0}")]
     ScalarEncode(String),
-    #[error("task {task_id} ledger is at version {actual}, not {expected}; read it again and resend your patch")]
-    StaleTaskState { task_id: String, expected: u64, actual: u64 },
+    #[error(
+        "task {task_id} ledger is at version {actual}, not {expected}; read it again and resend your patch"
+    )]
+    StaleTaskState {
+        task_id: String,
+        expected: u64,
+        actual: u64,
+    },
     #[error("stored record is malformed: {0}")]
     AppDecode(String),
     #[error("{0}")]
@@ -146,7 +154,6 @@ impl Store {
             eprintln!("[store] write failed: {e}");
         }
     }
-
 }
 
 fn configure(connection: &Connection) -> Result<(), rusqlite::Error> {
@@ -189,7 +196,9 @@ fn add_missing_columns(connection: &Connection) -> Result<(), rusqlite::Error> {
     let fresh = Connection::open_in_memory()?;
     create_schema(&fresh)?;
     let tables: Vec<String> = fresh
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE TABLE%'")?
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE TABLE%'",
+        )?
         .query_map([], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
     for table in tables {
@@ -199,7 +208,9 @@ fn add_missing_columns(connection: &Connection) -> Result<(), rusqlite::Error> {
         }
         let mut want = fresh.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
         let want: Vec<(String, String, bool, Option<String>)> = want
-            .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?
+            .query_map([], |row| {
+                Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            })?
             .collect::<Result<_, _>>()?;
         for (name, ty, not_null, default) in want {
             if have.iter().any(|c| c.eq_ignore_ascii_case(&name)) {
@@ -258,7 +269,11 @@ mod tests {
             let tasks = table_columns(c, "tasks")?;
             assert!(tasks.iter().any(|n| n == "goal_id"));
             assert!(tasks.iter().any(|n| n == "work_plan_json"));
-            assert!(table_columns(c, "agent_board")?.iter().any(|n| n == "folder"));
+            assert!(
+                table_columns(c, "agent_board")?
+                    .iter()
+                    .any(|n| n == "folder")
+            );
             let title: String =
                 c.query_row("SELECT title FROM tasks WHERE id = 'old'", [], |r| r.get(0))?;
             assert_eq!(title, "kept");

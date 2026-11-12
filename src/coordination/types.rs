@@ -46,7 +46,6 @@ pub struct CoordinationEvent {
     pub created_at: String,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +68,4 @@ mod tests {
         assert_eq!(event.sequence, 1);
         assert_eq!(event.event_type, "message.posted");
     }
-
 }

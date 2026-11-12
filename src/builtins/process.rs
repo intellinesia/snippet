@@ -63,7 +63,9 @@ impl Tool for ManageProcessTool {
             }
             "kill" => {
                 let Some(id) = id_clean else {
-                    return Err(ToolError::msg("Missing required argument 'id' for action 'kill'"));
+                    return Err(ToolError::msg(
+                        "Missing required argument 'id' for action 'kill'",
+                    ));
                 };
                 match crate::bg::kill_by_id(ctx.workspace_root(), id) {
                     Ok(true) => Ok(ToolResult::success(json!({
@@ -76,15 +78,19 @@ impl Tool for ManageProcessTool {
                         "status": "already_stopped",
                         "note": format!("Background process '{id}' was already terminated or exited"),
                     }))),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        Err(ToolError::msg(format!("Background process with ID '{id}' not found")))
-                    }
-                    Err(e) => Err(ToolError::msg(format!("Failed to kill background process '{id}': {e}"))),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ToolError::msg(
+                        format!("Background process with ID '{id}' not found"),
+                    )),
+                    Err(e) => Err(ToolError::msg(format!(
+                        "Failed to kill background process '{id}': {e}"
+                    ))),
                 }
             }
             "log" => {
                 let Some(id) = id_clean else {
-                    return Err(ToolError::msg("Missing required argument 'id' for action 'log'"));
+                    return Err(ToolError::msg(
+                        "Missing required argument 'id' for action 'log'",
+                    ));
                 };
                 let lines_to_read = args.lines.unwrap_or(50).clamp(1, 1000);
                 match crate::bg::tail_log(ctx.workspace_root(), id, lines_to_read) {
@@ -94,10 +100,12 @@ impl Tool for ManageProcessTool {
                         "truncated": truncated,
                         "log": log_content,
                     }))),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        Err(ToolError::msg(format!("Log for background process '{id}' not found")))
-                    }
-                    Err(e) => Err(ToolError::msg(format!("Failed to read log for '{id}': {e}"))),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ToolError::msg(
+                        format!("Log for background process '{id}' not found"),
+                    )),
+                    Err(e) => Err(ToolError::msg(format!(
+                        "Failed to read log for '{id}': {e}"
+                    ))),
                 }
             }
             other => Err(ToolError::msg(format!(
@@ -117,10 +125,7 @@ mod tests {
         let ctx = ToolContext::new(temp.path()).unwrap();
         let tool = ManageProcessTool;
 
-        let res = tool
-            .execute(&ctx, json!({"action": "list"}))
-            .await
-            .unwrap();
+        let res = tool.execute(&ctx, json!({"action": "list"})).await.unwrap();
         assert_eq!(res.value["data"]["total"], 0);
         assert_eq!(res.value["data"]["running"], 0);
     }
@@ -180,7 +185,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.value["data"]["id"], id);
-        assert!(res.value["data"]["log"].as_str().unwrap().contains("listening on port 3000"));
+        assert!(
+            res.value["data"]["log"]
+                .as_str()
+                .unwrap()
+                .contains("listening on port 3000")
+        );
     }
 
     #[tokio::test]

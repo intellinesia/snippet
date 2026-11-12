@@ -38,7 +38,9 @@ pub fn reason_for(provider: &str) -> Option<&'static str> {
         "claude-code" | "antigravity" | "devin" => {
             Some("runs through a CLI driver that owns its own prompt cache")
         }
-        "gemini" => Some("Gemini context caches here are explicit with a 30-minute TTL, not a one-hour prompt cache"),
+        "gemini" => Some(
+            "Gemini context caches here are explicit with a 30-minute TTL, not a one-hour prompt cache",
+        ),
         "openai" | "chatgpt" | "xai" | "grok" | "openrouter" | "openai-compatible" => Some(
             "automatic prefix caching: the provider sets retention and offers no one-hour TTL to request",
         ),
@@ -93,7 +95,13 @@ pub enum Decision {
 
 /// What to do for one entry now. `last_turn` is the session's last real model
 /// call; `quiet` and `busy` are the owner's quiet hours and a running turn.
-pub fn decide(entry: &KeepWarm, now: i64, last_turn: Option<i64>, quiet: bool, busy: bool) -> Decision {
+pub fn decide(
+    entry: &KeepWarm,
+    now: i64,
+    last_turn: Option<i64>,
+    quiet: bool,
+    busy: bool,
+) -> Decision {
     if !entry.enabled {
         return Decision::Skip("disabled".into());
     }
@@ -102,7 +110,10 @@ pub fn decide(entry: &KeepWarm, now: i64, last_turn: Option<i64>, quiet: bool, b
     };
     let idle = now - last_turn;
     if idle >= entry.max_idle_hours as i64 * 3600 {
-        return Decision::Skip(format!("idle over {}h; stopped until the next turn", entry.max_idle_hours));
+        return Decision::Skip(format!(
+            "idle over {}h; stopped until the next turn",
+            entry.max_idle_hours
+        ));
     }
     if quiet {
         return Decision::Skip("quiet hours".into());
@@ -182,7 +193,10 @@ pub fn record_outcome(entry: &mut KeepWarm, outcome: &Outcome, now: i64) {
 pub fn list(root: &Path) -> Result<Vec<KeepWarm>, String> {
     let store = crate::recurring::store_at(root)?;
     let rows = store.keep_warm_entries().map_err(|e| e.to_string())?;
-    Ok(rows.iter().filter_map(|raw| serde_json::from_str(raw).ok()).collect())
+    Ok(rows
+        .iter()
+        .filter_map(|raw| serde_json::from_str(raw).ok())
+        .collect())
 }
 
 pub fn get(root: &Path, owner: &str) -> Result<Option<KeepWarm>, String> {
@@ -217,7 +231,9 @@ pub fn set(
 ) -> Result<KeepWarm, String> {
     let owner = owner.trim();
     let current = get(root, owner)?;
-    if setter == Setter::MissionControl && current.as_ref().is_some_and(|e| e.set_by == Setter::User) {
+    if setter == Setter::MissionControl
+        && current.as_ref().is_some_and(|e| e.set_by == Setter::User)
+    {
         return Err("the user set this keep-warm; ask them to change it".into());
     }
     let interval = spec
@@ -269,7 +285,12 @@ pub fn set(
 /// entry changed, so the tick writes only then.
 pub fn note_decision(entry: &mut KeepWarm, decision: &Decision) -> bool {
     let shown = match decision {
-        Decision::Skip(reason) => Some(entry.provider_reason.clone().unwrap_or_else(|| reason.clone())),
+        Decision::Skip(reason) => Some(
+            entry
+                .provider_reason
+                .clone()
+                .unwrap_or_else(|| reason.clone()),
+        ),
         Decision::Wait if entry.skipped_at.is_none() => entry.provider_reason.clone(),
         _ => return false,
     };
@@ -283,7 +304,10 @@ pub fn note_decision(entry: &mut KeepWarm, decision: &Decision) -> bool {
 /// Owner's quiet hours: its wake schedule's when set, else the user's.
 pub fn quiet_now(root: &Path, owner: &str, now: i64) -> bool {
     let at = chrono::DateTime::from_timestamp(now, 0).unwrap_or_default();
-    if let Some(wake) = crate::agent_wakes::get(root, owner).ok().flatten().and_then(|j| j.wake)
+    if let Some(wake) = crate::agent_wakes::get(root, owner)
+        .ok()
+        .flatten()
+        .and_then(|j| j.wake)
         && wake.quiet_start.is_some()
     {
         return crate::mission_autonomy::quiet_at(
@@ -360,12 +384,24 @@ impl Tool for KeepWarmTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: ToolArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let named = args.agent_id.as_deref().map(str::trim).filter(|a| !a.is_empty());
+        let args: ToolArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let named = args
+            .agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty());
         let (owner, setter) = match (ctx.is_mission_control(), named) {
             (true, Some(other)) => (other.to_string(), Setter::MissionControl),
-            (true, None) => (crate::mission_control::SESSION_ID.to_string(), Setter::Owner),
-            (false, Some(_)) => return Err(ToolError::msg("only Mission Control can manage another agent's keep-warm")),
+            (true, None) => (
+                crate::mission_control::SESSION_ID.to_string(),
+                Setter::Owner,
+            ),
+            (false, Some(_)) => {
+                return Err(ToolError::msg(
+                    "only Mission Control can manage another agent's keep-warm",
+                ));
+            }
             (false, None) => (
                 ctx.agent_id()
                     .filter(|a| *a != crate::coordination::SNIPPET_AGENT_ID)
@@ -377,19 +413,25 @@ impl Tool for KeepWarmTool {
         };
         let root = crate::recurring::default_root();
         match args.action.as_str() {
-            "show" => Ok(ToolResult::success(match get(&root, &owner).map_err(ToolError::msg)? {
-                Some(entry) => view(&entry),
-                None => json!({"owner": owner, "keep_warm": null}),
-            })),
+            "show" => Ok(ToolResult::success(
+                match get(&root, &owner).map_err(ToolError::msg)? {
+                    Some(entry) => view(&entry),
+                    None => json!({"owner": owner, "keep_warm": null}),
+                },
+            )),
             "clear" => {
                 let cleared = clear(&root, &owner, setter).map_err(ToolError::msg)?;
-                Ok(ToolResult::success(json!({"owner": owner, "cleared": cleared})))
+                Ok(ToolResult::success(
+                    json!({"owner": owner, "cleared": cleared}),
+                ))
             }
             "set" => {
                 let store = crate::recurring::store_at(&root).map_err(ToolError::msg)?;
-                let kind = crate::agent_wakes::resolve_owner(&store, &owner).map_err(ToolError::msg)?;
+                let kind =
+                    crate::agent_wakes::resolve_owner(&store, &owner).map_err(ToolError::msg)?;
                 let now = chrono::Utc::now().timestamp();
-                let entry = set(&root, &owner, kind, args.spec, setter, now).map_err(ToolError::msg)?;
+                let entry =
+                    set(&root, &owner, kind, args.spec, setter, now).map_err(ToolError::msg)?;
                 Ok(ToolResult::success(view(&entry)))
             }
             other => Err(ToolError::msg(format!("unknown action `{other}`"))),
@@ -426,18 +468,33 @@ mod tests {
     #[test]
     fn warms_just_before_the_hour_and_not_before() {
         let e = entry();
-        assert_eq!(decide(&e, NOW, Some(NOW - 30 * 60), false, false), Decision::Wait);
-        assert_eq!(decide(&e, NOW, Some(NOW - 55 * 60), false, false), Decision::Warm);
-        assert_eq!(decide(&e, NOW, Some(NOW - 55 * 60), false, true), Decision::Wait);
+        assert_eq!(
+            decide(&e, NOW, Some(NOW - 30 * 60), false, false),
+            Decision::Wait
+        );
+        assert_eq!(
+            decide(&e, NOW, Some(NOW - 55 * 60), false, false),
+            Decision::Warm
+        );
+        assert_eq!(
+            decide(&e, NOW, Some(NOW - 55 * 60), false, true),
+            Decision::Wait
+        );
     }
 
     #[test]
     fn a_warm_resets_the_clock_until_max_idle() {
         let mut e = entry();
         e.last_warm_at = Some(NOW - 10 * 60);
-        assert_eq!(decide(&e, NOW, Some(NOW - 3 * 3600), false, false), Decision::Wait);
+        assert_eq!(
+            decide(&e, NOW, Some(NOW - 3 * 3600), false, false),
+            Decision::Wait
+        );
         e.last_warm_at = Some(NOW - 56 * 60);
-        assert_eq!(decide(&e, NOW, Some(NOW - 3 * 3600), false, false), Decision::Warm);
+        assert_eq!(
+            decide(&e, NOW, Some(NOW - 3 * 3600), false, false),
+            Decision::Warm
+        );
         assert!(matches!(
             decide(&e, NOW, Some(NOW - 6 * 3600), false, false),
             Decision::Skip(r) if r.contains("idle over 6h")
@@ -447,18 +504,32 @@ mod tests {
     #[test]
     fn lapsed_caches_quiet_hours_and_disabled_entries_are_skipped() {
         let mut e = entry();
-        assert!(matches!(decide(&e, NOW, Some(NOW - 70 * 60), false, false), Decision::Skip(r) if r.contains("lapsed")));
-        assert_eq!(decide(&e, NOW, Some(NOW - 55 * 60), true, false), Decision::Skip("quiet hours".into()));
-        assert!(matches!(decide(&e, NOW, None, false, false), Decision::Skip(_)));
+        assert!(
+            matches!(decide(&e, NOW, Some(NOW - 70 * 60), false, false), Decision::Skip(r) if r.contains("lapsed"))
+        );
+        assert_eq!(
+            decide(&e, NOW, Some(NOW - 55 * 60), true, false),
+            Decision::Skip("quiet hours".into())
+        );
+        assert!(matches!(
+            decide(&e, NOW, None, false, false),
+            Decision::Skip(_)
+        ));
         e.enabled = false;
-        assert_eq!(decide(&e, NOW, Some(NOW - 55 * 60), false, false), Decision::Skip("disabled".into()));
+        assert_eq!(
+            decide(&e, NOW, Some(NOW - 55 * 60), false, false),
+            Decision::Skip("disabled".into())
+        );
     }
 
     #[test]
     fn an_unsupported_skip_is_not_retried_every_tick() {
         let mut e = entry();
         record_outcome(&mut e, &Outcome::Skipped("no hour cache".into()), NOW - 60);
-        assert_eq!(decide(&e, NOW, Some(NOW - 56 * 60), false, false), Decision::Wait);
+        assert_eq!(
+            decide(&e, NOW, Some(NOW - 56 * 60), false, false),
+            Decision::Wait
+        );
         assert_eq!(e.skipped_reason.as_deref(), Some("no hour cache"));
     }
 
@@ -466,7 +537,10 @@ mod tests {
     fn a_provider_reason_outranks_timing_reasons_until_a_warm() {
         let mut e = entry();
         record_outcome(&mut e, &Outcome::Unsupported("5-minute cache".into()), NOW);
-        assert!(!note_decision(&mut e, &Decision::Skip("cache already lapsed".into())));
+        assert!(!note_decision(
+            &mut e,
+            &Decision::Skip("cache already lapsed".into())
+        ));
         assert_eq!(e.skipped_reason.as_deref(), Some("5-minute cache"));
         record_outcome(&mut e, &Outcome::Warmed(TokenUsage::default()), NOW);
         assert!(e.provider_reason.is_none());
@@ -478,7 +552,11 @@ mod tests {
     #[test]
     fn a_warm_records_the_cache_read() {
         let mut e = entry();
-        let usage = TokenUsage { cache_read_tokens: 41_200, cache_creation_tokens: 90, ..TokenUsage::default() };
+        let usage = TokenUsage {
+            cache_read_tokens: 41_200,
+            cache_creation_tokens: 90,
+            ..TokenUsage::default()
+        };
         record_outcome(&mut e, &Outcome::Warmed(usage), NOW);
         assert_eq!(e.last_warm_at, Some(NOW));
         assert_eq!(e.last_cache_read_tokens, Some(41_200));
@@ -506,13 +584,35 @@ mod tests {
     fn set_validates_and_guards_user_entries() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
-        let e = set(root, "researcher", OwnerKind::Agent, KeepWarmSpec::default(), Setter::User, NOW).unwrap();
-        assert_eq!((e.interval_minutes, e.max_idle_hours, e.enabled), (55, 6, true));
+        let e = set(
+            root,
+            "researcher",
+            OwnerKind::Agent,
+            KeepWarmSpec::default(),
+            Setter::User,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(
+            (e.interval_minutes, e.max_idle_hours, e.enabled),
+            (55, 6, true)
+        );
         assert_eq!(e.session_id, "inbox-researcher");
-        let bad = KeepWarmSpec { interval_minutes: Some(60), ..KeepWarmSpec::default() };
+        let bad = KeepWarmSpec {
+            interval_minutes: Some(60),
+            ..KeepWarmSpec::default()
+        };
         assert!(set(root, "researcher", OwnerKind::Agent, bad, Setter::User, NOW).is_err());
         assert!(
-            set(root, "researcher", OwnerKind::Agent, KeepWarmSpec::default(), Setter::MissionControl, NOW).is_err()
+            set(
+                root,
+                "researcher",
+                OwnerKind::Agent,
+                KeepWarmSpec::default(),
+                Setter::MissionControl,
+                NOW
+            )
+            .is_err()
         );
         assert!(clear(root, "researcher", Setter::MissionControl).is_err());
         assert!(clear(root, "researcher", Setter::User).unwrap());

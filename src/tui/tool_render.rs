@@ -1,8 +1,8 @@
-use ratatui::prelude::*;
-use serde_json::Value;
+use super::fmt_si;
 use super::markdown::{wrap_code_line, wrap_one};
 use super::theme::*;
-use super::fmt_si;
+use ratatui::prelude::*;
+use serde_json::Value;
 
 const AGENT: usize = 3;
 
@@ -372,7 +372,10 @@ fn line_count(v: Option<&Value>) -> usize {
 
 pub(super) fn file_changes(steps: &[RunStep]) -> Vec<FileChange> {
     let mut out: Vec<FileChange> = Vec::new();
-    for step in steps.iter().filter(|s| s.tool == "change_files" && !s.failed()) {
+    for step in steps
+        .iter()
+        .filter(|s| s.tool == "change_files" && !s.failed())
+    {
         let changes = step.args.get("changes").and_then(Value::as_array);
         for c in changes.into_iter().flatten() {
             let action = c.get("action").and_then(Value::as_str).unwrap_or("");
@@ -381,14 +384,22 @@ pub(super) fn file_changes(steps: &[RunStep]) -> Vec<FileChange> {
                 continue;
             }
             let path = if action == "move" {
-                format!("{path} → {}", c.get("to").and_then(Value::as_str).unwrap_or(""))
+                format!(
+                    "{path} → {}",
+                    c.get("to").and_then(Value::as_str).unwrap_or("")
+                )
             } else {
                 path.to_string()
             };
             let idx = match out.iter().position(|f| f.path == path) {
                 Some(i) => i,
                 None => {
-                    out.push(FileChange { path, added: 0, removed: 0, deleted: false });
+                    out.push(FileChange {
+                        path,
+                        added: 0,
+                        removed: 0,
+                        deleted: false,
+                    });
                     out.len() - 1
                 }
             };
@@ -408,21 +419,41 @@ pub(super) fn file_changes(steps: &[RunStep]) -> Vec<FileChange> {
 }
 
 pub(super) fn activity_summary(steps: &[RunStep]) -> String {
-    let plural = |n: usize, one: &str, many: &str| if n == 1 { one.to_string() } else { many.to_string() };
-    let count = |tools: &[&str]| steps.iter().filter(|s| tools.contains(&s.tool.as_str())).count();
+    let plural = |n: usize, one: &str, many: &str| {
+        if n == 1 {
+            one.to_string()
+        } else {
+            many.to_string()
+        }
+    };
+    let count = |tools: &[&str]| {
+        steps
+            .iter()
+            .filter(|s| tools.contains(&s.tool.as_str()))
+            .count()
+    };
     let change_steps = count(&["change_files"]);
     let changed = file_changes(steps).len();
     let runs = count(&["bash", "manage_process"]);
     let searches = count(&["web_search", "web_read"]);
     let mut groups: Vec<(usize, String)> = Vec::new();
     if change_steps > 0 {
-        groups.push((change_steps, format!("changed {changed} {}", plural(changed, "file", "files"))));
+        groups.push((
+            change_steps,
+            format!("changed {changed} {}", plural(changed, "file", "files")),
+        ));
     }
     if runs > 0 {
-        groups.push((runs, format!("ran {runs} {}", plural(runs, "command", "commands"))));
+        groups.push((
+            runs,
+            format!("ran {runs} {}", plural(runs, "command", "commands")),
+        ));
     }
     if searches > 0 {
-        groups.push((searches, format!("{searches} web {}", plural(searches, "search", "searches"))));
+        groups.push((
+            searches,
+            format!("{searches} web {}", plural(searches, "search", "searches")),
+        ));
     }
     if groups.is_empty() {
         return format!("{} steps", steps.len());
@@ -448,7 +479,10 @@ pub(super) fn run_summary_lines(steps: &[RunStep], width: usize) -> Vec<Line<'st
         Span::styled(activity_summary(steps), Style::default().fg(soft())),
     ];
     if failed > 0 {
-        head.push(Span::styled(format!(" · {failed} failed"), Style::default().fg(danger())));
+        head.push(Span::styled(
+            format!(" · {failed} failed"),
+            Style::default().fg(danger()),
+        ));
     }
     let mut lines = vec![Line::from(head)];
     let changes = file_changes(steps);
@@ -456,7 +490,14 @@ pub(super) fn run_summary_lines(steps: &[RunStep], width: usize) -> Vec<Line<'st
     for change in changes.iter().take(5) {
         let mut path = change.path.clone();
         if path.chars().count() > budget {
-            let tail: String = path.chars().rev().take(budget - 1).collect::<Vec<_>>().into_iter().rev().collect();
+            let tail: String = path
+                .chars()
+                .rev()
+                .take(budget - 1)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
             path = format!("…{tail}");
         }
         let mut row = vec![
@@ -466,8 +507,14 @@ pub(super) fn run_summary_lines(steps: &[RunStep], width: usize) -> Vec<Line<'st
         if change.deleted {
             row.push(Span::styled("  deleted", Style::default().fg(danger())));
         } else if change.added + change.removed > 0 {
-            row.push(Span::styled(format!("  +{}", change.added), Style::default().fg(success())));
-            row.push(Span::styled(format!(" −{}", change.removed), Style::default().fg(danger())));
+            row.push(Span::styled(
+                format!("  +{}", change.added),
+                Style::default().fg(success()),
+            ));
+            row.push(Span::styled(
+                format!(" −{}", change.removed),
+                Style::default().fg(danger()),
+            ));
         }
         lines.push(Line::from(row));
     }

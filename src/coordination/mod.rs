@@ -10,12 +10,12 @@ mod agents;
 pub mod board;
 mod consumed;
 pub mod direct;
-pub mod typed;
 mod events;
 pub mod goals;
 pub mod groups;
 pub mod handoffs;
 pub mod last_message;
+pub mod typed;
 pub use last_message::LastMessage;
 pub mod turns;
 pub use turns::SessionMember;
@@ -28,22 +28,23 @@ mod tasks;
 pub mod types;
 
 pub use crate::store::{Store, StoreError};
+pub use agents::AgentRemoval;
 pub use board::{
     ALL_AGENTS, BoardEntry, BoardEntryKind, BoardGroup, BoardGrouping, BoardQuery, NewBoardEntry,
 };
-pub use direct::{
-    InboxEntry, InboxKind, InboxQuery, OwedReply,
-    DirectThreadSummary, LOCAL_HUMAN_ID, PendingDirectMessage, actor_ref, direct_thread_id,
-};
 pub use consumed::direct_consumed;
-pub use agents::AgentRemoval;
+pub use direct::{
+    DirectThreadSummary, InboxEntry, InboxKind, InboxQuery, LOCAL_HUMAN_ID, OwedReply,
+    PendingDirectMessage, actor_ref, direct_thread_id,
+};
 pub use goals::{Goal, GoalCriterion, GoalStatus};
 pub use groups::{GroupMember, GroupSummary};
-pub use task_state::{Decision, PendingReport, StatePatch, TaskState, VerifyMethod, VerifyMode};
 pub use identity::{AgentHome, IdentityError};
-pub use tasks::{offer_marker, progress_stamp, stall_marker_for_current_spell, stall_threshold_minutes, stalled_minutes,
+pub use task_state::{Decision, PendingReport, StatePatch, TaskState, VerifyMethod, VerifyMode};
+pub use tasks::{
     HandoffMode, NotificationMarker, Task, TaskAgent, TaskFilter, TaskHandoff, TaskLink,
-    TaskLinkKind, TaskResult, TaskStatus, TaskSubStatus, WorkStep,
+    TaskLinkKind, TaskResult, TaskStatus, TaskSubStatus, WorkStep, offer_marker, progress_stamp,
+    stall_marker_for_current_spell, stall_threshold_minutes, stalled_minutes,
 };
 
 /// The built-in general coding agent. Mission Control dispatches to it unless a

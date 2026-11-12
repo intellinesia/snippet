@@ -156,10 +156,17 @@ pub struct Vault {
 
 fn harness_files() -> Vec<PathBuf> {
     let home = crate::config::snippet_home();
-    ["serve.json", "serve.json.bak", "serve.token", "config.toml", "xai_auth.json", "chatgpt_auth.json"]
-        .iter()
-        .map(|f| home.join(f))
-        .collect()
+    [
+        "serve.json",
+        "serve.json.bak",
+        "serve.token",
+        "config.toml",
+        "xai_auth.json",
+        "chatgpt_auth.json",
+    ]
+    .iter()
+    .map(|f| home.join(f))
+    .collect()
 }
 
 fn sensitive_key(key: &str) -> bool {
@@ -175,7 +182,11 @@ fn collect_json(value: &Value, path: &str, out: &mut Vec<(String, String)>) {
     match value {
         Value::Object(map) => {
             for (k, v) in map {
-                let p = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                let p = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
                 match v {
                     Value::String(s) if sensitive_key(k) => out.push((p, s.clone())),
                     _ => collect_json(v, &p, out),
@@ -195,7 +206,11 @@ fn collect_toml(value: &toml::Value, path: &str, out: &mut Vec<(String, String)>
     match value {
         toml::Value::Table(map) => {
             for (k, v) in map {
-                let p = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                let p = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
                 match v {
                     toml::Value::String(s) if sensitive_key(k) => out.push((p, s.clone())),
                     _ => collect_toml(v, &p, out),
@@ -217,7 +232,10 @@ fn collect_toml(value: &toml::Value, path: &str, out: &mut Vec<(String, String)>
 fn harness_secrets(files: &[(PathBuf, Vec<u8>)]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (path, bytes) in files {
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("config");
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("config");
         let text = String::from_utf8_lossy(bytes);
         let mut found = Vec::new();
         if name == "serve.token" {
@@ -230,7 +248,9 @@ fn harness_secrets(files: &[(PathBuf, Vec<u8>)]) -> Vec<(String, String)> {
             collect_json(&value, "", &mut found);
         }
         for (key, value) in found {
-            if value.len() >= PARTIAL_SEED && !out.iter().any(|(_, v): &(String, String)| *v == value) {
+            if value.len() >= PARTIAL_SEED
+                && !out.iter().any(|(_, v): &(String, String)| *v == value)
+            {
                 out.push((format!("{name} {key}"), value));
             }
         }
@@ -262,11 +282,15 @@ impl Vault {
         }
         let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((cached, vault)) = cache.as_ref()
-            && *cached == key {
-                return vault.clone();
-            }
+            && *cached == key
+        {
+            return vault.clone();
+        }
         let secrets = serde_json::from_slice(&bytes).unwrap_or_default();
-        let vault = Self { secrets, harness: harness_secrets(&files) };
+        let vault = Self {
+            secrets,
+            harness: harness_secrets(&files),
+        };
         *cache = Some((key, vault.clone()));
         vault
     }
@@ -363,7 +387,11 @@ impl Vault {
             .secrets
             .iter()
             .map(|(name, value)| (format!("[vault:{name}]"), value))
-            .chain(self.harness.iter().map(|(name, value)| (format!("[secret:{name}]"), value)));
+            .chain(
+                self.harness
+                    .iter()
+                    .map(|(name, value)| (format!("[secret:{name}]"), value)),
+            );
         for (marker, value) in named {
             if value.len() < MIN_SECRET_LEN {
                 continue;

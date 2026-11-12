@@ -44,7 +44,11 @@ impl Fbank {
         let width = 16000.0 / NFFT as f64;
         let filters = (0..BINS)
             .map(|b| {
-                let (l, c, r) = (lo + b as f64 * delta, lo + (b + 1) as f64 * delta, lo + (b + 2) as f64 * delta);
+                let (l, c, r) = (
+                    lo + b as f64 * delta,
+                    lo + (b + 1) as f64 * delta,
+                    lo + (b + 2) as f64 * delta,
+                );
                 let w: Vec<f32> = (0..NFFT / 2)
                     .map(|k| {
                         let m = mel(width * k as f64);
@@ -53,7 +57,10 @@ impl Fbank {
                     .collect();
                 let start = w.iter().position(|x| *x > 0.0).unwrap_or(0);
                 let end = w.iter().rposition(|x| *x > 0.0).map_or(start, |e| e + 1);
-                Filter { start, weights: w[start..end].to_vec() }
+                Filter {
+                    start,
+                    weights: w[start..end].to_vec(),
+                }
             })
             .collect();
         let mut tw_re = [0f32; NFFT / 2];
@@ -68,11 +75,25 @@ impl Fbank {
         for (i, r) in rev.iter_mut().enumerate() {
             *r = ((i as u32).reverse_bits() >> (32 - bits)) as u16;
         }
-        Self { window, filters, tw_re, tw_im, rev, frame: [0.0; WIN], re: [0.0; NFFT], im: [0.0; NFFT], power: [0.0; SPEC] }
+        Self {
+            window,
+            filters,
+            tw_re,
+            tw_im,
+            rev,
+            frame: [0.0; WIN],
+            re: [0.0; NFFT],
+            im: [0.0; NFFT],
+            power: [0.0; SPEC],
+        }
     }
 
     pub fn frames(samples: usize) -> usize {
-        if samples < WIN { 0 } else { 1 + (samples - WIN) / HOP }
+        if samples < WIN {
+            0
+        } else {
+            1 + (samples - WIN) / HOP
+        }
     }
 
     /// `samples` at int16 scale. Appends `frames * 80` mean-normalised features to `out` and returns the frame count.
@@ -92,7 +113,11 @@ impl Fbank {
             self.frame[0] -= 0.97 * self.frame[0];
             for i in 0..NFFT {
                 let j = self.rev[i] as usize;
-                self.re[j] = if i < WIN { self.frame[i] * self.window[i] } else { 0.0 };
+                self.re[j] = if i < WIN {
+                    self.frame[i] * self.window[i]
+                } else {
+                    0.0
+                };
                 self.im[j] = 0.0;
             }
             self.fft();
@@ -100,7 +125,12 @@ impl Fbank {
                 self.power[k] = self.re[k] * self.re[k] + self.im[k] * self.im[k];
             }
             for filt in &self.filters {
-                let e: f32 = filt.weights.iter().zip(&self.power[filt.start..]).map(|(w, p)| w * p).sum();
+                let e: f32 = filt
+                    .weights
+                    .iter()
+                    .zip(&self.power[filt.start..])
+                    .map(|(w, p)| w * p)
+                    .sum();
                 out.push(e.max(f32::EPSILON).ln());
             }
         }
@@ -165,7 +195,10 @@ mod tests {
                 r += *v as f64 * a.cos();
                 im += *v as f64 * a.sin();
             }
-            assert!((fb.re[k] as f64 - r).abs() < 0.05 && (fb.im[k] as f64 - im).abs() < 0.05, "bin {k}");
+            assert!(
+                (fb.re[k] as f64 - r).abs() < 0.05 && (fb.im[k] as f64 - im).abs() < 0.05,
+                "bin {k}"
+            );
         }
     }
 
@@ -175,7 +208,9 @@ mod tests {
         assert_eq!(Fbank::frames(400), 1);
         assert_eq!(Fbank::frames(16000), 98);
         let mut out = Vec::new();
-        let x: Vec<f32> = (0..16000).map(|i| ((i as f32) * 0.05).sin() * 3000.0).collect();
+        let x: Vec<f32> = (0..16000)
+            .map(|i| ((i as f32) * 0.05).sin() * 3000.0)
+            .collect();
         assert_eq!(Fbank::new().compute(&x, &mut out), 98);
         assert_eq!(out.len(), 98 * BINS);
     }

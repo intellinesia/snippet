@@ -84,11 +84,16 @@ impl Store {
 
     /// Whether `token` is still the task's current fencing token.
     pub fn lease_token_is_current(&self, task_id: &str, token: u64) -> Result<bool, StoreError> {
-        Ok(self.current_lease(task_id)?.is_none_or(|l| l.fencing_token == token))
+        Ok(self
+            .current_lease(task_id)?
+            .is_none_or(|l| l.fencing_token == token))
     }
 }
 
-fn open_lease(conn: &rusqlite::Connection, task_id: &str) -> Result<Option<Lease>, rusqlite::Error> {
+fn open_lease(
+    conn: &rusqlite::Connection,
+    task_id: &str,
+) -> Result<Option<Lease>, rusqlite::Error> {
     conn.query_row(
         "SELECT task_id, session_id, agent_id, fencing_token, acquired_at FROM session_leases
          WHERE task_id = ?1 AND released_at IS NULL",
@@ -114,7 +119,14 @@ mod tests {
     #[test]
     fn tokens_grow_with_each_change_of_holder_and_stale_ones_are_refused() {
         let db = Store::open_in_memory().unwrap();
-        let task = Task::filed_by_human("t".into(), "t".into(), "d".into(), "s1".into(), 0, "2026-01-01T00:00:00Z".into());
+        let task = Task::filed_by_human(
+            "t".into(),
+            "t".into(),
+            "d".into(),
+            "s1".into(),
+            0,
+            "2026-01-01T00:00:00Z".into(),
+        );
         db.create_task(&task).unwrap();
         for id in ["a", "b"] {
             db.create_agent(&crate::coordination::types::Agent {
@@ -128,11 +140,33 @@ mod tests {
             .unwrap();
         }
         assert!(db.current_lease("t").unwrap().is_none());
-        db.add_task_agent_full("t", "a", "implementer", None, "", "active", "2026-01-01T00:00:00Z").unwrap();
-        db.add_task_agent_full("t", "b", "reviewer", None, "", "waiting", "2026-01-01T00:00:00Z").unwrap();
+        db.add_task_agent_full(
+            "t",
+            "a",
+            "implementer",
+            None,
+            "",
+            "active",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        db.add_task_agent_full(
+            "t",
+            "b",
+            "reviewer",
+            None,
+            "",
+            "waiting",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
         let first = db.current_lease("t").unwrap().unwrap();
         assert_eq!((first.agent_id.as_str(), first.fencing_token), ("a", 1));
-        assert_eq!(db.current_lease("t").unwrap().unwrap().fencing_token, 1, "idempotent");
+        assert_eq!(
+            db.current_lease("t").unwrap().unwrap().fencing_token,
+            1,
+            "idempotent"
+        );
         db.transfer_task_session_lease("t", "a", "b").unwrap();
         let second = db.current_lease("t").unwrap().unwrap();
         assert_eq!((second.agent_id.as_str(), second.fencing_token), ("b", 2));

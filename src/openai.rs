@@ -660,13 +660,33 @@ async fn parse_openai_sse(
                     .filter(|s| !s.is_empty())
                 {
                     if entry.name.is_empty() {
-                        StreamBuffer::tool_event(sink, crate::llm::ToolArgEvent::Start { call_id: if entry.id.is_empty() { index.to_string() } else { entry.id.clone() }, name: name.to_string() });
+                        StreamBuffer::tool_event(
+                            sink,
+                            crate::llm::ToolArgEvent::Start {
+                                call_id: if entry.id.is_empty() {
+                                    index.to_string()
+                                } else {
+                                    entry.id.clone()
+                                },
+                                name: name.to_string(),
+                            },
+                        );
                     }
                     entry.name.push_str(name);
                 }
                 if let Some(args) = call.pointer("/function/arguments").and_then(Value::as_str) {
                     entry.args.push_str(args);
-                    StreamBuffer::tool_event(sink, crate::llm::ToolArgEvent::Delta { call_id: if entry.id.is_empty() { index.to_string() } else { entry.id.clone() }, chunk: args.to_string() });
+                    StreamBuffer::tool_event(
+                        sink,
+                        crate::llm::ToolArgEvent::Delta {
+                            call_id: if entry.id.is_empty() {
+                                index.to_string()
+                            } else {
+                                entry.id.clone()
+                            },
+                            chunk: args.to_string(),
+                        },
+                    );
                 }
             }
         }
@@ -677,7 +697,16 @@ async fn parse_openai_sse(
     .map_err(|error| ToolError::model_request(format!("model stream error: {error}"), true))?;
 
     for (index, call) in &calls {
-        StreamBuffer::tool_event(sink, crate::llm::ToolArgEvent::End { call_id: if call.id.is_empty() { index.to_string() } else { call.id.clone() } });
+        StreamBuffer::tool_event(
+            sink,
+            crate::llm::ToolArgEvent::End {
+                call_id: if call.id.is_empty() {
+                    index.to_string()
+                } else {
+                    call.id.clone()
+                },
+            },
+        );
     }
     if let Some(err) = stream_error {
         return Err(ToolError::model_request(
@@ -816,7 +845,10 @@ fn chat_messages_from_harness(index: usize, message: &HarnessMessage) -> Vec<Cha
             vec![ChatMessage::text("system", content)]
         }
         HarnessMessage::System { content } => {
-            vec![ChatMessage::text("user", &crate::llm::system_reminder(content))]
+            vec![ChatMessage::text(
+                "user",
+                &crate::llm::system_reminder(content),
+            )]
         }
         HarnessMessage::User { content } => vec![ChatMessage::text("user", content)],
         HarnessMessage::Assistant {
@@ -847,8 +879,7 @@ fn chat_messages_from_harness(index: usize, message: &HarnessMessage) -> Vec<Cha
             content,
         } => {
             let (cleaned, image) = crate::llm::split_inlined_image(content);
-            let body =
-                crate::llm::render_tool_result(&cleaned);
+            let body = crate::llm::render_tool_result(&cleaned);
             // Tool messages can't carry images, so an inlined image follows as
             // a separate user message with an image_url data URL.
             let mut out = vec![ChatMessage::tool(tool_call_id, &body)];

@@ -112,9 +112,8 @@ impl Kind {
 }
 
 fn ends_with_question(text: &str) -> bool {
-    let trimmed = text.trim_end_matches(|c: char| {
-        c.is_whitespace() || matches!(c, '"' | '\'' | ')' | ']' | '*')
-    });
+    let trimmed = text
+        .trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | ']' | '*'));
     trimmed.ends_with('?') || trimmed.ends_with('？')
 }
 
@@ -217,9 +216,8 @@ pub fn load(store: &Store, agent_id: &str) -> Reach {
             }
         }
         {
-            let mut stmt = conn.prepare(
-                "SELECT kind, channels FROM agent_reach_policy WHERE agent_id = ?1",
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT kind, channels FROM agent_reach_policy WHERE agent_id = ?1")?;
             let rows = stmt.query_map(params![agent_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;
@@ -253,7 +251,12 @@ pub fn save(store: &Store, agent_id: &str, reach: &Reach) -> Result<(), StoreErr
                  ON CONFLICT(agent_id, channel) DO UPDATE SET
                      enabled = excluded.enabled,
                      quiet_hours = excluded.quiet_hours",
-                params![agent_id, ch.as_str(), i64::from(enabled), i64::from(state.quiet_hours)],
+                params![
+                    agent_id,
+                    ch.as_str(),
+                    i64::from(enabled),
+                    i64::from(state.quiet_hours)
+                ],
             )?;
         }
         for (&kind, channels) in &reach.policy {
@@ -449,9 +452,8 @@ pub(crate) fn apply_outbound_human(
         let _ = crate::mission_autonomy::hold_ping_in(store, agent_id, &title, body, ping_kind);
     }
     if decision.used.contains(&Channel::Push) {
-        let _ = crate::mission_autonomy::send_ping_in(
-            store, agent_id, &title, body, ping_kind, urgent,
-        );
+        let _ =
+            crate::mission_autonomy::send_ping_in(store, agent_id, &title, body, ping_kind, urgent);
     }
     decision
 }
@@ -510,11 +512,15 @@ pub fn deliver_channel(
             let _ = crate::mission_autonomy::hold_ping_in(store, sender.1, &title, body, "result");
             extra.insert("held".into(), json!(["push"]));
         } else {
-            let _ = crate::mission_autonomy::send_ping_in(store, sender.1, &title, body, "result", false);
+            let _ = crate::mission_autonomy::send_ping_in(
+                store, sender.1, &title, body, "result", false,
+            );
         }
     }
     extra.insert("channel".into(), json!(channel.as_str()));
-    extra.entry("kind".to_string()).or_insert_with(|| json!("result"));
+    extra
+        .entry("kind".to_string())
+        .or_insert_with(|| json!("result"));
     let key = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let saved = store
@@ -557,9 +563,9 @@ pub fn apply_patch(reach: &mut Reach, patch: &Value) -> Result<(), String> {
     let mut changed = false;
 
     if let Some(policy_val) = obj.get("policy").filter(|v| !v.is_null()) {
-        let policy_map = policy_val
-            .as_object()
-            .ok_or_else(|| "`policy` must be an object mapping kind to channel array".to_string())?;
+        let policy_map = policy_val.as_object().ok_or_else(|| {
+            "`policy` must be an object mapping kind to channel array".to_string()
+        })?;
         for (raw_kind, raw_list) in policy_map {
             let kind = Kind::parse(raw_kind).ok_or_else(|| {
                 format!("unknown kind `{raw_kind}`; use question, blocker, result, or status")
@@ -594,7 +600,13 @@ pub fn apply_patch(reach: &mut Reach, patch: &Value) -> Result<(), String> {
                     .get("quiet_hours")
                     .and_then(Value::as_bool)
                     .unwrap_or(current.quiet_hours);
-                reach.channels.insert(ch, ChannelState { enabled, quiet_hours });
+                reach.channels.insert(
+                    ch,
+                    ChannelState {
+                        enabled,
+                        quiet_hours,
+                    },
+                );
                 changed = true;
             }
         } else if channels_val.is_array() {
@@ -620,7 +632,10 @@ pub fn apply_patch(reach: &mut Reach, patch: &Value) -> Result<(), String> {
 
     let enabled_opt = match obj.get("enabled") {
         None | Some(Value::Null) => None,
-        Some(v) => Some(v.as_bool().ok_or_else(|| "`enabled` must be a boolean".to_string())?),
+        Some(v) => Some(
+            v.as_bool()
+                .ok_or_else(|| "`enabled` must be a boolean".to_string())?,
+        ),
     };
     let quiet_opt = match obj.get("quiet_hours") {
         None | Some(Value::Null) => None,
@@ -630,7 +645,11 @@ pub fn apply_patch(reach: &mut Reach, patch: &Value) -> Result<(), String> {
         ),
     };
 
-    if let Some(raw_ch) = obj.get("channel").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+    if let Some(raw_ch) = obj
+        .get("channel")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+    {
         let ch = Channel::parse(raw_ch).ok_or_else(|| {
             format!("unknown channel `{raw_ch}`; use chat, push, voice, or task_room")
         })?;
@@ -682,9 +701,8 @@ fn parse_channel_array(raw: &Value) -> Result<Vec<Channel>, String> {
         let s = item
             .as_str()
             .ok_or_else(|| "channel names must be strings".to_string())?;
-        let ch = Channel::parse(s).ok_or_else(|| {
-            format!("unknown channel `{s}`; use chat, push, voice, or task_room")
-        })?;
+        let ch = Channel::parse(s)
+            .ok_or_else(|| format!("unknown channel `{s}`; use chat, push, voice, or task_room"))?;
         if !parsed.contains(&ch) {
             parsed.push(ch);
         }
@@ -819,9 +837,7 @@ mod tests {
                 quiet_hours: false,
             },
         );
-        custom
-            .policy
-            .insert(Kind::Question, vec![Channel::Chat]);
+        custom.policy.insert(Kind::Question, vec![Channel::Chat]);
         custom
             .policy
             .insert(Kind::Result, vec![Channel::Push, Channel::Chat]);

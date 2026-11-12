@@ -6,7 +6,13 @@ pub const SESSION_ENV: &str = "SNIPPET_MCP_URL";
 pub const MCP_SERVER_NAME: &str = "snippet_snippet";
 const RULE_CHUNK_BYTES: usize = 20_000;
 
-const ALLOWED: &[&str] = &["list_resources", "read_resource", "finish", "wait", "wait_5_seconds"];
+const ALLOWED: &[&str] = &[
+    "list_resources",
+    "read_resource",
+    "finish",
+    "wait",
+    "wait_5_seconds",
+];
 
 pub fn binary() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("SNIPPET_AGY_BIN") {
@@ -22,7 +28,9 @@ pub fn binary() -> Option<PathBuf> {
     }) {
         return Some(found);
     }
-    real_home().map(|home| home.join(".local/bin/agy")).filter(|p| p.is_file())
+    real_home()
+        .map(|home| home.join(".local/bin/agy"))
+        .filter(|p| p.is_file())
 }
 
 pub fn real_home() -> Option<PathBuf> {
@@ -41,7 +49,10 @@ fn decision(raw: &str, in_snippet: bool) -> Value {
         return json!({"decision": "allow"});
     }
     let payload: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
-    let name = payload.pointer("/toolCall/name").and_then(Value::as_str).unwrap_or("");
+    let name = payload
+        .pointer("/toolCall/name")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if name == "call_mcp_tool" {
         let server = payload
             .pointer("/toolCall/args/ServerName")
@@ -56,7 +67,9 @@ fn decision(raw: &str, in_snippet: bool) -> Value {
         return json!({"decision": "allow"});
     }
     if name == "view_file" {
-        let path = payload.pointer("/toolCall/args/AbsolutePath").and_then(Value::as_str);
+        let path = payload
+            .pointer("/toolCall/args/AbsolutePath")
+            .and_then(Value::as_str);
         let own = real_home()
             .map(|home| home.join(".gemini"))
             .zip(path)
@@ -72,10 +85,14 @@ fn decision(raw: &str, in_snippet: bool) -> Value {
         "search_web" => "the snippet `web_search` tool",
         "read_url_content" => "the snippet `web_read` tool",
         "run_command" | "send_command_input" => "the snippet `bash` tool",
-        "write_to_file" | "replace_file_content" | "multi_replace_file_content" | "sed_file" | "notebook_edit" => {
-            "the snippet `change_files` tool"
+        "write_to_file"
+        | "replace_file_content"
+        | "multi_replace_file_content"
+        | "sed_file"
+        | "notebook_edit" => "the snippet `change_files` tool",
+        "ask_question" | "ask_permission" | "ask_custom_permission" => {
+            "the snippet `ask_user` tool"
         }
-        "ask_question" | "ask_permission" | "ask_custom_permission" => "the snippet `ask_user` tool",
         "invoke_subagent" | "define_subagent" | "manage_subagents" | "browser_subagent" => {
             "the snippet `delegate_task` tool"
         }
@@ -105,13 +122,24 @@ pub fn is_image(path: &str) -> bool {
 /// Where a rejected call_mcp_tool envelope is marked for the bridge serving
 /// `mcp_url`, so the next result it serves carries a reminder.
 pub fn envelope_marker(mcp_url: &str) -> Option<PathBuf> {
-    let token = mcp_url.trim_end_matches('/').rsplit('/').next().filter(|t| !t.is_empty())?;
-    Some(crate::config::snippet_home().join("antigravity").join("envelope").join(token))
+    let token = mcp_url
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|t| !t.is_empty())?;
+    Some(
+        crate::config::snippet_home()
+            .join("antigravity")
+            .join("envelope")
+            .join(token),
+    )
 }
 
 pub fn prepare_home(key: &str, mcp_url: &str, prompt: &str) -> Result<PathBuf, String> {
     let real = real_home().ok_or("HOME is not set")?.join(".gemini");
-    let home = crate::config::snippet_home().join("antigravity/homes").join(key);
+    let home = crate::config::snippet_home()
+        .join("antigravity/homes")
+        .join(key);
     let gemini = home.join(".gemini");
     let plugin = gemini.join("config/plugins/snippet");
     let rules = plugin.join("rules");
@@ -175,7 +203,7 @@ pub fn prepare_home(key: &str, mcp_url: &str, prompt: &str) -> Result<PathBuf, S
             rules.join(format!("{index:02}-snippet.md")),
             format!("---\ntrigger: always_on\n---\n{chunk}"),
         )
-            .map_err(|e| format!("write rules: {e}"))?;
+        .map_err(|e| format!("write rules: {e}"))?;
     }
     Ok(home)
 }
@@ -196,7 +224,9 @@ fn link_entries(real: &Path, private: &Path, skip: &[&str]) -> Result<(), String
                 continue;
             }
             let path = entry.path();
-            let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
             if meta.file_type().is_symlink() || !meta.is_file() {
                 continue;
             }
@@ -206,12 +236,15 @@ fn link_entries(real: &Path, private: &Path, skip: &[&str]) -> Result<(), String
                 Err(_) => true,
             };
             if newer {
-                std::fs::copy(&path, &target).map_err(|e| format!("sync {}: {e}", target.display()))?;
+                std::fs::copy(&path, &target)
+                    .map_err(|e| format!("sync {}: {e}", target.display()))?;
             }
             let _ = std::fs::remove_file(&path);
         }
     }
-    let Ok(entries) = std::fs::read_dir(real) else { return Ok(()) };
+    let Ok(entries) = std::fs::read_dir(real) else {
+        return Ok(());
+    };
     for entry in entries.flatten() {
         let name = entry.file_name();
         if skip.iter().any(|s| name == *s) {
@@ -286,7 +319,8 @@ fn quota_path() -> PathBuf {
 }
 
 pub fn cached_quota() -> Option<(i64, Vec<crate::llm::RateLimitSnapshot>)> {
-    let cache: QuotaCache = serde_json::from_str(&std::fs::read_to_string(quota_path()).ok()?).ok()?;
+    let cache: QuotaCache =
+        serde_json::from_str(&std::fs::read_to_string(quota_path()).ok()?).ok()?;
     Some((cache.fetched_at, cache.groups))
 }
 
@@ -302,7 +336,10 @@ pub fn refresh_quota_if_stale(max_age_secs: i64) {
         if let Ok(groups) = read_quota_screen()
             && !groups.is_empty()
         {
-            let cache = QuotaCache { fetched_at: chrono::Utc::now().timestamp(), groups };
+            let cache = QuotaCache {
+                fetched_at: chrono::Utc::now().timestamp(),
+                groups,
+            };
             if let Ok(body) = serde_json::to_string(&cache) {
                 let path = quota_path();
                 if let Some(dir) = path.parent() {
@@ -322,12 +359,26 @@ fn read_quota_screen() -> Result<Vec<crate::llm::RateLimitSnapshot>, String> {
     use std::time::{Duration, Instant};
 
     let bin = binary().ok_or("agy isn't installed")?;
-    let cbin = std::ffi::CString::new(bin.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
-    let cwd = std::ffi::CString::new(std::env::temp_dir().as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
+    let cbin =
+        std::ffi::CString::new(bin.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
+    let cwd = std::ffi::CString::new(std::env::temp_dir().as_os_str().as_encoded_bytes())
+        .map_err(|e| e.to_string())?;
     let (rows, cols) = (60u16, 130u16);
-    let mut ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+    let mut ws = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
     let mut master_fd = -1;
-    let pid = unsafe { libc::forkpty(&mut master_fd, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) };
+    let pid = unsafe {
+        libc::forkpty(
+            &mut master_fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut ws,
+        )
+    };
     if pid < 0 {
         return Err(format!("forkpty: {}", std::io::Error::last_os_error()));
     }
@@ -346,14 +397,19 @@ fn read_quota_screen() -> Result<Vec<crate::llm::RateLimitSnapshot>, String> {
     }
     let mut master = unsafe { std::fs::File::from_raw_fd(master_fd) };
     let mut parser = vt100::Parser::new(rows, cols, 0);
-    let pump = |master: &mut std::fs::File, parser: &mut vt100::Parser, until: &dyn Fn(&str) -> bool, limit: Duration| {
+    let pump = |master: &mut std::fs::File,
+                parser: &mut vt100::Parser,
+                until: &dyn Fn(&str) -> bool,
+                limit: Duration| {
         let start = Instant::now();
         let mut buf = [0u8; 65536];
         while start.elapsed() < limit {
             match master.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => parser.process(&buf[..n]),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(100)),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(100))
+                }
                 Err(_) => break,
             }
             if until(&parser.screen().contents()) {
@@ -361,13 +417,33 @@ fn read_quota_screen() -> Result<Vec<crate::llm::RateLimitSnapshot>, String> {
             }
         }
     };
-    pump(&mut master, &mut parser, &|s| s.contains("Antigravity CLI") && s.contains('>'), Duration::from_secs(15));
+    pump(
+        &mut master,
+        &mut parser,
+        &|s| s.contains("Antigravity CLI") && s.contains('>'),
+        Duration::from_secs(15),
+    );
     std::thread::sleep(Duration::from_millis(500));
     let _ = master.write_all(b"/usage");
-    pump(&mut master, &mut parser, &|_| false, Duration::from_millis(1200));
+    pump(
+        &mut master,
+        &mut parser,
+        &|_| false,
+        Duration::from_millis(1200),
+    );
     let _ = master.write_all(b"\r");
-    pump(&mut master, &mut parser, &|s| s.contains("esc Close") || s.matches("Five Hour Limit Remaining").count() >= 2, Duration::from_secs(15));
-    pump(&mut master, &mut parser, &|_| false, Duration::from_millis(400));
+    pump(
+        &mut master,
+        &mut parser,
+        &|s| s.contains("esc Close") || s.matches("Five Hour Limit Remaining").count() >= 2,
+        Duration::from_secs(15),
+    );
+    pump(
+        &mut master,
+        &mut parser,
+        &|_| false,
+        Duration::from_millis(400),
+    );
     let screen = parser.screen().contents();
     let _ = master.write_all(b"\x1b");
     std::thread::sleep(Duration::from_millis(200));
@@ -402,7 +478,10 @@ fn is_group_header(lines: &[&str], i: usize) -> bool {
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == ' ')
         && line.chars().any(|c| c.is_ascii_alphabetic())
-        && lines[i + 1..].iter().take(6).any(|l| limit_line_minutes(l).is_some())
+        && lines[i + 1..]
+            .iter()
+            .take(6)
+            .any(|l| limit_line_minutes(l).is_some())
 }
 
 fn group_label(header: &str) -> String {
@@ -435,7 +514,10 @@ fn parse_quota_screen(screen: &str, now: i64) -> Vec<crate::llm::RateLimitSnapsh
                 .get(i + 1)
                 .and_then(|l| l.rsplit(' ').next())
                 .and_then(|p| p.trim_end_matches('%').parse::<f64>().ok());
-            let resets_in = lines.get(i + 2).and_then(|l| l.strip_prefix("Refreshes in ")).map(parse_duration_secs);
+            let resets_in = lines
+                .get(i + 2)
+                .and_then(|l| l.strip_prefix("Refreshes in "))
+                .map(parse_duration_secs);
             if let Some(remaining) = remaining {
                 let window = crate::llm::RateLimitWindow {
                     used_percent: (100.0 - remaining).clamp(0.0, 100.0),
@@ -462,7 +544,10 @@ fn parse_quota_screen(screen: &str, now: i64) -> Vec<crate::llm::RateLimitSnapsh
     if let Some(group) = current {
         groups.push(group);
     }
-    groups.into_iter().filter(|g| g.primary.is_some() || g.secondary.is_some()).collect()
+    groups
+        .into_iter()
+        .filter(|g| g.primary.is_some() || g.secondary.is_some())
+        .collect()
 }
 
 fn parse_duration_secs(text: &str) -> i64 {
@@ -629,7 +714,10 @@ Refreshes in 106h 16m
         assert_eq!(claude.label.as_deref(), Some("Claude And GPT Models"));
         let weekly = claude.secondary.expect("claude weekly");
         assert_eq!(weekly.used_percent, 100.0);
-        assert!(claude.primary.is_none(), "disabled five-hour limit must not parse");
+        assert!(
+            claude.primary.is_none(),
+            "disabled five-hour limit must not parse"
+        );
 
         let argon = &groups[2];
         assert_eq!(argon.label.as_deref(), Some("Gemini 4 Argon"));
@@ -645,8 +733,16 @@ Refreshes in 106h 16m
     fn live_quota_screen() {
         let groups = read_quota_screen().expect("quota screen");
         for group in groups {
-            let pct = |w: &Option<crate::llm::RateLimitWindow>| w.map(|w| format!("{}%/{}m", w.used_percent, w.window_minutes)).unwrap_or_else(|| "-".into());
-            println!("{} primary={} secondary={}", group.label.as_deref().unwrap_or("-"), pct(&group.primary), pct(&group.secondary));
+            let pct = |w: &Option<crate::llm::RateLimitWindow>| {
+                w.map(|w| format!("{}%/{}m", w.used_percent, w.window_minutes))
+                    .unwrap_or_else(|| "-".into())
+            };
+            println!(
+                "{} primary={} secondary={}",
+                group.label.as_deref().unwrap_or("-"),
+                pct(&group.primary),
+                pct(&group.secondary)
+            );
         }
     }
 }

@@ -90,10 +90,17 @@ impl Drive {
 
     /// First nudge after a day of waiting, then every two days, every 12 hours near a due date.
     pub fn nudge_due(&self, now: i64) -> bool {
-        if self.waiting_on.is_empty() || epoch(&self.snoozed_until).is_some_and(|until| until > now) {
+        if self.waiting_on.is_empty() || epoch(&self.snoozed_until).is_some_and(|until| until > now)
+        {
             return false;
         }
-        let gap = if self.due_soon(now) { DAY_SECS / 2 } else if self.nudges == 0 { DAY_SECS } else { 2 * DAY_SECS };
+        let gap = if self.due_soon(now) {
+            DAY_SECS / 2
+        } else if self.nudges == 0 {
+            DAY_SECS
+        } else {
+            2 * DAY_SECS
+        };
         let from = epoch(&self.last_nudged_at).or_else(|| epoch(&self.waiting_since));
         from.is_none_or(|from| now - from >= gap)
     }
@@ -109,7 +116,11 @@ impl Drive {
 
 fn clip(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max { flat } else { format!("{}…", flat.chars().take(max).collect::<String>()) }
+    if flat.chars().count() <= max {
+        flat
+    } else {
+        format!("{}…", flat.chars().take(max).collect::<String>())
+    }
 }
 
 impl Goal {
@@ -121,7 +132,14 @@ impl Goal {
         self.plan["drive"] = serde_json::json!(drive);
     }
 
-    pub fn new(id: String, title: String, outcome: String, criteria: Vec<GoalCriterion>, requester: String, now: String) -> Self {
+    pub fn new(
+        id: String,
+        title: String,
+        outcome: String,
+        criteria: Vec<GoalCriterion>,
+        requester: String,
+        now: String,
+    ) -> Self {
         Self {
             id,
             title,
@@ -138,12 +156,21 @@ impl Goal {
     /// Record evidence for criteria named by number or by text. Names that match
     /// nothing come back, so a typo is not silently dropped.
     pub fn attach_evidence(&mut self, items: &[(String, String)]) -> Vec<String> {
-        let norm = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        let norm = |t: &str| {
+            t.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
         let mut unknown = Vec::new();
         for (key, text) in items {
             let k = key.trim().trim_start_matches('#');
             let number = k.parse::<usize>().ok();
-            let hit = self.acceptance.iter().enumerate().position(|(i, c)| number == Some(i + 1) || norm(k) == norm(&c.criterion));
+            let hit = self
+                .acceptance
+                .iter()
+                .enumerate()
+                .position(|(i, c)| number == Some(i + 1) || norm(k) == norm(&c.criterion));
             match hit {
                 Some(i) => self.acceptance[i].evidence = text.trim().to_string(),
                 None => unknown.push(key.clone()),
@@ -155,31 +182,62 @@ impl Goal {
     /// Replace the checks when the scope moves. A check that goes stays on record
     /// with the reason, so the owner can see what changed; evidence on unchanged
     /// text is kept.
-    pub fn replace_acceptance(&mut self, new: Vec<GoalCriterion>, reason: &str) -> Result<(), String> {
+    pub fn replace_acceptance(
+        &mut self,
+        new: Vec<GoalCriterion>,
+        reason: &str,
+    ) -> Result<(), String> {
         let reason = reason.trim();
-        let (old_dropped, old): (Vec<_>, Vec<_>) = std::mem::take(&mut self.acceptance).into_iter().partition(|c| !c.dropped.is_empty());
-        let gone: Vec<GoalCriterion> = old.iter().filter(|o| !new.iter().any(|n| n.criterion == o.criterion)).cloned().collect();
+        let (old_dropped, old): (Vec<_>, Vec<_>) = std::mem::take(&mut self.acceptance)
+            .into_iter()
+            .partition(|c| !c.dropped.is_empty());
+        let gone: Vec<GoalCriterion> = old
+            .iter()
+            .filter(|o| !new.iter().any(|n| n.criterion == o.criterion))
+            .cloned()
+            .collect();
         if !gone.is_empty() && reason.is_empty() {
             self.acceptance = old.into_iter().chain(old_dropped).collect();
-            return Err(format!("say why the scope changed: pass reason, since this removes {}", gone.iter().map(|c| clip(&c.criterion, 80)).collect::<Vec<_>>().join("; ")));
+            return Err(format!(
+                "say why the scope changed: pass reason, since this removes {}",
+                gone.iter()
+                    .map(|c| clip(&c.criterion, 80))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
         }
         self.acceptance = new
             .into_iter()
             .map(|mut c| {
                 c.dropped.clear();
-                c.evidence = old.iter().find(|o| o.criterion == c.criterion).map(|o| o.evidence.clone()).unwrap_or_default();
+                c.evidence = old
+                    .iter()
+                    .find(|o| o.criterion == c.criterion)
+                    .map(|o| o.evidence.clone())
+                    .unwrap_or_default();
                 c
             })
             .collect();
-        let kept_drops: Vec<GoalCriterion> = old_dropped.into_iter().filter(|d| !self.acceptance.iter().any(|c| c.criterion == d.criterion)).collect();
+        let kept_drops: Vec<GoalCriterion> = old_dropped
+            .into_iter()
+            .filter(|d| !self.acceptance.iter().any(|c| c.criterion == d.criterion))
+            .collect();
         self.acceptance.extend(kept_drops);
-        self.acceptance.extend(gone.into_iter().map(|c| GoalCriterion { dropped: reason.to_string(), ..c }));
+        self.acceptance
+            .extend(gone.into_iter().map(|c| GoalCriterion {
+                dropped: reason.to_string(),
+                ..c
+            }));
         Ok(())
     }
 
     /// Checks dropped along the way, as `text: reason`.
     pub fn dropped_checks(&self) -> Vec<String> {
-        self.acceptance.iter().filter(|c| !c.dropped.is_empty()).map(|c| format!("{}: {}", clip(&c.criterion, 120), clip(&c.dropped, 200))).collect()
+        self.acceptance
+            .iter()
+            .filter(|c| !c.dropped.is_empty())
+            .map(|c| format!("{}: {}", clip(&c.criterion, 120), clip(&c.dropped, 200)))
+            .collect()
     }
 
     /// Criteria with no evidence, as `n. text`.
@@ -188,7 +246,14 @@ impl Goal {
             .iter()
             .enumerate()
             .filter(|(_, c)| c.dropped.is_empty() && c.evidence.trim().is_empty())
-            .map(|(i, c)| format!("{}. [{}] {}", i + 1, c.method.as_str(), clip(&c.criterion, 160)))
+            .map(|(i, c)| {
+                format!(
+                    "{}. [{}] {}",
+                    i + 1,
+                    c.method.as_str(),
+                    clip(&c.criterion, 160)
+                )
+            })
             .collect()
     }
 
@@ -203,7 +268,11 @@ impl Goal {
         if self.acceptance.is_empty() {
             gaps.push("the goal has no acceptance criteria; add some with update_goal".into());
         }
-        gaps.extend(self.unevidenced().into_iter().map(|c| format!("no evidence for criterion {c}")));
+        gaps.extend(
+            self.unevidenced()
+                .into_iter()
+                .map(|c| format!("no evidence for criterion {c}")),
+        );
         gaps
     }
 
@@ -236,7 +305,12 @@ impl Attention {
 /// `(done, total)` slices, a dropped (cancelled) slice not counting.
 pub fn progress(tasks: &[Task]) -> (usize, usize) {
     let live = tasks.iter().filter(|t| t.status != TaskStatus::Cancelled);
-    (live.clone().filter(|t| t.status == TaskStatus::Done).count(), live.count())
+    (
+        live.clone()
+            .filter(|t| t.status == TaskStatus::Done)
+            .count(),
+        live.count(),
+    )
 }
 
 pub fn attention(goal: &Goal, tasks: &[Task]) -> Option<Attention> {
@@ -249,7 +323,12 @@ pub fn attention(goal: &Goal, tasks: &[Task]) -> Option<Attention> {
     if !goal.drive().waiting_on.is_empty() {
         return Some(Attention::Waiting);
     }
-    let moving = tasks.iter().any(|t| matches!(t.status, TaskStatus::InProgress | TaskStatus::Todo | TaskStatus::InReview));
+    let moving = tasks.iter().any(|t| {
+        matches!(
+            t.status,
+            TaskStatus::InProgress | TaskStatus::Todo | TaskStatus::InReview
+        )
+    });
     (!moving).then_some(Attention::Stalled)
 }
 
@@ -260,7 +339,11 @@ pub fn is_open(task: &Task) -> bool {
 
 /// Slice number of a task in the goal's plan (0-based, stable across replans).
 pub fn slice_number(plan: &serde_json::Value, task_id: &str) -> Option<u64> {
-    plan["slices"].as_array()?.iter().find(|s| s["task_id"] == task_id)?["n"].as_u64()
+    plan["slices"]
+        .as_array()?
+        .iter()
+        .find(|s| s["task_id"] == task_id)?["n"]
+        .as_u64()
 }
 
 fn slice_state(status: &TaskStatus) -> &'static str {
@@ -279,21 +362,46 @@ fn slice_state(status: &TaskStatus) -> &'static str {
 /// slice, what each neighbour owns and whether it is done, and (when `full`) the
 /// reports of finished neighbours its blockers do not already carry.
 pub fn goal_block(store: &Store, task: &Task, full: bool) -> String {
-    let Some(goal) = task.goal_id.as_deref().and_then(|id| store.get_goal(id).ok().flatten()) else {
+    let Some(goal) = task
+        .goal_id
+        .as_deref()
+        .and_then(|id| store.get_goal(id).ok().flatten())
+    else {
         return String::new();
     };
-    let siblings: Vec<Task> = store.goal_tasks(&goal.id).unwrap_or_default().into_iter().filter(|t| t.id != task.id).collect();
+    let siblings: Vec<Task> = store
+        .goal_tasks(&goal.id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t.id != task.id)
+        .collect();
     let label = |t: &Task| match slice_number(&goal.plan, &t.id) {
         Some(n) => format!("slice {n}"),
         None => "task".to_string(),
     };
-    let mut out = format!("[goal]\ngoal: {}: {}\n", clip(&goal.title, 120), clip(&goal.outcome, if full { 500 } else { 200 }));
+    let mut out = format!(
+        "[goal]\ngoal: {}: {}\n",
+        clip(&goal.title, 120),
+        clip(&goal.outcome, if full { 500 } else { 200 })
+    );
     if full && !goal.acceptance.is_empty() {
-        let checks: Vec<String> = goal.acceptance.iter().filter(|c| c.dropped.is_empty()).map(|c| clip(&c.criterion, 100)).collect();
+        let checks: Vec<String> = goal
+            .acceptance
+            .iter()
+            .filter(|c| c.dropped.is_empty())
+            .map(|c| clip(&c.criterion, 100))
+            .collect();
         out.push_str(&format!("goal acceptance: {}\n", checks.join("; ")));
     }
-    out.push_str(&format!("this is {}: {}\n", label(task), clip(&task.title, 100)));
-    let others: Vec<&Task> = siblings.iter().filter(|t| t.status != TaskStatus::Cancelled).collect();
+    out.push_str(&format!(
+        "this is {}: {}\n",
+        label(task),
+        clip(&task.title, 100)
+    ));
+    let others: Vec<&Task> = siblings
+        .iter()
+        .filter(|t| t.status != TaskStatus::Cancelled)
+        .collect();
     if !others.is_empty() {
         out.push_str("other slices (each agent owns its own; do not redo theirs):\n");
         for t in &others {
@@ -303,7 +411,13 @@ pub fn goal_block(store: &Store, task: &Task, full: bool) -> String {
                 .and_then(|r| r.into_iter().find(|m| m.removed_at.is_none()))
                 .map(|m| format!(", {}", m.agent_id))
                 .unwrap_or_default();
-            out.push_str(&format!("  - {} \"{}\" ({}{agent}): {}\n", label(t), clip(&t.title, 80), slice_state(&t.status), clip(&t.description, 100)));
+            out.push_str(&format!(
+                "  - {} \"{}\" ({}{agent}): {}\n",
+                label(t),
+                clip(&t.title, 80),
+                slice_state(&t.status),
+                clip(&t.description, 100)
+            ));
         }
     }
     if full {
@@ -311,18 +425,31 @@ pub fn goal_block(store: &Store, task: &Task, full: bool) -> String {
         let reports: Vec<String> = others
             .iter()
             .filter(|t| t.status == TaskStatus::Done && !blockers.contains(&t.id))
-            .filter_map(|t| t.result.as_ref().map(|r| format!("  - {} \"{}\": {}\n", label(t), clip(&t.title, 80), clip(&r.summary, 300))))
+            .filter_map(|t| {
+                t.result.as_ref().map(|r| {
+                    format!(
+                        "  - {} \"{}\": {}\n",
+                        label(t),
+                        clip(&t.title, 80),
+                        clip(&r.summary, 300)
+                    )
+                })
+            })
             .take(6)
             .collect();
         if !reports.is_empty() {
-            out.push_str(&format!("reports from finished slices:\n{}", reports.concat()));
+            out.push_str(&format!(
+                "reports from finished slices:\n{}",
+                reports.concat()
+            ));
         }
     }
     out.push_str("[/goal]\n");
     out
 }
 
-const GOAL_COLUMNS: &str = "id, title, outcome, acceptance_json, status, requester, created_at, closed_at, plan_json";
+const GOAL_COLUMNS: &str =
+    "id, title, outcome, acceptance_json, status, requester, created_at, closed_at, plan_json";
 
 fn goal_from_row(row: &rusqlite::Row<'_>) -> Result<Goal, rusqlite::Error> {
     let bad = |i: usize, e: serde_json::Error| {
@@ -367,7 +494,12 @@ impl Store {
 
     pub fn get_goal(&self, id: &str) -> Result<Option<Goal>, StoreError> {
         self.with_connection(|conn| {
-            conn.query_row(&format!("SELECT {GOAL_COLUMNS} FROM goals WHERE id = ?1"), params![id], goal_from_row).optional()
+            conn.query_row(
+                &format!("SELECT {GOAL_COLUMNS} FROM goals WHERE id = ?1"),
+                params![id],
+                goal_from_row,
+            )
+            .optional()
         })
     }
 
@@ -424,8 +556,18 @@ mod tests {
             "Ship it".into(),
             "Users can sign in".into(),
             vec![
-                GoalCriterion { criterion: "tests pass".into(), method: VerifyMethod::Command, evidence: String::new(), dropped: String::new() },
-                GoalCriterion { criterion: "login screen looks right".into(), method: VerifyMethod::Visual, evidence: String::new(), dropped: String::new() },
+                GoalCriterion {
+                    criterion: "tests pass".into(),
+                    method: VerifyMethod::Command,
+                    evidence: String::new(),
+                    dropped: String::new(),
+                },
+                GoalCriterion {
+                    criterion: "login screen looks right".into(),
+                    method: VerifyMethod::Visual,
+                    evidence: String::new(),
+                    dropped: String::new(),
+                },
             ],
             "user".into(),
             "2026-01-01T00:00:00Z".into(),
@@ -433,7 +575,14 @@ mod tests {
     }
 
     fn task(id: &str, goal: Option<&str>, status: TaskStatus) -> Task {
-        let mut t = Task::filed_by_human(id.into(), format!("T {id}"), "do".into(), "s".into(), 0, "2026-01-01T00:00:00Z".into());
+        let mut t = Task::filed_by_human(
+            id.into(),
+            format!("T {id}"),
+            "do".into(),
+            "s".into(),
+            0,
+            "2026-01-01T00:00:00Z".into(),
+        );
         t.goal_id = goal.map(str::to_string);
         t.status = status;
         t
@@ -457,7 +606,8 @@ mod tests {
     fn linked_tasks_come_back_by_goal() {
         let db = Store::open_in_memory().unwrap();
         db.create_goal(&goal()).unwrap();
-        db.create_task(&task("a", Some("g1"), TaskStatus::Todo)).unwrap();
+        db.create_task(&task("a", Some("g1"), TaskStatus::Todo))
+            .unwrap();
         db.create_task(&task("b", None, TaskStatus::Todo)).unwrap();
         let linked = db.goal_tasks("g1").unwrap();
         assert_eq!(linked.len(), 1);
@@ -468,11 +618,19 @@ mod tests {
     #[test]
     fn closing_is_refused_for_open_tasks_and_missing_evidence() {
         let mut g = goal();
-        let tasks = [task("a", Some("g1"), TaskStatus::InProgress), task("b", Some("g1"), TaskStatus::Done), task("c", Some("g1"), TaskStatus::Failed)];
+        let tasks = [
+            task("a", Some("g1"), TaskStatus::InProgress),
+            task("b", Some("g1"), TaskStatus::Done),
+            task("c", Some("g1"), TaskStatus::Failed),
+        ];
         let gaps = g.close_gaps(&tasks);
         assert_eq!(gaps.len(), 4, "{gaps:?}");
         assert!(gaps[0].contains("task a") && gaps[1].contains("task c"));
-        let unknown = g.attach_evidence(&[("1".into(), "cargo test: ok".into()), ("Login Screen looks right".into(), "shot.png".into()), ("9".into(), "x".into())]);
+        let unknown = g.attach_evidence(&[
+            ("1".into(), "cargo test: ok".into()),
+            ("Login Screen looks right".into(), "shot.png".into()),
+            ("9".into(), "x".into()),
+        ]);
         assert_eq!(unknown, ["9"]);
         assert!(g.fully_evidenced());
         assert_eq!(g.close_gaps(&tasks[1..2]), Vec::<String>::new());
@@ -482,7 +640,11 @@ mod tests {
     fn a_goal_without_criteria_cannot_close() {
         let mut g = goal();
         g.acceptance.clear();
-        assert!(g.close_gaps(&[]).iter().any(|g| g.contains("no acceptance criteria")));
+        assert!(
+            g.close_gaps(&[])
+                .iter()
+                .any(|g| g.contains("no acceptance criteria"))
+        );
     }
 
     #[test]
@@ -490,16 +652,45 @@ mod tests {
         let mut g = goal();
         let t = |id: &str, st| task(id, Some("g1"), st);
         assert_eq!(attention(&g, &[]), Some(Attention::Stalled));
-        assert_eq!(attention(&g, &[t("a", TaskStatus::Blocked), t("b", TaskStatus::Failed)]), Some(Attention::Stalled));
-        for moving in [TaskStatus::InProgress, TaskStatus::Todo, TaskStatus::InReview] {
-            assert_eq!(attention(&g, &[t("a", moving), t("b", TaskStatus::Blocked)]), None);
+        assert_eq!(
+            attention(
+                &g,
+                &[t("a", TaskStatus::Blocked), t("b", TaskStatus::Failed)]
+            ),
+            Some(Attention::Stalled)
+        );
+        for moving in [
+            TaskStatus::InProgress,
+            TaskStatus::Todo,
+            TaskStatus::InReview,
+        ] {
+            assert_eq!(
+                attention(&g, &[t("a", moving), t("b", TaskStatus::Blocked)]),
+                None
+            );
         }
-        assert_eq!(attention(&g, &[t("a", TaskStatus::Done)]), Some(Attention::Stalled));
+        assert_eq!(
+            attention(&g, &[t("a", TaskStatus::Done)]),
+            Some(Attention::Stalled)
+        );
         g.attach_evidence(&[("1".into(), "ok".into()), ("2".into(), "ok".into())]);
-        assert_eq!(attention(&g, &[t("a", TaskStatus::Done), t("b", TaskStatus::Cancelled)]), Some(Attention::ReadyToClose));
+        assert_eq!(
+            attention(
+                &g,
+                &[t("a", TaskStatus::Done), t("b", TaskStatus::Cancelled)]
+            ),
+            Some(Attention::ReadyToClose)
+        );
         assert_eq!(attention(&g, &[t("a", TaskStatus::InProgress)]), None);
         g.status = GoalStatus::Closed;
         assert_eq!(attention(&g, &[]), None);
-        assert_eq!(progress(&[t("a", TaskStatus::Done), t("b", TaskStatus::Cancelled), t("c", TaskStatus::Todo)]), (1, 2));
+        assert_eq!(
+            progress(&[
+                t("a", TaskStatus::Done),
+                t("b", TaskStatus::Cancelled),
+                t("c", TaskStatus::Todo)
+            ]),
+            (1, 2)
+        );
     }
 }

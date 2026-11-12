@@ -5,7 +5,15 @@
 
 use serde_json::{Map, Value};
 
-pub const KINDS: &[&str] = &["note", "question", "status", "handoff_note", "blocker", "result", "interrupt"];
+pub const KINDS: &[&str] = &[
+    "note",
+    "question",
+    "status",
+    "handoff_note",
+    "blocker",
+    "result",
+    "interrupt",
+];
 pub const REACTIONS: &[&str] = &["check", "eyes", "thumbs_up", "question", "thinking"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +33,10 @@ impl Urgency {
 
 /// Validated kind and urgency from optional tool arguments. An `interrupt`
 /// is urgent by definition; a blocker is only urgent when the sender says so.
-pub fn parse(kind: Option<&str>, urgency: Option<&str>) -> Result<(Option<&'static str>, Urgency), String> {
+pub fn parse(
+    kind: Option<&str>,
+    urgency: Option<&str>,
+) -> Result<(Option<&'static str>, Urgency), String> {
     let kind = match kind.map(str::trim).filter(|k| !k.is_empty()) {
         None => None,
         Some(k) => Some(
@@ -41,7 +52,11 @@ pub fn parse(kind: Option<&str>, urgency: Option<&str>) -> Result<(Option<&'stat
         Some("urgent") => Urgency::Urgent,
         Some(other) => return Err(format!("unknown urgency `{other}`; use normal or urgent")),
     };
-    let urgency = if kind == Some("interrupt") { Urgency::Urgent } else { urgency };
+    let urgency = if kind == Some("interrupt") {
+        Urgency::Urgent
+    } else {
+        urgency
+    };
     Ok((kind, urgency))
 }
 
@@ -63,7 +78,10 @@ pub fn parse_reply_and_reaction(
         None => None,
         Some(r) => {
             if !REACTIONS.contains(&r) && !is_emoji(r) {
-                return Err(format!("unknown reaction `{r}`; use one of {} or a single emoji", REACTIONS.join(", ")));
+                return Err(format!(
+                    "unknown reaction `{r}`; use one of {} or a single emoji",
+                    REACTIONS.join(", ")
+                ));
             }
             let valid = r.to_string();
             if reply_to.is_none() {
@@ -91,7 +109,11 @@ pub fn apply_reply_and_reaction(
 }
 
 /// Payload fields for a typed message; empty for an untyped normal one.
-pub fn payload_fields(kind: Option<&str>, urgency: Urgency, task_id: Option<&str>) -> Map<String, Value> {
+pub fn payload_fields(
+    kind: Option<&str>,
+    urgency: Urgency,
+    task_id: Option<&str>,
+) -> Map<String, Value> {
     let mut map = Map::new();
     if let Some(kind) = kind {
         map.insert("kind".into(), Value::from(kind));
@@ -128,7 +150,9 @@ pub fn envelope_lines(payload: &Value) -> String {
         out.push_str(&format!("addressed_to: {}\n", names.join(", ")));
     }
     if urgency_of(payload) == Urgency::Urgent {
-        out.push_str("urgency: urgent (the sender interrupted your run for this; deal with it first)\n");
+        out.push_str(
+            "urgency: urgent (the sender interrupted your run for this; deal with it first)\n",
+        );
     }
     out
 }
@@ -139,7 +163,10 @@ mod tests {
 
     #[test]
     fn interrupt_is_always_urgent() {
-        assert_eq!(parse(Some("interrupt"), None).unwrap(), (Some("interrupt"), Urgency::Urgent));
+        assert_eq!(
+            parse(Some("interrupt"), None).unwrap(),
+            (Some("interrupt"), Urgency::Urgent)
+        );
     }
 
     #[test]
@@ -162,7 +189,8 @@ mod tests {
     fn reaction_requires_reply_to_and_stays_normal_urgency() {
         assert!(parse_reply_and_reaction(None, Some("check")).is_err());
         assert!(parse_reply_and_reaction(Some("e1"), Some("confetti")).is_err());
-        let (reply_to, reaction) = parse_reply_and_reaction(Some(" e1 "), Some("thumbs_up")).unwrap();
+        let (reply_to, reaction) =
+            parse_reply_and_reaction(Some(" e1 "), Some("thumbs_up")).unwrap();
         assert_eq!(reply_to.as_deref(), Some("e1"));
         assert_eq!(reaction.as_deref(), Some("thumbs_up"));
         let (_, emoji) = parse_reply_and_reaction(Some("e1"), Some("👍🏽")).unwrap();

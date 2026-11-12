@@ -12,8 +12,8 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::builtins::coding_tools;
 use crate::config::{InferenceProfileConfig, SnippetConfig, workspaces_root};
-use crate::coordination::{AgentHome, IdentityError};
 pub use crate::coordination::SessionMember;
+use crate::coordination::{AgentHome, IdentityError};
 use crate::harness::{CodingHarness, HarnessConfig, HarnessState, LoopInput};
 use crate::lanes::ModelFactory;
 use crate::llm::StreamHandle;
@@ -336,22 +336,25 @@ impl AgentRuntime {
     /// or conversation rules — and not its executable permissions.
     fn snippet(i: RuntimeInputs, identity: Option<AgentIdentity<'_>>) -> Result<Self, ToolError> {
         let context = ToolContext::new(i.workspace)?
-        .with_durable_session_id_opt(i.durable_id.clone())
-        // Every session's coordination tools open the same database the daemon
-        // owns, so board posts and tasks share one store.
-        .with_store_path(crate::store::default_db_path())
-        // A specialized session acts as its directory agent, so lease tools can
-        // attribute turn ownership to the right identity.
-        .with_agent_id_opt(identity.map(|(agent_id, _)| agent_id.to_string()));
+            .with_durable_session_id_opt(i.durable_id.clone())
+            // Every session's coordination tools open the same database the daemon
+            // owns, so board posts and tasks share one store.
+            .with_store_path(crate::store::default_db_path())
+            // A specialized session acts as its directory agent, so lease tools can
+            // attribute turn ownership to the right identity.
+            .with_agent_id_opt(identity.map(|(agent_id, _)| agent_id.to_string()));
 
-        let custom_dir = crate::agent_tools::tools_dir(identity.map_or("snippet", |(agent_id, _)| agent_id));
+        let custom_dir =
+            crate::agent_tools::tools_dir(identity.map_or("snippet", |(agent_id, _)| agent_id));
         if let Some(dir) = custom_dir.as_ref() {
             let _ = std::fs::create_dir_all(dir);
         }
         let tools = work_tool_registry(i.exa_api_key.clone(), custom_dir.clone());
 
         let prompt_ctx = i.prompt_ctx;
-        let custom_section = custom_dir.as_deref().map(crate::agent_tools::prompt_section);
+        let custom_section = custom_dir
+            .as_deref()
+            .map(crate::agent_tools::prompt_section);
         let prompt = match identity {
             Some((agent_id, body)) => crate::prompts::specialized_agent_system_prompt(
                 crate::prompts::SpecializedAgentPromptContext {
@@ -371,24 +374,26 @@ impl AgentRuntime {
         let setups = i.setups;
         let parent_session_id = i.durable_id;
         Ok(Self {
-            factory: Some(Arc::new(move |profile: Option<&str>, lane_id: Option<String>| {
-                let session_id = lane_id.or_else(|| parent_session_id.clone());
-                if let Some(name) = profile {
-                    if let Some(cfg) = setups.as_ref().and_then(|s| s.get(name)) {
-                        return Ok(cfg.build_model_for_session(session_id));
-                    } else {
-                        let known = setups
-                            .as_ref()
-                            .map(|s| s.keys().cloned().collect::<Vec<_>>())
-                            .unwrap_or_default();
-                        return Err(format!(
-                            "unknown inference profile `{name}`. Available setups: [{}]",
-                            known.join(", ")
-                        ));
+            factory: Some(Arc::new(
+                move |profile: Option<&str>, lane_id: Option<String>| {
+                    let session_id = lane_id.or_else(|| parent_session_id.clone());
+                    if let Some(name) = profile {
+                        if let Some(cfg) = setups.as_ref().and_then(|s| s.get(name)) {
+                            return Ok(cfg.build_model_for_session(session_id));
+                        } else {
+                            let known = setups
+                                .as_ref()
+                                .map(|s| s.keys().cloned().collect::<Vec<_>>())
+                                .unwrap_or_default();
+                            return Err(format!(
+                                "unknown inference profile `{name}`. Available setups: [{}]",
+                                known.join(", ")
+                            ));
+                        }
                     }
-                }
-                Ok(base_model.build_model_for_session(session_id))
-            })),
+                    Ok(base_model.build_model_for_session(session_id))
+                },
+            )),
             context,
             tools,
             prompt,
@@ -411,17 +416,14 @@ impl AgentRuntime {
     /// It keeps read-only session awareness so it can dispatch into the right
     /// place, but not Mission Control's task tools — the runtime owns task state,
     /// and a peer managing it would be a second owner.
-    fn coordination(
-        i: RuntimeInputs,
-        identity: AgentIdentity<'_>,
-    ) -> Result<Self, ToolError> {
+    fn coordination(i: RuntimeInputs, identity: AgentIdentity<'_>) -> Result<Self, ToolError> {
         let (agent_id, body) = identity;
         let context = ToolContext::new(i.workspace)?
-        .with_durable_session_id_opt(i.durable_id)
-        .with_store_path(crate::store::default_db_path())
-        // The board is per agent, so the identity is what makes every board read
-        // and write attributable.
-        .with_agent_id(agent_id.to_string());
+            .with_durable_session_id_opt(i.durable_id)
+            .with_store_path(crate::store::default_db_path())
+            // The board is per agent, so the identity is what makes every board read
+            // and write attributable.
+            .with_agent_id(agent_id.to_string());
 
         let tools = coordination_tool_registry(i.exa_api_key.clone());
 
@@ -443,7 +445,13 @@ impl AgentRuntime {
             ),
             // Nothing to delegate: no lane control in a coordination session.
             allow_lane_control: false,
-            hidden_meta: &["ask_user", "monitor", "present_file", "set_session_title", "update_plan"],
+            hidden_meta: &[
+                "ask_user",
+                "monitor",
+                "present_file",
+                "set_session_title",
+                "update_plan",
+            ],
             memory: true,
         })
     }
@@ -471,7 +479,10 @@ impl AgentRuntime {
                         "a coordination session requires an agent identity — its board is per agent",
                     )
                 })?;
-                Self::coordination(inputs, (identity.agent_id.as_str(), identity.identity.as_str()))
+                Self::coordination(
+                    inputs,
+                    (identity.agent_id.as_str(), identity.identity.as_str()),
+                )
             }
         }
     }
@@ -484,7 +495,9 @@ pub(crate) fn mission_control_tool_registry(exa_api_key: Option<String>) -> Tool
     tools.insert(crate::builtins::ViewImageTool);
     // Mission Control may research current docs and issues while routing work.
     if let Some(key) = exa_api_key.filter(|k| !k.trim().is_empty()) {
-        tools.insert(crate::builtins::WebSearchTool { api_key: key.clone() });
+        tools.insert(crate::builtins::WebSearchTool {
+            api_key: key.clone(),
+        });
         tools.insert(crate::builtins::WebReadTool { api_key: key });
     }
     crate::mission_tools::add_mission_control_tools(&mut tools);
@@ -503,7 +516,10 @@ pub(crate) fn mission_control_tool_registry(exa_api_key: Option<String>) -> Tool
 }
 
 /// A work session's tools: coding tools plus report, coordination and review.
-pub(crate) fn work_tool_registry(exa_api_key: Option<String>, custom_dir: Option<PathBuf>) -> ToolRegistry {
+pub(crate) fn work_tool_registry(
+    exa_api_key: Option<String>,
+    custom_dir: Option<PathBuf>,
+) -> ToolRegistry {
     let mut tools = coding_tools(exa_api_key).with_custom_dir(custom_dir);
     crate::mission_tools::add_worker_report_tool(&mut tools);
     crate::coordination_tools::add_coordination_tools(&mut tools);
@@ -530,7 +546,9 @@ pub(crate) fn coordination_tool_registry(exa_api_key: Option<String>) -> ToolReg
     tools.insert(crate::coordination_tools::DeclineTask);
     tools.insert(crate::builtins::read_only_shell::ReadOnlyBashTool);
     if let Some(key) = exa_api_key.filter(|k| !k.trim().is_empty()) {
-        tools.insert(crate::builtins::WebSearchTool { api_key: key.clone() });
+        tools.insert(crate::builtins::WebSearchTool {
+            api_key: key.clone(),
+        });
         tools.insert(crate::builtins::WebReadTool { api_key: key });
     }
     for name in [
@@ -601,7 +619,7 @@ fn start_session_with_role(
                 workspace,
                 durable_id,
                 prompt_ctx,
-                        exa_api_key: exa_api_key.clone(),
+                exa_api_key: exa_api_key.clone(),
                 base_model: model_config,
                 setups,
             },
@@ -628,8 +646,10 @@ fn start_session_with_role(
             runtime.context,
         );
         if let Some(mut profile) = cli_profile {
-            profile.context_window =
-                crate::agent_context::effective_context_window(profile.context_window, context_limit);
+            profile.context_window = crate::agent_context::effective_context_window(
+                profile.context_window,
+                context_limit,
+            );
             let result = harness
                 .run_cli_agent(profile, initial, rx, runtime.factory, stream)
                 .await
@@ -662,7 +682,10 @@ fn start_session_with_role(
 /// Run the post-request memory reflection for a stored session that has no live
 /// loop, as a plain conversation. `Ok(false)`: nothing to save, or the model is a
 /// CLI agent (those save memory in their own idle pass).
-pub async fn reflect_stored_session(config: &SnippetConfig, state_path: &Path) -> Result<bool, String> {
+pub async fn reflect_stored_session(
+    config: &SnippetConfig,
+    state_path: &Path,
+) -> Result<bool, String> {
     let workspace = config.workspace.clone();
     let durable_id = Some(session_id_for_state_path(state_path));
     let model_config = config.model.clone();
@@ -703,7 +726,10 @@ pub async fn reflect_stored_session(config: &SnippetConfig, state_path: &Path) -
         runtime.tools,
         runtime.context,
     );
-    harness.reflect_stored_session(&mut *model).await.map_err(|e| e.to_string())
+    harness
+        .reflect_stored_session(&mut *model)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// One session as seen on disk, for the serve daemon's device-wide list.
@@ -795,18 +821,18 @@ pub fn inbox_session_id(agent_id: &str) -> String {
 /// A delegated lane's transcript, stored like a session but never run as one:
 /// the lane runs inside its parent session.
 pub fn is_lane_session_id(id: &str) -> bool {
-    id.rsplit_once('/')
-        .is_some_and(|(dir, name)| (dir == "lanes" || dir.ends_with("/lanes")) && name.starts_with("lane-"))
+    id.rsplit_once('/').is_some_and(|(dir, name)| {
+        (dir == "lanes" || dir.ends_with("/lanes")) && name.starts_with("lane-")
+    })
 }
 
 pub fn is_inbox_session_id(id: &str) -> bool {
-    id.strip_prefix("inbox-")
-        .is_some_and(|agent_id| {
-            !agent_id.is_empty()
-                && agent_id
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
-        })
+    id.strip_prefix("inbox-").is_some_and(|agent_id| {
+        !agent_id.is_empty()
+            && agent_id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+    })
 }
 
 /// Resolve a session id to its state path, rejecting any id that escapes the root.
@@ -910,15 +936,22 @@ pub fn session_task_contexts(store: &crate::store::Store) -> SessionTaskContexts
         Ok(r) => r,
         Err(_) => return contexts,
     };
-    for (task_id, session_id, task_status, agent_id, role, member_status, work_session_id) in records {
+    for (task_id, session_id, task_status, agent_id, role, member_status, work_session_id) in
+        records
+    {
         let parent_canon = crate::conversations::canonical_session_id(&session_id);
-        if parent_canon.is_empty() || is_inbox_session_id(&parent_canon) || is_lane_session_id(&parent_canon) {
+        if parent_canon.is_empty()
+            || is_inbox_session_id(&parent_canon)
+            || is_lane_session_id(&parent_canon)
+        {
             continue;
         }
         let is_terminal = matches!(task_status.as_str(), "done" | "failed" | "cancelled");
 
         if !contexts.parent_tasks.contains_key(&parent_canon) {
-            contexts.parent_tasks.insert(parent_canon.clone(), task_id.clone());
+            contexts
+                .parent_tasks
+                .insert(parent_canon.clone(), task_id.clone());
         }
 
         if let Some(agent) = agent_id {
@@ -926,19 +959,27 @@ pub fn session_task_contexts(store: &crate::store::Store) -> SessionTaskContexts
             let status_str = member_status.unwrap_or_else(|| "waiting".to_string());
             let is_holder = status_str == "active";
 
-            let work_canon = work_session_id.as_deref().map(|ws| crate::conversations::canonical_session_id(ws));
+            let work_canon = work_session_id
+                .as_deref()
+                .map(|ws| crate::conversations::canonical_session_id(ws));
 
             if !is_terminal {
                 if is_holder {
                     contexts.workers.insert(parent_canon.clone(), agent.clone());
                 } else {
-                    contexts.workers.entry(parent_canon.clone()).or_insert_with(|| agent.clone());
+                    contexts
+                        .workers
+                        .entry(parent_canon.clone())
+                        .or_insert_with(|| agent.clone());
                 }
                 if let Some(ref ws) = work_canon {
                     if is_holder {
                         contexts.workers.insert(ws.clone(), agent.clone());
                     } else {
-                        contexts.workers.entry(ws.clone()).or_insert_with(|| agent.clone());
+                        contexts
+                            .workers
+                            .entry(ws.clone())
+                            .or_insert_with(|| agent.clone());
                     }
                 }
             }
@@ -951,15 +992,19 @@ pub fn session_task_contexts(store: &crate::store::Store) -> SessionTaskContexts
                 }
             }
 
-            contexts.members.entry(parent_canon.clone()).or_default().push(SessionMember {
-                task_id: task_id.clone(),
-                session_id: parent_canon.clone(),
-                agent_id: agent,
-                role: role_str,
-                status: status_str,
-                work_session_id: work_canon,
-                is_holder,
-            });
+            contexts
+                .members
+                .entry(parent_canon.clone())
+                .or_default()
+                .push(SessionMember {
+                    task_id: task_id.clone(),
+                    session_id: parent_canon.clone(),
+                    agent_id: agent,
+                    role: role_str,
+                    status: status_str,
+                    work_session_id: work_canon,
+                    is_holder,
+                });
         }
     }
     contexts
@@ -973,7 +1018,10 @@ pub fn session_task_contexts(store: &crate::store::Store) -> SessionTaskContexts
 /// [`list_device_sessions`] instead.
 pub fn all_device_sessions() -> Vec<SessionInfo> {
     let store = store_for_sessions();
-    let contexts = store.as_ref().map(session_task_contexts).unwrap_or_default();
+    let contexts = store
+        .as_ref()
+        .map(session_task_contexts)
+        .unwrap_or_default();
     let now = now_unix_secs();
     let ttls = crate::settle::profile_cache_ttls();
     let mut out: Vec<SessionInfo> = store
@@ -990,16 +1038,22 @@ pub fn all_device_sessions() -> Vec<SessionInfo> {
                         .and_then(|s| s.current_attention(&row.id).ok().flatten())
                 })
                 .flatten();
-            let (task_id, parent_session_id, agent_id, members) = if let Some((parent_id, task_id, seated_agent)) = contexts.seats.get(&row.id) {
-                (Some(task_id.clone()), Some(parent_id.clone()), row.agent_id.or_else(|| seated_agent.clone()), None)
-            } else {
-                (
-                    contexts.parent_tasks.get(&row.id).cloned(),
-                    None,
-                    row.agent_id,
-                    contexts.members.get(&row.id).cloned(),
-                )
-            };
+            let (task_id, parent_session_id, agent_id, members) =
+                if let Some((parent_id, task_id, seated_agent)) = contexts.seats.get(&row.id) {
+                    (
+                        Some(task_id.clone()),
+                        Some(parent_id.clone()),
+                        row.agent_id.or_else(|| seated_agent.clone()),
+                        None,
+                    )
+                } else {
+                    (
+                        contexts.parent_tasks.get(&row.id).cloned(),
+                        None,
+                        row.agent_id,
+                        contexts.members.get(&row.id).cloned(),
+                    )
+                };
             let worker_agent_id = contexts.workers.get(&row.id).cloned();
             let cache = if crate::settle::never_cold(&row.id) {
                 "warm"
@@ -1027,8 +1081,14 @@ pub fn all_device_sessions() -> Vec<SessionInfo> {
                 keep_awake: row.keep_awake,
                 resume_mode: row.resume_mode.clone(),
                 git: false,
-                changes: row.last_changes.as_deref().and_then(|j| serde_json::from_str(j).ok()),
-                total_changes: row.total_changes.as_deref().and_then(|j| serde_json::from_str(j).ok()),
+                changes: row
+                    .last_changes
+                    .as_deref()
+                    .and_then(|j| serde_json::from_str(j).ok()),
+                total_changes: row
+                    .total_changes
+                    .as_deref()
+                    .and_then(|j| serde_json::from_str(j).ok()),
                 running_since: None,
                 idle_secs: crate::settle::idle_secs(now, row.last_active.unwrap_or(0)),
                 cache,
@@ -1103,7 +1163,12 @@ pub fn list_routable_sessions() -> Vec<SessionInfo> {
 /// The session-list label. New state stores this in `title`; the initial request
 /// fallback is only for old states while they are being migrated.
 fn effective_title(state: &HarnessState) -> String {
-    if let Some(title) = state.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+    if let Some(title) = state
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
         return title.chars().take(120).collect();
     }
     state
@@ -1126,14 +1191,21 @@ pub(crate) fn request_label(request: &str) -> String {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     };
-    if let Some(job) = text.strip_prefix("**Scheduled run — ").and_then(|rest| rest.split("**").next()) {
+    if let Some(job) = text
+        .strip_prefix("**Scheduled run — ")
+        .and_then(|rest| rest.split("**").next())
+    {
         return format!("Scheduled: {}", job.trim());
     }
     let envelope = text.starts_with('[') || text.contains("[mission_control_task]");
     if !envelope {
         return text.lines().next().unwrap_or("").trim().to_string();
     }
-    if let Some(title) = field("title:").or_else(|| field("task_title:")).or_else(|| field("task:")).or_else(|| field("job:")) {
+    if let Some(title) = field("title:")
+        .or_else(|| field("task_title:"))
+        .or_else(|| field("task:"))
+        .or_else(|| field("job:"))
+    {
         return title;
     }
     if let Some(from) = field("from_id:").or_else(|| field("from:")) {
@@ -1195,7 +1267,6 @@ pub fn set_session_title(state_path: &Path, title: &str) -> Result<(), String> {
     write_session_state(state_path, &state)
 }
 
-
 pub mod fork;
 pub use fork::*;
 
@@ -1206,15 +1277,17 @@ pub use fork::*;
 /// parks the task here; a silent idle stop is the stall check's to notice.
 pub fn park_failed_session_work(id: &str, prev_status: &str, state: &HarnessState) {
     let status = status_str(state.status);
-    if prev_status == "running" && matches!(status.as_str(), "idle" | "failed")
+    if prev_status == "running"
+        && matches!(status.as_str(), "idle" | "failed")
         && let Some(crate::harness::HarnessEvent::ModelError { message }) = state.events.last()
-            && crate::routing::is_limit_error(message) {
-                crate::routing::report(crate::routing::LimitHit {
-                    session_id: id.to_string(),
-                    message: message.clone(),
-                    resets_at: crate::routing::reset_from(state.rate_limit.as_ref()),
-                });
-            }
+        && crate::routing::is_limit_error(message)
+    {
+        crate::routing::report(crate::routing::LimitHit {
+            session_id: id.to_string(),
+            message: message.clone(),
+            resets_at: crate::routing::reset_from(state.rate_limit.as_ref()),
+        });
+    }
     if status != "failed" || prev_status == "failed" {
         return;
     }
@@ -1228,11 +1301,7 @@ pub fn park_failed_session_work(id: &str, prev_status: &str, state: &HarnessStat
         })
         .unwrap_or("");
     if let Some(store) = store_for_sessions() {
-        let _ = store.block_tasks_for_failed_session(
-            id,
-            detail,
-            &chrono::Utc::now().to_rfc3339(),
-        );
+        let _ = store.block_tasks_for_failed_session(id, detail, &chrono::Utc::now().to_rfc3339());
     }
 }
 
@@ -1276,10 +1345,11 @@ fn read_session_state_from_store(state_path: &Path) -> Option<HarnessState> {
 pub fn read_session_meta(state_path: &Path) -> Option<HarnessState> {
     let id = session_id_for_state_path(state_path);
     if let Some(store) = store_for_sessions()
-        && store.has_conversation(&id).ok()? {
-            let scalar = store.load_session_scalar(&id).ok()??;
-            return crate::harness::state_from_scalar(&scalar, Vec::new(), Vec::new()).ok();
-        }
+        && store.has_conversation(&id).ok()?
+    {
+        let scalar = store.load_session_scalar(&id).ok()??;
+        return crate::harness::state_from_scalar(&scalar, Vec::new(), Vec::new()).ok();
+    }
     read_session_state(state_path)
 }
 
@@ -1398,15 +1468,15 @@ pub fn subscribe_device_events() -> broadcast::Receiver<serde_json::Value> {
 }
 
 #[cfg(test)]
-mod notification_tests;
-#[cfg(test)]
-mod notification_wire_tests;
+mod notification_attention_tests;
 #[cfg(test)]
 mod notification_paging_tests;
 #[cfg(test)]
-mod notification_attention_tests;
-#[cfg(test)]
 mod notification_stop_tests;
+#[cfg(test)]
+mod notification_tests;
+#[cfg(test)]
+mod notification_wire_tests;
 
 const NOTIFICATION_RETENTION_SECS: i64 = 24 * 60 * 60;
 
@@ -1420,47 +1490,60 @@ fn emit_device_event_with_store(
     events: &broadcast::Sender<serde_json::Value>,
 ) {
     if let Some(store) = store
-        && let Some(mut notification) = notification_candidate(&event) {
-            if notification["kind"] == "waiting" {
-                let attention = notification["session"].as_str()
-                    .and_then(|id| store.current_attention(id).ok().flatten());
-                let Some(attention) = attention else {
-                    let _ = events.send(event);
-                    return;
-                };
-                let detail = attention["text"].as_str().unwrap_or("").to_string();
-                let body_empty = notification["body"].as_str().is_none_or(|b| b.trim().is_empty());
-                if body_empty && !detail.is_empty() {
-                    notification["body"] = detail.into();
-                }
-                notification["attention"] = attention;
+        && let Some(mut notification) = notification_candidate(&event)
+    {
+        if notification["kind"] == "waiting" {
+            let attention = notification["session"]
+                .as_str()
+                .and_then(|id| store.current_attention(id).ok().flatten());
+            let Some(attention) = attention else {
+                let _ = events.send(event);
+                return;
+            };
+            let detail = attention["text"].as_str().unwrap_or("").to_string();
+            let body_empty = notification["body"]
+                .as_str()
+                .is_none_or(|b| b.trim().is_empty());
+            if body_empty && !detail.is_empty() {
+                notification["body"] = detail.into();
             }
-            if notification["kind"] == "idle" {
-                let identity = notification["session"].as_str()
-                    .and_then(|id| store.current_stop_identity(id).ok().flatten());
-                let Some(identity) = identity else {
-                    let _ = events.send(event);
-                    return;
-                };
-                notification["stop_identity"] = identity.into();
-            }
-            if matches!(notification["kind"].as_str(), Some("idle" | "done" | "error"))
-                && notification["body"].as_str().is_none_or(|b| b.trim().is_empty())
-                && let Some(text) = notification["session"].as_str()
-                    .and_then(|id| store.last_assistant_excerpt(id).ok().flatten())
-            {
-                notification["body"] = text.into();
-            }
-            if let Ok(settings) = store.load_control_settings()
-                && notification_allowed(&settings, &notification) {
-                    match store.append_notification_event(notification, NOTIFICATION_RETENTION_SECS) {
-                        Ok(saved) => { let _ = events.send(serde_json::json!({
-                            "kind": "notification", "notification": saved
-                        })); }
-                        Err(error) => eprintln!("persist notification: {error}"),
-                    }
-                }
+            notification["attention"] = attention;
         }
+        if notification["kind"] == "idle" {
+            let identity = notification["session"]
+                .as_str()
+                .and_then(|id| store.current_stop_identity(id).ok().flatten());
+            let Some(identity) = identity else {
+                let _ = events.send(event);
+                return;
+            };
+            notification["stop_identity"] = identity.into();
+        }
+        if matches!(
+            notification["kind"].as_str(),
+            Some("idle" | "done" | "error")
+        ) && notification["body"]
+            .as_str()
+            .is_none_or(|b| b.trim().is_empty())
+            && let Some(text) = notification["session"]
+                .as_str()
+                .and_then(|id| store.last_assistant_excerpt(id).ok().flatten())
+        {
+            notification["body"] = text.into();
+        }
+        if let Ok(settings) = store.load_control_settings()
+            && notification_allowed(&settings, &notification)
+        {
+            match store.append_notification_event(notification, NOTIFICATION_RETENTION_SECS) {
+                Ok(saved) => {
+                    let _ = events.send(serde_json::json!({
+                        "kind": "notification", "notification": saved
+                    }));
+                }
+                Err(error) => eprintln!("persist notification: {error}"),
+            }
+        }
+    }
     let _ = events.send(event);
 }
 
@@ -1474,7 +1557,10 @@ fn notification_candidate(event: &serde_json::Value) -> Option<serde_json::Value
         return None;
     }
     if matches!(kind, "done" | "idle")
-        && event.get("session").and_then(|s| s.as_str()).is_some_and(|id| is_inbox_session_id(id.split('/').next().unwrap_or(id)))
+        && event
+            .get("session")
+            .and_then(|s| s.as_str())
+            .is_some_and(|id| is_inbox_session_id(id.split('/').next().unwrap_or(id)))
     {
         return None;
     }
@@ -1482,7 +1568,8 @@ fn notification_candidate(event: &serde_json::Value) -> Option<serde_json::Value
         let session = event.get("session")?.as_str()?;
         value["destination"] = serde_json::json!({"type": "session", "id": session});
     } else if matches!(kind, "call_prompt" | "call_state") {
-        value["destination"] = serde_json::json!({"type": "session", "id": crate::mission_control::SESSION_ID});
+        value["destination"] =
+            serde_json::json!({"type": "session", "id": crate::mission_control::SESSION_ID});
     } else if kind == "coordination_event" {
         let source = event.get("event")?;
         let event_type = source.get("event_type")?.as_str()?;
@@ -1522,17 +1609,32 @@ fn notification_candidate(event: &serde_json::Value) -> Option<serde_json::Value
 
 fn notification_attention_current(store: &crate::store::Store, event: &serde_json::Value) -> bool {
     if event["kind"] == "idle" {
-        let Some(session) = event["session"].as_str() else { return false; };
-        return store.current_stop_identity(session).ok().flatten()
+        let Some(session) = event["session"].as_str() else {
+            return false;
+        };
+        return store
+            .current_stop_identity(session)
+            .ok()
+            .flatten()
             .is_some_and(|identity| event["stop_identity"].as_str() == Some(identity.as_str()));
     }
-    if event["kind"] != "waiting" { return true; }
-    let Some(session) = event["session"].as_str() else { return false; };
-    store.current_attention(session).ok().flatten()
+    if event["kind"] != "waiting" {
+        return true;
+    }
+    let Some(session) = event["session"].as_str() else {
+        return false;
+    };
+    store
+        .current_attention(session)
+        .ok()
+        .flatten()
         .is_some_and(|attention| event["attention"] == attention)
 }
 
-fn notification_allowed(settings: &crate::mission_control::ControlSettings, event: &serde_json::Value) -> bool {
+fn notification_allowed(
+    settings: &crate::mission_control::ControlSettings,
+    event: &serde_json::Value,
+) -> bool {
     // A call prompt needs an answer whatever the policy; unanswered it just expires.
     if matches!(event["kind"].as_str(), Some("call_prompt" | "call_state")) {
         return true;
@@ -1540,7 +1642,9 @@ fn notification_allowed(settings: &crate::mission_control::ControlSettings, even
     let destination = &event["destination"];
     let session = if destination["type"] == "session" {
         destination["id"].as_str()
-    } else { destination["session"].as_str() };
+    } else {
+        destination["session"].as_str()
+    };
     match settings.notification_policy.as_str() {
         "all_sessions" => true,
         "mission_control_only" => session.is_some_and(|id| {
@@ -1588,14 +1692,26 @@ pub fn emit_status_transition(
     }
 }
 
-pub fn replay_notification_events_after_cursor(created_at: i64, event_id: u64, limit: usize) -> Result<serde_json::Value, String> {
+pub fn replay_notification_events_after_cursor(
+    created_at: i64,
+    event_id: u64,
+    limit: usize,
+) -> Result<serde_json::Value, String> {
     let store = store_for_sessions().ok_or("notification store unavailable")?;
     let settings = store.load_control_settings().map_err(|e| e.to_string())?;
     notification_tuple_page(&store, &settings, created_at, event_id, limit)
 }
 
-fn notification_tuple_page(store: &crate::store::Store, settings: &crate::mission_control::ControlSettings, created_at: i64, event_id: u64, limit: usize) -> Result<serde_json::Value, String> {
-    let mut rows = store.notification_events_after_cursor(created_at, event_id).map_err(|e| e.to_string())?;
+fn notification_tuple_page(
+    store: &crate::store::Store,
+    settings: &crate::mission_control::ControlSettings,
+    created_at: i64,
+    event_id: u64,
+    limit: usize,
+) -> Result<serde_json::Value, String> {
+    let mut rows = store
+        .notification_events_after_cursor(created_at, event_id)
+        .map_err(|e| e.to_string())?;
     let more_rows = rows.len() > 500;
     rows.truncate(500);
     let mut cursor = serde_json::json!({"created_at": created_at, "event_id": event_id});
@@ -1604,8 +1720,12 @@ fn notification_tuple_page(store: &crate::store::Store, settings: &crate::missio
     let mut has_more = more_rows;
     for row in rows {
         let eligible = row.get("notification_id").is_some()
-            && row["created_at"].as_i64().is_some_and(|ts| ts >= now - NOTIFICATION_RETENTION_SECS)
-            && row["expires_at"].as_i64().is_some_and(|expiry| expiry > now)
+            && row["created_at"]
+                .as_i64()
+                .is_some_and(|ts| ts >= now - NOTIFICATION_RETENTION_SECS)
+            && row["expires_at"]
+                .as_i64()
+                .is_some_and(|expiry| expiry > now)
             && notification_allowed(settings, &row)
             && notification_attention_current(store, &row);
         if eligible && events.len() == limit.clamp(1, 500) {
@@ -1613,7 +1733,9 @@ fn notification_tuple_page(store: &crate::store::Store, settings: &crate::missio
             break;
         }
         cursor = serde_json::json!({"created_at": row["created_at"], "event_id": row["event_id"]});
-        if eligible { events.push(row); }
+        if eligible {
+            events.push(row);
+        }
     }
     Ok(serde_json::json!({"events": events, "next_cursor": cursor, "has_more": has_more}))
 }
@@ -1630,15 +1752,21 @@ fn notification_page_from_store(
     since: u64,
     limit: usize,
 ) -> Result<serde_json::Value, String> {
-    let mut rows = store.notification_events_since(since, 501).map_err(|e| e.to_string())?;
+    let mut rows = store
+        .notification_events_since(since, 501)
+        .map_err(|e| e.to_string())?;
     let more_rows = rows.len() > 500;
     rows.truncate(500);
-    let rows = rows.into_iter().map(|mut row| {
-        if !notification_attention_current(store, &row) {
-            row.as_object_mut().map(|object| object.remove("notification_id"));
-        }
-        row
-    }).collect();
+    let rows = rows
+        .into_iter()
+        .map(|mut row| {
+            if !notification_attention_current(store, &row) {
+                row.as_object_mut()
+                    .map(|object| object.remove("notification_id"));
+            }
+            row
+        })
+        .collect();
     let mut page = notification_page(rows, settings, since, limit);
     if more_rows {
         page["has_more"] = serde_json::json!(true);
@@ -1646,7 +1774,12 @@ fn notification_page_from_store(
     Ok(page)
 }
 
-fn notification_page(rows: Vec<serde_json::Value>, settings: &crate::mission_control::ControlSettings, since: u64, limit: usize) -> serde_json::Value {
+fn notification_page(
+    rows: Vec<serde_json::Value>,
+    settings: &crate::mission_control::ControlSettings,
+    since: u64,
+    limit: usize,
+) -> serde_json::Value {
     let limit = limit.clamp(1, 500);
     let now = chrono::Utc::now().timestamp();
     let mut events = Vec::new();
@@ -1655,18 +1788,27 @@ fn notification_page(rows: Vec<serde_json::Value>, settings: &crate::mission_con
     for row in rows {
         let id = row["event_id"].as_u64().unwrap_or(cursor);
         let eligible = row.get("notification_id").is_some()
-            && row["expires_at"].as_i64().is_some_and(|expiry| expiry > now)
+            && row["expires_at"]
+                .as_i64()
+                .is_some_and(|expiry| expiry > now)
             && notification_allowed(settings, &row);
-        if eligible && events.len() == limit { has_more = true; break; }
+        if eligible && events.len() == limit {
+            has_more = true;
+            break;
+        }
         cursor = id;
-        if eligible { events.push(row); }
+        if eligible {
+            events.push(row);
+        }
     }
     serde_json::json!({"events": events, "next_cursor": cursor, "has_more": has_more})
 }
 
 /// Wake a settled session because something addressed it. No-op for an awake one.
 pub fn wake_settled(id: &str) {
-    let Some(store) = store_for_sessions() else { return };
+    let Some(store) = store_for_sessions() else {
+        return;
+    };
     if let Ok(Some(row)) = store.get_session_row(id)
         && row.settled_at.is_some()
     {
@@ -1693,7 +1835,6 @@ pub fn bump_session_activity(state_path: &Path) {
 /// `~/.snippet/worktrees/{repo}/{id}` and return that path (preserving a
 /// subfolder relative to the repo root). Non-git folders, nested worktrees
 /// already under that root, and any git failure fall back to `folder`.
-
 pub mod worktree;
 pub use worktree::*;
 
@@ -1871,4 +2012,3 @@ fn workspace_from_state_file(state_path: &Path) -> Option<PathBuf> {
         Some(PathBuf::from(state.workspace))
     }
 }
-

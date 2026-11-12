@@ -20,16 +20,17 @@ pub(crate) async fn config_watch_loop(daemon: Shared) {
 
         if let Ok(meta) = tokio::fs::metadata(&path).await
             && let Ok(mtime) = meta.modified()
-                && Some(mtime) != last_mtime {
-                    last_mtime = Some(mtime);
-                    daemon.reload_config().await;
-                    let ids: Vec<String> = daemon.sessions.lock().await.keys().cloned().collect();
-                    eprintln!(
-                        "config.toml changed — reloaded; rebuilding {} live session model(s)",
-                        ids.len()
-                    );
-                    pending.extend(ids);
-                }
+            && Some(mtime) != last_mtime
+        {
+            last_mtime = Some(mtime);
+            daemon.reload_config().await;
+            let ids: Vec<String> = daemon.sessions.lock().await.keys().cloned().collect();
+            eprintln!(
+                "config.toml changed — reloaded; rebuilding {} live session model(s)",
+                ids.len()
+            );
+            pending.extend(ids);
+        }
 
         if pending.is_empty() {
             continue;
@@ -252,4 +253,3 @@ fn trigger_restart() {
         }
     }
 }
-

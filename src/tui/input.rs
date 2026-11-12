@@ -1,6 +1,5 @@
-
-use crate::harness::{HarnessStatus, LoopInput};
 use super::app::*;
+use crate::harness::{HarnessStatus, LoopInput};
 
 impl App {
     pub(crate) fn input_clear(&mut self) {
@@ -215,12 +214,14 @@ impl App {
                 ),
             ] {
                 if let Ok(out) = std::process::Command::new(cmd).args(&args).output()
-                    && out.status.success() && !out.stdout.is_empty() {
-                        wrote = std::fs::write(&dest, &out.stdout).is_ok();
-                        if wrote {
-                            break;
-                        }
+                    && out.status.success()
+                    && !out.stdout.is_empty()
+                {
+                    wrote = std::fs::write(&dest, &out.stdout).is_ok();
+                    if wrote {
+                        break;
                     }
+                }
             }
             wrote
         };
@@ -474,7 +475,9 @@ impl App {
             return;
         }
         // Record for Up/Down history recall (skip consecutive duplicates).
-        if !text.starts_with("/voice key") && self.input_history.last().map(String::as_str) != Some(text.as_str()) {
+        if !text.starts_with("/voice key")
+            && self.input_history.last().map(String::as_str) != Some(text.as_str())
+        {
             self.input_history.push(text.clone());
         }
         self.history_pos = None;
@@ -612,8 +615,6 @@ impl App {
             .map(|s| s.queued_inputs.as_slice())
             .unwrap_or(&[])
     }
-
-
 }
 
 fn pasted_block(body: &str, lines: usize) -> String {

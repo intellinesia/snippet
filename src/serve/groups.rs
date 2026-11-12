@@ -7,11 +7,11 @@
 //! a restart loses nothing.
 
 use super::api_error;
+use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post, put};
-use axum::Router;
 use serde::Deserialize;
 
 use super::Shared;
@@ -74,8 +74,7 @@ fn store_error(status: StatusCode, error: crate::store::StoreError) -> Response 
 
 /// `id` names a real agent, or Mission Control's fixed session id.
 fn known_agent(d: &Shared, id: &str) -> bool {
-    id == crate::mission_control::SESSION_ID
-        || d.store.get_agent(id).ok().flatten().is_some()
+    id == crate::mission_control::SESSION_ID || d.store.get_agent(id).ok().flatten().is_some()
 }
 
 /// GET /groups — every group thread with the human's unread count.
@@ -94,7 +93,10 @@ async fn create_group(State(d): State<Shared>, Json(req): Json<GroupCreateReq>) 
         return api_error(StatusCode::BAD_REQUEST, "title is required");
     }
     if req.members.is_empty() {
-        return api_error(StatusCode::BAD_REQUEST, "members must name at least one agent");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "members must name at least one agent",
+        );
     }
     let mut members: Vec<String> = Vec::new();
     for member in &req.members {
@@ -110,7 +112,10 @@ async fn create_group(State(d): State<Shared>, Json(req): Json<GroupCreateReq>) 
         }
     }
     if members.is_empty() {
-        return api_error(StatusCode::BAD_REQUEST, "members must name at least one agent");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "members must name at least one agent",
+        );
     }
     let lead = req.lead.as_deref().map(str::trim).filter(|l| !l.is_empty());
     if let Some(lead) = lead
@@ -122,7 +127,10 @@ async fn create_group(State(d): State<Shared>, Json(req): Json<GroupCreateReq>) 
         );
     }
     let now = chrono::Utc::now().to_rfc3339();
-    match d.store.create_group(title, ("human", "human"), &members, lead, &now) {
+    match d
+        .store
+        .create_group(title, ("human", "human"), &members, lead, &now)
+    {
         Ok(group) => {
             crate::session::emit_device_event(serde_json::json!({
                 "kind": "group_changed",
@@ -175,7 +183,11 @@ async fn update_group(
     {
         return store_error(StatusCode::BAD_REQUEST, error);
     }
-    if let Some(title) = req.title.as_deref().map(str::trim).filter(|t| !t.is_empty())
+    if let Some(title) = req
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
         && let Err(error) = d.store.set_group_title(&id, title)
     {
         return store_error(StatusCode::CONFLICT, error);
@@ -212,7 +224,10 @@ async fn group_events(
             let _ = d.store.mark_group_read(&id, up_to, &now);
             Json(events).into_response()
         }
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("group events: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("group events: {error}"),
+        ),
     }
 }
 
@@ -344,7 +359,10 @@ async fn deliver_group(
 pub async fn group_dispatch_loop(d: Shared) {
     loop {
         let now = chrono::Utc::now().to_rfc3339();
-        match d.store.list_pending_group_deliveries(GROUP_DELIVER_BATCH, &now) {
+        match d
+            .store
+            .list_pending_group_deliveries(GROUP_DELIVER_BATCH, &now)
+        {
             Ok(pending) => {
                 for message in pending {
                     let at = chrono::Utc::now().to_rfc3339();
@@ -466,7 +484,15 @@ mod tests {
         );
 
         let green = db
-            .post_group_message(&id, ("agent", "b"), "green", &[], Some(&p1.event_id), "k2", T1)
+            .post_group_message(
+                &id,
+                ("agent", "b"),
+                "green",
+                &[],
+                Some(&p1.event_id),
+                "k2",
+                T1,
+            )
             .unwrap();
         deliver(&db, T1, &mut delivered);
         deliver(&db, "2026-01-01T00:00:15+00:00", &mut delivered);
@@ -476,7 +502,15 @@ mod tests {
         );
 
         let p2 = db
-            .post_group_message(&id, ("human", "human"), "and the tests?", &[], None, "k3", T2)
+            .post_group_message(
+                &id,
+                ("human", "human"),
+                "and the tests?",
+                &[],
+                None,
+                "k3",
+                T2,
+            )
             .unwrap();
         deliver(&db, T2, &mut delivered);
         assert!(
@@ -486,8 +520,16 @@ mod tests {
             "the lead — b, last addressed — takes the unmentioned post: {delivered:?}"
         );
 
-        db.post_group_message(&id, ("agent", "b"), "they pass", &[], Some(&p2.event_id), "k4", T2)
-            .unwrap();
+        db.post_group_message(
+            &id,
+            ("agent", "b"),
+            "they pass",
+            &[],
+            Some(&p2.event_id),
+            "k4",
+            T2,
+        )
+        .unwrap();
         deliver(&db, "2026-01-01T00:00:31+00:00", &mut delivered);
         assert!(
             !delivered
@@ -534,6 +576,9 @@ mod tests {
         }
         let deferred = group_message_envelope(&event, "build", false);
         assert!(deferred.contains("reply_expected: false"));
-        assert!(deferred.contains("reply only if this is a question in your field; otherwise do nothing."));
+        assert!(
+            deferred
+                .contains("reply only if this is a question in your field; otherwise do nothing.")
+        );
     }
 }

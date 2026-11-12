@@ -11,14 +11,14 @@
 //! genuinely mutate together; splitting them into columns would add schema
 //! churn for no read that needs it.
 
-
 use rusqlite::{OptionalExtension, params};
 
 use crate::harness::HarnessEvent;
 use crate::llm::HarnessMessage;
 use crate::store::{Store, StoreError};
 
-static SESSION_CHANGES: std::sync::OnceLock<tokio::sync::watch::Sender<()>> = std::sync::OnceLock::new();
+static SESSION_CHANGES: std::sync::OnceLock<tokio::sync::watch::Sender<()>> =
+    std::sync::OnceLock::new();
 
 fn session_changes_tx() -> &'static tokio::sync::watch::Sender<()> {
     SESSION_CHANGES.get_or_init(|| tokio::sync::watch::channel(()).0)
@@ -352,7 +352,13 @@ impl Store {
 
     /// Whether a session's transcript holds `needle` at or after `since`, optionally
     /// only in what the session itself asked for rather than what it was shown.
-    pub fn session_mentions(&self, session_id: &str, since: &str, needle: &str, calls_only: bool) -> Result<bool, StoreError> {
+    pub fn session_mentions(
+        &self,
+        session_id: &str,
+        since: &str,
+        needle: &str,
+        calls_only: bool,
+    ) -> Result<bool, StoreError> {
         let encoded = serde_json::to_string(needle).unwrap_or_default();
         let encoded = encoded.trim_matches('"').to_string();
         let row = self.get_session_row(session_id)?;
@@ -500,7 +506,11 @@ impl Store {
     }
 
     /// Settle (`Some(at)`) or wake (`None`) a session. Returns whether a row changed.
-    pub fn set_session_settled(&self, id: &str, settled_at: Option<i64>) -> Result<bool, StoreError> {
+    pub fn set_session_settled(
+        &self,
+        id: &str,
+        settled_at: Option<i64>,
+    ) -> Result<bool, StoreError> {
         self.with_connection(|conn| {
             let changed = conn.execute(
                 "UPDATE sessions SET settled_at = ?2 WHERE id = ?1 AND settled_at IS NOT ?2",
@@ -512,7 +522,13 @@ impl Store {
 
     /// Record a turn that changed files: it becomes the session's last-turn totals and is added
     /// to its lifetime totals. Read-modify-write on the one store connection.
-    pub fn record_turn_changes(&self, id: &str, files: u64, added: u64, removed: u64) -> Result<(), StoreError> {
+    pub fn record_turn_changes(
+        &self,
+        id: &str,
+        files: u64,
+        added: u64,
+        removed: u64,
+    ) -> Result<(), StoreError> {
         self.with_connection(|conn| {
             let current: Option<String> = conn
                 .query_row(
@@ -544,7 +560,11 @@ impl Store {
     }
 
     /// Replace a session's lifetime totals with a figure measured from its worktree.
-    pub fn set_total_changes(&self, id: &str, total: &crate::session_stats::Changes) -> Result<(), StoreError> {
+    pub fn set_total_changes(
+        &self,
+        id: &str,
+        total: &crate::session_stats::Changes,
+    ) -> Result<(), StoreError> {
         let json = serde_json::to_string(total).unwrap_or_default();
         self.with_connection(|conn| {
             conn.execute(
@@ -586,8 +606,9 @@ impl Store {
     /// Ids of sessions settled strictly before `cutoff` (unix seconds).
     pub fn sessions_settled_before(&self, cutoff: i64) -> Result<Vec<String>, StoreError> {
         self.with_connection(|conn| {
-            let mut stmt =
-                conn.prepare("SELECT id FROM sessions WHERE settled_at IS NOT NULL AND settled_at < ?1")?;
+            let mut stmt = conn.prepare(
+                "SELECT id FROM sessions WHERE settled_at IS NOT NULL AND settled_at < ?1",
+            )?;
             let rows = stmt.query_map(params![cutoff], |r| r.get::<_, String>(0))?;
             rows.collect()
         })
@@ -743,7 +764,11 @@ impl Store {
                     created_at,
                     now,
                     scalar_json,
-                    if crate::mission_control::is_session_id(id) { "mission_control" } else { "standard" }
+                    if crate::mission_control::is_session_id(id) {
+                        "mission_control"
+                    } else {
+                        "standard"
+                    }
                 ],
             )?;
             Ok(())
@@ -751,7 +776,11 @@ impl Store {
     }
 
     /// The status the parent's lane records hold for `lane`, if they list it.
-    pub fn session_lane_record_status(&self, parent: &str, lane: &str) -> Result<Option<String>, StoreError> {
+    pub fn session_lane_record_status(
+        &self,
+        parent: &str,
+        lane: &str,
+    ) -> Result<Option<String>, StoreError> {
         self.with_connection(|conn| {
             conn.query_row(
                 "SELECT json_extract(l.value, '$.status')
@@ -808,7 +837,9 @@ impl Store {
                 "SELECT stop_identity FROM sessions WHERE id = ?1 AND status = 'idle'",
                 params![id],
                 |row| row.get::<_, Option<String>>(0),
-            ).optional().map(Option::flatten)
+            )
+            .optional()
+            .map(Option::flatten)
         })
     }
 
@@ -862,13 +893,12 @@ impl Store {
     /// Read a session's stored scalar state, if this store has the session.
     pub fn load_session_scalar(&self, id: &str) -> Result<Option<String>, StoreError> {
         self.with_connection(|conn| {
-            conn
-                .query_row(
-                    "SELECT state_json FROM sessions WHERE id = ?1",
-                    params![id],
-                    |row| row.get(0),
-                )
-                .optional()
+            conn.query_row(
+                "SELECT state_json FROM sessions WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
         })
     }
 
@@ -1404,7 +1434,10 @@ fn approval_call_detail(
     let call: serde_json::Value = serde_json::from_str(&call).ok()?;
     let command = call["arguments"]["command"].as_str()?;
     let head = clip(command, 40);
-    if !payload["summary"].as_str()?.contains(head.trim_end_matches('…')) {
+    if !payload["summary"]
+        .as_str()?
+        .contains(head.trim_end_matches('…'))
+    {
         return None;
     }
     attention["command"] = clip_keeping_lines(command, 2000).into();
@@ -1424,8 +1457,12 @@ fn attention_detail(attention: &mut serde_json::Value, payload: &serde_json::Val
         }
         return;
     }
-    let Some(questions) = payload["questions"]["questions"].as_array() else { return };
-    let Some(first) = questions.first() else { return };
+    let Some(questions) = payload["questions"]["questions"].as_array() else {
+        return;
+    };
+    let Some(first) = questions.first() else {
+        return;
+    };
     if let Some(text) = first["text"].as_str() {
         attention["text"] = clip(text, 600).into();
     }
@@ -1435,16 +1472,19 @@ fn attention_detail(attention: &mut serde_json::Value, payload: &serde_json::Val
     }
     let kind = &first["answer_kind"];
     let choices: Vec<serde_json::Value> = match kind["kind"].as_str() {
-        Some("single_choice") => kind["choices"].as_array().map(|cs| {
-            cs.iter()
-                .filter_map(|c| {
-                    let value = c["value"].as_str()?;
-                    let label = c["label"].as_str().unwrap_or(value);
-                    Some(serde_json::json!({"label": clip(label, 60), "value": value}))
-                })
-                .take(4)
-                .collect()
-        }).unwrap_or_default(),
+        Some("single_choice") => kind["choices"]
+            .as_array()
+            .map(|cs| {
+                cs.iter()
+                    .filter_map(|c| {
+                        let value = c["value"].as_str()?;
+                        let label = c["label"].as_str().unwrap_or(value);
+                        Some(serde_json::json!({"label": clip(label, 60), "value": value}))
+                    })
+                    .take(4)
+                    .collect()
+            })
+            .unwrap_or_default(),
         Some("yes_no") => vec![
             serde_json::json!({"label": "Yes", "value": "yes"}),
             serde_json::json!({"label": "No", "value": "no"}),

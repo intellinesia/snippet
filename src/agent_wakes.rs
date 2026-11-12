@@ -60,7 +60,11 @@ fn yes() -> bool {
 
 impl Default for ReportPolicy {
     fn default() -> Self {
-        Self { to: ReportTo::MissionControl, task_id: None, only_on_change: true }
+        Self {
+            to: ReportTo::MissionControl,
+            task_id: None,
+            only_on_change: true,
+        }
     }
 }
 
@@ -145,11 +149,16 @@ pub fn resolve_owner(store: &crate::store::Store, owner: &str) -> Result<OwnerKi
 }
 
 pub fn list(root: &Path) -> Result<Vec<RecurringJob>, String> {
-    Ok(recurring::list_jobs(root)?.into_iter().filter(|j| j.wake.is_some()).collect())
+    Ok(recurring::list_jobs(root)?
+        .into_iter()
+        .filter(|j| j.wake.is_some())
+        .collect())
 }
 
 pub fn get(root: &Path, owner: &str) -> Result<Option<RecurringJob>, String> {
-    Ok(list(root)?.into_iter().find(|j| j.wake.as_ref().is_some_and(|w| w.owner == owner.trim())))
+    Ok(list(root)?
+        .into_iter()
+        .find(|j| j.wake.as_ref().is_some_and(|w| w.owner == owner.trim())))
 }
 
 pub fn clear(root: &Path, owner: &str) -> Result<bool, String> {
@@ -169,7 +178,11 @@ fn clean_clock(raw: Option<String>, current: Option<String>) -> Result<Option<St
 }
 
 pub fn validate_schedule(schedule: &Schedule, setter: Setter) -> Result<(), String> {
-    let min = if setter == Setter::User { recurring::MIN_INTERVAL_SECS } else { MIN_AGENT_INTERVAL_SECS };
+    let min = if setter == Setter::User {
+        recurring::MIN_INTERVAL_SECS
+    } else {
+        MIN_AGENT_INTERVAL_SECS
+    };
     match schedule.interval_secs() {
         Some(secs) if secs < min => Err(format!("interval must be at least {} minutes", min / 60)),
         _ => Ok(()),
@@ -195,13 +208,24 @@ pub fn set(
     if setter == Setter::MissionControl && existing.is_none() {
         let held = list(root)?
             .iter()
-            .filter(|j| j.wake.as_ref().is_some_and(|w| w.set_by == Setter::MissionControl))
+            .filter(|j| {
+                j.wake
+                    .as_ref()
+                    .is_some_and(|w| w.set_by == Setter::MissionControl)
+            })
             .count();
         if held >= MAX_SET_BY_MISSION_CONTROL {
-            return Err(format!("Mission Control already holds {held} wake schedules; clear one first"));
+            return Err(format!(
+                "Mission Control already holds {held} wake schedules; clear one first"
+            ));
         }
     }
-    let schedule = match spec.schedule.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let schedule = match spec
+        .schedule
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(raw) => Some(Schedule::parse(raw)?),
         None => None,
     };
@@ -209,19 +233,34 @@ pub fn set(
         validate_schedule(s, setter)?;
     }
     let brief = spec.brief.map(|b| b.trim().to_string());
-    if brief.as_ref().is_some_and(|b| b.chars().count() > BRIEF_MAX_CHARS) {
+    if brief
+        .as_ref()
+        .is_some_and(|b| b.chars().count() > BRIEF_MAX_CHARS)
+    {
         return Err(format!("brief is limited to {BRIEF_MAX_CHARS} characters"));
     }
     let current = existing.as_ref().and_then(|j| j.wake.clone());
-    let report = spec.report.or_else(|| current.as_ref().map(|w| w.report.clone())).unwrap_or_default();
-    if report.to == ReportTo::TaskRoom && report.task_id.as_deref().is_none_or(|t| t.trim().is_empty()) {
+    let report = spec
+        .report
+        .or_else(|| current.as_ref().map(|w| w.report.clone()))
+        .unwrap_or_default();
+    if report.to == ReportTo::TaskRoom
+        && report
+            .task_id
+            .as_deref()
+            .is_none_or(|t| t.trim().is_empty())
+    {
         return Err("report to task_room needs task_id".into());
     }
     let cap = spec
         .max_runs_per_day
         .or(current.as_ref().map(|w| w.max_runs_per_day))
         .unwrap_or(DEFAULT_MAX_RUNS_PER_DAY);
-    let ceiling = if setter == Setter::User { MAX_RUNS_PER_DAY_CEILING } else { DEFAULT_MAX_RUNS_PER_DAY };
+    let ceiling = if setter == Setter::User {
+        MAX_RUNS_PER_DAY_CEILING
+    } else {
+        DEFAULT_MAX_RUNS_PER_DAY
+    };
     if cap == 0 || cap > ceiling {
         return Err(format!("max_runs_per_day must be 1 to {ceiling}"));
     }
@@ -234,9 +273,17 @@ pub fn set(
         owner: owner.clone(),
         owner_kind: kind,
         set_by: setter,
-        quiet_start: clean_clock(spec.quiet_start, current.as_ref().and_then(|w| w.quiet_start.clone()))?,
-        quiet_end: clean_clock(spec.quiet_end, current.as_ref().and_then(|w| w.quiet_end.clone()))?,
-        utc_offset_minutes: spec.utc_offset_minutes.or(current.as_ref().and_then(|w| w.utc_offset_minutes)),
+        quiet_start: clean_clock(
+            spec.quiet_start,
+            current.as_ref().and_then(|w| w.quiet_start.clone()),
+        )?,
+        quiet_end: clean_clock(
+            spec.quiet_end,
+            current.as_ref().and_then(|w| w.quiet_end.clone()),
+        )?,
+        utc_offset_minutes: spec
+            .utc_offset_minutes
+            .or(current.as_ref().and_then(|w| w.utc_offset_minutes)),
         report,
         max_runs_per_day: cap,
     };
@@ -256,7 +303,11 @@ pub fn set(
             if let Some(b) = brief {
                 job.prompt = b;
             }
-            if let Some(t) = spec.title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+            if let Some(t) = spec
+                .title
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+            {
                 job.title = t;
             }
             if let Some(enabled) = spec.enabled {
@@ -272,8 +323,11 @@ pub fn set(
             job.wake = Some(policy);
         }),
         None => {
-            let schedule = schedule.ok_or("schedule is required, e.g. `every 30m`, `daily 09:00`, `weekdays 09:00`")?;
-            let brief = brief.filter(|b| !b.is_empty()).ok_or("brief is required: what to do on each wake")?;
+            let schedule = schedule
+                .ok_or("schedule is required, e.g. `every 30m`, `daily 09:00`, `weekdays 09:00`")?;
+            let brief = brief
+                .filter(|b| !b.is_empty())
+                .ok_or("brief is required: what to do on each wake")?;
             let title = spec
                 .title
                 .map(|t| t.trim().to_string())
@@ -299,7 +353,9 @@ pub fn set(
 
 pub fn policy_offset(policy: &WakePolicy) -> chrono::FixedOffset {
     crate::mission_autonomy::offset_or_local(
-        policy.utc_offset_minutes.or_else(crate::mission_autonomy::user_offset_minutes),
+        policy
+            .utc_offset_minutes
+            .or_else(crate::mission_autonomy::user_offset_minutes),
     )
 }
 
@@ -310,7 +366,13 @@ pub enum Gate {
 }
 
 /// Whether a due wake may fire now: quiet hours and the daily cap defer it.
-pub fn gate(policy: &WakePolicy, offset: chrono::FixedOffset, now: u64, runs_last_day: u32, oldest_in_day: Option<u64>) -> Gate {
+pub fn gate(
+    policy: &WakePolicy,
+    offset: chrono::FixedOffset,
+    now: u64,
+    runs_last_day: u32,
+    oldest_in_day: Option<u64>,
+) -> Gate {
     let at = chrono::DateTime::from_timestamp(now as i64, 0).unwrap_or_default();
     if let Some(end) = crate::mission_autonomy::quiet_ends_after(
         policy.quiet_start.as_deref(),
@@ -318,17 +380,28 @@ pub fn gate(policy: &WakePolicy, offset: chrono::FixedOffset, now: u64, runs_las
         offset,
         at,
     ) {
-        return Gate::Defer { until: end.timestamp() as u64, reason: "quiet hours" };
+        return Gate::Defer {
+            until: end.timestamp() as u64,
+            reason: "quiet hours",
+        };
     }
     if runs_last_day >= policy.max_runs_per_day {
-        let until = oldest_in_day.map_or(now + 3600, |t| t + 86_400).max(now + 60);
-        return Gate::Defer { until, reason: "daily run cap" };
+        let until = oldest_in_day
+            .map_or(now + 3600, |t| t + 86_400)
+            .max(now + 60);
+        return Gate::Defer {
+            until,
+            reason: "daily run cap",
+        };
     }
     Gate::Fire
 }
 
 fn normalise(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 pub fn is_no_change(summary: &str, last_result: Option<&str>) -> bool {
@@ -337,7 +410,12 @@ pub fn is_no_change(summary: &str, last_result: Option<&str>) -> bool {
 }
 
 /// Where a finished run's result goes; None keeps it to the run log.
-pub fn route(policy: &ReportPolicy, status: &str, summary: &str, last_result: Option<&str>) -> Option<ReportTo> {
+pub fn route(
+    policy: &ReportPolicy,
+    status: &str,
+    summary: &str,
+    last_result: Option<&str>,
+) -> Option<ReportTo> {
     if policy.to == ReportTo::None {
         return None;
     }
@@ -347,21 +425,36 @@ pub fn route(policy: &ReportPolicy, status: &str, summary: &str, last_result: Op
     Some(policy.to)
 }
 
-pub fn goal_addendum(policy: &WakePolicy, last_result: Option<&str>, last_run_at: Option<u64>) -> String {
+pub fn goal_addendum(
+    policy: &WakePolicy,
+    last_result: Option<&str>,
+    last_run_at: Option<u64>,
+) -> String {
     let dest = match policy.report.to {
         ReportTo::MissionControl => "Mission Control".to_string(),
         ReportTo::User => "the user as a notification".to_string(),
-        ReportTo::TaskRoom => format!("task room {}", policy.report.task_id.as_deref().unwrap_or("?")),
+        ReportTo::TaskRoom => format!(
+            "task room {}",
+            policy.report.task_id.as_deref().unwrap_or("?")
+        ),
         ReportTo::None => "the run log only".to_string(),
     };
-    let mut out = format!("\n\n---\n\nThis is your scheduled wake. Your complete_goal summary goes to {dest}");
+    let mut out = format!(
+        "\n\n---\n\nThis is your scheduled wake. Your complete_goal summary goes to {dest}"
+    );
     if policy.report.only_on_change {
-        out.push_str(&format!(", unless nothing changed: then start it with {NO_CHANGE}"));
+        out.push_str(&format!(
+            ", unless nothing changed: then start it with {NO_CHANGE}"
+        ));
     }
     out.push('.');
     if let (Some(last), Some(at)) = (last_result.filter(|l| !l.trim().is_empty()), last_run_at) {
         let when = chrono::DateTime::from_timestamp(at as i64, 0)
-            .map(|t| t.with_timezone(&policy_offset(policy)).format("%Y-%m-%d %H:%M").to_string())
+            .map(|t| {
+                t.with_timezone(&policy_offset(policy))
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            })
             .unwrap_or_default();
         out.push_str(&format!("\nLast run ({when}): {}", last.trim()));
     }
@@ -404,7 +497,10 @@ pub fn view_with_runs(root: &Path, job: &RecurringJob, now: u64) -> Value {
     let store = recurring::store_at(root).ok();
     let runs = store
         .as_ref()
-        .and_then(|s| s.count_recurring_runs_since(&job.id, now as i64 - 86_400).ok())
+        .and_then(|s| {
+            s.count_recurring_runs_since(&job.id, now as i64 - 86_400)
+                .ok()
+        })
         .unwrap_or(0);
     let last = store
         .as_ref()
@@ -473,16 +569,27 @@ fn own_minutes(schedule: &str) -> Option<u32> {
 fn own_wakes(args: &WakeToolArgs) -> Result<ToolResult, ToolError> {
     use crate::mission_autonomy as auto;
     match args.action.as_str() {
-        "show" => Ok(ToolResult::success(json!({"automated_wakes": own_view(&auto::load())}))),
+        "show" => Ok(ToolResult::success(
+            json!({"automated_wakes": own_view(&auto::load())}),
+        )),
         "set" | "clear" => {
             let clear = args.action == "clear";
-            let minutes = match args.schedule.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                Some(raw) => Some(own_minutes(raw).ok_or_else(|| ToolError::msg("schedule must look like `every 30m`, `every 2h` or `hourly`"))?),
+            let minutes = match args
+                .schedule
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                Some(raw) => Some(own_minutes(raw).ok_or_else(|| {
+                    ToolError::msg("schedule must look like `every 30m`, `every 2h` or `hourly`")
+                })?),
                 None => None,
             };
             for clock in [&args.quiet_start, &args.quiet_end].into_iter().flatten() {
                 if !clock.is_empty() && !auto::valid_clock(clock) {
-                    return Err(ToolError::msg(format!("quiet hours must be HH:MM, got `{clock}`")));
+                    return Err(ToolError::msg(format!(
+                        "quiet hours must be HH:MM, got `{clock}`"
+                    )));
                 }
             }
             let state = auto::update(|state| {
@@ -508,9 +615,13 @@ fn own_wakes(args: &WakeToolArgs) -> Result<ToolResult, ToolError> {
                 state.clone()
             })
             .map_err(ToolError::msg)?;
-            Ok(ToolResult::success(json!({"automated_wakes": own_view(&state), "note": "Your own heartbeat; the app's Wakes settings show the same values."})))
+            Ok(ToolResult::success(
+                json!({"automated_wakes": own_view(&state), "note": "Your own heartbeat; the app's Wakes settings show the same values."}),
+            ))
         }
-        other => Err(ToolError::msg(format!("unknown action `{other}`; use show, set or clear"))),
+        other => Err(ToolError::msg(format!(
+            "unknown action `{other}`; use show, set or clear"
+        ))),
     }
 }
 
@@ -543,28 +654,41 @@ impl Tool for WakeScheduleTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: WakeToolArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let named = args.agent_id.as_deref().map(str::trim).filter(|a| !a.is_empty());
+        let args: WakeToolArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let named = args
+            .agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty());
         let (owner, setter) = match (ctx.is_mission_control(), named) {
             (true, Some(other)) => (other.to_string(), Setter::MissionControl),
             (true, None) => return own_wakes(&args),
-            (false, Some(_)) => return Err(ToolError::msg("only Mission Control can set another agent's wake")),
+            (false, Some(_)) => {
+                return Err(ToolError::msg(
+                    "only Mission Control can set another agent's wake",
+                ));
+            }
             (false, None) => {
                 let own = ctx
                     .agent_id()
                     .filter(|a| *a != crate::coordination::SNIPPET_AGENT_ID)
                     .or(ctx.durable_session_id())
-                    .ok_or_else(|| ToolError::msg("this session has no durable identity to wake"))?;
+                    .ok_or_else(|| {
+                        ToolError::msg("this session has no durable identity to wake")
+                    })?;
                 (own.to_string(), Setter::Owner)
             }
         };
         let root = recurring::default_root();
         let now = chrono::Utc::now().timestamp() as u64;
         match args.action.as_str() {
-            "show" => Ok(ToolResult::success(match get(&root, &owner).map_err(ToolError::msg)? {
-                Some(job) => view_with_runs(&root, &job, now),
-                None => json!({"owner": owner, "schedule": null}),
-            })),
+            "show" => Ok(ToolResult::success(
+                match get(&root, &owner).map_err(ToolError::msg)? {
+                    Some(job) => view_with_runs(&root, &job, now),
+                    None => json!({"owner": owner, "schedule": null}),
+                },
+            )),
             "clear" => {
                 if setter == Setter::MissionControl
                     && get(&root, &owner)
@@ -572,16 +696,28 @@ impl Tool for WakeScheduleTool {
                         .and_then(|j| j.wake)
                         .is_some_and(|w| w.set_by == Setter::User)
                 {
-                    return Err(ToolError::msg("the user set this schedule; ask them to change it"));
+                    return Err(ToolError::msg(
+                        "the user set this schedule; ask them to change it",
+                    ));
                 }
                 let cleared = clear(&root, &owner).map_err(ToolError::msg)?;
-                Ok(ToolResult::success(json!({"owner": owner, "cleared": cleared})))
+                Ok(ToolResult::success(
+                    json!({"owner": owner, "cleared": cleared}),
+                ))
             }
             "set" => {
                 let store = recurring::store_at(&root).map_err(ToolError::msg)?;
                 let kind = resolve_owner(&store, &owner).map_err(ToolError::msg)?;
-                let report = if args.report_to.is_some() || args.task_id.is_some() || args.only_on_change.is_some() {
-                    let current = get(&root, &owner).ok().flatten().and_then(|j| j.wake).map(|w| w.report).unwrap_or_default();
+                let report = if args.report_to.is_some()
+                    || args.task_id.is_some()
+                    || args.only_on_change.is_some()
+                {
+                    let current = get(&root, &owner)
+                        .ok()
+                        .flatten()
+                        .and_then(|j| j.wake)
+                        .map(|w| w.report)
+                        .unwrap_or_default();
                     Some(ReportPolicy {
                         to: args.report_to.unwrap_or(current.to),
                         task_id: args.task_id.or(current.task_id),
@@ -633,7 +769,15 @@ mod tests {
     #[test]
     fn set_creates_one_schedule_per_owner_and_persists() {
         let r = root();
-        let job = set(r.path(), "jev", OwnerKind::Agent, spec("every 30m"), Setter::Owner, T0).unwrap();
+        let job = set(
+            r.path(),
+            "jev",
+            OwnerKind::Agent,
+            spec("every 30m"),
+            Setter::Owner,
+            T0,
+        )
+        .unwrap();
         assert_eq!(job.session_id, "inbox-jev");
         assert_eq!(job.next_run_at, T0 + 1800);
         assert!(job.enabled);
@@ -645,14 +789,21 @@ mod tests {
             r.path(),
             "jev",
             OwnerKind::Agent,
-            WakeSpec { brief: Some("New brief".into()), ..WakeSpec::default() },
+            WakeSpec {
+                brief: Some("New brief".into()),
+                ..WakeSpec::default()
+            },
             Setter::Owner,
             T0 + 60,
         )
         .unwrap();
         assert_eq!(again.id, job.id);
         assert_eq!(again.prompt, "New brief");
-        assert_eq!(again.next_run_at, T0 + 1800, "unchanged schedule keeps its next run");
+        assert_eq!(
+            again.next_run_at,
+            T0 + 1800,
+            "unchanged schedule keeps its next run"
+        );
         assert_eq!(list(r.path()).unwrap().len(), 1);
 
         let reread = get(r.path(), "jev").unwrap().unwrap();
@@ -665,32 +816,108 @@ mod tests {
     #[test]
     fn plain_recurring_jobs_are_not_wake_schedules() {
         let r = root();
-        recurring::create_job(r.path(), "sync", "s1", "do it", Schedule::Interval { every_secs: 3600 }, None).unwrap();
+        recurring::create_job(
+            r.path(),
+            "sync",
+            "s1",
+            "do it",
+            Schedule::Interval { every_secs: 3600 },
+            None,
+        )
+        .unwrap();
         assert!(list(r.path()).unwrap().is_empty());
     }
 
     #[test]
     fn minimum_interval_depends_on_who_sets_it() {
         let r = root();
-        let err = set(r.path(), "jev", OwnerKind::Agent, spec("every 10m"), Setter::Owner, T0).unwrap_err();
+        let err = set(
+            r.path(),
+            "jev",
+            OwnerKind::Agent,
+            spec("every 10m"),
+            Setter::Owner,
+            T0,
+        )
+        .unwrap_err();
         assert!(err.contains("15 minutes"), "{err}");
-        let err = set(r.path(), "jev", OwnerKind::Agent, spec("every 10m"), Setter::MissionControl, T0).unwrap_err();
+        let err = set(
+            r.path(),
+            "jev",
+            OwnerKind::Agent,
+            spec("every 10m"),
+            Setter::MissionControl,
+            T0,
+        )
+        .unwrap_err();
         assert!(err.contains("15 minutes"), "{err}");
-        assert!(set(r.path(), "jev", OwnerKind::Agent, spec("every 10m"), Setter::User, T0).is_ok());
+        assert!(
+            set(
+                r.path(),
+                "jev",
+                OwnerKind::Agent,
+                spec("every 10m"),
+                Setter::User,
+                T0
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn mission_control_is_capped_and_cannot_override_the_user() {
         let r = root();
         for i in 0..MAX_SET_BY_MISSION_CONTROL {
-            set(r.path(), &format!("a{i}"), OwnerKind::Agent, spec("every 1h"), Setter::MissionControl, T0).unwrap();
+            set(
+                r.path(),
+                &format!("a{i}"),
+                OwnerKind::Agent,
+                spec("every 1h"),
+                Setter::MissionControl,
+                T0,
+            )
+            .unwrap();
         }
-        let err = set(r.path(), "one-more", OwnerKind::Agent, spec("every 1h"), Setter::MissionControl, T0).unwrap_err();
+        let err = set(
+            r.path(),
+            "one-more",
+            OwnerKind::Agent,
+            spec("every 1h"),
+            Setter::MissionControl,
+            T0,
+        )
+        .unwrap_err();
         assert!(err.contains("clear one first"), "{err}");
-        assert!(set(r.path(), "a0", OwnerKind::Agent, spec("every 2h"), Setter::MissionControl, T0).is_ok());
+        assert!(
+            set(
+                r.path(),
+                "a0",
+                OwnerKind::Agent,
+                spec("every 2h"),
+                Setter::MissionControl,
+                T0
+            )
+            .is_ok()
+        );
 
-        set(r.path(), "mine", OwnerKind::Agent, spec("every 1h"), Setter::User, T0).unwrap();
-        let err = set(r.path(), "mine", OwnerKind::Agent, spec("every 2h"), Setter::MissionControl, T0).unwrap_err();
+        set(
+            r.path(),
+            "mine",
+            OwnerKind::Agent,
+            spec("every 1h"),
+            Setter::User,
+            T0,
+        )
+        .unwrap();
+        let err = set(
+            r.path(),
+            "mine",
+            OwnerKind::Agent,
+            spec("every 2h"),
+            Setter::MissionControl,
+            T0,
+        )
+        .unwrap_err();
         assert!(err.contains("user set"), "{err}");
     }
 
@@ -699,8 +926,25 @@ mod tests {
         let r = root();
         let mut s = spec("every 1h");
         s.max_runs_per_day = Some(100);
-        assert!(set(r.path(), "jev", OwnerKind::Agent, s.clone(), Setter::Owner, T0).is_err());
-        assert_eq!(set(r.path(), "jev", OwnerKind::Agent, s, Setter::User, T0).unwrap().wake.unwrap().max_runs_per_day, 100);
+        assert!(
+            set(
+                r.path(),
+                "jev",
+                OwnerKind::Agent,
+                s.clone(),
+                Setter::Owner,
+                T0
+            )
+            .is_err()
+        );
+        assert_eq!(
+            set(r.path(), "jev", OwnerKind::Agent, s, Setter::User, T0)
+                .unwrap()
+                .wake
+                .unwrap()
+                .max_runs_per_day,
+            100
+        );
     }
 
     #[test]
@@ -708,20 +952,51 @@ mod tests {
         let r = root();
         let mut s = spec("every 1h");
         s.quiet_start = Some("22:00".into());
-        assert!(set(r.path(), "x", OwnerKind::Agent, s.clone(), Setter::User, T0).unwrap_err().contains("both"));
+        assert!(
+            set(r.path(), "x", OwnerKind::Agent, s.clone(), Setter::User, T0)
+                .unwrap_err()
+                .contains("both")
+        );
         s.quiet_end = Some("8am".into());
-        assert!(set(r.path(), "x", OwnerKind::Agent, s, Setter::User, T0).unwrap_err().contains("HH:MM"));
+        assert!(
+            set(r.path(), "x", OwnerKind::Agent, s, Setter::User, T0)
+                .unwrap_err()
+                .contains("HH:MM")
+        );
         let mut s = spec("every 1h");
-        s.report = Some(ReportPolicy { to: ReportTo::TaskRoom, task_id: None, only_on_change: true });
-        assert!(set(r.path(), "x", OwnerKind::Agent, s, Setter::User, T0).unwrap_err().contains("task_id"));
-        let s = WakeSpec { schedule: Some("every 1h".into()), ..WakeSpec::default() };
-        assert!(set(r.path(), "x", OwnerKind::Agent, s, Setter::User, T0).unwrap_err().contains("brief"));
+        s.report = Some(ReportPolicy {
+            to: ReportTo::TaskRoom,
+            task_id: None,
+            only_on_change: true,
+        });
+        assert!(
+            set(r.path(), "x", OwnerKind::Agent, s, Setter::User, T0)
+                .unwrap_err()
+                .contains("task_id")
+        );
+        let s = WakeSpec {
+            schedule: Some("every 1h".into()),
+            ..WakeSpec::default()
+        };
+        assert!(
+            set(r.path(), "x", OwnerKind::Agent, s, Setter::User, T0)
+                .unwrap_err()
+                .contains("brief")
+        );
     }
 
     #[test]
     fn daily_schedule_uses_the_owners_timezone() {
         let r = root();
-        let job = set(r.path(), "jev", OwnerKind::Agent, spec("daily 09:00"), Setter::User, T0).unwrap();
+        let job = set(
+            r.path(),
+            "jev",
+            OwnerKind::Agent,
+            spec("daily 09:00"),
+            Setter::User,
+            T0,
+        )
+        .unwrap();
         // 09:00 at +05:30 on 1 Nov is 03:30 UTC.
         assert_eq!(job.next_run_at, 1_793_503_800);
     }
@@ -748,10 +1023,22 @@ mod tests {
         let night = T0 + 7 * 3600;
         assert_eq!(
             gate(&p, ist(), night, 0, None),
-            Gate::Defer { until: T0 + 13 * 3600 + 1800, reason: "quiet hours" }
+            Gate::Defer {
+                until: T0 + 13 * 3600 + 1800,
+                reason: "quiet hours"
+            }
         );
         // The same UTC instant is not quiet for a UTC owner (20:00 < 22:00).
-        assert_eq!(gate(&p, chrono::FixedOffset::east_opt(0).unwrap(), night, 0, None), Gate::Fire);
+        assert_eq!(
+            gate(
+                &p,
+                chrono::FixedOffset::east_opt(0).unwrap(),
+                night,
+                0,
+                None
+            ),
+            Gate::Fire
+        );
     }
 
     #[test]
@@ -760,34 +1047,66 @@ mod tests {
         assert_eq!(gate(&p, ist(), T0, 2, Some(T0 - 3600)), Gate::Fire);
         assert_eq!(
             gate(&p, ist(), T0, 3, Some(T0 - 3600)),
-            Gate::Defer { until: T0 - 3600 + 86_400, reason: "daily run cap" }
+            Gate::Defer {
+                until: T0 - 3600 + 86_400,
+                reason: "daily run cap"
+            }
         );
     }
 
     #[test]
     fn report_routing_respects_only_on_change() {
         let p = ReportPolicy::default();
-        assert_eq!(route(&p, "completed", "Two new mentions", Some("One mention")), Some(ReportTo::MissionControl));
+        assert_eq!(
+            route(&p, "completed", "Two new mentions", Some("One mention")),
+            Some(ReportTo::MissionControl)
+        );
         assert_eq!(route(&p, "completed", "NO_CHANGE: still quiet", None), None);
-        assert_eq!(route(&p, "completed", "one  mention", Some("One mention")), None);
-        assert_eq!(route(&p, "paused", "NO_CHANGE", None), Some(ReportTo::MissionControl));
-        let always = ReportPolicy { only_on_change: false, ..ReportPolicy::default() };
-        assert_eq!(route(&always, "completed", "NO_CHANGE", None), Some(ReportTo::MissionControl));
-        let silent = ReportPolicy { to: ReportTo::None, ..ReportPolicy::default() };
+        assert_eq!(
+            route(&p, "completed", "one  mention", Some("One mention")),
+            None
+        );
+        assert_eq!(
+            route(&p, "paused", "NO_CHANGE", None),
+            Some(ReportTo::MissionControl)
+        );
+        let always = ReportPolicy {
+            only_on_change: false,
+            ..ReportPolicy::default()
+        };
+        assert_eq!(
+            route(&always, "completed", "NO_CHANGE", None),
+            Some(ReportTo::MissionControl)
+        );
+        let silent = ReportPolicy {
+            to: ReportTo::None,
+            ..ReportPolicy::default()
+        };
         assert_eq!(route(&silent, "failed", "boom", None), None);
     }
 
     #[test]
     fn goal_text_carries_the_report_destination_and_last_result() {
         let r = root();
-        let mut job = set(r.path(), "jev", OwnerKind::Agent, spec("every 1h"), Setter::User, T0).unwrap();
+        let mut job = set(
+            r.path(),
+            "jev",
+            OwnerKind::Agent,
+            spec("every 1h"),
+            Setter::User,
+            T0,
+        )
+        .unwrap();
         job.last_result = Some("Three mentions, one needs a reply".into());
         job.last_run_at = Some(T0);
         let goal = job.render_goal(None).unwrap();
         assert!(goal.contains("Check the X mentions"));
         assert!(goal.contains("goes to Mission Control"));
         assert!(goal.contains(NO_CHANGE));
-        assert!(goal.contains("Last run (2026-10-31 18:30): Three mentions"), "{goal}");
+        assert!(
+            goal.contains("Last run (2026-10-31 18:30): Three mentions"),
+            "{goal}"
+        );
     }
 
     #[test]
@@ -799,19 +1118,44 @@ mod tests {
         let job = set(r.path(), "jev", OwnerKind::Agent, s, Setter::User, T0).unwrap();
         let v = view(&job, 2, Some("completed"));
         for key in [
-            "owner", "owner_kind", "job_id", "session_id", "title", "brief", "schedule", "schedule_text", "enabled",
-            "quiet_hours", "utc_offset_minutes", "report", "set_by", "max_runs_per_day", "runs_last_day",
-            "next_run_at", "last_run_at", "last_status", "last_result", "last_error", "queued", "created_at",
+            "owner",
+            "owner_kind",
+            "job_id",
+            "session_id",
+            "title",
+            "brief",
+            "schedule",
+            "schedule_text",
+            "enabled",
+            "quiet_hours",
+            "utc_offset_minutes",
+            "report",
+            "set_by",
+            "max_runs_per_day",
+            "runs_last_day",
+            "next_run_at",
+            "last_run_at",
+            "last_status",
+            "last_result",
+            "last_error",
+            "queued",
+            "created_at",
             "updated_at",
         ] {
             assert!(v.get(key).is_some(), "missing {key}");
         }
         assert_eq!(v["owner_kind"], "agent");
         assert_eq!(v["set_by"], "user");
-        assert_eq!(v["schedule"], json!({"kind": "weekly", "days": 31, "hour": 9, "minute": 0}));
+        assert_eq!(
+            v["schedule"],
+            json!({"kind": "weekly", "days": 31, "hour": 9, "minute": 0})
+        );
         assert_eq!(v["schedule_text"], "weekdays 09:00");
         assert_eq!(v["quiet_hours"], json!({"start": "22:00", "end": "08:00"}));
-        assert_eq!(v["report"], json!({"to": "mission_control", "task_id": null, "only_on_change": true}));
+        assert_eq!(
+            v["report"],
+            json!({"to": "mission_control", "task_id": null, "only_on_change": true})
+        );
         assert_eq!(v["runs_last_day"], 2);
         assert_eq!(limits()["min_interval_secs"]["agent"], 900);
     }
@@ -819,13 +1163,41 @@ mod tests {
     #[test]
     fn run_log_records_counts_and_interrupts() {
         let r = root();
-        let job = set(r.path(), "jev", OwnerKind::Agent, spec("every 1h"), Setter::User, T0).unwrap();
+        let job = set(
+            r.path(),
+            "jev",
+            OwnerKind::Agent,
+            spec("every 1h"),
+            Setter::User,
+            T0,
+        )
+        .unwrap();
         let store = recurring::store_at(r.path()).unwrap();
-        let a = store.insert_recurring_run(&job.id, Some("jev"), &job.session_id, T0 as i64 - 90_000).unwrap();
-        let b = store.insert_recurring_run(&job.id, Some("jev"), &job.session_id, T0 as i64 - 60).unwrap();
-        store.finish_recurring_run(a, "completed", Some("ok"), Some("mission_control"), T0 as i64 - 89_000).unwrap();
-        assert_eq!(store.count_recurring_runs_since(&job.id, T0 as i64 - 86_400).unwrap(), 1);
-        assert_eq!(store.interrupt_running_recurring_runs(T0 as i64).unwrap(), 1);
+        let a = store
+            .insert_recurring_run(&job.id, Some("jev"), &job.session_id, T0 as i64 - 90_000)
+            .unwrap();
+        let b = store
+            .insert_recurring_run(&job.id, Some("jev"), &job.session_id, T0 as i64 - 60)
+            .unwrap();
+        store
+            .finish_recurring_run(
+                a,
+                "completed",
+                Some("ok"),
+                Some("mission_control"),
+                T0 as i64 - 89_000,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .count_recurring_runs_since(&job.id, T0 as i64 - 86_400)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store.interrupt_running_recurring_runs(T0 as i64).unwrap(),
+            1
+        );
         let runs = store.list_recurring_runs(None, Some("jev"), 10).unwrap();
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].id, b);

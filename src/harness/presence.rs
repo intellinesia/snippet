@@ -47,7 +47,8 @@ impl Presence {
         state: &'static str,
         detail: &str,
     ) {
-        if let Some(frame) = self.transition(session, agent, state, detail, Utc::now().timestamp()) {
+        if let Some(frame) = self.transition(session, agent, state, detail, Utc::now().timestamp())
+        {
             crate::session::emit_device_event(frame);
         }
     }
@@ -61,7 +62,11 @@ pub(super) fn tool_detail(name: &str, args: &Value) -> String {
             .and_then(Value::as_str)
             .and_then(|c| c.split_whitespace().next())
             .unwrap_or("");
-        let label = args.get("label").and_then(Value::as_str).map(str::trim).unwrap_or("");
+        let label = args
+            .get("label")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
         return match (word.is_empty(), label.is_empty()) {
             (false, false) => format!("{word} {label}"),
             (false, true) => word.to_string(),
@@ -116,10 +121,16 @@ mod tests {
                 p.transition("s1", || Some("ag".into()), state, detail, 100 + i as i64)
             })
             .collect();
-        let states: Vec<&str> = frames.iter().map(|f| f["state"].as_str().unwrap()).collect();
+        let states: Vec<&str> = frames
+            .iter()
+            .map(|f| f["state"].as_str().unwrap())
+            .collect();
         assert_eq!(states, ["thinking", "typing", "tool", "idle"]);
         assert_eq!(frames[2]["detail"], "ls list");
-        let since: Vec<i64> = frames.iter().map(|f| f["since"].as_i64().unwrap()).collect();
+        let since: Vec<i64> = frames
+            .iter()
+            .map(|f| f["since"].as_i64().unwrap())
+            .collect();
         assert_eq!(since, [100, 102, 103, 105]);
         assert_eq!(frames[0]["kind"], "agent_presence");
         assert_eq!(frames[0]["session"], "s1");
@@ -129,7 +140,9 @@ mod tests {
     #[test]
     fn long_detail_is_trimmed() {
         let mut p = Presence::default();
-        let f = p.transition("s", || None, "tool", &"x".repeat(200), 1).unwrap();
+        let f = p
+            .transition("s", || None, "tool", &"x".repeat(200), 1)
+            .unwrap();
         assert_eq!(f["detail"].as_str().unwrap().len(), 80);
         assert!(f["agent"].is_null());
     }

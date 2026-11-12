@@ -1,19 +1,19 @@
 pub mod fs;
-pub mod shell_search;
-pub mod web;
-pub mod skills;
 pub mod process;
 pub mod read_only_shell;
+pub mod shell_search;
+pub mod skills;
+pub mod web;
 
 pub use fs::*;
-pub use shell_search::*;
-pub use web::*;
-pub use skills::*;
 pub use process::*;
+pub use shell_search::*;
+pub use skills::*;
+pub use web::*;
 
+use crate::tools::{ToolError, ToolRegistry};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use crate::tools::{ToolError, ToolRegistry};
 
 pub fn coding_tools(exa_api_key: Option<String>) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
@@ -57,5 +57,3 @@ where
     }
     Ok(serde_json::from_value(arguments)?)
 }
-
-

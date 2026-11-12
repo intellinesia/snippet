@@ -228,10 +228,11 @@ pub async fn attach(info: &DaemonInfo, state_path: &Path) -> Result<SidecarAttac
                 continue;
             };
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
-                && v.get("wire").and_then(|w| w.as_str()) == Some("term") {
-                    let _ = term_in_tx.send(v);
-                    continue;
-                }
+                && v.get("wire").and_then(|w| w.as_str()) == Some("term")
+            {
+                let _ = term_in_tx.send(v);
+                continue;
+            }
             apply_wire_frame(&text, &mut accumulated, &state_tx, &stream_in);
         }
         connected_in.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -690,7 +691,12 @@ mod tests {
 pub fn error_detail(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
-        .and_then(|v| v.get("error").and_then(|e| e.as_str()).or_else(|| v.as_str()).map(str::to_string))
+        .and_then(|v| {
+            v.get("error")
+                .and_then(|e| e.as_str())
+                .or_else(|| v.as_str())
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| body.trim().to_string())
 }
 

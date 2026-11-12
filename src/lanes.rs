@@ -16,8 +16,8 @@ use tokio::sync::mpsc;
 use crate::harness::{CodingHarness, HarnessConfig};
 use crate::lane_log::LaneLog;
 use crate::llm::AgentModel;
-use crate::prompts::{PromptContext, lane_prompt};
 use crate::llm::NativeToolDefinition;
+use crate::prompts::{PromptContext, lane_prompt};
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult, coding_tools};
 
 /// Builds a fresh model instance for a child lane run. Accepts an optional
@@ -135,7 +135,10 @@ impl LaneMailbox {
             if !waiting.is_empty() {
                 return waiting;
             }
-            if tokio::time::timeout_at(deadline, self.notify.notified()).await.is_err() {
+            if tokio::time::timeout_at(deadline, self.notify.notified())
+                .await
+                .is_err()
+            {
                 return self.drain();
             }
         }
@@ -152,7 +155,12 @@ fn lane_key(session_id: &str, lane_id: &str) -> String {
 /// Hand a message to a lane that is running right now. False when the lane
 /// has finished, so the caller can deliver it to the parent session instead.
 pub fn deliver_to_lane(session_id: &str, lane_id: &str, text: String) -> bool {
-    let Some(mailbox) = LIVE_LANES.lock().unwrap().get(&lane_key(session_id, lane_id)).cloned() else {
+    let Some(mailbox) = LIVE_LANES
+        .lock()
+        .unwrap()
+        .get(&lane_key(session_id, lane_id))
+        .cloned()
+    else {
         return false;
     };
     mailbox.push(text);
@@ -165,7 +173,10 @@ impl LiveLane {
     fn register(session_id: Option<&str>, lane_id: &str, mailbox: &Arc<LaneMailbox>) -> Self {
         let key = session_id.map(|session| lane_key(session, lane_id));
         if let Some(key) = &key {
-            LIVE_LANES.lock().unwrap().insert(key.clone(), mailbox.clone());
+            LIVE_LANES
+                .lock()
+                .unwrap()
+                .insert(key.clone(), mailbox.clone());
         }
         Self(key)
     }
@@ -213,7 +224,11 @@ impl Tool for MessageParent {
         }
     }
 
-    async fn execute(&self, _ctx: &ToolContext, arguments: serde_json::Value) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        arguments: serde_json::Value,
+    ) -> Result<ToolResult, ToolError> {
         let args: MessageParentArgs =
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let message = args.message.trim();
@@ -226,7 +241,9 @@ impl Tool for MessageParent {
                 kind: "message".to_string(),
                 text: message.to_string(),
             })
-            .map_err(|_| ToolError::msg("the agent that handed you this has gone; put it in your report"))?;
+            .map_err(|_| {
+                ToolError::msg("the agent that handed you this has gone; put it in your report")
+            })?;
         if !args.wait {
             return Ok(ToolResult::success(serde_json::json!({
                 "sent": true,
@@ -390,7 +407,10 @@ impl LaneManager {
         let Some(mailbox) = self.mailboxes.get(lane_id) else {
             return Err(format!("lane `{lane_id}` can't take messages right now."));
         };
-        mailbox.push(format!("[parent_message]\n{}\n[/parent_message]", text.trim()));
+        mailbox.push(format!(
+            "[parent_message]\n{}\n[/parent_message]",
+            text.trim()
+        ));
         Ok(record.title.clone())
     }
 
@@ -404,7 +424,9 @@ impl LaneManager {
         let mailbox = Arc::new(LaneMailbox::default());
         self.mailboxes.insert(id.to_string(), mailbox.clone());
         let parent = self.parent.as_ref();
-        let origin_session = parent.and_then(|p| p.durable_session_id()).map(str::to_string);
+        let origin_session = parent
+            .and_then(|p| p.durable_session_id())
+            .map(str::to_string);
         let speaker = parent.and_then(crate::coordination_tools::speaks_as);
         let task = match (parent, origin_session.as_deref()) {
             (Some(p), Some(session)) => crate::coordination_tools::session_task(p, session),
@@ -412,15 +434,23 @@ impl LaneManager {
         };
         let mut context = String::from("You're a co-worker taking one piece of a larger job.");
         match &speaker {
-            Some(("agent", who)) => context.push_str(&format!(" It was handed to you by the agent `{who}`")),
-            _ => context.push_str(" It was handed to you by the agent working in the parent session"),
+            Some(("agent", who)) => {
+                context.push_str(&format!(" It was handed to you by the agent `{who}`"))
+            }
+            _ => {
+                context.push_str(" It was handed to you by the agent working in the parent session")
+            }
         }
         if let Some((task_id, title)) = &task {
-            context.push_str(&format!(", who is working on the task \"{title}\" ({task_id})"));
+            context.push_str(&format!(
+                ", who is working on the task \"{title}\" ({task_id})"
+            ));
         }
         context.push('.');
         if let Some(agent) = agent {
-            context.push_str(&format!(" You bring the expertise of `{agent}`, and you speak as `{agent}`."));
+            context.push_str(&format!(
+                " You bring the expertise of `{agent}`, and you speak as `{agent}`."
+            ));
         }
         let siblings: Vec<String> = self
             .records
@@ -460,7 +490,12 @@ impl LaneManager {
                 .records
                 .iter()
                 .find(|r| r.id == id)
-                .map(|r| r.paths.iter().map(|p| self.workspace_root.join(p)).collect())
+                .map(|r| {
+                    r.paths
+                        .iter()
+                        .map(|p| self.workspace_root.join(p))
+                        .collect()
+                })
                 .unwrap_or_default(),
             lease_token: parent
                 .filter(|p| p.store_path().is_some())
@@ -470,7 +505,10 @@ impl LaneManager {
         }
     }
 
-    pub fn with_approvals(mut self, tx: Option<mpsc::UnboundedSender<LaneApprovalRequest>>) -> Self {
+    pub fn with_approvals(
+        mut self,
+        tx: Option<mpsc::UnboundedSender<LaneApprovalRequest>>,
+    ) -> Self {
         self.approval_tx = tx;
         self
     }
@@ -592,7 +630,12 @@ impl LaneManager {
     /// resumed from disk, so the lane keeps everything it learned (the analog of
     /// messaging an existing agent instead of spawning a fresh one). Returns the
     /// lane's title.
-    pub fn follow_up(&mut self, lane_id: &str, brief: &str, profile: Option<String>) -> Result<String, String> {
+    pub fn follow_up(
+        &mut self,
+        lane_id: &str,
+        brief: &str,
+        profile: Option<String>,
+    ) -> Result<String, String> {
         if self.factory.is_none() {
             return Err(
                 "delegate_task is unavailable in this run (no model factory; interactive mode only)."
@@ -699,7 +742,10 @@ impl LaneManager {
         let title = title.to_string();
         let lane_id = id.to_string();
         let exa_api_key = self.exa_api_key.clone();
-        let approval = self.approval_tx.clone().map(|tx| LaneApprovalRoute { lane: title.clone(), tx });
+        let approval = self.approval_tx.clone().map(|tx| LaneApprovalRoute {
+            lane: title.clone(),
+            tx,
+        });
         let link = self.link_for(id, agent.as_deref());
         let parent_profile = self.parent_profile.clone();
 
@@ -729,7 +775,10 @@ impl LaneManager {
             .await
             .unwrap_or_else(|_| {
                 timed_out = true;
-                let error = format!("paused after running for {} minutes, the lane time limit", limit.as_secs() / 60);
+                let error = format!(
+                    "paused after running for {} minutes, the lane time limit",
+                    limit.as_secs() / 60
+                );
                 if let Ok(mut log) = crate::lane_log::LaneLog::open(&lane_id) {
                     let _ = log.write_end(&lane_id, "paused", None, Some(&error), None);
                 }
@@ -747,7 +796,11 @@ impl LaneManager {
                 Err(error) => LaneResult {
                     id: lane_id,
                     title,
-                    status: if timed_out { LaneStatus::Paused } else { LaneStatus::Failed },
+                    status: if timed_out {
+                        LaneStatus::Paused
+                    } else {
+                        LaneStatus::Failed
+                    },
                     summary: None,
                     report: None,
                     error: Some(error),
@@ -784,7 +837,15 @@ impl LaneManager {
             .records
             .iter()
             .filter(|r| r.status == LaneStatus::Running)
-            .map(|r| (r.id.clone(), r.title.clone(), r.read_only, r.agent.clone(), r.profile.clone()))
+            .map(|r| {
+                (
+                    r.id.clone(),
+                    r.title.clone(),
+                    r.read_only,
+                    r.agent.clone(),
+                    r.profile.clone(),
+                )
+            })
             .collect();
         for (id, title, read_only, agent, profile) in ids {
             self.record_progress(&LaneProgress {
@@ -1024,11 +1085,17 @@ pub fn role_tool_definitions(
     };
     match role {
         "work" => Some((
-            with_meta(crate::session::work_tool_registry(key, custom_dir).definitions(), true),
+            with_meta(
+                crate::session::work_tool_registry(key, custom_dir).definitions(),
+                true,
+            ),
             WORK_TOOL_BUDGET_BYTES,
         )),
         "mission_control" => Some((
-            with_meta(crate::session::mission_control_tool_registry(key).definitions(), true),
+            with_meta(
+                crate::session::mission_control_tool_registry(key).definitions(),
+                true,
+            ),
             MISSION_CONTROL_TOOL_BUDGET_BYTES,
         )),
         "desk" => Some((
@@ -1061,7 +1128,11 @@ fn lane_route(
 ) -> Vec<Option<String>> {
     if let Some(name) = explicit {
         let mut route = vec![Some(name.to_string())];
-        route.extend(parent.filter(|p| *p != name && !limited(p)).map(|p| Some(p.to_string())));
+        route.extend(
+            parent
+                .filter(|p| *p != name && !limited(p))
+                .map(|p| Some(p.to_string())),
+        );
         return route;
     }
     let mut route = Vec::new();
@@ -1102,7 +1173,9 @@ async fn run_lane(
                 .await
                 .map(|c| crate::routing::configured(&c, crate::routing::Route::Lanes))
                 .unwrap_or_default();
-            lane_route(None, parent_profile.as_deref(), &chain, |n| crate::routing::limited_until(n).is_some())
+            lane_route(None, parent_profile.as_deref(), &chain, |n| {
+                crate::routing::limited_until(n).is_some()
+            })
         }
     };
     if route.len() <= 1 {
@@ -1160,8 +1233,19 @@ async fn run_lane(
         Some(message) => Err(message),
         None => {
             run_lane_once(
-                factory, workspace_root, state_path, brief, owner, exa_api_key, resume, read_only, agent, None,
-                progress_tx, approval, link,
+                factory,
+                workspace_root,
+                state_path,
+                brief,
+                owner,
+                exa_api_key,
+                resume,
+                read_only,
+                agent,
+                None,
+                progress_tx,
+                approval,
+                link,
             )
             .await
         }
@@ -1202,7 +1286,11 @@ async fn run_lane_once(
                 .with_read_only_shell(read_only)
                 .with_lease_token(link.lease_token)
                 .with_agent_id_opt(link.agent_id.clone())
-                .with_store_path(link.store_path.clone().unwrap_or_else(crate::store::default_db_path));
+                .with_store_path(
+                    link.store_path
+                        .clone()
+                        .unwrap_or_else(crate::store::default_db_path),
+                );
             match link.origin_session.as_deref() {
                 Some(session) => context.with_lane_origin(session, &owner),
                 None => context,
@@ -1253,7 +1341,9 @@ async fn run_lane_once(
                     images: model.supports_images(),
                     ..PromptContext::detect(&workspace_for_grounding, true, false)
                 },
-                identity.as_ref().map(|(id, body)| (id.as_str(), body.as_str())),
+                identity
+                    .as_ref()
+                    .map(|(id, body)| (id.as_str(), body.as_str())),
             ),
             state_path: Some(state_path),
             resume,
@@ -1367,7 +1457,12 @@ fn verify_grounding(roots: &[PathBuf], text: &str) -> Option<String> {
                 .iter()
                 .map(|root| root.join(path_str))
                 .find(|candidate| candidate.exists())
-                .unwrap_or_else(|| roots.first().map(|r| r.join(path_str)).unwrap_or_else(|| PathBuf::from(path_str)))
+                .unwrap_or_else(|| {
+                    roots
+                        .first()
+                        .map(|r| r.join(path_str))
+                        .unwrap_or_else(|| PathBuf::from(path_str))
+                })
         };
         match std::fs::read_to_string(&resolved) {
             Ok(content) => {
@@ -1421,7 +1516,11 @@ fn summarize_lane_outcome(outcome: &crate::harness::HarnessOutcome) -> String {
 
     let mut changed: Vec<String> = Vec::new();
     for event in &outcome.events {
-        let HarnessEvent::ToolCall { tool_name, arguments } = event else {
+        let HarnessEvent::ToolCall {
+            tool_name,
+            arguments,
+        } = event
+        else {
             continue;
         };
         if tool_name != "change_files" {
@@ -1487,7 +1586,12 @@ mod tests {
     fn tool_bytes(defs: &[crate::llm::NativeToolDefinition]) -> Vec<(String, usize)> {
         let mut sizes: Vec<(String, usize)> = defs
             .iter()
-            .map(|d| (d.name.clone(), d.name.len() + d.description.len() + d.input_schema.to_string().len()))
+            .map(|d| {
+                (
+                    d.name.clone(),
+                    d.name.len() + d.description.len() + d.input_schema.to_string().len(),
+                )
+            })
             .collect();
         sizes.sort_by(|a, b| b.1.cmp(&a.1));
         sizes
@@ -1501,9 +1605,20 @@ mod tests {
             let (defs, cap) = role_tool_definitions(role, None).unwrap();
             let sizes = tool_bytes(&defs);
             let total: usize = sizes.iter().map(|s| s.1).sum();
-            let top: Vec<String> = sizes.iter().take(15).map(|(n, b)| format!("{n} {b}")).collect();
-            println!("{role}: {} tools, {total} bytes; largest: {}", sizes.len(), top.join(", "));
-            assert!(total <= cap, "{role} tool definitions are {total} bytes, over {cap}");
+            let top: Vec<String> = sizes
+                .iter()
+                .take(15)
+                .map(|(n, b)| format!("{n} {b}"))
+                .collect();
+            println!(
+                "{role}: {} tools, {total} bytes; largest: {}",
+                sizes.len(),
+                top.join(", ")
+            );
+            assert!(
+                total <= cap,
+                "{role} tool definitions are {total} bytes, over {cap}"
+            );
         }
     }
 
@@ -1511,13 +1626,25 @@ mod tests {
     fn lane_route_order() {
         let chain = vec!["top".to_string(), "mid".to_string(), "low".to_string()];
         let none = |_: &str| false;
-        assert_eq!(lane_route(Some("pin"), Some("mid"), &chain, none), vec![Some("pin".into()), Some("mid".into())]);
-        assert_eq!(lane_route(Some("pin"), Some("pin"), &chain, none), vec![Some("pin".to_string())]);
+        assert_eq!(
+            lane_route(Some("pin"), Some("mid"), &chain, none),
+            vec![Some("pin".into()), Some("mid".into())]
+        );
+        assert_eq!(
+            lane_route(Some("pin"), Some("pin"), &chain, none),
+            vec![Some("pin".to_string())]
+        );
         let route = lane_route(None, Some("mid"), &chain, none);
-        assert_eq!(route, vec![Some("mid".into()), Some("top".into()), Some("low".into())]);
+        assert_eq!(
+            route,
+            vec![Some("mid".into()), Some("top".into()), Some("low".into())]
+        );
         let route = lane_route(None, Some("mid"), &chain, |n| n == "mid" || n == "low");
         assert_eq!(route, vec![Some("top".to_string())]);
-        assert_eq!(lane_route(None, None, &chain[..1], none), vec![None, Some("top".to_string())]);
+        assert_eq!(
+            lane_route(None, None, &chain[..1], none),
+            vec![None, Some("top".to_string())]
+        );
     }
 
     use super::*;
@@ -1635,7 +1762,9 @@ mod tests {
         running.read_only = false;
         running.paths = vec!["src/serve".into()];
         let mgr = empty_manager(dir).with_records(vec![running]);
-        let clash = mgr.scope_clash(false, &["src/serve/mod.rs".into()]).unwrap();
+        let clash = mgr
+            .scope_clash(false, &["src/serve/mod.rs".into()])
+            .unwrap();
         assert!(clash.contains("overlaps"), "{clash}");
         assert!(mgr.scope_clash(false, &["src/lanes.rs".into()]).is_none());
         assert!(mgr.scope_clash(true, &["src/serve".into()]).is_none());

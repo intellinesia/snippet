@@ -205,7 +205,10 @@ impl ToolContext {
     }
 
     pub fn store(&self) -> Result<crate::store::Store, crate::store::StoreError> {
-        let path = self.store_path.clone().unwrap_or_else(crate::store::default_db_path);
+        let path = self
+            .store_path
+            .clone()
+            .unwrap_or_else(crate::store::default_db_path);
         crate::store::Store::open_cached(path)
     }
 
@@ -226,7 +229,11 @@ impl ToolContext {
         self.agent_id.as_deref()
     }
 
-    pub fn with_lane_origin(mut self, session_id: impl Into<String>, lane_id: impl Into<String>) -> Self {
+    pub fn with_lane_origin(
+        mut self,
+        session_id: impl Into<String>,
+        lane_id: impl Into<String>,
+    ) -> Self {
         self.lane_origin = Some((session_id.into(), lane_id.into()));
         self
     }
@@ -259,7 +266,9 @@ impl ToolContext {
     }
 
     pub fn lane_origin(&self) -> Option<(&str, &str)> {
-        self.lane_origin.as_ref().map(|(session, lane)| (session.as_str(), lane.as_str()))
+        self.lane_origin
+            .as_ref()
+            .map(|(session, lane)| (session.as_str(), lane.as_str()))
     }
 
     /// Record that this context has seen `path`'s current on-disk contents (read).
@@ -271,9 +280,10 @@ impl ToolContext {
     pub fn is_file_unchanged(&self, path: &Path) -> bool {
         let stored = self.seen.lock().unwrap().get(path).copied();
         if let Some(stored) = stored
-            && let Ok(current) = std::fs::read(path) {
-                return content_hash(&current) == stored;
-            }
+            && let Ok(current) = std::fs::read(path)
+        {
+            return content_hash(&current) == stored;
+        }
         false
     }
 
@@ -390,7 +400,9 @@ impl ToolRegistry {
     }
 
     pub fn custom_dir(&self) -> Option<&Path> {
-        self.custom_dir.as_deref().filter(|_| self.tools.contains_key("bash"))
+        self.custom_dir
+            .as_deref()
+            .filter(|_| self.tools.contains_key("bash"))
     }
 
     fn custom_tools(&self) -> Vec<crate::agent_tools::CustomTool> {
@@ -405,7 +417,11 @@ impl ToolRegistry {
     pub fn definitions(&self) -> Vec<NativeToolDefinition> {
         let mut defs: Vec<NativeToolDefinition> =
             self.tools.values().map(|tool| tool.definition()).collect();
-        defs.extend(self.custom_tools().iter().map(crate::agent_tools::definition));
+        defs.extend(
+            self.custom_tools()
+                .iter()
+                .map(crate::agent_tools::definition),
+        );
         defs
     }
 
@@ -440,11 +456,16 @@ impl ToolRegistry {
         };
         let label = crate::progress::call_label(&arguments);
         let mut result = tool.execute(ctx, arguments).await?;
-        if let (crate::ownership::Gate::Warn(note), Some(map)) = (&gate, result.value.as_object_mut()) {
+        if let (crate::ownership::Gate::Warn(note), Some(map)) =
+            (&gate, result.value.as_object_mut())
+        {
             map.insert("ownership_warning".into(), Value::String(note.clone()));
         }
         result.value = bound_tool_output(ctx, name, result.value);
-        if let (Some(note), Some(map)) = (crate::progress::note_tool_call(ctx, name, label), result.value.as_object_mut()) {
+        if let (Some(note), Some(map)) = (
+            crate::progress::note_tool_call(ctx, name, label),
+            result.value.as_object_mut(),
+        ) {
             map.insert("harness_note".into(), Value::String(note));
         }
         Ok(result)
@@ -456,7 +477,9 @@ impl ToolRegistry {
         name: &str,
         arguments: Value,
     ) -> Result<ToolResult, ToolError> {
-        let dir = self.custom_dir().ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
+        let dir = self
+            .custom_dir()
+            .ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
         let call = crate::agent_tools::prepare(dir, name, &arguments)
             .ok_or_else(|| ToolError::UnknownTool(name.to_string()))?
             .map_err(|e| ToolError::msg(format!("{name}: {e}")))?;
@@ -465,8 +488,13 @@ impl ToolRegistry {
                 "custom tool `{name}` is new and hasn't been approved by the user yet"
             )));
         }
-        let bash = self.tools.get("bash").ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
-        let mut result = bash.execute(ctx, crate::agent_tools::bash_arguments(&call)).await?;
+        let bash = self
+            .tools
+            .get("bash")
+            .ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
+        let mut result = bash
+            .execute(ctx, crate::agent_tools::bash_arguments(&call))
+            .await?;
         if let Some(data) = result.value.get_mut("data").and_then(Value::as_object_mut) {
             data.insert("custom_tool".into(), Value::String(name.to_string()));
         }
@@ -482,11 +510,19 @@ fn note_session_activity(ctx: &ToolContext) {
     if ctx.is_mission_control() {
         return;
     }
-    let Some(session) = ctx.durable_session_id().or(ctx.lane_origin().map(|(s, _)| s)) else { return };
+    let Some(session) = ctx
+        .durable_session_id()
+        .or(ctx.lane_origin().map(|(s, _)| s))
+    else {
+        return;
+    };
     let Some(path) = ctx.store_path() else { return };
     {
         let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-        if last.get(session).is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(30)) {
+        if last
+            .get(session)
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(30))
+        {
             return;
         }
         last.insert(session.to_string(), std::time::Instant::now());

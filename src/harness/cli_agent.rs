@@ -110,8 +110,12 @@ impl CliSession {
             .next()
             .map(|id| id.trim().to_string())
             .filter(|id| reuse && !id.is_empty());
-        let synced = lines.next().and_then(|n| n.trim().parse().ok()).unwrap_or(0);
-        let (mut forking, mut mark, mut tokens, mut compactions) = (false, String::new(), 0u64, 0u64);
+        let synced = lines
+            .next()
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or(0);
+        let (mut forking, mut mark, mut tokens, mut compactions) =
+            (false, String::new(), 0u64, 0u64);
         for line in lines {
             let line = line.trim();
             if line == "fork" {
@@ -159,7 +163,9 @@ impl CliSession {
     }
 
     fn sidecar(kind: CliKind, key: &str) -> PathBuf {
-        let dir = crate::config::snippet_home().join(kind.dir()).join("sessions");
+        let dir = crate::config::snippet_home()
+            .join(kind.dir())
+            .join("sessions");
         let _ = std::fs::create_dir_all(&dir);
         dir.join(key)
     }
@@ -194,7 +200,11 @@ impl CliSession {
     fn mark_synced(&mut self, messages: &[HarnessMessage], compactions: u64, tokens: u64) {
         let upto = messages.len();
         let mark = transcript_mark(messages, upto);
-        if self.synced != upto || self.mark != mark || self.compactions != compactions || self.tokens != tokens {
+        if self.synced != upto
+            || self.mark != mark
+            || self.compactions != compactions
+            || self.tokens != tokens
+        {
             self.synced = upto;
             self.mark = mark;
             self.compactions = compactions;
@@ -226,16 +236,23 @@ fn transcript_mark(messages: &[HarnessMessage], upto: usize) -> String {
     upto.hash(&mut h);
     match &messages[upto - 1] {
         HarnessMessage::User { content } => ("user", content.as_str()).hash(&mut h),
-        HarnessMessage::Assistant { content, tool_calls } => {
+        HarnessMessage::Assistant {
+            content,
+            tool_calls,
+        } => {
             ("assistant", content.as_str()).hash(&mut h);
             for call in tool_calls {
                 call.name.hash(&mut h);
             }
         }
-        HarnessMessage::ToolResult { tool_name, tool_call_id, .. } => {
-            ("tool", tool_name.as_str(), tool_call_id.as_str()).hash(&mut h)
+        HarnessMessage::ToolResult {
+            tool_name,
+            tool_call_id,
+            ..
+        } => ("tool", tool_name.as_str(), tool_call_id.as_str()).hash(&mut h),
+        HarnessMessage::Summary { kind, content } => {
+            ("summary", kind.as_str(), content.as_str()).hash(&mut h)
         }
-        HarnessMessage::Summary { kind, content } => ("summary", kind.as_str(), content.as_str()).hash(&mut h),
         HarnessMessage::System { .. } => "system".hash(&mut h),
     }
     format!("{:016x}", h.finish())
@@ -253,8 +270,23 @@ fn clip_chars(text: &str, max: usize) -> String {
 }
 
 fn call_target(arguments: &Value) -> Option<String> {
-    for key in ["file_path", "path", "command", "cmd", "query", "pattern", "url", "description", "title"] {
-        if let Some(v) = arguments.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()) {
+    for key in [
+        "file_path",
+        "path",
+        "command",
+        "cmd",
+        "query",
+        "pattern",
+        "url",
+        "description",
+        "title",
+    ] {
+        if let Some(v) = arguments
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
             return Some(clip_chars(&v.replace('\n', " "), 100));
         }
     }
@@ -294,9 +326,11 @@ fn touched_paths(arguments: &Value, out: &mut Vec<String>) {
 
 fn writes_files(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    ["edit", "write", "change", "patch", "create", "delete", "move", "rename", "replace"]
-        .iter()
-        .any(|w| n.contains(w))
+    [
+        "edit", "write", "change", "patch", "create", "delete", "move", "rename", "replace",
+    ]
+    .iter()
+    .any(|w| n.contains(w))
 }
 
 struct Handoff {
@@ -315,7 +349,10 @@ fn handoff(messages: &[HarnessMessage], fresh: bool) -> Option<Handoff> {
             HarnessMessage::User { content } if !content.trim().is_empty() => {
                 entries.push(format!("user: {}", clip_chars(content, 2_000)));
             }
-            HarnessMessage::Assistant { content, tool_calls } => {
+            HarnessMessage::Assistant {
+                content,
+                tool_calls,
+            } => {
                 let mut line = format!("assistant: {}", clip_chars(content, 2_000));
                 for call in tool_calls {
                     match call_target(&call.arguments) {
@@ -349,10 +386,17 @@ fn handoff(messages: &[HarnessMessage], fresh: bool) -> Option<Handoff> {
     let dropped_requests: Vec<String> = messages
         .iter()
         .filter_map(|m| match m {
-            HarnessMessage::User { content } if !content.trim().is_empty() => Some(content.as_str()),
+            HarnessMessage::User { content } if !content.trim().is_empty() => {
+                Some(content.as_str())
+            }
             _ => None,
         })
-        .take(entries[..keep].iter().filter(|e| e.starts_with("user: ")).count())
+        .take(
+            entries[..keep]
+                .iter()
+                .filter(|e| e.starts_with("user: "))
+                .count(),
+        )
         .map(|c| clip_chars(&c.replace('\n', " "), 200))
         .collect();
     entries.drain(..keep);
@@ -367,7 +411,11 @@ fn handoff(messages: &[HarnessMessage], fresh: bool) -> Option<Handoff> {
     }
     if !dropped_requests.is_empty() {
         let skip = dropped_requests.len().saturating_sub(40);
-        let earlier = if skip > 0 { format!("({skip} earlier requests not listed)\n") } else { String::new() };
+        let earlier = if skip > 0 {
+            format!("({skip} earlier requests not listed)\n")
+        } else {
+            String::new()
+        };
         out.push_str(&format!(
             "\nEarlier requests, oldest first ({dropped} older messages are not shown in full):\n{earlier}- {}\n",
             dropped_requests[skip..].join("\n- ")
@@ -382,8 +430,16 @@ fn handoff(messages: &[HarnessMessage], fresh: bool) -> Option<Handoff> {
         let shown: Vec<&String> = touched.iter().take(40).collect();
         out.push_str(&format!(
             "\nFiles changed in that time{}:\n{}\n",
-            if touched.len() > shown.len() { format!(" (first {})", shown.len()) } else { String::new() },
-            shown.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n")
+            if touched.len() > shown.len() {
+                format!(" (first {})", shown.len())
+            } else {
+                String::new()
+            },
+            shown
+                .iter()
+                .map(|p| format!("- {p}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         ));
     }
     out.push_str("</conversation_so_far>\n\n");
@@ -441,7 +497,11 @@ impl AgentModel for CliAgentModel {
 async fn run_probe(bin: &Path, args: &[&str]) -> Option<String> {
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(20),
-        Command::new(bin).args(args).stdin(Stdio::null()).kill_on_drop(true).output(),
+        Command::new(bin)
+            .args(args)
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
     )
     .await
     .ok()?
@@ -484,8 +544,14 @@ pub async fn cli_agent_status(provider: &str) -> Value {
                 .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
                 .unwrap_or(Value::Null);
             (
-                status.get("loggedIn").and_then(Value::as_bool).unwrap_or(false),
-                status.get("authMethod").and_then(Value::as_str).map(str::to_string),
+                status
+                    .get("loggedIn")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                status
+                    .get("authMethod")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             )
         }
         CliKind::Antigravity => (crate::antigravity::models().await.is_ok(), None),
@@ -509,7 +575,8 @@ struct McpCall {
 }
 
 type SteerQueue = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
-type ServedResults = std::sync::Arc<std::sync::Mutex<HashMap<String, std::collections::VecDeque<Value>>>>;
+type ServedResults =
+    std::sync::Arc<std::sync::Mutex<HashMap<String, std::collections::VecDeque<Value>>>>;
 type LateResults = std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(String, String)>>>;
 
 #[derive(Clone)]
@@ -538,7 +605,13 @@ pub(crate) async fn claude_supported_models() -> Result<(Option<String>, Vec<Val
     let mut cmd = Command::new(bin);
     cmd.current_dir(std::env::temp_dir())
         .arg("-p")
-        .args(["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])
+        .args([
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ])
         .args(["--setting-sources", ""])
         .env("CLAUDE_CODE_ENTRYPOINT", "snippet")
         .stdin(Stdio::piped())
@@ -548,7 +621,9 @@ pub(crate) async fn claude_supported_models() -> Result<(Option<String>, Vec<Val
     if let Some(token) = account.as_deref().and_then(claude_account_token) {
         cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
     }
-    let mut child = cmd.spawn().map_err(|e| format!("couldn't start Claude Code: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("couldn't start Claude Code: {e}"))?;
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let read = async {
@@ -558,15 +633,24 @@ pub(crate) async fn claude_supported_models() -> Result<(Option<String>, Vec<Val
             .map_err(|e| e.to_string())?;
         let mut lines = BufReader::new(stdout).lines();
         while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
-            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
             if v.get("type").and_then(Value::as_str) != Some("control_response") {
                 continue;
             }
             let r = &v["response"];
             if r.get("subtype").and_then(Value::as_str) == Some("error") {
-                return Err(r.get("error").and_then(Value::as_str).unwrap_or("initialize failed").to_string());
+                return Err(r
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("initialize failed")
+                    .to_string());
             }
-            return Ok(r["response"]["models"].as_array().cloned().unwrap_or_default());
+            return Ok(r["response"]["models"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default());
         }
         Err("Claude Code exited without listing its models".to_string())
     };
@@ -583,7 +667,10 @@ fn claude_account_token(id: &str) -> Option<String> {
     }
     let raw = crate::accounts::read_credential("claude-code", id)?;
     let value: Value = serde_json::from_str(&raw).ok()?;
-    value.get("token").and_then(Value::as_str).map(str::to_string)
+    value
+        .get("token")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 enum CliLine {
@@ -633,14 +720,23 @@ pub(crate) fn claude_binary() -> Option<PathBuf> {
         return Some(found);
     }
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    [home.join(".local/bin/claude"), home.join(".claude/local/claude")]
-        .into_iter()
-        .find(|candidate| candidate.is_file())
+    [
+        home.join(".local/bin/claude"),
+        home.join(".claude/local/claude"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
 }
 
 fn sanitize_key(id: &str) -> String {
     id.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -662,8 +758,12 @@ fn tool_prompt_preamble(kind: CliKind) -> String {
 
 fn tool_guide(kind: CliKind, defs: &[NativeToolDefinition]) -> String {
     let header = match kind {
-        CliKind::Devin => "## Snippet tools and their arguments\n\nCall each through `mcp_call_tool` with `server_name: \"snippet\"` and `tool_name` set to the name below. Pass every required argument by its exact name; optional ones in brackets.\n",
-        _ => "## Snippet tools and their arguments\n\nCall each through call_mcp_tool with ServerName `snippet_snippet`, plus `toolSummary` and `toolAction` on every call. Pass every required argument by its exact name; optional ones in brackets.\n",
+        CliKind::Devin => {
+            "## Snippet tools and their arguments\n\nCall each through `mcp_call_tool` with `server_name: \"snippet\"` and `tool_name` set to the name below. Pass every required argument by its exact name; optional ones in brackets.\n"
+        }
+        _ => {
+            "## Snippet tools and their arguments\n\nCall each through call_mcp_tool with ServerName `snippet_snippet`, plus `toolSummary` and `toolAction` on every call. Pass every required argument by its exact name; optional ones in brackets.\n"
+        }
     };
     let mut out = String::from(header);
     for def in defs {
@@ -698,7 +798,12 @@ fn tool_guide(kind: CliKind, defs: &[NativeToolDefinition]) -> String {
             .chars()
             .take(160)
             .collect();
-        out.push_str(&format!("- `{}`({}) — {}\n", def.name, args.join(", "), summary.trim_end_matches('.')));
+        out.push_str(&format!(
+            "- `{}`({}) — {}\n",
+            def.name,
+            args.join(", "),
+            summary.trim_end_matches('.')
+        ));
     }
     out
 }
@@ -715,8 +820,15 @@ fn unwrap_custom(name: String, arguments: Value) -> (String, Value) {
     if name != "custom_tool" {
         return (name, arguments);
     }
-    let inner = arguments.get("name").and_then(Value::as_str).unwrap_or("custom_tool").to_string();
-    let args = arguments.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let inner = arguments
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("custom_tool")
+        .to_string();
+    let args = arguments
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     (inner, args)
 }
 
@@ -730,7 +842,10 @@ fn image_block(path: &str) -> Option<(&'static str, String)> {
     }
     let bytes = std::fs::read(path).ok()?;
     let (mime, bytes) = crate::builtins::fs::image_for_model(&bytes)?;
-    Some((mime, base64::engine::general_purpose::STANDARD.encode(&bytes)))
+    Some((
+        mime,
+        base64::engine::general_purpose::STANDARD.encode(&bytes),
+    ))
 }
 
 /// A user message for the CLI, with the app's `[attached image — …: /path]`
@@ -817,7 +932,10 @@ fn tool_result_from_block(block: &Value) -> Value {
     {
         return value;
     }
-    let failed = block.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+    let failed = block
+        .get("is_error")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if failed {
         error_result("tool_error", &text)
     } else {
@@ -874,12 +992,20 @@ async fn mcp_get(
     if request.method() == axum::http::Method::HEAD {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
-    let stream = futures_util::stream::pending::<Result<axum::response::sse::Event, std::convert::Infallible>>();
+    let stream = futures_util::stream::pending::<
+        Result<axum::response::sse::Event, std::convert::Infallible>,
+    >();
     let mut res = Sse::new(stream)
-        .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)).text("ping"))
+        .keep_alive(
+            KeepAlive::new()
+                .interval(std::time::Duration::from_secs(15))
+                .text("ping"),
+        )
         .into_response();
-    res.headers_mut()
-        .insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-cache"));
+    res.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-cache"),
+    );
     insert_session_id(&mut res, &token);
     res
 }
@@ -916,9 +1042,18 @@ fn read_command(arguments: &Value) -> String {
 
 fn normalise_call(name: &str, arguments: Value, known: &[String]) -> (String, Value) {
     let known_tool = |tool: &str| known.iter().any(|k| k == tool);
-    let text = |key: &str| arguments.get(key).and_then(Value::as_str).map(str::to_string);
+    let text = |key: &str| {
+        arguments
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
 
-    if name == "bash" && !arguments.as_object().is_some_and(|o| o.contains_key("command")) {
+    if name == "bash"
+        && !arguments
+            .as_object()
+            .is_some_and(|o| o.contains_key("command"))
+    {
         for key in ["cmd", "script", "shell"] {
             if let Some(value) = arguments.get(key).cloned() {
                 let mut fixed = arguments.clone();
@@ -937,7 +1072,9 @@ fn normalise_call(name: &str, arguments: Value, known: &[String]) -> (String, Va
         let mut changed = false;
         if let Some(changes) = fixed.get_mut("changes").and_then(Value::as_array_mut) {
             for change in changes.iter_mut() {
-                let Some(fields) = change.as_object_mut() else { continue };
+                let Some(fields) = change.as_object_mut() else {
+                    continue;
+                };
                 if fields.get("action").and_then(Value::as_str) == Some("overwrite") {
                     fields.insert("action".to_string(), json!("create"));
                     fields.insert("overwrite".to_string(), json!(true));
@@ -1019,8 +1156,15 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
             })).collect::<Vec<_>>()
         }),
         "tools/call" => {
-            let raw_name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
-            let raw_arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let raw_name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let raw_arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             let known: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
             let (name, arguments) = normalise_call(&raw_name, raw_arguments, &known);
             if name != raw_name {
@@ -1029,8 +1173,18 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
             let (reply, rx) = oneshot::channel();
             let mut rx = Box::pin(rx);
             let name_for_record = name.clone();
-            if state.calls.send(McpCall { name, arguments, reply }).is_err() {
-                return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "session ended"}}));
+            if state
+                .calls
+                .send(McpCall {
+                    name,
+                    arguments,
+                    reply,
+                })
+                .is_err()
+            {
+                return Some(
+                    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "session ended"}}),
+                );
             }
             let mut value = match tokio::time::timeout(MCP_SYNC_WAIT, rx.as_mut()).await {
                 Ok(Ok(value)) => value,
@@ -1052,7 +1206,9 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
                             late.push_back((late_name, rendered));
                         }
                     });
-                    let pending = format!("{name_for_record} is still running after 200s. Its result will be attached to your next tool result as <late_tool_result name=\"{name_for_record}\">. Carry on with other work; do not rerun it.");
+                    let pending = format!(
+                        "{name_for_record} is still running after 200s. Its result will be attached to your next tool result as <late_tool_result name=\"{name_for_record}\">. Carry on with other work; do not rerun it."
+                    );
                     // Keeps `served` one entry per call so the next call to this tool records its own value.
                     if let Ok(mut served) = state.served.lock() {
                         let queue = served.entry(name_for_record.clone()).or_default();
@@ -1087,14 +1243,16 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
                 }
             }
             let failed = value.get("status").and_then(Value::as_str) == Some("error");
-            let mut content = vec![json!({"type": "text", "text": crate::llm::render_tool_result(&value)})];
+            let mut content =
+                vec![json!({"type": "text", "text": crate::llm::render_tool_result(&value)})];
             if let Some(path) = image_path {
                 match image_block(&path).filter(|_| state.images) {
                     Some((mime, data)) => content.push(json!({"type": "image", "data": data, "mimeType": mime})),
                     None => content.push(json!({"type": "text", "text": format!("To see the image itself, open {path} with your own file viewer (view_file).")})),
                 }
             }
-            if let Some(marker) = crate::antigravity::envelope_marker(&format!("/mcp/{}", state.token))
+            if let Some(marker) =
+                crate::antigravity::envelope_marker(&format!("/mcp/{}", state.token))
                 && std::fs::remove_file(&marker).is_ok()
             {
                 content.push(json!({"type": "text", "text": "<system-reminder>Your previous call_mcp_tool call was rejected before it ran because it left out toolSummary or toolAction. Include both on every call.</system-reminder>"}));
@@ -1107,7 +1265,11 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
             for (late_name, late_text) in late {
                 content.push(json!({"type": "text", "text": format!("<late_tool_result name=\"{late_name}\">\n{late_text}\n</late_tool_result>")}));
             }
-            let steers: Vec<String> = state.steers.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+            let steers: Vec<String> = state
+                .steers
+                .lock()
+                .map(|mut q| std::mem::take(&mut *q))
+                .unwrap_or_default();
             if !steers.is_empty() {
                 content.push(json!({"type": "text", "text": format!(
                     "<user_message_mid_turn>\nThe user sent this while you were working. It takes priority: adjust what you are doing now.\n{}\n</user_message_mid_turn>",
@@ -1120,7 +1282,9 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
             })
         }
         _ => {
-            return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("unknown method {method}")}}));
+            return Some(
+                json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("unknown method {method}")}}),
+            );
         }
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
@@ -1137,19 +1301,27 @@ pub fn fork_cli_conversations(source: &str, fork: &str, source_len: usize, fork_
         return;
     }
     for kind in [CliKind::ClaudeCode, CliKind::Antigravity, CliKind::Devin] {
-        let raw = std::fs::read_to_string(CliSession::sidecar(kind, &sanitize_key(source))).unwrap_or_default();
+        let raw = std::fs::read_to_string(CliSession::sidecar(kind, &sanitize_key(source)))
+            .unwrap_or_default();
         let mut lines = raw.lines();
         let Some(id) = lines.next().map(str::trim).filter(|id| !id.is_empty()) else {
             continue;
         };
-        let synced: usize = lines.next().and_then(|n| n.trim().parse().ok()).unwrap_or(0);
+        let synced: usize = lines
+            .next()
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or(0);
         let target = CliSession::sidecar(kind, &sanitize_key(fork));
         let written = match kind {
-            CliKind::ClaudeCode => std::fs::write(&target, format!("{id}\n{synced}\nfork")).map_err(|e| e.to_string()),
-            CliKind::Antigravity => crate::antigravity::fork_conversation(id)
-                .and_then(|copy| std::fs::write(&target, format!("{copy}\n{synced}")).map_err(|e| e.to_string())),
-            CliKind::Devin => crate::devin::fork_conversation(id)
-                .and_then(|copy| std::fs::write(&target, format!("{copy}\n{synced}")).map_err(|e| e.to_string())),
+            CliKind::ClaudeCode => {
+                std::fs::write(&target, format!("{id}\n{synced}\nfork")).map_err(|e| e.to_string())
+            }
+            CliKind::Antigravity => crate::antigravity::fork_conversation(id).and_then(|copy| {
+                std::fs::write(&target, format!("{copy}\n{synced}")).map_err(|e| e.to_string())
+            }),
+            CliKind::Devin => crate::devin::fork_conversation(id).and_then(|copy| {
+                std::fs::write(&target, format!("{copy}\n{synced}")).map_err(|e| e.to_string())
+            }),
         };
         if let Err(e) = written {
             eprintln!("fork {} conversation for {fork}: {e}", kind.label());
@@ -1159,7 +1331,11 @@ pub fn fork_cli_conversations(source: &str, fork: &str, source_len: usize, fork_
 
 // The MCP tool list is fixed when the bridge starts, so complete_goal is always served
 // (it errors without an active goal); without it a CLI goal could never finish.
-fn cli_meta_tool_definitions(once: bool, lanes: bool, hidden: &[&str]) -> Vec<NativeToolDefinition> {
+fn cli_meta_tool_definitions(
+    once: bool,
+    lanes: bool,
+    hidden: &[&str],
+) -> Vec<NativeToolDefinition> {
     meta::conversation_meta_definitions_for(!once, lanes)
         .into_iter()
         .filter(|d| !once || !matches!(d.name.as_str(), "ask_user" | "monitor"))
@@ -1194,7 +1370,10 @@ fn cli_goal_due(state: &HarnessState, idle_pass: bool, outbox_empty: bool, once:
         && outbox_empty
         && state.status == HarnessStatus::Idle
         && state.pending_question.is_none()
-        && state.goal.as_ref().is_some_and(|g| g.status == GoalStatus::Active)
+        && state
+            .goal
+            .as_ref()
+            .is_some_and(|g| g.status == GoalStatus::Active)
 }
 
 async fn start_mcp_server(
@@ -1205,9 +1384,20 @@ async fn start_mcp_server(
 ) -> Result<(String, mpsc::UnboundedReceiver<McpCall>), String> {
     let (calls, rx) = mpsc::unbounded_channel();
     let token = uuid::Uuid::new_v4().simple().to_string();
-    let state = McpState { token: token.clone(), tools, calls, steers, served, late: Default::default(), images };
+    let state = McpState {
+        token: token.clone(),
+        tools,
+        calls,
+        steers,
+        served,
+        late: Default::default(),
+        images,
+    };
     let app = Router::new()
-        .route("/mcp/{token}", post(mcp_handler).get(mcp_get).delete(mcp_delete))
+        .route(
+            "/mcp/{token}",
+            post(mcp_handler).get(mcp_get).delete(mcp_delete),
+        )
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1281,16 +1471,26 @@ impl CodingHarness {
         account: Option<&str>,
     ) -> Result<Command, String> {
         let bin = claude_binary().ok_or_else(|| {
-            "Claude Code isn't installed or isn't on PATH (set SNIPPET_CLAUDE_BIN to its path)".to_string()
+            "Claude Code isn't installed or isn't on PATH (set SNIPPET_CLAUDE_BIN to its path)"
+                .to_string()
         })?;
         let mcp_config = json!({"mcpServers": {MCP_SERVER: {"type": "http", "url": mcp_url}}});
         let mut cmd = Command::new(bin);
         cmd.current_dir(self.context.workspace_root())
             .arg("-p")
-            .args(["--input-format", "stream-json", "--output-format", "stream-json"])
+            .args([
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+            ])
             .args(["--include-partial-messages", "--verbose"])
             .args(["--system-prompt", prompt])
-            .args(["--mcp-config", &mcp_config.to_string(), "--strict-mcp-config"])
+            .args([
+                "--mcp-config",
+                &mcp_config.to_string(),
+                "--strict-mcp-config",
+            ])
             .args(["--tools", ""])
             .args(["--allowedTools", &format!("mcp__{MCP_SERVER}")])
             .args(["--permission-prompts", "none"])
@@ -1316,7 +1516,14 @@ impl CodingHarness {
             cmd.env("CLAUDE_CODE_AUTO_COMPACT_WINDOW", auto_tokens.to_string());
         }
         if let Some(id) = session.id.as_deref() {
-            cmd.args([if session.started { "--resume" } else { "--session-id" }, id]);
+            cmd.args([
+                if session.started {
+                    "--resume"
+                } else {
+                    "--session-id"
+                },
+                id,
+            ]);
             if session.forking {
                 cmd.arg("--fork-session");
             }
@@ -1336,11 +1543,18 @@ impl CodingHarness {
         })?;
         let home = crate::antigravity::prepare_home(&session.key, mcp_url, prompt)?;
         let real = crate::antigravity::real_home().ok_or("HOME is not set")?;
-        let xdg = |var: &str, fallback: &str| std::env::var_os(var).unwrap_or_else(|| real.join(fallback).into_os_string());
+        let xdg = |var: &str, fallback: &str| {
+            std::env::var_os(var).unwrap_or_else(|| real.join(fallback).into_os_string())
+        };
         let mut cmd = Command::new(bin);
         cmd.current_dir(self.context.workspace_root())
             .arg("--print=")
-            .args(["--input-format", "stream-json", "--output-format", "stream-json"])
+            .args([
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+            ])
             .arg("--disable-slash-commands")
             .env("XDG_CONFIG_HOME", xdg("XDG_CONFIG_HOME", ".config"))
             .env("XDG_CACHE_HOME", xdg("XDG_CACHE_HOME", ".cache"))
@@ -1362,7 +1576,9 @@ impl CodingHarness {
         let effort = Self::effort_arg(profile);
         match (base, effort) {
             ("swe-2" | "swe", Some(tier @ ("medium" | "high" | "max"))) => format!("swe-2-{tier}"),
-            ("swe-2-flash", Some(tier @ ("medium" | "high" | "max"))) => format!("swe-2-flash-{tier}"),
+            ("swe-2-flash", Some(tier @ ("medium" | "high" | "max"))) => {
+                format!("swe-2-flash-{tier}")
+            }
             _ => base.to_string(),
         }
     }
@@ -1412,10 +1628,19 @@ impl CodingHarness {
             .write_all(format!("{req}\n").as_bytes())
             .await
             .map_err(|e| format!("send Devin {method}: {e}"))?;
-        stdin.flush().await.map_err(|e| format!("flush Devin {method}: {e}"))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|e| format!("flush Devin {method}: {e}"))?;
         let wait = async {
-            while let Some(line) = reader.next_line().await.map_err(|e| format!("read Devin {method}: {e}"))? {
-                let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
+            while let Some(line) = reader
+                .next_line()
+                .await
+                .map_err(|e| format!("read Devin {method}: {e}"))?
+            {
+                let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
                 if value.get("id").and_then(Value::as_u64) == Some(id) {
                     return Ok(value);
                 }
@@ -1448,7 +1673,10 @@ impl CodingHarness {
         )
         .await?;
         if let Some(err) = init.get("error") {
-            let msg = err.get("message").and_then(Value::as_str).unwrap_or("Devin initialize failed");
+            let msg = err
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Devin initialize failed");
             return Err(msg.to_string());
         }
         let cwd = self.context.workspace_root().display().to_string();
@@ -1498,10 +1726,16 @@ impl CodingHarness {
             created
         };
         if let Some(err) = session_reply.get("error") {
-            let msg = err.get("message").and_then(Value::as_str).unwrap_or("Devin session setup failed");
+            let msg = err
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Devin session setup failed");
             return Err(msg.to_string());
         }
-        if let Some(new_id) = session_reply.pointer("/result/sessionId").and_then(Value::as_str) {
+        if let Some(new_id) = session_reply
+            .pointer("/result/sessionId")
+            .and_then(Value::as_str)
+        {
             session.adopt(new_id);
         }
         let Some(sid) = session.id.clone() else {
@@ -1520,7 +1754,10 @@ impl CodingHarness {
             let has_thought = session_reply
                 .pointer("/result/configOptions")
                 .and_then(Value::as_array)
-                .is_some_and(|opts| opts.iter().any(|o| o.get("id").and_then(Value::as_str) == Some("thought_level")));
+                .is_some_and(|opts| {
+                    opts.iter()
+                        .any(|o| o.get("id").and_then(Value::as_str) == Some("thought_level"))
+                });
             if has_thought {
                 let _ = Self::devin_rpc(
                     stdin,
@@ -1537,7 +1774,9 @@ impl CodingHarness {
             .pointer("/result/configOptions")
             .and_then(Value::as_array)
             .and_then(|opts| {
-                let model_opt = opts.iter().find(|o| o.get("id").and_then(Value::as_str) == Some("model"))?;
+                let model_opt = opts
+                    .iter()
+                    .find(|o| o.get("id").and_then(Value::as_str) == Some("model"))?;
                 let cur = model_opt.get("currentValue").and_then(Value::as_str)?;
                 model_opt
                     .get("options")
@@ -1573,9 +1812,13 @@ impl CodingHarness {
         let prompt = self.cli_system_prompt(state, session);
         let account = kind.pooled_provider().and_then(crate::accounts::active);
         let mut cmd = match kind {
-            CliKind::ClaudeCode => self.claude_command(profile, &prompt, mcp_url, session, account.as_deref())?,
+            CliKind::ClaudeCode => {
+                self.claude_command(profile, &prompt, mcp_url, session, account.as_deref())?
+            }
             CliKind::Antigravity => self.antigravity_command(profile, &prompt, mcp_url, session)?,
-            CliKind::Devin => self.devin_command(profile, &prompt, mcp_url, session, account.as_deref())?,
+            CliKind::Devin => {
+                self.devin_command(profile, &prompt, mcp_url, session, account.as_deref())?
+            }
         };
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1583,8 +1826,14 @@ impl CodingHarness {
             .kill_on_drop(true);
         let label = kind.label();
         let mut child = cmd.spawn().map_err(|e| format!("start {label}: {e}"))?;
-        let mut stdin = child.stdin.take().ok_or(format!("{label} stdin unavailable"))?;
-        let stdout = child.stdout.take().ok_or(format!("{label} stdout unavailable"))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or(format!("{label} stdin unavailable"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or(format!("{label} stdout unavailable"))?;
         let stderr = child.stderr.take();
         let mut reader = BufReader::new(stdout).lines();
         let (acp_next_id, acp_supports_images) = if kind == CliKind::Devin {
@@ -1712,12 +1961,20 @@ impl CodingHarness {
             HarnessStatus::Completed | HarnessStatus::Failed | HarnessStatus::Interrupted
         );
         if status_reset {
-            state.status = if once { HarnessStatus::Running } else { HarnessStatus::Idle };
+            state.status = if once {
+                HarnessStatus::Running
+            } else {
+                HarnessStatus::Idle
+            };
         }
         let (lane_tx, mut lane_rx) = mpsc::unbounded_channel::<LaneResult>();
-        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<crate::lanes::LaneProgress>();
+        let (progress_tx, mut progress_rx) =
+            mpsc::unbounded_channel::<crate::lanes::LaneProgress>();
         let lanes_enabled = !once && self.config.allow_lane_control && factory.is_some();
-        let had_interrupted_lanes = state.lanes.iter().any(|lane| lane.status == LaneStatus::Running);
+        let had_interrupted_lanes = state
+            .lanes
+            .iter()
+            .any(|lane| lane.status == LaneStatus::Running);
         let (lane_approval_tx, mut lane_approval_rx) =
             mpsc::unbounded_channel::<crate::lanes::LaneApprovalRequest>();
         let mut lanes = self
@@ -1756,7 +2013,10 @@ impl CodingHarness {
         let guide = tool_guide(kind, &bridge_tools);
         let steers: SteerQueue = Default::default();
         let served: ServedResults = Default::default();
-        let (mcp_url, mut mcp_rx) = start_mcp_server(bridge_tools, steers.clone(), served.clone(), true).await.map_err(ToolError::msg)?;
+        let (mcp_url, mut mcp_rx) =
+            start_mcp_server(bridge_tools, steers.clone(), served.clone(), true)
+                .await
+                .map_err(ToolError::msg)?;
         let (line_tx, mut line_rx) = mpsc::unbounded_channel::<CliLine>();
         let mut process: Option<CliProcess> = None;
         let mut account_limit: Option<i64> = None;
@@ -1784,8 +2044,9 @@ impl CodingHarness {
         let mut pending_vault = false;
         let mut pending_custom: Option<crate::agent_tools::CustomTool> = None;
         let mut approval_index = 0usize;
-        let mut running: FuturesUnordered<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>> =
-            FuturesUnordered::new();
+        let mut running: FuturesUnordered<
+            std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>,
+        > = FuturesUnordered::new();
         let mut outbox: Vec<String> = Vec::new();
         let mut held_envelopes: Vec<String> = Vec::new();
         let mut last_heard = tokio::time::Instant::now();
@@ -1823,7 +2084,9 @@ impl CodingHarness {
                     state.status = HarnessStatus::Running;
                     state.events.push(HarnessEvent::SystemDecision {
                         step: "history_compaction_pass".to_string(),
-                        reasoning: "Saving working state to memory, then compacting the conversation.".to_string(),
+                        reasoning:
+                            "Saving working state to memory, then compacting the conversation."
+                                .to_string(),
                     });
                     let save = match kind {
                         CliKind::ClaudeCode => self.compaction_save_prompt(),
@@ -1873,7 +2136,8 @@ impl CodingHarness {
                 for (i, item) in held.into_iter().enumerate() {
                     let text = item.text;
                     if i == 0 {
-                        self.accept_user_message(&mut state, &mut vars, text.clone()).await;
+                        self.accept_user_message(&mut state, &mut vars, text.clone())
+                            .await;
                         let message = match state.messages.last() {
                             Some(HarnessMessage::User { content }) => content.clone(),
                             _ => text,
@@ -1911,7 +2175,8 @@ impl CodingHarness {
                     let len = state.messages.len();
                     let prior_end = len.saturating_sub(outbox.len());
                     let rewritten = session.synced > len
-                        || (!session.mark.is_empty() && transcript_mark(&state.messages, session.synced) != session.mark);
+                        || (!session.mark.is_empty()
+                            && transcript_mark(&state.messages, session.synced) != session.mark);
                     let away = !rewritten && prior_end > session.synced;
                     let behind = away
                         && handoff(&state.messages[session.synced..prior_end], false)
@@ -1927,10 +2192,9 @@ impl CodingHarness {
                         && !full
                         && kind == CliKind::ClaudeCode
                         && process.is_none()
-                        && session
-                            .id
-                            .as_deref()
-                            .is_some_and(|id| claude_transcript_lost(self.context.workspace_root(), id));
+                        && session.id.as_deref().is_some_and(|id| {
+                            claude_transcript_lost(self.context.workspace_root(), id)
+                        });
                     if rewritten || behind || full || lost {
                         if let Some(mut p) = process.take() {
                             let _ = p.child.start_kill();
@@ -1962,7 +2226,14 @@ impl CodingHarness {
                 if process.is_none() {
                     generation += 1;
                     match self
-                        .spawn_cli(&profile, &state, &mcp_url, &line_tx, generation, &mut session)
+                        .spawn_cli(
+                            &profile,
+                            &state,
+                            &mcp_url,
+                            &line_tx,
+                            generation,
+                            &mut session,
+                        )
                         .await
                     {
                         Ok(p) => {
@@ -1973,7 +2244,9 @@ impl CodingHarness {
                         }
                         Err(error) => {
                             outbox.clear();
-                            state.events.push(HarnessEvent::ModelError { message: error });
+                            state
+                                .events
+                                .push(HarnessEvent::ModelError { message: error });
                             state.status = HarnessStatus::Failed;
                             self.persist(&mut state, &lanes).await?;
                             if once {
@@ -1984,21 +2257,24 @@ impl CodingHarness {
                 }
                 if let Some(p) = process.as_mut() {
                     if session_key == crate::mission_control::SESSION_ID {
-                        let mode = format!("{} {}", crate::mission_autonomy::clock_line(), crate::mission_autonomy::mode_line());
+                        let mode = format!(
+                            "{} {}",
+                            crate::mission_autonomy::clock_line(),
+                            crate::mission_autonomy::mode_line()
+                        );
                         if mode != last_mode_line
                             && let Some(first) = outbox.first_mut()
                         {
-                            *first = format!("<system-reminder>{mode}</system-reminder>\n\n{first}");
+                            *first =
+                                format!("<system-reminder>{mode}</system-reminder>\n\n{first}");
                             last_mode_line = mode;
                         }
                     }
                     let prior_end = state.messages.len().saturating_sub(outbox.len());
                     let fresh = session.synced == 0;
                     if prior_end > session.synced.max(1)
-                        && let Some(context) = handoff(
-                            &state.messages[session.synced.max(1)..prior_end],
-                            fresh,
-                        )
+                        && let Some(context) =
+                            handoff(&state.messages[session.synced.max(1)..prior_end], fresh)
                         && let Some(first) = outbox.first_mut()
                     {
                         *first = format!("{}{first}", context.text);
@@ -2017,23 +2293,42 @@ impl CodingHarness {
                     let vault_line = if names.is_empty() {
                         String::new()
                     } else {
-                        format!("Vault secrets usable as $NAME in bash (values are hidden from you): {}", names.join(", "))
+                        format!(
+                            "Vault secrets usable as $NAME in bash (values are hidden from you): {}",
+                            names.join(", ")
+                        )
                     };
                     if vault_line != last_vault_line {
-                        reminder.push(if vault_line.is_empty() { "The vault is empty now.".to_string() } else { vault_line.clone() });
+                        reminder.push(if vault_line.is_empty() {
+                            "The vault is empty now.".to_string()
+                        } else {
+                            vault_line.clone()
+                        });
                         last_vault_line = vault_line;
                     }
                     if !reminder.is_empty()
-                        && let Some(first) = outbox.iter_mut().find(|t| !t.starts_with(COMMAND_MARK))
+                        && let Some(first) =
+                            outbox.iter_mut().find(|t| !t.starts_with(COMMAND_MARK))
                     {
-                        *first = format!("<system-reminder>{}</system-reminder>\n\n{first}", reminder.join("\n\n"));
+                        *first = format!(
+                            "<system-reminder>{}</system-reminder>\n\n{first}",
+                            reminder.join("\n\n")
+                        );
                     }
-                    session.mark_synced(&state.messages, state.compactions, state.last_prompt_tokens);
+                    session.mark_synced(
+                        &state.messages,
+                        state.compactions,
+                        state.last_prompt_tokens,
+                    );
                     last_heard = tokio::time::Instant::now();
                     if kind == CliKind::Devin {
                         let combined = std::mem::take(&mut outbox)
                             .into_iter()
-                            .map(|t| t.strip_prefix(COMMAND_MARK).map(str::to_string).unwrap_or(t))
+                            .map(|t| {
+                                t.strip_prefix(COMMAND_MARK)
+                                    .map(str::to_string)
+                                    .unwrap_or(t)
+                            })
                             .collect::<Vec<_>>()
                             .join("\n\n");
                         let sid = session.id.clone().unwrap_or_default();
@@ -2060,7 +2355,9 @@ impl CodingHarness {
                         for text in std::mem::take(&mut outbox) {
                             let text = match text.strip_prefix(COMMAND_MARK) {
                                 Some(command) => command.to_string(),
-                                None if kind == CliKind::ClaudeCode && text.trim_start().starts_with('/') => {
+                                None if kind == CliKind::ClaudeCode
+                                    && text.trim_start().starts_with('/') =>
+                                {
                                     format!(" {}", text.trim_start())
                                 }
                                 None => text,
@@ -2780,7 +3077,11 @@ impl CodingHarness {
     }
 
     async fn execute_cli_call(&self, call: McpCall) {
-        let value = match self.tools.execute(&self.context, &call.name, call.arguments).await {
+        let value = match self
+            .tools
+            .execute(&self.context, &call.name, call.arguments)
+            .await
+        {
             Ok(mut result) if call.name == "view_image" => {
                 let resolved = result
                     .value
@@ -2788,29 +3089,50 @@ impl CodingHarness {
                     .and_then(Value::as_str)
                     .and_then(|p| self.context.resolve_workspace_path(p).ok());
                 if let (Some(path), Some(object)) = (resolved, result.value.as_object_mut()) {
-                    object.insert(IMAGE_PATH_KEY.to_string(), json!(path.display().to_string()));
+                    object.insert(
+                        IMAGE_PATH_KEY.to_string(),
+                        json!(path.display().to_string()),
+                    );
                 }
                 result.value
             }
             Ok(result) => result.value,
             Err(ToolError::UnknownTool(name)) => {
-                let available: Vec<String> = self.tools.definitions().into_iter().map(|d| d.name).collect();
-                let hint = if self.context.workspace_root() == crate::mission_control::workspace_path() {
+                let available: Vec<String> = self
+                    .tools
+                    .definitions()
+                    .into_iter()
+                    .map(|d| d.name)
+                    .collect();
+                let hint = if self.context.workspace_root()
+                    == crate::mission_control::workspace_path()
+                {
                     " You are Mission Control: to check on, run or change anything in a project, ask the session that owns it (create_mission_task to that session, or inspect_session)."
                 } else {
                     ""
                 };
                 error_result(
                     "unknown_tool",
-                    &format!("`{name}` isn't a tool in this session.{hint} Tools you have: {}.", available.join(", ")),
+                    &format!(
+                        "`{name}` isn't a tool in this session.{hint} Tools you have: {}.",
+                        available.join(", ")
+                    ),
                 )
             }
             Err(error) => {
                 let text = error.to_string();
-                let argument_error = matches!(error, ToolError::Json(_) | ToolError::InvalidArguments { .. })
-                    || ["missing field", "unknown field", "invalid type", "unknown variant", "expected JSON object"]
-                        .iter()
-                        .any(|marker| text.contains(marker));
+                let argument_error = matches!(
+                    error,
+                    ToolError::Json(_) | ToolError::InvalidArguments { .. }
+                ) || [
+                    "missing field",
+                    "unknown field",
+                    "invalid type",
+                    "unknown variant",
+                    "expected JSON object",
+                ]
+                .iter()
+                .any(|marker| text.contains(marker));
                 let schema = self
                     .tools
                     .definitions()
@@ -2839,7 +3161,9 @@ impl CodingHarness {
     ) -> (bool, bool) {
         match event.get("event").and_then(Value::as_str) {
             Some("step_update") => {
-                let Some(step) = event.get("step_update") else { return (false, false) };
+                let Some(step) = event.get("step_update") else {
+                    return (false, false);
+                };
                 let index = step.get("step_index").and_then(Value::as_i64).unwrap_or(-1);
                 let done = step.get("state").and_then(Value::as_str);
                 match step.get("step_type").and_then(Value::as_str) {
@@ -2853,7 +3177,9 @@ impl CodingHarness {
                                 StreamBuffer::append(sink, delta);
                             }
                         }
-                        if let (Some(delta), Some(sink)) = (step.get("thinking_delta").and_then(Value::as_str), sink) {
+                        if let (Some(delta), Some(sink)) =
+                            (step.get("thinking_delta").and_then(Value::as_str), sink)
+                        {
                             StreamBuffer::append_thinking(sink, delta);
                         }
                         if done != Some("DONE") {
@@ -2876,15 +3202,25 @@ impl CodingHarness {
                                 ..Default::default()
                             });
                         }
-                        let text = parse.agy_text.remove(&index).unwrap_or_default().trim().to_string();
+                        let text = parse
+                            .agy_text
+                            .remove(&index)
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string();
                         if text.is_empty() {
                             return (false, false);
                         }
                         if let Some(sink) = sink {
                             StreamBuffer::clear(sink);
                         }
-                        state.messages.push(HarnessMessage::Assistant { content: text.clone(), tool_calls: Vec::new() });
-                        state.events.push(HarnessEvent::AssistantText { text, quiet: false });
+                        state.messages.push(HarnessMessage::Assistant {
+                            content: text.clone(),
+                            tool_calls: Vec::new(),
+                        });
+                        state
+                            .events
+                            .push(HarnessEvent::AssistantText { text, quiet: false });
                         (true, false)
                     }
                     Some("tool") => {
@@ -2894,13 +3230,20 @@ impl CodingHarness {
                         let mcp = raw == "call_mcp_tool";
                         let (name, arguments) = if mcp {
                             unwrap_custom(
-                                params.get("ToolName").and_then(Value::as_str).unwrap_or("tool").to_string(),
+                                params
+                                    .get("ToolName")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("tool")
+                                    .to_string(),
                                 params.get("Arguments").cloned().unwrap_or(Value::Null),
                             )
                         } else if let Some(path) = (raw == "view_file")
                             .then(|| params.get("AbsolutePath").and_then(Value::as_str))
                             .flatten()
-                            .filter(|p| !p.contains("/.gemini/antigravity-cli/") && crate::antigravity::is_image(p))
+                            .filter(|p| {
+                                !p.contains("/.gemini/antigravity-cli/")
+                                    && crate::antigravity::is_image(p)
+                            })
                         {
                             ("view_image".to_string(), json!({ "path": path }))
                         } else {
@@ -2920,8 +3263,14 @@ impl CodingHarness {
                             && info
                                 .pointer("/error/message")
                                 .and_then(Value::as_str)
-                                .is_some_and(|m| m.contains("missing properties") && (m.contains("toolSummary") || m.contains("toolAction")));
-                        let quiet = schema_read || redirected || envelope_rejected || QUIET_TOOLS.contains(&name.as_str());
+                                .is_some_and(|m| {
+                                    m.contains("missing properties")
+                                        && (m.contains("toolSummary") || m.contains("toolAction"))
+                                });
+                        let quiet = schema_read
+                            || redirected
+                            || envelope_rejected
+                            || QUIET_TOOLS.contains(&name.as_str());
                         let mut changed = false;
                         if envelope_rejected {
                             if let Some(marker) = parse.envelope_marker.as_ref() {
@@ -2942,20 +3291,32 @@ impl CodingHarness {
                         }
                         let announce = mcp || done.is_some_and(|d| d == "DONE" || d == "ERROR");
                         if announce && !quiet && parse.agy_tools.insert(index) {
-                            self.lane_progress("tool_call", super::dispatch::tool_activity_text(&name, &arguments));
+                            self.lane_progress(
+                                "tool_call",
+                                super::dispatch::tool_activity_text(&name, &arguments),
+                            );
                             self.presence("tool", &super::presence::tool_detail(&name, &arguments));
-                            state.events.push(HarnessEvent::ToolCall { tool_name: name.clone(), arguments });
+                            state.events.push(HarnessEvent::ToolCall {
+                                tool_name: name.clone(),
+                                arguments,
+                            });
                             changed = true;
                         }
                         let own = if mcp && matches!(done, Some("DONE") | Some("ERROR")) {
-                            parse.served.lock().ok().and_then(|mut served| served.get_mut(&name).and_then(|q| q.pop_front()))
+                            parse.served.lock().ok().and_then(|mut served| {
+                                served.get_mut(&name).and_then(|q| q.pop_front())
+                            })
                         } else {
                             None
                         };
                         let result = match done {
                             Some(_) if own.is_some() => own.unwrap_or_default(),
                             Some("DONE") => {
-                                let output = info.get("output").and_then(Value::as_str).unwrap_or("").to_string();
+                                let output = info
+                                    .get("output")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string();
                                 serde_json::Deserializer::from_str(output.trim_start())
                                     .into_iter::<Value>()
                                     .next()
@@ -2964,7 +3325,10 @@ impl CodingHarness {
                                     .unwrap_or_else(|| json!({"schema_version": 1, "status": "success", "data": {"output": output}}))
                             }
                             Some("ERROR") => {
-                                let message = info.pointer("/error/message").and_then(Value::as_str).unwrap_or("tool failed");
+                                let message = info
+                                    .pointer("/error/message")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("tool failed");
                                 serde_json::from_str::<Value>(message)
                                     .ok()
                                     .filter(|v| mcp && v.get("status").is_some())
@@ -2973,7 +3337,10 @@ impl CodingHarness {
                             _ => return (changed, false),
                         };
                         if !quiet {
-                            state.events.push(HarnessEvent::ToolResult { tool_name: name, result });
+                            state.events.push(HarnessEvent::ToolResult {
+                                tool_name: name,
+                                result,
+                            });
                             changed = true;
                         }
                         (changed, false)
@@ -2988,21 +3355,44 @@ impl CodingHarness {
                 }
                 parse.agy_text.clear();
                 parse.agy_tools.clear();
-                state.iterations += result.get("num_turns").and_then(Value::as_u64).unwrap_or(1) as usize;
+                state.iterations +=
+                    result.get("num_turns").and_then(Value::as_u64).unwrap_or(1) as usize;
                 let error = result.get("error").and_then(Value::as_str).unwrap_or("");
                 let cancelled = error.contains("context canceled");
-                let response = result.get("response").and_then(Value::as_str).map(str::trim).unwrap_or("");
+                let response = result
+                    .get("response")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
                 let replied = !response.is_empty()
                     || state
                         .events
                         .iter()
                         .rev()
-                        .take_while(|e| !matches!(e, HarnessEvent::UserInput { .. } | HarnessEvent::Steer { .. }))
+                        .take_while(|e| {
+                            !matches!(
+                                e,
+                                HarnessEvent::UserInput { .. } | HarnessEvent::Steer { .. }
+                            )
+                        })
                         .any(|e| matches!(e, HarnessEvent::AssistantText { .. }));
-                if result.get("status").and_then(Value::as_str) == Some("ERROR") && !cancelled && !replied {
-                    let message = if error.is_empty() { "Antigravity reported an error" } else { error }.to_string();
+                if result.get("status").and_then(Value::as_str) == Some("ERROR")
+                    && !cancelled
+                    && !replied
+                {
+                    let message = if error.is_empty() {
+                        "Antigravity reported an error"
+                    } else {
+                        error
+                    }
+                    .to_string();
                     state.events.push(HarnessEvent::ModelError { message });
-                } else if let Some(text) = result.get("response").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()) {
+                } else if let Some(text) = result
+                    .get("response")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                {
                     state.final_text = Some(text.to_string());
                 }
                 if state.status == HarnessStatus::Running {
@@ -3094,7 +3484,9 @@ impl CodingHarness {
                 }
                 let final_text = flushed.or_else(|| {
                     state.events.iter().rev().find_map(|e| match e {
-                        HarnessEvent::AssistantText { text, .. } if !text.trim().is_empty() => Some(text.clone()),
+                        HarnessEvent::AssistantText { text, .. } if !text.trim().is_empty() => {
+                            Some(text.clone())
+                        }
                         _ => None,
                     })
                 });
@@ -3120,8 +3512,10 @@ impl CodingHarness {
                 if state.status == HarnessStatus::Idle {
                     state.status = HarnessStatus::Running;
                 }
-                if let (Some(delta), Some(sink)) = (update.pointer("/content/text").and_then(Value::as_str), sink)
-                    && !delta.is_empty()
+                if let (Some(delta), Some(sink)) = (
+                    update.pointer("/content/text").and_then(Value::as_str),
+                    sink,
+                ) && !delta.is_empty()
                 {
                     StreamBuffer::append_thinking(sink, delta);
                 }
@@ -3145,7 +3539,11 @@ impl CodingHarness {
                 if meta.get("cognition.ai/subagent_context").is_some() {
                     return (false, false);
                 }
-                if let Some(size) = update.get("size").and_then(Value::as_u64).filter(|s| *s > 0) {
+                if let Some(size) = update
+                    .get("size")
+                    .and_then(Value::as_u64)
+                    .filter(|s| *s > 0)
+                {
                     parse.devin_window = size;
                 }
                 let n = |k: &str| meta.get(k).and_then(Value::as_u64).unwrap_or(0);
@@ -3171,55 +3569,97 @@ impl CodingHarness {
                 (false, false)
             }
             Some("tool_call") => {
-                if meta.get("cognition.ai/eventType").and_then(Value::as_str) == Some("hook_execution") {
+                if meta.get("cognition.ai/eventType").and_then(Value::as_str)
+                    == Some("hook_execution")
+                {
                     return (false, false);
                 }
                 let mut changed = self.flush_devin_text(state, sink, parse).is_some();
-                let call_id = update.get("toolCallId").and_then(Value::as_str).unwrap_or("").to_string();
+                let call_id = update
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let raw_name = meta
                     .get("cognition.ai/toolName")
                     .and_then(Value::as_str)
                     .or_else(|| meta.get("cognition.ai/mcpToolName").and_then(Value::as_str))
-                    .or_else(|| meta.get("cognition.ai/inferenceToolName").and_then(Value::as_str))
+                    .or_else(|| {
+                        meta.get("cognition.ai/inferenceToolName")
+                            .and_then(Value::as_str)
+                    })
                     .unwrap_or("tool");
                 let raw_input = update.get("rawInput").cloned().unwrap_or(Value::Null);
                 let is_meta_list = matches!(
                     raw_name,
-                    "mcp_list_tools" | "mcp_list_servers" | "mcp_read_resource" | "list_resources" | "read_resource"
+                    "mcp_list_tools"
+                        | "mcp_list_servers"
+                        | "mcp_read_resource"
+                        | "list_resources"
+                        | "read_resource"
                 );
-                let (mcp, name, arguments) = if let Some(stripped) = raw_name.strip_prefix(MCP_PREFIX) {
-                    let (n, a) = unwrap_custom(stripped.to_string(), raw_input);
-                    (true, n, a)
-                } else if raw_name == "mcp_call_tool" {
-                    let inner = raw_input.get("tool_name").and_then(Value::as_str).unwrap_or("tool").to_string();
-                    let args = raw_input.get("arguments").cloned().unwrap_or(Value::Null);
-                    let (n, a) = unwrap_custom(inner, args);
-                    (true, n, a)
-                } else {
-                    (false, raw_name.to_string(), raw_input)
-                };
+                let (mcp, name, arguments) =
+                    if let Some(stripped) = raw_name.strip_prefix(MCP_PREFIX) {
+                        let (n, a) = unwrap_custom(stripped.to_string(), raw_input);
+                        (true, n, a)
+                    } else if raw_name == "mcp_call_tool" {
+                        let inner = raw_input
+                            .get("tool_name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool")
+                            .to_string();
+                        let args = raw_input.get("arguments").cloned().unwrap_or(Value::Null);
+                        let (n, a) = unwrap_custom(inner, args);
+                        (true, n, a)
+                    } else {
+                        (false, raw_name.to_string(), raw_input)
+                    };
                 if !call_id.is_empty() {
-                    parse.tool_names.insert(call_id.clone(), if is_meta_list { format!("__meta:{name}") } else if mcp { format!("__mcp:{name}") } else { name.clone() });
+                    parse.tool_names.insert(
+                        call_id.clone(),
+                        if is_meta_list {
+                            format!("__meta:{name}")
+                        } else if mcp {
+                            format!("__mcp:{name}")
+                        } else {
+                            name.clone()
+                        },
+                    );
                 }
                 let quiet = is_meta_list || QUIET_TOOLS.contains(&name.as_str());
                 if mcp && !quiet && parse.devin_tools.insert(call_id) {
-                    self.lane_progress("tool_call", super::dispatch::tool_activity_text(&name, &arguments));
+                    self.lane_progress(
+                        "tool_call",
+                        super::dispatch::tool_activity_text(&name, &arguments),
+                    );
                     self.presence("tool", &super::presence::tool_detail(&name, &arguments));
-                    state.events.push(HarnessEvent::ToolCall { tool_name: name, arguments });
+                    state.events.push(HarnessEvent::ToolCall {
+                        tool_name: name,
+                        arguments,
+                    });
                     changed = true;
                 }
                 (changed, false)
             }
             Some("tool_call_update") => {
-                if meta.get("cognition.ai/eventType").and_then(Value::as_str) == Some("hook_execution") {
+                if meta.get("cognition.ai/eventType").and_then(Value::as_str)
+                    == Some("hook_execution")
+                {
                     return (false, false);
                 }
                 let status = update.get("status").and_then(Value::as_str).unwrap_or("");
                 if !matches!(status, "completed" | "failed") {
                     return (false, false);
                 }
-                let call_id = update.get("toolCallId").and_then(Value::as_str).unwrap_or("");
-                let recorded = parse.tool_names.get(call_id).cloned().unwrap_or_else(|| "tool".to_string());
+                let call_id = update
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let recorded = parse
+                    .tool_names
+                    .get(call_id)
+                    .cloned()
+                    .unwrap_or_else(|| "tool".to_string());
                 if recorded.starts_with("__meta:") {
                     return (false, false);
                 }
@@ -3245,7 +3685,12 @@ impl CodingHarness {
                             .join("\n")
                     })
                     .filter(|s| !s.is_empty())
-                    .or_else(|| update.get("rawOutput").and_then(Value::as_str).map(str::to_string))
+                    .or_else(|| {
+                        update
+                            .get("rawOutput")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
                     .unwrap_or_default();
                 let hook_blocked = status == "failed"
                     && (text.contains("handled by snippet: call")
@@ -3259,29 +3704,40 @@ impl CodingHarness {
                         arguments: json!({}),
                     });
                 }
-                let own = if mcp {
-                    parse
-                        .served
-                        .lock()
-                        .ok()
-                        .and_then(|mut served| served.get_mut(&name).and_then(|q| q.pop_front()))
-                } else {
-                    None
-                };
+                let own =
+                    if mcp {
+                        parse.served.lock().ok().and_then(|mut served| {
+                            served.get_mut(&name).and_then(|q| q.pop_front())
+                        })
+                    } else {
+                        None
+                    };
                 let result = if let Some(val) = own {
                     val
                 } else if status == "failed" {
                     serde_json::from_str::<Value>(&text)
                         .ok()
                         .filter(|v| mcp && v.get("status").is_some())
-                        .unwrap_or_else(|| error_result("tool_error", if text.is_empty() { "tool failed" } else { &text }))
+                        .unwrap_or_else(|| {
+                            error_result(
+                                "tool_error",
+                                if text.is_empty() {
+                                    "tool failed"
+                                } else {
+                                    &text
+                                },
+                            )
+                        })
                 } else {
                     serde_json::from_str::<Value>(text.trim_start())
                         .ok()
                         .filter(|v| mcp && v.get("status").is_some())
                         .unwrap_or_else(|| json!({"schema_version": 1, "status": "success", "data": {"output": text}}))
                 };
-                state.events.push(HarnessEvent::ToolResult { tool_name: name, result });
+                state.events.push(HarnessEvent::ToolResult {
+                    tool_name: name,
+                    result,
+                });
                 (true, false)
             }
             _ => (false, false),
@@ -3298,11 +3754,17 @@ impl CodingHarness {
         let tool_names = &mut parse.tool_names;
         match event.get("type").and_then(Value::as_str) {
             Some("stream_event") => {
-                let n = |v: Option<&Value>, k: &str| v.and_then(|u| u.get(k)).and_then(Value::as_u64).unwrap_or(0);
+                let n = |v: Option<&Value>, k: &str| {
+                    v.and_then(|u| u.get(k))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                };
                 match event.pointer("/event/type").and_then(Value::as_str) {
                     Some("message_start") => {
                         let usage = event.pointer("/event/message/usage");
-                        let prompt = n(usage, "input_tokens") + n(usage, "cache_read_input_tokens") + n(usage, "cache_creation_input_tokens");
+                        let prompt = n(usage, "input_tokens")
+                            + n(usage, "cache_read_input_tokens")
+                            + n(usage, "cache_creation_input_tokens");
                         parse.claude_call = Some(crate::llm::TokenUsage {
                             prompt_tokens: prompt,
                             completion_tokens: n(usage, "output_tokens"),
@@ -3349,18 +3811,32 @@ impl CodingHarness {
                 if state.status == HarnessStatus::Idle {
                     state.status = HarnessStatus::Running;
                 }
-                let blocks = event.pointer("/message/content").and_then(Value::as_array).cloned().unwrap_or_default();
+                let blocks = event
+                    .pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 let mut changed = false;
                 for block in blocks {
                     match block.get("type").and_then(Value::as_str) {
                         Some("text") => {
-                            let text = block.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                            let text = block
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
                             if !text.is_empty() {
                                 if let Some(sink) = sink {
                                     StreamBuffer::clear(sink);
                                 }
-                                state.messages.push(HarnessMessage::Assistant { content: text.clone(), tool_calls: Vec::new() });
-                                state.events.push(HarnessEvent::AssistantText { text, quiet: false });
+                                state.messages.push(HarnessMessage::Assistant {
+                                    content: text.clone(),
+                                    tool_calls: Vec::new(),
+                                });
+                                state
+                                    .events
+                                    .push(HarnessEvent::AssistantText { text, quiet: false });
                                 self.lane_progress("model", super::step::MODEL_ACTIVITY_TEXT);
                                 changed = true;
                             }
@@ -3375,9 +3851,18 @@ impl CodingHarness {
                                 tool_names.insert(id.to_string(), name.clone());
                             }
                             if !QUIET_TOOLS.contains(&name.as_str()) {
-                                self.lane_progress("tool_call", super::dispatch::tool_activity_text(&name, &arguments));
-                                self.presence("tool", &super::presence::tool_detail(&name, &arguments));
-                                state.events.push(HarnessEvent::ToolCall { tool_name: name, arguments });
+                                self.lane_progress(
+                                    "tool_call",
+                                    super::dispatch::tool_activity_text(&name, &arguments),
+                                );
+                                self.presence(
+                                    "tool",
+                                    &super::presence::tool_detail(&name, &arguments),
+                                );
+                                state.events.push(HarnessEvent::ToolCall {
+                                    tool_name: name,
+                                    arguments,
+                                });
                                 changed = true;
                             }
                         }
@@ -3387,18 +3872,31 @@ impl CodingHarness {
                 changed
             }
             Some("user") => {
-                let blocks = event.pointer("/message/content").and_then(Value::as_array).cloned().unwrap_or_default();
+                let blocks = event
+                    .pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 let mut changed = false;
                 for block in blocks {
                     if block.get("type").and_then(Value::as_str) != Some("tool_result") {
                         continue;
                     }
-                    let id = block.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
-                    let name = tool_names.get(id).cloned().unwrap_or_else(|| "tool".to_string());
+                    let id = block
+                        .get("tool_use_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let name = tool_names
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_else(|| "tool".to_string());
                     if QUIET_TOOLS.contains(&name.as_str()) {
                         continue;
                     }
-                    state.events.push(HarnessEvent::ToolResult { tool_name: name, result: tool_result_from_block(&block) });
+                    state.events.push(HarnessEvent::ToolResult {
+                        tool_name: name,
+                        result: tool_result_from_block(&block),
+                    });
                     changed = true;
                 }
                 changed
@@ -3406,11 +3904,17 @@ impl CodingHarness {
             Some("rate_limit_event") => {
                 let windows = event.pointer("/rate_limit_info/unifiedWindows");
                 let window = |key: &str, minutes: i64| {
-                    windows.and_then(|w| w.get(key)).map(|w| crate::llm::RateLimitWindow {
-                        used_percent: w.get("utilization").and_then(Value::as_f64).unwrap_or(0.0) * 100.0,
-                        window_minutes: minutes,
-                        resets_at: w.get("resetsAt").and_then(Value::as_i64).unwrap_or(0),
-                    })
+                    windows
+                        .and_then(|w| w.get(key))
+                        .map(|w| crate::llm::RateLimitWindow {
+                            used_percent: w
+                                .get("utilization")
+                                .and_then(Value::as_f64)
+                                .unwrap_or(0.0)
+                                * 100.0,
+                            window_minutes: minutes,
+                            resets_at: w.get("resetsAt").and_then(Value::as_i64).unwrap_or(0),
+                        })
                 };
                 let snapshot = crate::llm::RateLimitSnapshot {
                     primary: window("five_hour", 300),
@@ -3433,21 +3937,32 @@ impl CodingHarness {
                 }
                 let usage = event.get("usage").cloned().unwrap_or(Value::Null);
                 let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
-                let prompt = n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens");
+                let prompt = n("input_tokens")
+                    + n("cache_read_input_tokens")
+                    + n("cache_creation_input_tokens");
                 let completion = n("output_tokens");
                 state.prompt_tokens += prompt;
                 state.completion_tokens += completion;
                 state.total_tokens += prompt + completion;
                 state.cache_read_tokens += n("cache_read_input_tokens");
-                state.iterations += event.get("num_turns").and_then(Value::as_u64).unwrap_or(1) as usize;
-                let failed = event.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                state.iterations +=
+                    event.get("num_turns").and_then(Value::as_u64).unwrap_or(1) as usize;
+                let failed = event
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 if failed {
-                    let message = event.get("result").and_then(Value::as_str)
+                    let message = event
+                        .get("result")
+                        .and_then(Value::as_str)
                         .or_else(|| event.get("subtype").and_then(Value::as_str))
-                        .unwrap_or("Claude Code reported an error").to_string();
-                    if matches!(state.events.last(), Some(HarnessEvent::AssistantText { text, .. }) if text.trim() == message.trim()) {
+                        .unwrap_or("Claude Code reported an error")
+                        .to_string();
+                    if matches!(state.events.last(), Some(HarnessEvent::AssistantText { text, .. }) if text.trim() == message.trim())
+                    {
                         state.events.pop();
-                        if matches!(state.messages.last(), Some(HarnessMessage::Assistant { content, tool_calls }) if tool_calls.is_empty() && content.trim() == message.trim()) {
+                        if matches!(state.messages.last(), Some(HarnessMessage::Assistant { content, tool_calls }) if tool_calls.is_empty() && content.trim() == message.trim())
+                        {
                             state.messages.pop();
                         }
                     }
@@ -3486,7 +4001,10 @@ mod goal_tests {
     #[test]
     fn cli_agents_are_served_complete_goal() {
         let names = |once| -> Vec<String> {
-            cli_meta_tool_definitions(once, false, &[]).into_iter().map(|d| d.name).collect()
+            cli_meta_tool_definitions(once, false, &[])
+                .into_iter()
+                .map(|d| d.name)
+                .collect()
         };
         assert!(names(false).iter().any(|n| n == "complete_goal"));
         assert!(!names(true).iter().any(|n| n == "complete_goal"));
@@ -3494,11 +4012,36 @@ mod goal_tests {
 
     #[test]
     fn idle_cli_loop_drives_an_active_goal() {
-        assert!(cli_goal_due(&active_goal_state(HarnessStatus::Idle), true, true, false));
-        assert!(!cli_goal_due(&active_goal_state(HarnessStatus::Running), true, true, false));
-        assert!(!cli_goal_due(&active_goal_state(HarnessStatus::Idle), true, false, false));
-        assert!(!cli_goal_due(&active_goal_state(HarnessStatus::Idle), false, true, false));
-        assert!(!cli_goal_due(&active_goal_state(HarnessStatus::Idle), true, true, true));
+        assert!(cli_goal_due(
+            &active_goal_state(HarnessStatus::Idle),
+            true,
+            true,
+            false
+        ));
+        assert!(!cli_goal_due(
+            &active_goal_state(HarnessStatus::Running),
+            true,
+            true,
+            false
+        ));
+        assert!(!cli_goal_due(
+            &active_goal_state(HarnessStatus::Idle),
+            true,
+            false,
+            false
+        ));
+        assert!(!cli_goal_due(
+            &active_goal_state(HarnessStatus::Idle),
+            false,
+            true,
+            false
+        ));
+        assert!(!cli_goal_due(
+            &active_goal_state(HarnessStatus::Idle),
+            true,
+            true,
+            true
+        ));
         let mut paused = active_goal_state(HarnessStatus::Idle);
         paused.goal.as_mut().unwrap().status = GoalStatus::Paused;
         assert!(!cli_goal_due(&paused, true, true, false));
@@ -3506,11 +4049,17 @@ mod goal_tests {
 
     #[test]
     fn stall_watch_only_covers_a_silent_running_turn() {
-        let running = HarnessState { status: HarnessStatus::Running, ..Default::default() };
+        let running = HarnessState {
+            status: HarnessStatus::Running,
+            ..Default::default()
+        };
         assert!(cli_stall_watched(&running, true, false));
         assert!(!cli_stall_watched(&running, false, false));
         assert!(!cli_stall_watched(&running, true, true));
-        let idle = HarnessState { status: HarnessStatus::Idle, ..Default::default() };
+        let idle = HarnessState {
+            status: HarnessStatus::Idle,
+            ..Default::default()
+        };
         assert!(!cli_stall_watched(&idle, true, false));
     }
 }
@@ -3522,8 +4071,16 @@ mod lane_progress_tests {
     #[test]
     fn claude_tool_use_publishes_lane_progress() {
         let (tx, mut rx) = mpsc::unbounded_channel::<crate::lanes::LaneProgress>();
-        let config = HarnessConfig { progress_tx: Some(tx), progress_id: Some("lane-1".into()), ..HarnessConfig::default() };
-        let harness = CodingHarness::new(config, ToolRegistry::new(), ToolContext::new(std::env::temp_dir()).expect("ctx"));
+        let config = HarnessConfig {
+            progress_tx: Some(tx),
+            progress_id: Some("lane-1".into()),
+            ..HarnessConfig::default()
+        };
+        let harness = CodingHarness::new(
+            config,
+            ToolRegistry::new(),
+            ToolContext::new(std::env::temp_dir()).expect("ctx"),
+        );
         let mut state = HarnessState::default();
         let mut parse = CliParse::default();
         let event = serde_json::json!({"type": "assistant", "message": {"content": [
@@ -3531,8 +4088,16 @@ mod lane_progress_tests {
             {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git log", "description": "Check lane progress"}}
         ]}});
         harness.apply_cli_event(&mut state, &event, None, &mut parse);
-        let got: Vec<(String, String)> = std::iter::from_fn(|| rx.try_recv().ok()).map(|p| (p.kind, p.text)).collect();
-        assert_eq!(got, vec![("model".into(), "Thinking".into()), ("tool_call".into(), "Check lane progress".into())]);
+        let got: Vec<(String, String)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|p| (p.kind, p.text))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("model".into(), "Thinking".into()),
+                ("tool_call".into(), "Check lane progress".into())
+            ]
+        );
     }
 }
 
@@ -3563,7 +4128,10 @@ mod devin_acp_tests {
 
         cfg.model = "swe-2-flash".into();
         cfg.reasoning_effort = Some("medium".into());
-        assert_eq!(CodingHarness::resolved_devin_model(&cfg), "swe-2-flash-medium");
+        assert_eq!(
+            CodingHarness::resolved_devin_model(&cfg),
+            "swe-2-flash-medium"
+        );
     }
 
     #[test]
@@ -3576,8 +4144,12 @@ mod devin_acp_tests {
         let mut parse = CliParse::default();
 
         // Pre-turn handshake reply (id < 10) is ignored.
-        let init_reply = json!({"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "oval-booklet"}});
-        assert_eq!(harness.apply_devin_event(&mut state, &init_reply, None, &mut parse), (false, false));
+        let init_reply =
+            json!({"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "oval-booklet"}});
+        assert_eq!(
+            harness.apply_devin_event(&mut state, &init_reply, None, &mut parse),
+            (false, false)
+        );
 
         // Meta mcp_list_tools call and its completion are quiet.
         let list_call = json!({
@@ -3593,7 +4165,10 @@ mod devin_acp_tests {
                 }
             }
         });
-        assert_eq!(harness.apply_devin_event(&mut state, &list_call, None, &mut parse), (false, false));
+        assert_eq!(
+            harness.apply_devin_event(&mut state, &list_call, None, &mut parse),
+            (false, false)
+        );
         let list_done = json!({
             "jsonrpc": "2.0",
             "method": "session/update",
@@ -3607,7 +4182,10 @@ mod devin_acp_tests {
                 }
             }
         });
-        assert_eq!(harness.apply_devin_event(&mut state, &list_done, None, &mut parse), (false, false));
+        assert_eq!(
+            harness.apply_devin_event(&mut state, &list_done, None, &mut parse),
+            (false, false)
+        );
 
         // Hook execution updates are ignored.
         let hook_ev = json!({
@@ -3622,7 +4200,10 @@ mod devin_acp_tests {
                 }
             }
         });
-        assert_eq!(harness.apply_devin_event(&mut state, &hook_ev, None, &mut parse), (false, false));
+        assert_eq!(
+            harness.apply_devin_event(&mut state, &hook_ev, None, &mut parse),
+            (false, false)
+        );
 
         // Snippet MCP tool call and completion emit ToolCall + ToolResult.
         let mcp_call = json!({
@@ -3641,7 +4222,10 @@ mod devin_acp_tests {
                 }
             }
         });
-        assert_eq!(harness.apply_devin_event(&mut state, &mcp_call, None, &mut parse), (true, false));
+        assert_eq!(
+            harness.apply_devin_event(&mut state, &mcp_call, None, &mut parse),
+            (true, false)
+        );
 
         let mcp_done = json!({
             "jsonrpc": "2.0",
@@ -3656,7 +4240,10 @@ mod devin_acp_tests {
                 }
             }
         });
-        assert_eq!(harness.apply_devin_event(&mut state, &mcp_done, None, &mut parse), (true, false));
+        assert_eq!(
+            harness.apply_devin_event(&mut state, &mcp_done, None, &mut parse),
+            (true, false)
+        );
 
         // Usage update + duplicate subagent_context copy: counted once.
         let u1 = json!({
@@ -3712,13 +4299,20 @@ mod devin_acp_tests {
             "id": 10,
             "result": {"stopReason": "end_turn", "usage": {"totalTokens": 20810, "inputTokens": 20798, "outputTokens": 12, "cachedReadTokens": 20000}}
         });
-        let (changed, finished) = harness.apply_devin_event(&mut state, &prompt_res, None, &mut parse);
+        let (changed, finished) =
+            harness.apply_devin_event(&mut state, &prompt_res, None, &mut parse);
         assert!(changed && finished);
         assert_eq!(state.status, HarnessStatus::Idle);
         assert_eq!(state.final_text.as_deref(), Some("All done."));
         assert_eq!(parse.calls.len(), 1);
-        assert!(state.events.iter().any(|e| matches!(e, HarnessEvent::ToolCall { tool_name, .. } if tool_name == "bash")));
-        assert!(state.events.iter().any(|e| matches!(e, HarnessEvent::ToolResult { tool_name, .. } if tool_name == "bash")));
+        assert!(
+            state.events.iter().any(
+                |e| matches!(e, HarnessEvent::ToolCall { tool_name, .. } if tool_name == "bash")
+            )
+        );
+        assert!(state.events.iter().any(
+            |e| matches!(e, HarnessEvent::ToolResult { tool_name, .. } if tool_name == "bash")
+        ));
     }
 
     #[test]
@@ -3739,9 +4333,12 @@ mod devin_acp_tests {
             }
         });
         assert!(crate::devin::quota_exhausted_hint(&quota_err).is_some());
-        let (changed, finished) = harness.apply_devin_event(&mut state, &quota_err, None, &mut parse);
+        let (changed, finished) =
+            harness.apply_devin_event(&mut state, &quota_err, None, &mut parse);
         assert!(changed && finished);
-        assert!(matches!(state.events.last(), Some(HarnessEvent::ModelError { message }) if message == "Quota exhausted."));
+        assert!(
+            matches!(state.events.last(), Some(HarnessEvent::ModelError { message }) if message == "Quota exhausted.")
+        );
     }
 
     #[tokio::test]
@@ -3760,7 +4357,10 @@ mod devin_acp_tests {
                 std::os::unix::fs::symlink(&creds, fake_devin.join("credentials.toml")).unwrap();
             }
         }
-        if let Some(real_cfg) = crate::devin::real_home().map(|h| h.join(".config/devin/config.json")).filter(|p| p.is_file()) {
+        if let Some(real_cfg) = crate::devin::real_home()
+            .map(|h| h.join(".config/devin/config.json"))
+            .filter(|p| p.is_file())
+        {
             let fake_cfg = fake_home.join(".config/devin");
             std::fs::create_dir_all(&fake_cfg).unwrap();
             std::os::unix::fs::symlink(&real_cfg, fake_cfg.join("config.json")).unwrap();
@@ -3798,8 +4398,21 @@ mod devin_acp_tests {
             )
             .await
             .expect("turn 1");
-        assert!(s1.final_text.as_deref().unwrap_or("").contains("sentinel-42"), "s1 final_text: {:?}", s1.final_text);
-        assert!(s1.events.iter().any(|e| matches!(e, HarnessEvent::ToolCall { tool_name, .. } if tool_name == "bash")), "s1 events: {:?}", s1.events);
+        assert!(
+            s1.final_text
+                .as_deref()
+                .unwrap_or("")
+                .contains("sentinel-42"),
+            "s1 final_text: {:?}",
+            s1.final_text
+        );
+        assert!(
+            s1.events.iter().any(
+                |e| matches!(e, HarnessEvent::ToolCall { tool_name, .. } if tool_name == "bash")
+            ),
+            "s1 events: {:?}",
+            s1.events
+        );
         assert!(s1.iterations >= 1);
 
         let h2 = make(true);
@@ -3810,7 +4423,15 @@ mod devin_acp_tests {
             )
             .await
             .expect("turn 2");
-        assert!(s2.final_text.as_deref().unwrap_or("").to_uppercase().contains("FALCON"), "s2 final_text: {:?}", s2.final_text);
+        assert!(
+            s2.final_text
+                .as_deref()
+                .unwrap_or("")
+                .to_uppercase()
+                .contains("FALCON"),
+            "s2 final_text: {:?}",
+            s2.final_text
+        );
         assert!(
             !s2.events.iter().any(|e| matches!(e, HarnessEvent::SystemDecision { step, .. } if step == "runtime_reseeded")),
             "s2 should resume via session/load without reseeding: {:?}",
@@ -3835,11 +4456,19 @@ mod devinrel_tests {
     fn normalise_read_aliases_become_bash() {
         let k = known();
         for name in ["read_file", "read", "view_file", "cat"] {
-            let (n, a) = normalise_call(name, json!({"path": "src/main.rs", "start_line": 3, "end_line": 9}), &k);
+            let (n, a) = normalise_call(
+                name,
+                json!({"path": "src/main.rs", "start_line": 3, "end_line": 9}),
+                &k,
+            );
             assert_eq!(n, "bash");
             assert_eq!(a, json!({"command": "sed -n '3,9p' 'src/main.rs'"}));
         }
-        let (n, a) = normalise_call("read_file", json!({"path": "a b.txt", "offset": 10, "limit": 5}), &k);
+        let (n, a) = normalise_call(
+            "read_file",
+            json!({"path": "a b.txt", "offset": 10, "limit": 5}),
+            &k,
+        );
         assert_eq!(n, "bash");
         assert_eq!(a["command"], "sed -n '11,15p' 'a b.txt'");
         let (n, a) = normalise_call("cat", json!({"path": "x"}), &k);
@@ -3864,7 +4493,11 @@ mod devinrel_tests {
     fn normalise_edit_aliases_become_change_files_replace() {
         let k = known();
         for name in ["edit", "edit_file", "str_replace", "replace"] {
-            let (n, a) = normalise_call(name, json!({"path": "f", "old_string": "a", "new_string": "b"}), &k);
+            let (n, a) = normalise_call(
+                name,
+                json!({"path": "f", "old_string": "a", "new_string": "b"}),
+                &k,
+            );
             assert_eq!(n, "change_files");
             assert_eq!(a["changes"][0]["action"], "replace");
             assert_eq!(a["changes"][0]["find"], "a");
@@ -3942,7 +4575,11 @@ mod devinrel_tests {
         let (n, a) = normalise_call("bash", json!({"command": "ls"}), &k);
         assert_eq!(n, "bash");
         assert_eq!(a, json!({"command": "ls"}));
-        let (n, a) = normalise_call("change_files", json!({"changes": [{"action": "delete", "path": "f"}]}), &k);
+        let (n, a) = normalise_call(
+            "change_files",
+            json!({"changes": [{"action": "delete", "path": "f"}]}),
+            &k,
+        );
         assert_eq!(n, "change_files");
         assert_eq!(a["changes"][0]["action"], "delete");
         let (n, a) = normalise_call("ask_user", json!({"question": "?"}), &k);
@@ -4006,7 +4643,10 @@ mod devinrel_tests {
             .reply
             .send(json!({"schema_version": 1, "status": "success", "data": {"output": "ok"}}))
             .expect("send second reply");
-        let reply2 = second.await.expect("dispatch2 join").expect("dispatch2 reply");
+        let reply2 = second
+            .await
+            .expect("dispatch2 join")
+            .expect("dispatch2 reply");
         let content = reply2
             .pointer("/result/content")
             .and_then(Value::as_array)
@@ -4024,7 +4664,10 @@ mod devinrel_tests {
             .collect();
         assert_eq!(served.len(), 2, "one served entry per call: {served:?}");
         assert!(served[0].contains("still running"), "{served:?}");
-        assert_eq!(served[1], "ok", "the second call records its own value: {served:?}");
+        assert_eq!(
+            served[1], "ok",
+            "the second call records its own value: {served:?}"
+        );
     }
 
     fn get_request(method: &str, token: &str) -> Request {
@@ -4040,17 +4683,42 @@ mod devinrel_tests {
         let token = "0123456789abcdef0123456789abcdef".to_string();
         let (state, _calls) = test_mcp_state(&token);
 
-        let res = mcp_get(AxState(state.clone()), AxPath(token.clone()), get_request("GET", &token)).await;
+        let res = mcp_get(
+            AxState(state.clone()),
+            AxPath(token.clone()),
+            get_request("GET", &token),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK);
-        let content_type = res.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
-        assert!(content_type.starts_with("text/event-stream"), "{content_type}");
+        let content_type = res
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.starts_with("text/event-stream"),
+            "{content_type}"
+        );
         assert_eq!(res.headers().get("cache-control").unwrap(), "no-cache");
-        assert_eq!(res.headers().get("mcp-session-id").unwrap(), "snippet-01234567");
+        assert_eq!(
+            res.headers().get("mcp-session-id").unwrap(),
+            "snippet-01234567"
+        );
 
-        let res = mcp_get(AxState(state.clone()), AxPath("badtoken".into()), get_request("GET", "badtoken")).await;
+        let res = mcp_get(
+            AxState(state.clone()),
+            AxPath("badtoken".into()),
+            get_request("GET", "badtoken"),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
-        let res = mcp_get(AxState(state.clone()), AxPath(token.clone()), get_request("HEAD", &token)).await;
+        let res = mcp_get(
+            AxState(state.clone()),
+            AxPath(token.clone()),
+            get_request("HEAD", &token),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
 
         let res = mcp_delete(AxState(state.clone()), AxPath(token.clone())).await;
@@ -4062,7 +4730,10 @@ mod devinrel_tests {
             Json(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})),
         )
         .await;
-        assert_eq!(res.headers().get("mcp-session-id").unwrap(), "snippet-01234567");
+        assert_eq!(
+            res.headers().get("mcp-session-id").unwrap(),
+            "snippet-01234567"
+        );
     }
 
     #[test]

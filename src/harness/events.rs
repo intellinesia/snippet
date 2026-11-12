@@ -338,12 +338,24 @@ impl CodingHarness {
             let end = crate::checkpoint::tree_snapshot(&workspace).ok()?;
             crate::checkpoint::numstat(&workspace, &start, &end)
         });
-        let Ok(Ok(Some(entries))) = tokio::time::timeout(std::time::Duration::from_secs(15), work).await else {
+        let Ok(Ok(Some(entries))) =
+            tokio::time::timeout(std::time::Duration::from_secs(15), work).await
+        else {
             return;
         };
-        let Some(event) = turn_changes_event(entries) else { return };
-        if let (HarnessEvent::TurnChanges { total_files, add, del, .. }, Some(store), Some(id)) =
-            (&event, self.store(), self.session_id())
+        let Some(event) = turn_changes_event(entries) else {
+            return;
+        };
+        if let (
+            HarnessEvent::TurnChanges {
+                total_files,
+                add,
+                del,
+                ..
+            },
+            Some(store),
+            Some(id),
+        ) = (&event, self.store(), self.session_id())
         {
             let _ = store.record_turn_changes(&id, *total_files as u64, *add, *del);
         }
@@ -512,10 +524,27 @@ impl CodingHarness {
 
     /// Start a lane the daemon asked for. No turn is started; the lane's report
     /// arrives like any other.
-    pub(super) fn spawn_requested_lane(&self, state: &mut HarnessState, lanes: &mut LaneManager, spec: super::LaneSpawn) {
-        match lanes.spawn(&spec.title, &spec.brief, spec.read_only, spec.agent, spec.profile) {
-            Ok(id) => state.events.push(HarnessEvent::LaneSpawned { id, title: spec.title }),
-            Err(error) => eprintln!("[lanes] requested lane `{}` not started: {error}", spec.title),
+    pub(super) fn spawn_requested_lane(
+        &self,
+        state: &mut HarnessState,
+        lanes: &mut LaneManager,
+        spec: super::LaneSpawn,
+    ) {
+        match lanes.spawn(
+            &spec.title,
+            &spec.brief,
+            spec.read_only,
+            spec.agent,
+            spec.profile,
+        ) {
+            Ok(id) => state.events.push(HarnessEvent::LaneSpawned {
+                id,
+                title: spec.title,
+            }),
+            Err(error) => eprintln!(
+                "[lanes] requested lane `{}` not started: {error}",
+                spec.title
+            ),
         }
     }
 
@@ -616,7 +645,10 @@ impl CodingHarness {
                 false
             }
             LoopInput::KeepWarm(id) => {
-                crate::keep_warm::complete(&id, crate::keep_warm::Outcome::Skipped(keep_warm_skip_reason(state.status).into()));
+                crate::keep_warm::complete(
+                    &id,
+                    crate::keep_warm::Outcome::Skipped(keep_warm_skip_reason(state.status).into()),
+                );
                 false
             }
             // Spawned by `drain_pending`, which holds the lane manager.
@@ -825,7 +857,10 @@ impl CodingHarness {
                 "PAUSED: {}. Its context and partial work are saved. Check its activity, then decide: \
                  continue it (delegate_task with lane_id=\"{}\" and a short instruction, narrower if it was \
                  circling), take the slice over yourself, or cancel_delegated_task if it's no longer needed.",
-                result.error.clone().unwrap_or_else(|| "hit the lane time limit".to_string()),
+                result
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "hit the lane time limit".to_string()),
                 result.id,
             ),
             LaneStatus::Cancelled => "cancelled".to_string(),
@@ -889,7 +924,10 @@ pub(super) fn turn_changes_event(entries: Vec<(String, u64, u64)>) -> Option<Har
     const MAX_FILES: usize = 12;
     let (files, total_files, add, del) = crate::checkpoint::summarize_numstat(entries, MAX_FILES)?;
     Some(HarnessEvent::TurnChanges {
-        files: files.into_iter().map(|(path, add, del)| FileChange { path, add, del }).collect(),
+        files: files
+            .into_iter()
+            .map(|(path, add, del)| FileChange { path, add, del })
+            .collect(),
         total_files,
         add,
         del,
@@ -906,11 +944,24 @@ mod turn_changes_tests {
         let mut entries: Vec<(String, u64, u64)> =
             (0..15).map(|i| (format!("f{i:02}.rs"), i, 0)).collect();
         entries.push(("big.rs".into(), 100, 40));
-        let Some(HarnessEvent::TurnChanges { files, total_files, add, del }) = turn_changes_event(entries) else {
+        let Some(HarnessEvent::TurnChanges {
+            files,
+            total_files,
+            add,
+            del,
+        }) = turn_changes_event(entries)
+        else {
             panic!("expected an event");
         };
         assert_eq!(files.len(), 12);
-        assert_eq!(files[0], FileChange { path: "big.rs".into(), add: 100, del: 40 });
+        assert_eq!(
+            files[0],
+            FileChange {
+                path: "big.rs".into(),
+                add: 100,
+                del: 40
+            }
+        );
         assert_eq!(total_files, 16);
         assert_eq!((add, del), (100 + (0..15).sum::<u64>(), 40));
     }
@@ -938,8 +989,14 @@ mod turn_changes_tests {
         std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").unwrap();
 
         harness.emit_turn_changes(&mut state, &mut vars).await;
-        assert!(matches!(state.events.last(), Some(HarnessEvent::TurnChanges { .. })));
-        assert!(state.messages.is_empty(), "context is built from messages only");
+        assert!(matches!(
+            state.events.last(),
+            Some(HarnessEvent::TurnChanges { .. })
+        ));
+        assert!(
+            state.messages.is_empty(),
+            "context is built from messages only"
+        );
 
         // The turn is closed: a second call with nothing open emits nothing.
         let before = state.events.len();
@@ -966,7 +1023,11 @@ mod turn_changes_tests {
 }
 
 fn keep_warm_skip_reason(status: HarnessStatus) -> &'static str {
-    if status == HarnessStatus::Running { "session was mid-turn" } else { "cli harness keeps no provider cache" }
+    if status == HarnessStatus::Running {
+        "session was mid-turn"
+    } else {
+        "cli harness keeps no provider cache"
+    }
 }
 
 #[cfg(test)]
@@ -975,7 +1036,13 @@ mod keep_warm_tests {
 
     #[test]
     fn idle_cli_loop_reports_no_provider_cache() {
-        assert_eq!(keep_warm_skip_reason(HarnessStatus::Idle), "cli harness keeps no provider cache");
-        assert_eq!(keep_warm_skip_reason(HarnessStatus::Running), "session was mid-turn");
+        assert_eq!(
+            keep_warm_skip_reason(HarnessStatus::Idle),
+            "cli harness keeps no provider cache"
+        );
+        assert_eq!(
+            keep_warm_skip_reason(HarnessStatus::Running),
+            "session was mid-turn"
+        );
     }
 }

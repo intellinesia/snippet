@@ -4,11 +4,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 use serde_json::Value;
 
-use crate::harness::{HarnessEvent, HarnessStatus};
 use super::app::*;
 use super::settings::*;
 use super::theme::*;
 use super::*;
+use crate::harness::{HarnessEvent, HarnessStatus};
 
 pub(crate) fn render_checkpoint_selection(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     use super::chrome::{Row, age, note, screen_frame, window};
@@ -19,13 +19,29 @@ pub(crate) fn render_checkpoint_selection(frame: &mut ratatui::Frame<'_>, area: 
         .unwrap_or_default();
     let is_rewind = app.screen == Screen::RewindCheckpointSelection;
     let (title, subtitle, verb) = if is_rewind {
-        ("Rewind", "the chat and its files go back to just before the chosen message", "rewind")
+        (
+            "Rewind",
+            "the chat and its files go back to just before the chosen message",
+            "rewind",
+        )
     } else {
-        ("Fork", "a new chat starts from just before the chosen message", "fork")
+        (
+            "Fork",
+            "a new chat starts from just before the chosen message",
+            "fork",
+        )
     };
-    let body = screen_frame(frame, area, title, subtitle, &[("↑↓", "choose"), ("Enter", verb), ("Esc", "cancel")]);
+    let body = screen_frame(
+        frame,
+        area,
+        title,
+        subtitle,
+        &[("↑↓", "choose"), ("Enter", verb), ("Esc", "cancel")],
+    );
     let width = body.width as usize;
-    let selected = app.checkpoint_selected_index.min(checkpoints.len().saturating_sub(1));
+    let selected = app
+        .checkpoint_selected_index
+        .min(checkpoints.len().saturating_sub(1));
     let (start, end) = window(&checkpoints, selected, body.height as usize);
     let mut lines = Vec::new();
     for (index, checkpoint) in checkpoints.iter().enumerate().take(end).skip(start) {
@@ -43,7 +59,9 @@ pub(crate) fn render_checkpoint_selection(frame: &mut ratatui::Frame<'_>, area: 
         );
     }
     if lines.is_empty() {
-        lines.push(note("No checkpoints yet — one is taken before each message."));
+        lines.push(note(
+            "No checkpoints yet — one is taken before each message.",
+        ));
     }
     frame.render_widget(Paragraph::new(lines), body);
 }
@@ -52,8 +70,16 @@ pub(crate) fn render_lanes(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App
     use super::chrome::{Row, note, screen_frame, window};
 
     let lanes = app.state.as_ref().map(|state| &state.lanes);
-    let count = |status: LaneStatus| lanes.map_or(0, |items| items.iter().filter(|i| i.status == status).count());
-    let (running, completed, failed) = (count(LaneStatus::Running), count(LaneStatus::Completed), count(LaneStatus::Failed));
+    let count = |status: LaneStatus| {
+        lanes.map_or(0, |items| {
+            items.iter().filter(|i| i.status == status).count()
+        })
+    };
+    let (running, completed, failed) = (
+        count(LaneStatus::Running),
+        count(LaneStatus::Completed),
+        count(LaneStatus::Failed),
+    );
     let total = lanes.map_or(0, |items| items.len());
     let subtitle = if total == 0 {
         String::new()
@@ -67,17 +93,41 @@ pub(crate) fn render_lanes(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App
         &subtitle,
         &[
             ("↑↓", "lane"),
-            ("Enter", if app.lanes_detail_expanded { "collapse" } else { "full report" }),
+            (
+                "Enter",
+                if app.lanes_detail_expanded {
+                    "collapse"
+                } else {
+                    "full report"
+                },
+            ),
             ("PgUp/PgDn", "scroll"),
             ("Esc", "back"),
         ],
     );
     let list_w = 34.min(body.width / 3).max(20);
-    let list_area = Rect { width: list_w, ..body };
-    let rule_area = Rect { x: body.x + list_w, width: 1, ..body };
-    let detail_inner = Rect { x: body.x + list_w + 2, width: body.width.saturating_sub(list_w + 2), ..body };
+    let list_area = Rect {
+        width: list_w,
+        ..body
+    };
+    let rule_area = Rect {
+        x: body.x + list_w,
+        width: 1,
+        ..body
+    };
+    let detail_inner = Rect {
+        x: body.x + list_w + 2,
+        width: body.width.saturating_sub(list_w + 2),
+        ..body
+    };
     frame.render_widget(
-        Paragraph::new(vec![Line::from(Span::styled("│", Style::default().fg(border2()))); body.height as usize]),
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "│",
+                Style::default().fg(border2())
+            ));
+            body.height as usize
+        ]),
         rule_area,
     );
 
@@ -206,7 +256,10 @@ pub(crate) fn render_lanes(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App
             detail_lines.extend(markdown::render_prose(&preview, prose_w));
         }
     } else {
-        detail_lines.push(Line::from(Span::styled("Choose a lane to see its work.", Style::default().fg(faint()))));
+        detail_lines.push(Line::from(Span::styled(
+            "Choose a lane to see its work.",
+            Style::default().fg(faint()),
+        )));
     }
 
     let visible_h = detail_inner.height as usize;
@@ -222,12 +275,20 @@ pub(crate) fn render_lanes(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App
 
 fn keycap(key: &str, label: &str, color: Color) -> [Span<'static>; 2] {
     [
-        Span::styled(format!("{key} "), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("{key} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(format!("{label}   "), Style::default().fg(muted())),
     ]
 }
 
-fn card_block(glyph: &str, title: String, tone: Color, frame_color: Color) -> ratatui::widgets::Block<'static> {
+fn card_block(
+    glyph: &str,
+    title: String,
+    tone: Color,
+    frame_color: Color,
+) -> ratatui::widgets::Block<'static> {
     use ratatui::widgets::{Block, BorderType, Borders, Padding};
     Block::default()
         .borders(Borders::ALL)
@@ -236,7 +297,10 @@ fn card_block(glyph: &str, title: String, tone: Color, frame_color: Color) -> ra
         .border_style(Style::default().fg(frame_color))
         .title(Line::from(vec![
             Span::raw(" "),
-            Span::styled(format!("{glyph} "), Style::default().fg(tone).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{glyph} "),
+                Style::default().fg(tone).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(title, Style::default().fg(soft())),
             Span::raw(" "),
         ]))
@@ -260,7 +324,10 @@ fn approval_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         lines.push(Line::from(Span::styled(seg, Style::default().fg(text()))));
     }
     if more > 0 {
-        lines.push(Line::from(Span::styled(format!("… {more} more lines"), Style::default().fg(faint()))));
+        lines.push(Line::from(Span::styled(
+            format!("… {more} more lines"),
+            Style::default().fg(faint()),
+        )));
     }
     let mut actions = Vec::new();
     actions.extend(keycap("y", "approve", success()));
@@ -354,7 +421,12 @@ pub(crate) fn render_profiles(frame: &mut ratatui::Frame<'_>, area: Rect, app: &
     let active_lanes = app
         .state
         .as_ref()
-        .map(|s| s.lanes.iter().filter(|l| l.status == LaneStatus::Running).count())
+        .map(|s| {
+            s.lanes
+                .iter()
+                .filter(|l| l.status == LaneStatus::Running)
+                .count()
+        })
         .unwrap_or(0);
     let subtitle = if active_lanes > 0 {
         format!("{active_lanes} delegated running")
@@ -366,19 +438,37 @@ pub(crate) fn render_profiles(frame: &mut ratatui::Frame<'_>, area: Rect, app: &
         area,
         "Models",
         &subtitle,
-        &[("↑↓", "move"), ("Enter", "this chat"), ("g", "global"), ("l", "delegate"), ("e", "edit"), ("a", "add"), ("d", "delete"), ("Esc", "back")],
+        &[
+            ("↑↓", "move"),
+            ("Enter", "this chat"),
+            ("g", "global"),
+            ("l", "delegate"),
+            ("e", "edit"),
+            ("a", "add"),
+            ("d", "delete"),
+            ("Esc", "back"),
+        ],
     );
     let width = body.width as usize;
     let names = app.options.config.profile_names();
     let total = names.len();
     let active = app.options.config.active_setup.clone().unwrap_or_default();
-    let delegate = app.options.config.delegate_setup.clone().unwrap_or_default();
+    let delegate = app
+        .options
+        .config
+        .delegate_setup
+        .clone()
+        .unwrap_or_default();
     let setups = app.options.config.setups.as_ref();
     let sel = app.profiles_selected_index.min(total);
 
     let visible = ((body.height as usize).saturating_sub(2) / 3).max(1);
     let focus = sel.min(total.saturating_sub(1));
-    let start = if total > 0 && focus >= visible { focus + 1 - visible } else { 0 };
+    let start = if total > 0 && focus >= visible {
+        focus + 1 - visible
+    } else {
+        0
+    };
     let end = (start + visible).min(total);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -395,14 +485,34 @@ pub(crate) fn render_profiles(frame: &mut ratatui::Frame<'_>, area: Rect, app: &
             badges.push("delegate");
         }
         let right = (!badges.is_empty()).then(|| {
-            (badges.join(" · "), if *name == active { success() } else { accent() })
+            (
+                badges.join(" · "),
+                if *name == active { success() } else { accent() },
+            )
         });
         lines.push(
-            Row { selected: is_sel, dot: None, title: name, emphasis: true, meta: "", right }.line(width),
+            Row {
+                selected: is_sel,
+                dot: None,
+                title: name,
+                emphasis: true,
+                meta: "",
+                right,
+            }
+            .line(width),
         );
         if let Some(cfg) = setups.and_then(|m| m.get(name)) {
-            let model = if cfg.model.is_empty() { "no model".to_string() } else { cfg.model.clone() };
-            lines.push(sub_line(&format!("{model} · {}", profile_status(cfg)), is_sel, 2, width));
+            let model = if cfg.model.is_empty() {
+                "no model".to_string()
+            } else {
+                cfg.model.clone()
+            };
+            lines.push(sub_line(
+                &format!("{model} · {}", profile_status(cfg)),
+                is_sel,
+                2,
+                width,
+            ));
         }
         lines.push(Line::from(""));
     }
@@ -411,8 +521,15 @@ pub(crate) fn render_profiles(frame: &mut ratatui::Frame<'_>, area: Rect, app: &
     }
     let add_sel = sel >= total;
     lines.push(
-        Row { selected: add_sel, dot: None, title: "+ Add a model", emphasis: false, meta: "", right: None }
-            .line(width),
+        Row {
+            selected: add_sel,
+            dot: None,
+            title: "+ Add a model",
+            emphasis: false,
+            meta: "",
+            right: None,
+        }
+        .line(width),
     );
     frame.render_widget(Paragraph::new(lines), body);
 
@@ -438,7 +555,7 @@ pub(crate) fn render_profiles(frame: &mut ratatui::Frame<'_>, area: Rect, app: &
 
 /// Start a new session, or pick up an existing one in this folder or its worktrees.
 pub(crate) fn render_new_session(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
-    use super::chrome::{Row, compact_secs, section, screen_frame, sub_line};
+    use super::chrome::{Row, compact_secs, screen_frame, section, sub_line};
     use crate::tui::commands::NewChoice;
     let folder = app
         .home_folder()
@@ -451,10 +568,19 @@ pub(crate) fn render_new_session(frame: &mut ratatui::Frame<'_>, area: Rect, app
         area,
         "Sessions",
         &format!("in {folder} — start something new or pick up where you left off"),
-        &[("↑↓", "choose"), ("Enter", "start or open"), ("Esc", "cancel")],
+        &[
+            ("↑↓", "choose"),
+            ("Enter", "start or open"),
+            ("Esc", "cancel"),
+        ],
     );
     let width = body.width as usize;
-    let name_of = |path: &std::path::Path| path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    let name_of = |path: &std::path::Path| {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string()
+    };
     let now = chrono::Utc::now().timestamp();
     let mut lines = Vec::new();
     let mut selected_line = 0;
@@ -467,15 +593,43 @@ pub(crate) fn render_new_session(frame: &mut ratatui::Frame<'_>, area: Rect, app
         match choice {
             NewChoice::Worktree(_) => {
                 lines.push(
-                    Row { selected, dot: None, title: "New worktree", emphasis: true, meta: "", right: None }.line(width),
+                    Row {
+                        selected,
+                        dot: None,
+                        title: "New worktree",
+                        emphasis: true,
+                        meta: "",
+                        right: None,
+                    }
+                    .line(width),
                 );
-                lines.push(sub_line("Its own branch and checkout; other sessions' edits stay apart.", selected, 2, width));
+                lines.push(sub_line(
+                    "Its own branch and checkout; other sessions' edits stay apart.",
+                    selected,
+                    2,
+                    width,
+                ));
                 lines.push(Line::from(""));
             }
             NewChoice::Folder(path) => {
                 let title = format!("This folder ({})", name_of(path));
-                lines.push(Row { selected, dot: None, title: &title, emphasis: true, meta: "", right: None }.line(width));
-                lines.push(sub_line("Work directly in the checkout.", selected, 2, width));
+                lines.push(
+                    Row {
+                        selected,
+                        dot: None,
+                        title: &title,
+                        emphasis: true,
+                        meta: "",
+                        right: None,
+                    }
+                    .line(width),
+                );
+                lines.push(sub_line(
+                    "Work directly in the checkout.",
+                    selected,
+                    2,
+                    width,
+                ));
                 lines.push(Line::from(""));
             }
             NewChoice::Session(c) => {
@@ -483,7 +637,11 @@ pub(crate) fn render_new_session(frame: &mut ratatui::Frame<'_>, area: Rect, app
                     sessions_header = true;
                     lines.push(section("Existing sessions"));
                 }
-                let meta = c.branch.as_ref().map(|b| format!("⎇ {b}")).unwrap_or_default();
+                let meta = c
+                    .branch
+                    .as_ref()
+                    .map(|b| format!("⎇ {b}"))
+                    .unwrap_or_default();
                 let age = compact_secs(now - c.last_active);
                 if c.parent_session_id.is_some() {
                     let agent = c.agent_id.as_deref().unwrap_or(&c.title);
@@ -526,14 +684,27 @@ pub(crate) fn render_resume_selection(frame: &mut ratatui::Frame<'_>, area: Rect
         .and_then(|n| n.to_str())
         .unwrap_or("workspace")
         .to_string();
-    let top_count = convs.iter().filter(|c| c.parent_session_id.is_none()).count();
-    let subtitle = format!("{folder} · {} session{}", top_count, if top_count == 1 { "" } else { "s" });
+    let top_count = convs
+        .iter()
+        .filter(|c| c.parent_session_id.is_none())
+        .count();
+    let subtitle = format!(
+        "{folder} · {} session{}",
+        top_count,
+        if top_count == 1 { "" } else { "s" }
+    );
     let hints: &[(&str, &str)] = if app.resume_rename.is_some() {
         &[("Enter", "save"), ("Esc", "cancel")]
     } else if app.resume_pending_delete {
         &[("d", "delete"), ("any key", "keep")]
     } else {
-        &[("↑↓", "move"), ("Enter", "open"), ("r", "rename"), ("d", "delete"), ("Esc", "back")]
+        &[
+            ("↑↓", "move"),
+            ("Enter", "open"),
+            ("r", "rename"),
+            ("d", "delete"),
+            ("Esc", "back"),
+        ]
     };
     let body = screen_frame(frame, area, "Sessions", &subtitle, hints);
     let width = body.width as usize;
@@ -559,7 +730,11 @@ pub(crate) fn render_resume_selection(frame: &mut ratatui::Frame<'_>, area: Rect
         let visible = (body.height as usize).saturating_sub(lines.len());
         let (start, end) = window(&convs, selected_idx, visible);
         for (offset, c) in convs[start..end].iter().enumerate() {
-            let meta = c.branch.as_ref().map(|b| format!("⎇ {b}")).unwrap_or_default();
+            let meta = c
+                .branch
+                .as_ref()
+                .map(|b| format!("⎇ {b}"))
+                .unwrap_or_default();
             let age = compact_secs(chrono::Utc::now().timestamp() - c.last_active);
             let selected = start + offset == selected_idx;
             if c.parent_session_id.is_some() {
@@ -592,7 +767,6 @@ pub(crate) fn render_resume_selection(frame: &mut ratatui::Frame<'_>, area: Rect
 /// Models offered by the picker: the live-fetched list (uncapped) or the static
 /// fallback for the provider, filtered by the search query (case-insensitive).
 
-
 pub(crate) fn render_nested_session_row(
     selected: bool,
     dot_color: Color,
@@ -609,7 +783,10 @@ pub(crate) fn render_nested_session_row(
         title_style = title_style.add_modifier(Modifier::BOLD);
     }
     let mut spans = vec![
-        Span::styled(if selected { "▍" } else { " " }, Style::default().fg(accent())),
+        Span::styled(
+            if selected { "▍" } else { " " },
+            Style::default().fg(accent()),
+        ),
         Span::raw("  "),
         Span::styled("● ", Style::default().fg(dot_color)),
         Span::styled(pad(agent, title_w), title_style),
@@ -618,7 +795,11 @@ pub(crate) fn render_nested_session_row(
     let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
     spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
     let line = Line::from(spans);
-    if selected { line.style(Style::default().bg(surface3())) } else { line }
+    if selected {
+        line.style(Style::default().bg(surface3()))
+    } else {
+        line
+    }
 }
 
 pub(crate) fn render_term(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
@@ -680,16 +861,15 @@ pub(crate) fn render_term(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut 
     if need_open {
         // Spawn at the measured pane size — never 80×24 then resize.
         app.send_term_open();
-    } else if need_resize
-        && let Some(a) = app.sidecar_attach.as_ref() {
-            let _ = a.send_term(serde_json::json!({
-                "wire": "term",
-                "op": "resize",
-                "id": id,
-                "cols": cols,
-                "rows": rows,
-            }));
-        }
+    } else if need_resize && let Some(a) = app.sidecar_attach.as_ref() {
+        let _ = a.send_term(serde_json::json!({
+            "wire": "term",
+            "op": "resize",
+            "id": id,
+            "cols": cols,
+            "rows": rows,
+        }));
+    }
     let pane = &app.term_panes[focus];
     let mut lines: Vec<Line> = Vec::with_capacity(rows);
     let (raw_cx, raw_cy) = pane.vt.cursor();
@@ -735,7 +915,6 @@ pub(crate) fn render_term(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut 
     frame.render_widget(Paragraph::new(lines), body);
 }
 
-
 pub(crate) fn questions_of(app: &App) -> Vec<Value> {
     app.state
         .as_ref()
@@ -766,14 +945,24 @@ pub(crate) struct QOption {
 
 impl QOption {
     fn plain(value: &str, label: String) -> Self {
-        Self { value: value.into(), label, description: String::new(), recommended: false }
+        Self {
+            value: value.into(),
+            label,
+            description: String::new(),
+            recommended: false,
+        }
     }
 
     /// How the choice reads in the answer sent back: the label, with the value
     /// alongside when it says something the label doesn't ("android" for
     /// "Android" adds nothing).
     pub(crate) fn answer(&self) -> String {
-        let norm = |x: &str| x.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase();
+        let norm = |x: &str| {
+            x.chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+                .to_lowercase()
+        };
         if norm(&self.value) == norm(&self.label) {
             self.label.clone()
         } else {
@@ -814,7 +1003,11 @@ pub(crate) fn q_options(question: &Value) -> Vec<QOption> {
             .to_string()
     };
     let text = |c: &Value, k: &str| {
-        c.get(k).and_then(Value::as_str).map(str::trim).unwrap_or("").to_string()
+        c.get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string()
     };
     match q_kind(question) {
         "single_choice" | "multi_choice" => {
@@ -824,11 +1017,14 @@ pub(crate) fn q_options(question: &Value) -> Vec<QOption> {
                 .map(|cs| {
                     cs.iter()
                         .map(|c| QOption {
-                                value: text(c, "value"),
-                                label: text(c, "label"),
-                                description: text(c, "description"),
-                                recommended: c.get("recommended").and_then(Value::as_bool).unwrap_or(false),
-                            })
+                            value: text(c, "value"),
+                            label: text(c, "label"),
+                            description: text(c, "description"),
+                            recommended: c
+                                .get("recommended")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
@@ -836,7 +1032,10 @@ pub(crate) fn q_options(question: &Value) -> Vec<QOption> {
             opts.sort_by_key(|o| !o.recommended);
             opts
         }
-        "yes_no" => vec![QOption::plain("yes", "Yes".into()), QOption::plain("no", "No".into())],
+        "yes_no" => vec![
+            QOption::plain("yes", "Yes".into()),
+            QOption::plain("no", "No".into()),
+        ],
         "confirm" => vec![
             QOption::plain("confirm", label_or("confirm_label", "Confirm")),
             QOption::plain("cancel", label_or("cancel_label", "Cancel")),
@@ -892,13 +1091,14 @@ pub(crate) fn prepare_question(app: &mut App, qs: &[Value]) {
     app.q_sel = 0;
     app.q_multi.clear();
     if let Some(q) = qs.get(app.q_index)
-        && q_kind(q) == "multi_choice" {
-            for (i, o) in q_options(q).iter().enumerate() {
-                if o.recommended {
-                    app.q_multi.insert(i);
-                }
+        && q_kind(q) == "multi_choice"
+    {
+        for (i, o) in q_options(q).iter().enumerate() {
+            if o.recommended {
+                app.q_multi.insert(i);
             }
         }
+    }
 }
 
 /// Intercept navigation/selection keys while an ask_user question is pending.
@@ -943,7 +1143,12 @@ fn question_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             let header = q_header(q, i);
             let answered = i < app.q_answers.len();
             let (label, style) = if !app.q_review && i == current {
-                (header, Style::default().fg(accent()).add_modifier(Modifier::BOLD | Modifier::UNDERLINED))
+                (
+                    header,
+                    Style::default()
+                        .fg(accent())
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                )
             } else if answered {
                 (format!("✓ {header}"), Style::default().fg(success()))
             } else {
@@ -952,7 +1157,12 @@ fn question_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             tabs.push(Span::styled(label, style));
         }
         if app.q_review {
-            tabs.push(Span::styled("  Review", Style::default().fg(accent()).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)));
+            tabs.push(Span::styled(
+                "  Review",
+                Style::default()
+                    .fg(accent())
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            ));
         }
         lines.push(Line::from(tabs));
         lines.push(Line::from(""));
@@ -963,12 +1173,25 @@ fn question_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         lines.push(Line::from(Span::styled("Check your answers", bold)));
         for (i, (q, (_, answer))) in qs.iter().zip(app.q_answers.iter()).enumerate() {
             lines.push(Line::from(vec![
-                Span::styled(format!(" {}  ", q_header(q, i)), Style::default().fg(faint())),
-                Span::styled(answer.chars().take(inner.saturating_sub(14)).collect::<String>(), Style::default().fg(text())),
+                Span::styled(
+                    format!(" {}  ", q_header(q, i)),
+                    Style::default().fg(faint()),
+                ),
+                Span::styled(
+                    answer
+                        .chars()
+                        .take(inner.saturating_sub(14))
+                        .collect::<String>(),
+                    Style::default().fg(text()),
+                ),
             ]));
         }
         lines.push(Line::from(""));
-        let hints = [keycap("↵", "send", soft()), keycap("←", "edit", soft()), keycap("esc", "cancel", soft())];
+        let hints = [
+            keycap("↵", "send", soft()),
+            keycap("←", "edit", soft()),
+            keycap("esc", "cancel", soft()),
+        ];
         lines.push(Line::from(hints.into_iter().flatten().collect::<Vec<_>>()));
         return lines;
     }
@@ -988,14 +1211,21 @@ fn question_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let back = current > 0;
     let mut hints = Vec::new();
     if opts.is_empty() {
-        lines.push(Line::from(Span::styled("Type your answer in the box below", Style::default().fg(muted()))));
+        lines.push(Line::from(Span::styled(
+            "Type your answer in the box below",
+            Style::default().fg(muted()),
+        )));
         hints.push(keycap("↵", "send", soft()));
     } else {
         let sel = app.q_sel.min(opts.len() - 1);
         for (i, opt) in opts.iter().enumerate().take(9) {
             let focused = i == sel;
             let mark = if multi {
-                if app.q_multi.contains(&i) { "[x] " } else { "[ ] " }
+                if app.q_multi.contains(&i) {
+                    "[x] "
+                } else {
+                    "[ ] "
+                }
             } else if focused {
                 "▸ "
             } else {
@@ -1004,13 +1234,28 @@ fn question_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             let badge = if opt.recommended { " recommended" } else { "" };
             let room = inner.saturating_sub(4 + mark.len() + badge.len());
             let label: String = opt.label.chars().take(room).collect();
-            let pad = inner.saturating_sub(4 + mark.chars().count() + label.chars().count() + badge.len());
-            let row_style = if focused { Style::default().bg(surface3()) } else { Style::default() };
+            let pad = inner
+                .saturating_sub(4 + mark.chars().count() + label.chars().count() + badge.len());
+            let row_style = if focused {
+                Style::default().bg(surface3())
+            } else {
+                Style::default()
+            };
             lines.push(
                 Line::from(vec![
                     Span::styled(format!("{} ", i + 1), Style::default().fg(faint())),
-                    Span::styled(mark.to_string(), Style::default().fg(accent()).add_modifier(Modifier::BOLD)),
-                    Span::styled(label, if focused { bold } else { Style::default().fg(soft()) }),
+                    Span::styled(
+                        mark.to_string(),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        label,
+                        if focused {
+                            bold
+                        } else {
+                            Style::default().fg(soft())
+                        },
+                    ),
                     Span::styled(badge.to_string(), Style::default().fg(accent())),
                     Span::raw(" ".repeat(pad)),
                 ])
@@ -1018,13 +1263,31 @@ fn question_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             );
             if !opt.description.is_empty() {
                 let indent = 2 + mark.chars().count();
-                let desc: String = opt.description.chars().take(inner.saturating_sub(indent + 1)).collect();
-                lines.push(Line::from(Span::styled(format!("{}{desc}", " ".repeat(indent)), Style::default().fg(faint()))));
+                let desc: String = opt
+                    .description
+                    .chars()
+                    .take(inner.saturating_sub(indent + 1))
+                    .collect();
+                lines.push(Line::from(Span::styled(
+                    format!("{}{desc}", " ".repeat(indent)),
+                    Style::default().fg(faint()),
+                )));
             }
         }
-        lines.push(Line::from(Span::styled("or type your own answer below", Style::default().fg(faint()))));
-        hints.push(keycap(if multi { "1-9 space" } else { "1-9" }, if multi { "toggle" } else { "pick" }, soft()));
-        hints.push(keycap("↵", if multi { "confirm" } else { "select" }, soft()));
+        lines.push(Line::from(Span::styled(
+            "or type your own answer below",
+            Style::default().fg(faint()),
+        )));
+        hints.push(keycap(
+            if multi { "1-9 space" } else { "1-9" },
+            if multi { "toggle" } else { "pick" },
+            soft(),
+        ));
+        hints.push(keycap(
+            "↵",
+            if multi { "confirm" } else { "select" },
+            soft(),
+        ));
     }
     if back {
         hints.push(keycap("←", "back", soft()));
@@ -1045,7 +1308,11 @@ pub(crate) fn render_question(frame: &mut ratatui::Frame<'_>, area: Rect, app: &
         return;
     }
     let title = if qs.len() > 1 {
-        format!("Questions · {} of {}", (app.q_index + 1).min(qs.len()), qs.len())
+        format!(
+            "Questions · {} of {}",
+            (app.q_index + 1).min(qs.len()),
+            qs.len()
+        )
     } else {
         "Question".to_string()
     };
@@ -1099,10 +1366,16 @@ pub(crate) fn lane_lines(app: &App) -> Vec<Line<'static>> {
                 Span::styled(title, Style::default().fg(muted())),
             ];
             if let Some(agent) = &l.agent {
-                spans.push(Span::styled(format!(" [{agent}]"), Style::default().fg(muted())));
+                spans.push(Span::styled(
+                    format!(" [{agent}]"),
+                    Style::default().fg(muted()),
+                ));
             }
             if let Some(profile) = &l.profile {
-                spans.push(Span::styled(format!(" [{profile}]"), Style::default().fg(faint())));
+                spans.push(Span::styled(
+                    format!(" [{profile}]"),
+                    Style::default().fg(faint()),
+                ));
             }
             spans.push(Span::styled(
                 format!(" — running {elapsed}"),
@@ -1370,9 +1643,16 @@ pub(crate) fn login_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             .form_reasoning_effort
             .clone()
             .unwrap_or_else(|| "default".to_string());
-        lines.push(field_row(&reasoning_label, r_focus, chooser(reasoning, r_focus, "")));
+        lines.push(field_row(
+            &reasoning_label,
+            r_focus,
+            chooser(reasoning, r_focus, ""),
+        ));
         if r_focus {
-            lines.push(Line::from(Span::styled(format!("      {}", spec.note), Style::default().fg(faint))));
+            lines.push(Line::from(Span::styled(
+                format!("      {}", spec.note),
+                Style::default().fg(faint),
+            )));
         }
     } else {
         let fixed = if spec.control == crate::reasoning::Control::Model {
@@ -1480,4 +1760,3 @@ pub(crate) fn login_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines
 }
-

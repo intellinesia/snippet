@@ -10,7 +10,10 @@ use serde_json::json;
 fn envelope_body(text: &str) -> Option<&str> {
     let mut body = text.trim_start();
     if let Some(rest) = body.strip_prefix("note:") {
-        body = rest.split_once('\n').map(|(_, after)| after.trim_start()).unwrap_or("");
+        body = rest
+            .split_once('\n')
+            .map(|(_, after)| after.trim_start())
+            .unwrap_or("");
     }
     body.strip_prefix("[direct_message]")
 }
@@ -94,7 +97,9 @@ mod tests {
 
         assert!(direct_consumed(&envelope(&event.event_id)));
 
-        let found = store().direct_deliveries(&[event.event_id.clone()]).unwrap();
+        let found = store()
+            .direct_deliveries(&[event.event_id.clone()])
+            .unwrap();
         assert!(found[&event.event_id].1.is_some(), "read_at set");
         let frame = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while let Ok(frame) = rx.recv().await {
@@ -132,7 +137,9 @@ mod tests {
         assert!(found[&routed.event_id].1.is_some());
 
         assert!(!direct_consumed("just a message"));
-        assert!(!direct_consumed("[agent_reply]\nfrom: agent:a\n[/agent_reply]"));
+        assert!(!direct_consumed(
+            "[agent_reply]\nfrom: agent:a\n[/agent_reply]"
+        ));
         assert!(!direct_consumed(&envelope("").replace("event_id: \n", "")));
     }
 }

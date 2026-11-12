@@ -240,9 +240,10 @@ impl WatchManager {
                 // Filter gates the WAKE, not the offset — non-matching appends
                 // are consumed silently so the next match delivers only fresh text.
                 if let Some(re) = &filter
-                    && !re.is_match(&delta) {
-                        continue;
-                    }
+                    && !re.is_match(&delta)
+                {
+                    continue;
+                }
                 let (appended, skipped) = cap_tail(&delta, MAX_DELIVER_BYTES);
                 let _ = tx.send(WatchEvent {
                     id: id.clone(),

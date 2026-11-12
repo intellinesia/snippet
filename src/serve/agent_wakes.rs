@@ -1,20 +1,23 @@
 use super::api_error;
+use axum::Router;
 use axum::extract::{Json, Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::{Shared, mission_error};
 use crate::agent_wakes::{self, Setter, WakeSpec};
-use super::{mission_error, Shared};
 
 pub fn router() -> Router<Shared> {
     Router::new()
         .route("/wakes", get(list_wakes))
         .route("/wake-runs", get(list_runs))
-        .route("/wakes/{*owner}", get(get_wake).put(put_wake).delete(delete_wake))
+        .route(
+            "/wakes/{*owner}",
+            get(get_wake).put(put_wake).delete(delete_wake),
+        )
 }
 
 fn now() -> u64 {
@@ -22,23 +25,32 @@ fn now() -> u64 {
 }
 
 fn not_found(owner: &str) -> Response {
-    (StatusCode::NOT_FOUND, Json(json!({"owner": owner, "error": "no wake schedule"}))).into_response()
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({"owner": owner, "error": "no wake schedule"})),
+    )
+        .into_response()
 }
 
 async fn list_wakes(State(d): State<Shared>) -> Response {
     match agent_wakes::list(&d.recurring_root) {
         Ok(jobs) => {
             let now = now();
-            let wakes: Vec<_> = jobs.iter().map(|j| agent_wakes::view_with_runs(&d.recurring_root, j, now)).collect();
+            let wakes: Vec<_> = jobs
+                .iter()
+                .map(|j| agent_wakes::view_with_runs(&d.recurring_root, j, now))
+                .collect();
             Json(json!({"wakes": wakes, "limits": agent_wakes::limits()})).into_response()
         }
         Err(error) => mission_error(error),
     }
 }
 
-async fn get_wake(State(d): State<Shared>, AxumPath(owner): AxumPath<String>,) -> Response {
+async fn get_wake(State(d): State<Shared>, AxumPath(owner): AxumPath<String>) -> Response {
     match agent_wakes::get(&d.recurring_root, &owner) {
-        Ok(Some(job)) => Json(agent_wakes::view_with_runs(&d.recurring_root, &job, now())).into_response(),
+        Ok(Some(job)) => {
+            Json(agent_wakes::view_with_runs(&d.recurring_root, &job, now())).into_response()
+        }
         Ok(None) => not_found(&owner),
         Err(error) => mission_error(error),
     }
@@ -54,12 +66,14 @@ async fn put_wake(
         Err(error) => return api_error(StatusCode::NOT_FOUND, error),
     };
     match agent_wakes::set(&d.recurring_root, &owner, kind, spec, Setter::User, now()) {
-        Ok(job) => Json(agent_wakes::view_with_runs(&d.recurring_root, &job, now())).into_response(),
+        Ok(job) => {
+            Json(agent_wakes::view_with_runs(&d.recurring_root, &job, now())).into_response()
+        }
         Err(error) => mission_error(error),
     }
 }
 
-async fn delete_wake(State(d): State<Shared>, AxumPath(owner): AxumPath<String>,) -> Response {
+async fn delete_wake(State(d): State<Shared>, AxumPath(owner): AxumPath<String>) -> Response {
     match agent_wakes::clear(&d.recurring_root, &owner) {
         Ok(true) => Json(json!({"owner": owner, "deleted": true})).into_response(),
         Ok(false) => not_found(&owner),

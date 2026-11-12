@@ -109,7 +109,12 @@ impl CodingHarness {
         }
 
         track_call_repeats(vars, &calls);
-        note_turn_text(vars, progress_text.as_deref().is_some_and(|t| !t.trim().is_empty()));
+        note_turn_text(
+            vars,
+            progress_text
+                .as_deref()
+                .is_some_and(|t| !t.trim().is_empty()),
+        );
         if let Some(end) = repeat_stop(state, vars) {
             return end;
         }
@@ -171,7 +176,9 @@ impl CodingHarness {
             &self.context.current_dir(),
             crate::coordination_tools::task_awareness(&self.context),
         ) {
-            state.messages.push(HarnessMessage::System { content: reminder });
+            state
+                .messages
+                .push(HarnessMessage::System { content: reminder });
         }
         let mut request_messages = state.messages.clone();
         self.inline_images(&mut request_messages, model.supports_images());
@@ -212,7 +219,8 @@ impl CodingHarness {
         definitions: &[NativeToolDefinition],
         sink: Option<&StreamHandle>,
     ) -> Result<crate::llm::ModelOutput, StepResult> {
-        let voice = sink.is_some_and(crate::llm::StreamBuffer::has_tool_tap) && voice_turn(request_messages);
+        let voice = sink.is_some_and(crate::llm::StreamBuffer::has_tool_tap)
+            && voice_turn(request_messages);
         loop {
             if voice {
                 crate::ambient::mark_last("llm_request");
@@ -243,7 +251,11 @@ impl CodingHarness {
             };
             let error = match generated {
                 Ok(output) => {
-                    if output.content_text.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+                    if output
+                        .content_text
+                        .as_deref()
+                        .is_some_and(|t| !t.trim().is_empty())
+                    {
                         self.presence("typing", "");
                     }
                     if voice {
@@ -255,26 +267,27 @@ impl CodingHarness {
             };
             let raw = error.to_string();
             if crate::llm::is_effort_rejection(&raw)
-                && let Some(current) = model.swap_reasoning_effort(None) {
-                    let next = crate::llm::degrade_effort(&current);
-                    model.swap_reasoning_effort(next.map(str::to_string));
-                    state.events.push(HarnessEvent::SystemDecision {
-                        step: format!(
-                            "reasoning effort `{current}` rejected by the model — retrying at `{}`",
-                            next.unwrap_or("provider default")
-                        ),
-                        reasoning: raw
-                            .lines()
-                            .next()
-                            .unwrap_or(&raw)
-                            .chars()
-                            .take(200)
-                            .collect(),
-                    });
-                    let _ = self.persist_state(state).await;
-                    continue;
-                }
-                // No effort was set — not degradable (the swap restored None).
+                && let Some(current) = model.swap_reasoning_effort(None)
+            {
+                let next = crate::llm::degrade_effort(&current);
+                model.swap_reasoning_effort(next.map(str::to_string));
+                state.events.push(HarnessEvent::SystemDecision {
+                    step: format!(
+                        "reasoning effort `{current}` rejected by the model — retrying at `{}`",
+                        next.unwrap_or("provider default")
+                    ),
+                    reasoning: raw
+                        .lines()
+                        .next()
+                        .unwrap_or(&raw)
+                        .chars()
+                        .take(200)
+                        .collect(),
+                });
+                let _ = self.persist_state(state).await;
+                continue;
+            }
+            // No effort was set — not degradable (the swap restored None).
             // Adapters embed the full HTTP body; show only a concise first line.
             let line = raw.lines().next().unwrap_or(&raw);
             let message = if line.chars().count() > 240 {

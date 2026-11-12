@@ -3,7 +3,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::coordination::{NotificationMarker, Store, StoreError, TaskStatus, types::CoordinationEvent};
+use crate::coordination::{
+    NotificationMarker, Store, StoreError, TaskStatus, types::CoordinationEvent,
+};
 use crate::llm::NativeToolDefinition;
 use crate::tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResult};
 
@@ -41,7 +43,6 @@ pub fn add_coordination_tools(registry: &mut ToolRegistry) {
     registry.insert(GroupThread);
 }
 
-
 /// Open the store the daemon owns: the path bound to this session when present,
 /// otherwise the canonical general-purpose store.
 fn db(ctx: &ToolContext) -> Result<Store, ToolError> {
@@ -65,8 +66,12 @@ fn actor(ctx: &ToolContext) -> Result<(&'static str, String), ToolError> {
     {
         return Ok(("agent", agent_id.to_string()));
     }
-    let session = ctx.durable_session_id().or(ctx.lane_origin().map(|(session, _)| session));
-    if let Some(member) = session.and_then(|session| db(ctx).ok()?.member_by_session(session).ok().flatten()) {
+    let session = ctx
+        .durable_session_id()
+        .or(ctx.lane_origin().map(|(session, _)| session));
+    if let Some(member) =
+        session.and_then(|session| db(ctx).ok()?.member_by_session(session).ok().flatten())
+    {
         return Ok(("agent", member.agent_id));
     }
     // The lease holder on work dispatched here comes first: a lease can move an
@@ -80,13 +85,20 @@ fn actor(ctx: &ToolContext) -> Result<(&'static str, String), ToolError> {
     if let Some(session_id) = session {
         return Ok(("session", session_id.to_string()));
     }
-    Err(ToolError::msg("posting to the coordination board requires a session identity"))
+    Err(ToolError::msg(
+        "posting to the coordination board requires a session identity",
+    ))
 }
 
 /// Refuse a board thread this session has no place in. Allowed: the shared
 /// room, a room it is a member of, the room of a task dispatched to this
 /// session, and every room for Mission Control, which coordinates them all.
-fn require_thread_access(db: &Store, ctx: &ToolContext, actor_id: &str, thread_id: &str) -> Result<(), ToolError> {
+fn require_thread_access(
+    db: &Store,
+    ctx: &ToolContext,
+    actor_id: &str,
+    thread_id: &str,
+) -> Result<(), ToolError> {
     if thread_id == crate::serve::COORDINATION_THREAD {
         return Ok(());
     }
@@ -110,7 +122,9 @@ fn require_thread_access(db: &Store, ctx: &ToolContext, actor_id: &str, thread_i
     if own_task {
         return Ok(());
     }
-    Err(ToolError::msg(format!("this session is not a member of `{thread_id}`")))
+    Err(ToolError::msg(format!(
+        "this session is not a member of `{thread_id}`"
+    )))
 }
 
 /// The specialized agent holding the lease on a task this session is running.
@@ -122,11 +136,14 @@ pub(crate) fn speaks_as(ctx: &ToolContext) -> Option<(&'static str, String)> {
 /// The task in progress in a session, if any: its id and title.
 pub(crate) fn session_task(ctx: &ToolContext, session_id: &str) -> Option<(String, String)> {
     let db = db(ctx).ok()?;
-    db.tasks_worked_in(session_id, Some(&crate::coordination::TaskStatus::InProgress))
-        .ok()?
-        .into_iter()
-        .find(|task| task.reporting_session.as_deref() == Some(session_id))
-        .map(|task| (task.id, task.title))
+    db.tasks_worked_in(
+        session_id,
+        Some(&crate::coordination::TaskStatus::InProgress),
+    )
+    .ok()?
+    .into_iter()
+    .find(|task| task.reporting_session.as_deref() == Some(session_id))
+    .map(|task| (task.id, task.title))
 }
 
 pub(crate) fn task_awareness(ctx: &ToolContext) -> String {
@@ -196,10 +213,17 @@ pub(crate) fn task_awareness(ctx: &ToolContext) -> String {
             text.push_str(&format!("\nTeam: {}", team.join("; ")));
         }
         if let Some(me) = session
-            .and_then(|s| roster.iter().find(|m| m.work_session_id.as_deref() == Some(s)))
+            .and_then(|s| {
+                roster
+                    .iter()
+                    .find(|m| m.work_session_id.as_deref() == Some(s))
+            })
             .filter(|m| m.status != "active")
         {
-            let holder = roster.iter().find(|m| m.status == "active").map_or("nobody", |m| m.agent_id.as_str());
+            let holder = roster
+                .iter()
+                .find(|m| m.status == "active")
+                .map_or("nobody", |m| m.agent_id.as_str());
             text.push_str(&format!(
                 "\nYou are seated here as {} and {holder} holds the turn: read anything and talk in the room, but only the holder changes files.",
                 me.agent_id
@@ -209,10 +233,19 @@ pub(crate) fn task_awareness(ctx: &ToolContext) -> String {
             .task_links(&task.id)
             .unwrap_or_default()
             .into_iter()
-            .filter(|l| l.kind == crate::coordination::TaskLinkKind::Blocks && l.to_task_id == task.id)
+            .filter(|l| {
+                l.kind == crate::coordination::TaskLinkKind::Blocks && l.to_task_id == task.id
+            })
             .filter_map(|l| db.get_task(&l.from_task_id).ok().flatten())
             .filter(|t| !t.status.is_terminal())
-            .map(|t| format!("\"{}\" (task {}, {})", sanitize_line(&t.title), t.id, label(&t.status)))
+            .map(|t| {
+                format!(
+                    "\"{}\" (task {}, {})",
+                    sanitize_line(&t.title),
+                    t.id,
+                    label(&t.status)
+                )
+            })
             .collect();
         if !waits.is_empty() {
             text.push_str(&format!("\nWaiting on: {}", waits.join("; ")));
@@ -270,7 +303,10 @@ fn sanitize_line(text: &str) -> String {
 fn lease_holder(ctx: &ToolContext, session_id: &str) -> Option<String> {
     let db = db(ctx).ok()?;
     let tasks = db
-        .list_tasks(Some(session_id), Some(&crate::coordination::TaskStatus::InProgress))
+        .list_tasks(
+            Some(session_id),
+            Some(&crate::coordination::TaskStatus::InProgress),
+        )
         .ok()?;
     tasks
         .iter()
@@ -284,7 +320,6 @@ fn lease_holder(ctx: &ToolContext, session_id: &str) -> Option<String> {
                 .filter(|agent| agent != crate::coordination::SNIPPET_AGENT_ID)
         })
 }
-
 
 pub struct ListCoordinationAgents;
 #[async_trait]
@@ -326,7 +361,6 @@ impl Tool for ListCoordinationAgents {
         Ok(ToolResult::success(json!({"agents": agents})))
     }
 }
-
 
 fn identity_summary(identity: &str) -> String {
     let para = identity
@@ -552,7 +586,9 @@ fn reply_session_for_agent(db: &Store, agent_id: &str, human_id: &str) -> Option
     let origin = latest_human_origin(&events)?;
     // Only redirect to a session the store actually has: a stale origin would
     // create a delivery that can never land — worse than the human thread.
-    db.has_conversation(origin).ok()?.then(|| origin.to_string())
+    db.has_conversation(origin)
+        .ok()?
+        .then(|| origin.to_string())
 }
 
 /// Send a direct message to a peer agent by id.
@@ -689,7 +725,9 @@ impl Tool for SendAgentMessage {
                         "unknown agent `{to_id}` — list_coordination_agents shows the directory. Use `human` to reply to the person."
                     )));
                 }
-                Some(agent) if agent.status == crate::coordination::types::AgentStatus::Disabled => {
+                Some(agent)
+                    if agent.status == crate::coordination::types::AgentStatus::Disabled =>
+                {
                     return Err(ToolError::msg(format!("agent `{to_id}` is disabled")));
                 }
                 Some(_) => {}
@@ -734,7 +772,10 @@ impl Tool for SendAgentMessage {
         }
         let (sender_kind, sender_id) = actor(ctx)?;
         let (kind, urgency) = if reaction.is_some() {
-            (Some("reaction"), crate::coordination::typed::Urgency::Normal)
+            (
+                Some("reaction"),
+                crate::coordination::typed::Urgency::Normal,
+            )
         } else {
             crate::coordination::typed::parse(args.kind.as_deref(), args.urgency.as_deref())
                 .map_err(ToolError::msg)?
@@ -752,7 +793,9 @@ impl Tool for SendAgentMessage {
                 && reaction.is_none()
                 && sender_id != crate::mission_control::SESSION_ID
             {
-                crate::coordination::reach::apply_outbound_human(&db, &sender_id, &body, &mut extra);
+                crate::coordination::reach::apply_outbound_human(
+                    &db, &sender_id, &body, &mut extra,
+                );
             }
         }
         let key = args
@@ -829,8 +872,7 @@ impl Tool for ReadAgentThread {
             return Err(ToolError::msg("peer_agent_id must not be empty"));
         }
         let (kind, id) = actor(ctx)?;
-        let thread_id =
-            crate::coordination::direct_thread_id((kind, &id), ("agent", peer));
+        let thread_id = crate::coordination::direct_thread_id((kind, &id), ("agent", peer));
         let limit = args.limit.unwrap_or(20).clamp(1, 100);
         let db = db(ctx)?;
         let events = match args.after_sequence {
@@ -929,22 +971,34 @@ impl Tool for ReadCoordinationBoard {
         }
         let args: Args =
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let named = args.agent_id.as_deref().map(str::trim).filter(|a| !a.is_empty());
+        let named = args
+            .agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty());
         let db = db(ctx)?;
-        let task_alone = args.task_id.as_deref().map(str::trim).filter(|t| !t.is_empty()).filter(|_| {
-            named.is_none()
-                && args.group_by.is_none()
-                && args.workspace.is_none()
-                && args.contains.is_none()
-                && args.kind.is_none()
-                && !args.outstanding_only
-        });
+        let task_alone = args
+            .task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .filter(|_| {
+                named.is_none()
+                    && args.group_by.is_none()
+                    && args.workspace.is_none()
+                    && args.contains.is_none()
+                    && args.kind.is_none()
+                    && !args.outstanding_only
+            });
         if let Some(task) = task_alone {
             let limit = args.limit.unwrap_or(30).clamp(1, 100);
             let rows = db
                 .task_log(task, args.before_id, limit)
                 .map_err(|e| ToolError::msg(format!("read task log: {e}")))?;
-            let next = rows.last().map(|r| r.id).filter(|_| rows.len() as u32 == limit);
+            let next = rows
+                .last()
+                .map(|r| r.id)
+                .filter(|_| rows.len() as u32 == limit);
             return Ok(ToolResult::success(json!({
                 "task_id": task,
                 "count": rows.len(),
@@ -955,7 +1009,9 @@ impl Tool for ReadCoordinationBoard {
         let agent_id = match named {
             Some("all") => {
                 if args.outstanding_only {
-                    return Err(ToolError::msg("outstanding_only reads one agent's board; name that agent"));
+                    return Err(ToolError::msg(
+                        "outstanding_only reads one agent's board; name that agent",
+                    ));
                 }
                 crate::coordination::ALL_AGENTS.to_string()
             }
@@ -972,15 +1028,20 @@ impl Tool for ReadCoordinationBoard {
                 "note": "Dispatches with no report yet. Read a specific one by searching its correlation id.",
             })));
         }
-        let kind = match args.kind.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        let kind = match args
+            .kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        {
             None => None,
-            Some(raw) => Some(
-                crate::coordination::BoardEntryKind::parse(raw).ok_or_else(|| {
+            Some(raw) => Some(crate::coordination::BoardEntryKind::parse(raw).ok_or_else(
+                || {
                     ToolError::msg(format!(
                         "unknown kind `{raw}` — use dispatched, reported, noted, or progress"
                     ))
-                })?,
-            ),
+                },
+            )?),
         };
         let query = crate::coordination::BoardQuery {
             workspace: args.workspace.as_deref().filter(|w| !w.trim().is_empty()),
@@ -991,10 +1052,16 @@ impl Tool for ReadCoordinationBoard {
             correlation: args.task_id.as_deref().filter(|t| !t.trim().is_empty()),
         };
         let limit = args.limit.unwrap_or(30).clamp(1, 100);
-        let (entries, last_id) = match args.group_by.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
+        let (entries, last_id) = match args
+            .group_by
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+        {
             Some(raw) => {
-                let grouping = crate::coordination::BoardGrouping::parse(raw)
-                    .ok_or_else(|| ToolError::msg(format!("unknown group_by `{raw}`: use task or folder")))?;
+                let grouping = crate::coordination::BoardGrouping::parse(raw).ok_or_else(|| {
+                    ToolError::msg(format!("unknown group_by `{raw}`: use task or folder"))
+                })?;
                 let groups = db
                     .read_board_groups(&agent_id, grouping, &query, limit)
                     .map_err(|e| ToolError::msg(format!("read board: {e}")))?;
@@ -1062,7 +1129,9 @@ impl Tool for RecordCoordinationNote {
             return Err(ToolError::msg("summary must not be empty"));
         }
         let agent_id = board_agent_id(ctx)?;
-        let session = ctx.durable_session_id().filter(|id| !crate::session::is_inbox_session_id(id));
+        let session = ctx
+            .durable_session_id()
+            .filter(|id| !crate::session::is_inbox_session_id(id));
         let here = ctx.workspace_root().display().to_string();
         let on_task = session.and_then(|s| crate::progress::working_as(ctx, s).1);
         let id = db(ctx)?
@@ -1070,7 +1139,11 @@ impl Tool for RecordCoordinationNote {
                 &agent_id,
                 crate::coordination::BoardEntryKind::Noted,
                 &crate::coordination::NewBoardEntry {
-                    session_id: args.session_id.as_deref().filter(|s| !s.trim().is_empty()).or(session),
+                    session_id: args
+                        .session_id
+                        .as_deref()
+                        .filter(|s| !s.trim().is_empty())
+                        .or(session),
                     workspace: args
                         .workspace
                         .as_deref()
@@ -1097,9 +1170,10 @@ impl Tool for RecordCoordinationNote {
 /// is not an agent.
 fn board_agent_id(ctx: &ToolContext) -> Result<String, ToolError> {
     if let Ok((kind, id)) = actor(ctx)
-        && kind == "agent" {
-            return Ok(id);
-        }
+        && kind == "agent"
+    {
+        return Ok(id);
+    }
     if let Some(agent_id) = ctx.agent_id() {
         return Ok(agent_id.to_string());
     }
@@ -1159,11 +1233,14 @@ impl Tool for MessageMissionControl {
             actor_kind: actor_kind.to_string(),
             actor_id: actor_id.clone(),
             payload_version: 1,
-            payload: stamp_origin(ctx, json!({
-                "body": message,
-                "task_id": task_id,
-                "to": "mission_control",
-            })),
+            payload: stamp_origin(
+                ctx,
+                json!({
+                    "body": message,
+                    "task_id": task_id,
+                    "to": "mission_control",
+                }),
+            ),
             causation_id: None,
             correlation_id: Some(task_id.to_string()),
             idempotency_key: Uuid::new_v4().to_string(),
@@ -1239,20 +1316,33 @@ impl Tool for PostTaskCoordination {
             .ok_or_else(|| ToolError::msg(format!("task `{task_id}` not found")))?;
         let (actor_kind, actor_id) = actor(ctx)?;
         require_thread_access(&db, ctx, &actor_id, &task.thread_id)?;
-        let (kind, urgency) = crate::coordination::typed::parse(args.kind.as_deref(), args.urgency.as_deref())
-            .map_err(ToolError::msg)?;
+        let (kind, urgency) =
+            crate::coordination::typed::parse(args.kind.as_deref(), args.urgency.as_deref())
+                .map_err(ToolError::msg)?;
         let mut payload = json!({"body": body, "task_id": task_id});
-        let to: Vec<String> = args.to.iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect();
+        let to: Vec<String> = args
+            .to
+            .iter()
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty())
+            .collect();
         if !to.is_empty() {
             let roster = db.list_task_agents(task_id).unwrap_or_default();
             if let Some(stranger) = to.iter().find(|a| {
                 a.as_str() != crate::mission_control::SESSION_ID
-                    && !roster.iter().any(|m| m.agent_id == **a && m.removed_at.is_none())
+                    && !roster
+                        .iter()
+                        .any(|m| m.agent_id == **a && m.removed_at.is_none())
             }) {
-                return Err(ToolError::msg(format!("`{stranger}` isn't on this task. Use invite_task_agent to bring them in.")));
+                return Err(ToolError::msg(format!(
+                    "`{stranger}` isn't on this task. Use invite_task_agent to bring them in."
+                )));
             }
             crate::members::seat_holder(&db, &task);
-            for agent in to.iter().filter(|a| a.as_str() != crate::mission_control::SESSION_ID) {
+            for agent in to
+                .iter()
+                .filter(|a| a.as_str() != crate::mission_control::SESSION_ID)
+            {
                 crate::members::seat(&db, &task, agent, &now_rfc3339()).map_err(ToolError::msg)?;
             }
             payload["to"] = json!(to);
@@ -1314,7 +1404,8 @@ impl Tool for PostTaskCoordination {
             let _ = db.touch_task_progress(&task.id, &now_step);
             if !step_line.is_empty() {
                 let _ = db.update_task_in(&task.id, &now_step, |t| {
-                    if let Some(active) = t.work_plan.iter_mut().find(|s| s.status == "in_progress") {
+                    if let Some(active) = t.work_plan.iter_mut().find(|s| s.status == "in_progress")
+                    {
                         active.step = step_line.clone();
                     }
                 });
@@ -1360,7 +1451,8 @@ impl Tool for PassTurn {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: PassTurnArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let args: PassTurnArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let task_id = args.task_id.trim();
         let to_agent = args.to_agent_id.trim();
         if task_id.is_empty() || to_agent.is_empty() {
@@ -1375,7 +1467,10 @@ impl Tool for PassTurn {
             .map_err(|e| ToolError::msg(format!("lookup task: {e}")))?
             .ok_or_else(|| ToolError::msg(format!("task `{task_id}` not found")))?;
         if task.status != TaskStatus::InProgress {
-            return Err(ToolError::msg(format!("task `{task_id}` is {}, so there is no turn to pass", task.status)));
+            return Err(ToolError::msg(format!(
+                "task `{task_id}` is {}, so there is no turn to pass",
+                task.status
+            )));
         }
         let holder = db
             .list_task_agents(task_id)
@@ -1384,10 +1479,20 @@ impl Tool for PassTurn {
             .find(|m| m.status == "active" && m.removed_at.is_none())
             .map(|m| m.agent_id)
             .ok_or_else(|| ToolError::msg("nobody holds this task's turn yet"))?;
-        let session = ctx.durable_session_id().or(ctx.lane_origin().map(|(s, _)| s)).unwrap_or_default();
-        let bound = task.reporting_session.as_deref().unwrap_or(&task.session_id);
-        if crate::conversations::canonical_session_id(bound) != crate::conversations::canonical_session_id(session) {
-            return Err(ToolError::msg(format!("only the holder of the turn can pass it, and that is `{holder}`. Ask them in the room.")));
+        let session = ctx
+            .durable_session_id()
+            .or(ctx.lane_origin().map(|(s, _)| s))
+            .unwrap_or_default();
+        let bound = task
+            .reporting_session
+            .as_deref()
+            .unwrap_or(&task.session_id);
+        if crate::conversations::canonical_session_id(bound)
+            != crate::conversations::canonical_session_id(session)
+        {
+            return Err(ToolError::msg(format!(
+                "only the holder of the turn can pass it, and that is `{holder}`. Ask them in the room."
+            )));
         }
         if to_agent == holder {
             return Err(ToolError::msg("you already hold the turn"));
@@ -1406,11 +1511,20 @@ impl Tool for PassTurn {
             created_at: now.clone(),
             acked_at: None,
         };
-        let passed = crate::members::pass_turn(&db, &task, to_agent, &handover, &now).map_err(ToolError::msg)?;
+        let passed = crate::members::pass_turn(&db, &task, to_agent, &handover, &now)
+            .map_err(ToolError::msg)?;
         let body = crate::members::handover_body(&handover, &passed);
-        post_handover_event(&db, ctx, &task.thread_id, "task.lease_transferred", &holder, &body, json!({
-            "task_id": task_id, "handoff_id": handover.id, "from_agent_id": holder, "to_agent_id": to_agent,
-        }))?;
+        post_handover_event(
+            &db,
+            ctx,
+            &task.thread_id,
+            "task.lease_transferred",
+            &holder,
+            &body,
+            json!({
+                "task_id": task_id, "handoff_id": handover.id, "from_agent_id": holder, "to_agent_id": to_agent,
+            }),
+        )?;
         Ok(ToolResult::success(json!({
             "passed": true,
             "holder": to_agent,
@@ -1446,8 +1560,12 @@ fn post_handover_event(
         idempotency_key: Uuid::new_v4().to_string(),
         created_at: now_rfc3339(),
     };
-    let saved = db.append_event(&event).map_err(|e| ToolError::msg(format!("record event: {e}")))?;
-    crate::session::emit_device_event(json!({"kind": "coordination_event", "event": saved.clone()}));
+    let saved = db
+        .append_event(&event)
+        .map_err(|e| ToolError::msg(format!("record event: {e}")))?;
+    crate::session::emit_device_event(
+        json!({"kind": "coordination_event", "event": saved.clone()}),
+    );
     crate::serve::queue_coordination_wake(db, saved.clone());
     Ok(saved)
 }
@@ -1555,11 +1673,16 @@ impl Tool for ClaimAndDispatchTask {
             .map_err(|e| ToolError::msg(format!("lookup task: {e}")))?
             .ok_or_else(|| ToolError::msg(format!("task `{task_id}` not found")))?;
         if task.status.is_terminal() || task.status == crate::coordination::TaskStatus::InProgress {
-            return Err(ToolError::msg(format!("task `{task_id}` is {}; only queued or blocked work can be claimed", task.status)));
+            return Err(ToolError::msg(format!(
+                "task `{task_id}` is {}; only queued or blocked work can be claimed",
+                task.status
+            )));
         }
         let (actor_kind, actor_id) = actor(ctx)?;
         if actor_kind != "agent" {
-            return Err(ToolError::msg("claiming a task needs an agent identity; this session has none"));
+            return Err(ToolError::msg(
+                "claiming a task needs an agent identity; this session has none",
+            ));
         }
         if actor_id == crate::mission_control::SESSION_ID {
             return Err(ToolError::msg(
@@ -1589,12 +1712,15 @@ impl Tool for ClaimAndDispatchTask {
             actor_kind: actor_kind.to_string(),
             actor_id: actor_id.clone(),
             payload_version: 1,
-            payload: stamp_origin(ctx, json!({
-                "body": format!("{actor_id} claimed the task"),
-                "task_id": task_id,
-                "agent_id": actor_id,
-                "profile": queued.profile,
-            })),
+            payload: stamp_origin(
+                ctx,
+                json!({
+                    "body": format!("{actor_id} claimed the task"),
+                    "task_id": task_id,
+                    "agent_id": actor_id,
+                    "profile": queued.profile,
+                }),
+            ),
             causation_id: None,
             correlation_id: Some(task_id.to_string()),
             idempotency_key: Uuid::new_v4().to_string(),
@@ -1658,7 +1784,9 @@ impl Tool for DeclineTask {
         }
         let (actor_kind, actor_id) = actor(ctx)?;
         if actor_kind != "agent" {
-            return Err(ToolError::msg("declining a task needs an agent identity; this session has none"));
+            return Err(ToolError::msg(
+                "declining a task needs an agent identity; this session has none",
+            ));
         }
         let db = db(ctx)?;
         let task = db
@@ -1675,14 +1803,19 @@ impl Tool for DeclineTask {
         db.remove_task_agent(task_id, &actor_id, &now)
             .map_err(|e| ToolError::msg(format!("leave the roster: {e}")))?;
         let message = format!("{actor_id} declined the task: {reason}");
-        db.move_task(task_id, crate::coordination::TaskStatus::Blocked, &message, &now)
-            .map_err(|e| ToolError::msg(format!("park task: {e}")))?;
+        db.move_task(
+            task_id,
+            crate::coordination::TaskStatus::Blocked,
+            &message,
+            &now,
+        )
+        .map_err(|e| ToolError::msg(format!("park task: {e}")))?;
         let marker = crate::coordination::offer_marker(&actor_id);
         db.update_task_in(task_id, &now, |t| {
             t.notifications.retain(|n| n.target != marker);
             t.notify_once("declined", &message);
         })
-            .map_err(|e| ToolError::msg(format!("notify Mission Control: {e}")))?;
+        .map_err(|e| ToolError::msg(format!("notify Mission Control: {e}")))?;
         let event = CoordinationEvent {
             event_id: Uuid::new_v4().to_string(),
             thread_id: task.thread_id.clone(),
@@ -1692,7 +1825,10 @@ impl Tool for DeclineTask {
             actor_kind: actor_kind.to_string(),
             actor_id: actor_id.clone(),
             payload_version: 1,
-            payload: stamp_origin(ctx, json!({"body": message, "task_id": task_id, "agent_id": actor_id})),
+            payload: stamp_origin(
+                ctx,
+                json!({"body": message, "task_id": task_id, "agent_id": actor_id}),
+            ),
             causation_id: None,
             correlation_id: Some(task_id.to_string()),
             idempotency_key: Uuid::new_v4().to_string(),
@@ -1720,7 +1856,9 @@ fn group_agent(ctx: &ToolContext) -> Result<String, ToolError> {
     match actor(ctx)? {
         ("agent", id) => Ok(id),
         ("session", id) if id == crate::mission_control::SESSION_ID => Ok(id),
-        _ => Err(ToolError::msg("group threads are for agents and Mission Control")),
+        _ => Err(ToolError::msg(
+            "group threads are for agents and Mission Control",
+        )),
     }
 }
 
@@ -1832,7 +1970,13 @@ impl Tool for GroupThread {
                     )));
                 }
                 let group = db
-                    .create_group(title, ("agent", agent_id.as_str()), &deduped, lead, &now_rfc3339())
+                    .create_group(
+                        title,
+                        ("agent", agent_id.as_str()),
+                        &deduped,
+                        lead,
+                        &now_rfc3339(),
+                    )
                     .map_err(|e| ToolError::msg(format!("create group: {e}")))?;
                 Ok(ToolResult::success(json!(group)))
             }
@@ -1922,7 +2066,9 @@ impl Tool for GroupThread {
                 require_group_member(&group, &agent_id)?;
                 db.set_group_lead(thread_id, agent)
                     .map_err(|e| ToolError::msg(format!("set lead: {e}")))?;
-                Ok(ToolResult::success(json!({"thread_id": thread_id, "lead": agent})))
+                Ok(ToolResult::success(
+                    json!({"thread_id": thread_id, "lead": agent}),
+                ))
             }
             "add_member" => {
                 let thread_id = arguments
@@ -1942,7 +2088,9 @@ impl Tool for GroupThread {
                 }
                 db.add_group_member(thread_id, agent)
                     .map_err(|e| ToolError::msg(format!("add member: {e}")))?;
-                Ok(ToolResult::success(json!({"thread_id": thread_id, "member": agent})))
+                Ok(ToolResult::success(
+                    json!({"thread_id": thread_id, "member": agent}),
+                ))
             }
             other => Err(ToolError::msg(format!(
                 "unknown action `{other}`; use create, list, read, post, set_lead or add_member"
@@ -1954,7 +2102,6 @@ impl Tool for GroupThread {
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
-
 
 /// Record the session an event was posted from, so the room's wake-up skips it.
 const SHARE_ARTIFACT_TTL_SECS: i64 = 30 * 24 * 60 * 60;
@@ -2019,8 +2166,11 @@ impl Tool for ShareArtifactTool {
             .durable_session_id()
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| ToolError::msg("share_artifact requires a durable session"))?;
-        let artifact = crate::artifacts::get(session, artifact_id)
-            .ok_or_else(|| ToolError::msg(format!("unknown artifact `{artifact_id}` in session `{session}`")))?;
+        let artifact = crate::artifacts::get(session, artifact_id).ok_or_else(|| {
+            ToolError::msg(format!(
+                "unknown artifact `{artifact_id}` in session `{session}`"
+            ))
+        })?;
         let version = artifact
             .latest()
             .ok_or_else(|| ToolError::msg(format!("artifact `{artifact_id}` has no versions")))?;
@@ -2074,7 +2224,9 @@ impl Tool for ShareArtifactTool {
         } else if target == "human" {
             extra.insert("channel".into(), json!("chat"));
             if sender_kind == "agent" && sender_id != crate::mission_control::SESSION_ID {
-                crate::coordination::reach::apply_outbound_human(&db, &sender_id, &body, &mut extra);
+                crate::coordination::reach::apply_outbound_human(
+                    &db, &sender_id, &body, &mut extra,
+                );
             }
             let key = Uuid::new_v4().to_string();
             let ev = db
@@ -2105,7 +2257,9 @@ impl Tool for ShareArtifactTool {
                         "unknown target `{target}`; supported targets are `human`, a directory agent id, `channel:chat`, or `channel:push`"
                     )));
                 }
-                Some(agent) if agent.status == crate::coordination::types::AgentStatus::Disabled => {
+                Some(agent)
+                    if agent.status == crate::coordination::types::AgentStatus::Disabled =>
+                {
                     return Err(ToolError::msg(format!("agent `{target}` is disabled")));
                 }
                 Some(_) => {}
@@ -2181,18 +2335,24 @@ mod tests {
         let room = crate::coordination::Task::thread_for("t1");
 
         let outsider = context(dir.path(), "work-2");
-        assert!(PostCoordinationMessage
-            .execute(&outsider, json!({"thread_id": room, "body": "hi"}))
-            .await
-            .is_err());
-        assert!(ReadCoordinationThread
-            .execute(&outsider, json!({"thread_id": room}))
-            .await
-            .is_err());
-        assert!(PostCoordinationMessage
-            .execute(&outsider, json!({"thread_id": "made-up", "body": "hi"}))
-            .await
-            .is_err());
+        assert!(
+            PostCoordinationMessage
+                .execute(&outsider, json!({"thread_id": room, "body": "hi"}))
+                .await
+                .is_err()
+        );
+        assert!(
+            ReadCoordinationThread
+                .execute(&outsider, json!({"thread_id": room}))
+                .await
+                .is_err()
+        );
+        assert!(
+            PostCoordinationMessage
+                .execute(&outsider, json!({"thread_id": "made-up", "body": "hi"}))
+                .await
+                .is_err()
+        );
 
         // The task's own session and Mission Control are let in.
         let worker = context(dir.path(), "work-1");
@@ -2234,8 +2394,16 @@ mod tests {
         );
         task.status = crate::coordination::TaskStatus::Blocked;
         db.create_task(&task).unwrap();
-        db.add_task_agent_full("t1", "snippet", "implementer", None, "", "active", "2026-01-01T00:00:00Z")
-            .unwrap();
+        db.add_task_agent_full(
+            "t1",
+            "snippet",
+            "implementer",
+            None,
+            "",
+            "active",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
 
         let ctx = context(dir.path(), "inbox-reviewer").with_agent_id("reviewer");
         ClaimAndDispatchTask
@@ -2246,12 +2414,25 @@ mod tests {
         let task = db.get_task("t1").unwrap().unwrap();
         assert_eq!(task.status, crate::coordination::TaskStatus::Todo);
         let roster = db.list_task_agents("t1").unwrap();
-        let status = |id: &str| roster.iter().find(|m| m.agent_id == id).unwrap().status.clone();
+        let status = |id: &str| {
+            roster
+                .iter()
+                .find(|m| m.agent_id == id)
+                .unwrap()
+                .status
+                .clone()
+        };
         assert_eq!(status("reviewer"), "active");
         assert_eq!(status("snippet"), "waiting", "one lease holder at a time");
 
-        db.claim_task_for_dispatch("t1", "2026-01-01T00:00:01Z").unwrap();
-        assert!(ClaimAndDispatchTask.execute(&ctx, json!({"task_id": "t1"})).await.is_err());
+        db.claim_task_for_dispatch("t1", "2026-01-01T00:00:01Z")
+            .unwrap();
+        assert!(
+            ClaimAndDispatchTask
+                .execute(&ctx, json!({"task_id": "t1"}))
+                .await
+                .is_err()
+        );
     }
 
     /// A lease moves an agent into a session it does not own; posts from that
@@ -2280,8 +2461,16 @@ mod tests {
         task.status = crate::coordination::TaskStatus::InProgress;
         task.reporting_session = Some("s1".into());
         db.create_task(&task).unwrap();
-        db.add_task_agent_full("t1", "reviewer", "reviewer", None, "", "active", "2026-01-01T00:00:00Z")
-            .unwrap();
+        db.add_task_agent_full(
+            "t1",
+            "reviewer",
+            "reviewer",
+            None,
+            "",
+            "active",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
 
         let ctx = context(dir.path(), "s1").with_agent_id("owner");
         let posted = PostTaskCoordination
@@ -2289,7 +2478,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(posted.value["data"]["event"]["actor_id"], "reviewer");
-        assert_eq!(posted.value["data"]["event"]["payload"]["origin_session"], "s1");
+        assert_eq!(
+            posted.value["data"]["event"]["payload"]["origin_session"],
+            "s1"
+        );
     }
 
     #[tokio::test]
@@ -2317,7 +2509,6 @@ mod tests {
         assert_eq!(events[0].actor_kind, "session");
     }
 
-
     #[tokio::test]
     async fn post_message_posts_as_the_bound_agent() {
         let dir = tempfile::tempdir().unwrap();
@@ -2336,7 +2527,6 @@ mod tests {
         assert_eq!(events[0].actor_kind, "agent");
     }
 
-
     #[tokio::test]
     async fn post_message_requires_a_session_identity() {
         let dir = tempfile::tempdir().unwrap();
@@ -2348,7 +2538,6 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("session identity"));
     }
-
 
     #[tokio::test]
     async fn post_message_is_idempotent_for_a_repeated_key() {
@@ -2365,7 +2554,6 @@ mod tests {
 
         assert_eq!(db.events_for_thread("system", 0, 10).unwrap().len(), 1);
     }
-
 
     #[tokio::test]
     async fn list_agents_reports_registered_agents() {
@@ -2391,11 +2579,9 @@ mod tests {
         assert_eq!(agents[0]["id"], "web-researcher");
     }
 
-
     /// The separation itself: a session is not an agent, so a session with no
     /// agent bound cannot take a turn. Before this split the session id stood in
     /// as the identity, which made every session an agent.
-
 
     #[tokio::test]
     async fn read_thread_defaults_to_the_shared_room_most_recent_first() {
@@ -2430,7 +2616,6 @@ mod tests {
         assert_eq!(data["oldest_sequence"], 1);
         assert_eq!(data["newest_sequence"], 3);
     }
-
 
     #[tokio::test]
     async fn read_thread_pages_forward_and_back_by_cursor() {
@@ -2474,7 +2659,6 @@ mod tests {
         assert_eq!(forward.value["data"]["direction"], "forward");
     }
 
-
     #[tokio::test]
     async fn read_thread_reports_an_empty_room_without_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -2489,7 +2673,6 @@ mod tests {
         assert_eq!(data["may_have_more"], false);
         assert_eq!(data["newest_sequence"], 0);
     }
-
 
     fn direct_event(actor_kind: &str, origin: Option<&str>) -> CoordinationEvent {
         let mut payload = json!({"body": "x", "recipient": "agent:snippet"});
@@ -2614,8 +2797,26 @@ mod tests {
             "2026-01-01T00:00:00Z".into(),
         );
         db.create_task(&task).unwrap();
-        db.add_task_agent_full("t1", "agent-a", "implementer", None, "", "active", "2026-01-01T00:00:00Z").unwrap();
-        db.add_task_agent_full("t1", "agent-b", "reviewer", None, "", "waiting", "2026-01-01T00:00:00Z").unwrap();
+        db.add_task_agent_full(
+            "t1",
+            "agent-a",
+            "implementer",
+            None,
+            "",
+            "active",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        db.add_task_agent_full(
+            "t1",
+            "agent-b",
+            "reviewer",
+            None,
+            "",
+            "waiting",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
 
         let ctx_a = ToolContext::new(dir.path())
             .unwrap()
@@ -2624,7 +2825,10 @@ mod tests {
             .with_agent_id("agent-a");
 
         let res = MessageMissionControl
-            .execute(&ctx_a, json!({"task_id": "t1", "message": "Need clarification on auth"}))
+            .execute(
+                &ctx_a,
+                json!({"task_id": "t1", "message": "Need clarification on auth"}),
+            )
             .await
             .unwrap();
         assert_eq!(res.value["status"], "success");
@@ -2632,15 +2836,23 @@ mod tests {
         let t = db.get_task("t1").unwrap().unwrap();
         assert_eq!(t.notifications.len(), 1);
         assert_eq!(t.notifications[0].target, "mission_control");
-        assert!(t.notifications[0].message.contains("Need clarification on auth"));
+        assert!(
+            t.notifications[0]
+                .message
+                .contains("Need clarification on auth")
+        );
 
         let res = PostTaskCoordination
-            .execute(&ctx_a, json!({"task_id": "t1", "body": "Auth implementation ready for review"}))
+            .execute(
+                &ctx_a,
+                json!({"task_id": "t1", "body": "Auth implementation ready for review"}),
+            )
             .await
             .unwrap();
         assert_eq!(res.value["status"], "success");
 
-        db.transfer_task_session_lease("t1", "agent-a", "agent-b").unwrap();
+        db.transfer_task_session_lease("t1", "agent-a", "agent-b")
+            .unwrap();
 
         // Verify InspectTask provides maximum visibility
         let ctx_b = ToolContext::new(dir.path())
@@ -2689,19 +2901,32 @@ mod tests {
         let ctx = context(dir.path(), "s-sender").with_agent_id("sender");
 
         let first = SendAgentMessage
-            .execute(&ctx, json!({"recipient_agent_id": "peer", "body": "can you verify?"}))
+            .execute(
+                &ctx,
+                json!({"recipient_agent_id": "peer", "body": "can you verify?"}),
+            )
             .await
             .unwrap();
-        let target_id = first.value["data"]["event_id"].as_str().unwrap().to_string();
+        let target_id = first.value["data"]["event_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
-        assert!(SendAgentMessage
-            .execute(&ctx, json!({"recipient_agent_id": "peer", "reaction": "eyes"}))
-            .await
-            .is_err());
-        assert!(SendAgentMessage
-            .execute(&ctx, json!({"recipient_agent_id": "peer", "body": ""}))
-            .await
-            .is_err());
+        assert!(
+            SendAgentMessage
+                .execute(
+                    &ctx,
+                    json!({"recipient_agent_id": "peer", "reaction": "eyes"})
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            SendAgentMessage
+                .execute(&ctx, json!({"recipient_agent_id": "peer", "body": ""}))
+                .await
+                .is_err()
+        );
 
         SendAgentMessage
             .execute(
@@ -2765,15 +2990,13 @@ mod tests {
         assert!(err.contains("unknown artifact"), "{err}");
 
         let page = dir.path().join("report.html");
-        std::fs::write(&page, "<!doctype html><title>Weekly Report</title><h1>Hi</h1>").unwrap();
-        let presented = crate::artifacts::present(
-            &session,
+        std::fs::write(
             &page,
-            Some("Weekly Report"),
-            None,
-            None,
+            "<!doctype html><title>Weekly Report</title><h1>Hi</h1>",
         )
         .unwrap();
+        let presented =
+            crate::artifacts::present(&session, &page, Some("Weekly Report"), None, None).unwrap();
         assert_eq!(presented.version, 1);
         let aid = presented.artifact.id.clone();
 
@@ -2793,8 +3016,12 @@ mod tests {
         let parts: Vec<&str> = url.trim_start_matches("/a/").splitn(3, '/').collect();
         let exp: i64 = parts[0].parse().unwrap();
         let now = chrono::Utc::now().timestamp();
-        assert!(exp >= now + 29 * 86_400 && exp <= now + 31 * 86_400, "exp={exp}, now={now}");
-        let resolved = crate::artifacts::resolve_signed(&artifact_signing_secret(), exp, parts[1], parts[2]);
+        assert!(
+            exp >= now + 29 * 86_400 && exp <= now + 31 * 86_400,
+            "exp={exp}, now={now}"
+        );
+        let resolved =
+            crate::artifacts::resolve_signed(&artifact_signing_secret(), exp, parts[1], parts[2]);
         assert!(resolved.is_some_and(|p| p.is_file()));
 
         let human_thread = crate::coordination::direct_thread_id(
@@ -2817,7 +3044,8 @@ mod tests {
             )
             .await
             .unwrap();
-        let peer_thread = crate::coordination::direct_thread_id(("agent", "sender"), ("agent", "peer"));
+        let peer_thread =
+            crate::coordination::direct_thread_id(("agent", "sender"), ("agent", "peer"));
         let peer_events = db.direct_thread_events(&peer_thread, 0, 10).unwrap();
         assert_eq!(peer_events.len(), 1);
         assert_eq!(peer_events[0].payload["body"], "Check this chart");
@@ -2841,10 +3069,7 @@ mod tests {
         assert_eq!(human_events[1].payload["artifact"]["id"], aid);
 
         let bad_chan = ShareArtifactTool
-            .execute(
-                &ctx,
-                json!({"artifact_id": aid, "to": "channel:voice"}),
-            )
+            .execute(&ctx, json!({"artifact_id": aid, "to": "channel:voice"}))
             .await
             .unwrap_err()
             .to_string();

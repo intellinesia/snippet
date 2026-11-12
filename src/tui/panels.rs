@@ -5,10 +5,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
+use super::App;
 use super::boards::s;
 use super::shell::{Focus, PaneTab};
 use super::theme::*;
-use super::App;
 
 #[derive(Default)]
 pub(crate) struct PanelState {
@@ -46,15 +46,28 @@ fn selected_bg(selected: bool) -> Style {
 fn back_line(title: &str, meta: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled("‹ ", Style::default().fg(accent())),
-        Span::styled(title.to_string(), Style::default().fg(text()).add_modifier(Modifier::BOLD)),
-        Span::styled(if meta.is_empty() { String::new() } else { format!("  {meta}") }, Style::default().fg(faint())),
+        Span::styled(
+            title.to_string(),
+            Style::default().fg(text()).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if meta.is_empty() {
+                String::new()
+            } else {
+                format!("  {meta}")
+            },
+            Style::default().fg(faint()),
+        ),
     ])
 }
 
 fn state(f: &super::boards::Fetched, empty: &str, is_empty: bool) -> Option<Vec<Line<'static>>> {
     if f.value.is_none() {
         return Some(vec![match &f.error {
-            Some(e) => Line::from(Span::styled(format!("Couldn't load: {e}"), Style::default().fg(danger()))),
+            Some(e) => Line::from(Span::styled(
+                format!("Couldn't load: {e}"),
+                Style::default().fg(danger()),
+            )),
             None => faint_line("Loading…"),
         }]);
     }
@@ -63,7 +76,9 @@ fn state(f: &super::boards::Fetched, empty: &str, is_empty: bool) -> Option<Vec<
 
 fn windowed(rows: Vec<Line<'static>>, selected: usize, visible: usize) -> Vec<Line<'static>> {
     let visible = visible.max(3);
-    let start = selected.saturating_sub(visible.saturating_sub(2)).min(rows.len().saturating_sub(visible));
+    let start = selected
+        .saturating_sub(visible.saturating_sub(2))
+        .min(rows.len().saturating_sub(visible));
     rows.into_iter().skip(start).take(visible).collect()
 }
 
@@ -159,7 +174,10 @@ impl App {
     }
 
     fn inbox_query() -> Vec<(&'static str, String)> {
-        vec![("since_created_at", (now_secs() - DAY).max(0).to_string()), ("limit", "500".into())]
+        vec![
+            ("since_created_at", (now_secs() - DAY).max(0).to_string()),
+            ("limit", "500".into()),
+        ]
     }
 
     pub(crate) fn poll_panels(&mut self, info: &crate::serve::sidecar::DaemonInfo) {
@@ -173,9 +191,27 @@ impl App {
         };
         let session = self.current_session_id();
         let (method, path, query, body, max_age) = match tab {
-            PaneTab::Inbox => (reqwest::Method::GET, "/notifications".to_string(), Self::inbox_query(), None, 15),
-            PaneTab::Procs => (reqwest::Method::GET, "/bg".into(), vec![("session", session.clone())], None, 3),
-            PaneTab::Git => (reqwest::Method::GET, "/git/status".into(), vec![("session", session.clone())], None, 5),
+            PaneTab::Inbox => (
+                reqwest::Method::GET,
+                "/notifications".to_string(),
+                Self::inbox_query(),
+                None,
+                15,
+            ),
+            PaneTab::Procs => (
+                reqwest::Method::GET,
+                "/bg".into(),
+                vec![("session", session.clone())],
+                None,
+                3,
+            ),
+            PaneTab::Git => (
+                reqwest::Method::GET,
+                "/git/status".into(),
+                vec![("session", session.clone())],
+                None,
+                5,
+            ),
             PaneTab::Files => (
                 reqwest::Method::GET,
                 "/fs".into(),
@@ -186,7 +222,8 @@ impl App {
             _ => return,
         };
         if self.boards.stale(&key, Duration::from_secs(max_age)) {
-            self.boards.fetch_with(info.clone(), key, method, path, query, body);
+            self.boards
+                .fetch_with(info.clone(), key, method, path, query, body);
         }
         let Some(item) = self.shell.pane_detail.and_then(|_| self.panel_item(tab)) else {
             return;
@@ -196,13 +233,32 @@ impl App {
                 format!("proclog:{session}:{}", s(&item, "id")),
                 reqwest::Method::GET,
                 "/bg/log".to_string(),
-                vec![("session", session.clone()), ("id", s(&item, "id")), ("tail", "400".into())],
+                vec![
+                    ("session", session.clone()),
+                    ("id", s(&item, "id")),
+                    ("tail", "400".into()),
+                ],
                 None,
-                if item.get("running").and_then(Value::as_bool).unwrap_or(false) { 2 } else { 3600 },
+                if item
+                    .get("running")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    2
+                } else {
+                    3600
+                },
             )),
             PaneTab::Git => {
-                let untracked = item.get("untracked").and_then(Value::as_bool).unwrap_or(false);
-                let staged = !untracked && !item.get("unstaged").and_then(Value::as_bool).unwrap_or(false);
+                let untracked = item
+                    .get("untracked")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let staged = !untracked
+                    && !item
+                        .get("unstaged")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
                 Some((
                     format!("diff:{session}:{}:{staged}", s(&item, "path")),
                     reqwest::Method::GET,
@@ -217,30 +273,40 @@ impl App {
                     5,
                 ))
             }
-            PaneTab::Files if !item.get("is_dir").and_then(Value::as_bool).unwrap_or(false) => Some((
-                format!("file:{}", s(&item, "path")),
-                reqwest::Method::GET,
-                "/fs/file".to_string(),
-                vec![("path", s(&item, "path"))],
-                None,
-                10,
-            )),
+            PaneTab::Files if !item.get("is_dir").and_then(Value::as_bool).unwrap_or(false) => {
+                Some((
+                    format!("file:{}", s(&item, "path")),
+                    reqwest::Method::GET,
+                    "/fs/file".to_string(),
+                    vec![("path", s(&item, "path"))],
+                    None,
+                    10,
+                ))
+            }
             _ => None,
         };
         if let Some((key, method, path, query, body, max_age)) = detail
             && self.boards.stale(&key, Duration::from_secs(max_age))
         {
-            self.boards.fetch_with(info.clone(), key, method, path, query, body);
+            self.boards
+                .fetch_with(info.clone(), key, method, path, query, body);
         }
     }
 
     fn poll_inbox_alerts(&mut self, info: &crate::serve::sidecar::DaemonInfo) {
-        if let Some(events) = self.boards.get("inbox").value.and_then(|v| v.get("events").cloned()) {
+        if let Some(events) = self
+            .boards
+            .get("inbox")
+            .value
+            .and_then(|v| v.get("events").cloned())
+        {
             let events = events.as_array().cloned().unwrap_or_default();
             let mine = self.current_session_id();
             let newest = events
                 .iter()
-                .filter_map(|e| Some((e.get("created_at")?.as_i64()?, e.get("event_id")?.as_u64()?)))
+                .filter_map(|e| {
+                    Some((e.get("created_at")?.as_i64()?, e.get("event_id")?.as_u64()?))
+                })
                 .max();
             match self.panels.inbox_cursor {
                 None => self.panels.inbox_cursor = Some(newest.unwrap_or((now_secs(), 0))),
@@ -257,8 +323,11 @@ impl App {
                         .collect();
                     if let Some(last) = fresh.last() {
                         let (label, _) = notification_label(last);
-                        self.status = format!("{label}: {} — Ctrl-P inbox", notification_title(last));
-                        if !(self.shell.tab == PaneTab::Inbox && self.shell.pane_visible(self.shell.width)) {
+                        self.status =
+                            format!("{label}: {} — Ctrl-P inbox", notification_title(last));
+                        if !(self.shell.tab == PaneTab::Inbox
+                            && self.shell.pane_visible(self.shell.width))
+                        {
                             self.panels.inbox_unseen += fresh.len();
                         }
                     }
@@ -272,7 +341,11 @@ impl App {
             self.panels.inbox_unseen = 0;
             return;
         }
-        if self.panels.inbox_polled.is_some_and(|at| at.elapsed() < Duration::from_secs(20)) {
+        if self
+            .panels
+            .inbox_polled
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(20))
+        {
             return;
         }
         self.panels.inbox_polled = Some(Instant::now());
@@ -298,7 +371,10 @@ impl App {
                     .boards
                     .get("tasks")
                     .value
-                    .and_then(|v| v.as_array().and_then(|l| l.iter().position(|t| s(t, "id") == id)))
+                    .and_then(|v| {
+                        v.as_array()
+                            .and_then(|l| l.iter().position(|t| s(t, "id") == id))
+                    })
                     .unwrap_or(0);
             }
             "session" => {
@@ -321,7 +397,10 @@ impl App {
     pub(crate) fn handle_panel_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
         use crossterm::event::KeyCode;
         let tab = self.shell.tab;
-        if !matches!(tab, PaneTab::Inbox | PaneTab::Procs | PaneTab::Git | PaneTab::Files) {
+        if !matches!(
+            tab,
+            PaneTab::Inbox | PaneTab::Procs | PaneTab::Git | PaneTab::Files
+        ) {
             return false;
         }
         if self.shell.pane_detail.is_some() {
@@ -334,7 +413,9 @@ impl App {
                 };
                 match tab {
                     PaneTab::Inbox => self.open_notification(&item),
-                    PaneTab::Files if item.get("is_dir").and_then(Value::as_bool).unwrap_or(false) => {
+                    PaneTab::Files
+                        if item.get("is_dir").and_then(Value::as_bool).unwrap_or(false) =>
+                    {
                         self.panels.files_path = Some(PathBuf::from(s(&item, "path")));
                         self.shell.pane_index = 0;
                     }
@@ -371,13 +452,18 @@ impl App {
                 true
             }
             KeyCode::Char('x') if tab == PaneTab::Procs => {
-                if let Some(p) = self.panel_item(tab)
+                if let Some(p) = self
+                    .panel_item(tab)
                     .filter(|p| p.get("running").and_then(Value::as_bool).unwrap_or(false))
                 {
                     let name = proc_name(&p);
                     self.board_confirm = Some(super::boards::Confirm {
                         prompt: format!("Stop {name}? y to confirm"),
-                        action: super::boards::ConfirmAction::KillProcess(self.current_session_id(), s(&p, "id"), name),
+                        action: super::boards::ConfirmAction::KillProcess(
+                            self.current_session_id(),
+                            s(&p, "id"),
+                            name,
+                        ),
                     });
                 }
                 true
@@ -389,7 +475,11 @@ impl App {
 
 fn proc_name(p: &Value) -> String {
     let label = s(p, "label");
-    if label.is_empty() { s(p, "command") } else { label }
+    if label.is_empty() {
+        s(p, "command")
+    } else {
+        label
+    }
 }
 
 pub(crate) fn panel_hint(tab: PaneTab, detail: bool) -> Option<&'static str> {
@@ -438,7 +528,11 @@ pub(crate) fn panel_lines(app: &App, tab: PaneTab, width: usize) -> Vec<Line<'st
             lines.extend(windowed(rows, sel, visible));
         }
         PaneTab::Procs => {
-            if let Some(st) = state(&f, "No background processes in this session.", list.is_empty()) {
+            if let Some(st) = state(
+                &f,
+                "No background processes in this session.",
+                list.is_empty(),
+            ) {
                 return st;
             }
             let rows = list
@@ -450,9 +544,19 @@ pub(crate) fn panel_lines(app: &App, tab: PaneTab, width: usize) -> Vec<Line<'st
                         "running".to_string()
                     } else {
                         let code = s(p, "status");
-                        if code.is_empty() { "exited".into() } else { format!("exit {code}") }
+                        if code.is_empty() {
+                            "exited".into()
+                        } else {
+                            format!("exit {code}")
+                        }
                     };
-                    let color = if running { warn() } else if s(p, "status") == "0" { success() } else { danger() };
+                    let color = if running {
+                        warn()
+                    } else if s(p, "status") == "0" {
+                        success()
+                    } else {
+                        danger()
+                    };
                     super::chrome::Row {
                         selected: focused && i == sel,
                         dot: Some(color),
@@ -480,15 +584,24 @@ pub(crate) fn panel_lines(app: &App, tab: PaneTab, width: usize) -> Vec<Line<'st
             }
             let mut head = vec![
                 Span::styled("⎇ ", Style::default().fg(accent())),
-                Span::styled(s(v, "branch"), Style::default().fg(text()).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    s(v, "branch"),
+                    Style::default().fg(text()).add_modifier(Modifier::BOLD),
+                ),
             ];
             let ahead = v.get("ahead").and_then(Value::as_i64).unwrap_or(0);
             let behind = v.get("behind").and_then(Value::as_i64).unwrap_or(0);
             if ahead > 0 {
-                head.push(Span::styled(format!("  ↑{ahead}"), Style::default().fg(success())));
+                head.push(Span::styled(
+                    format!("  ↑{ahead}"),
+                    Style::default().fg(success()),
+                ));
             }
             if behind > 0 {
-                head.push(Span::styled(format!("  ↓{behind}"), Style::default().fg(warn())));
+                head.push(Span::styled(
+                    format!("  ↓{behind}"),
+                    Style::default().fg(warn()),
+                ));
             }
             lines.push(Line::from(head));
             lines.push(Line::from(""));
@@ -502,14 +615,34 @@ pub(crate) fn panel_lines(app: &App, tab: PaneTab, width: usize) -> Vec<Line<'st
                 .map(|(i, e)| {
                     let x = s(e, "x");
                     let y = s(e, "y");
-                    let code = if x == "?" { "?".to_string() } else if x.trim().is_empty() { y.clone() } else { x.clone() };
+                    let code = if x == "?" {
+                        "?".to_string()
+                    } else if x.trim().is_empty() {
+                        y.clone()
+                    } else {
+                        x.clone()
+                    };
                     let staged = e.get("staged").and_then(Value::as_bool).unwrap_or(false);
                     let selected = focused && i == sel;
                     Line::from(vec![
-                        Span::styled(if selected { "▍ " } else { "  " }, Style::default().fg(accent())),
-                        Span::styled(format!("{} ", if code == "?" { "U" } else { code.as_str() }), Style::default().fg(git_color(&code)).add_modifier(Modifier::BOLD)),
-                        Span::styled(pad(&s(e, "path"), width.saturating_sub(12)), Style::default().fg(if selected { text() } else { soft() })),
-                        Span::styled(if staged { " staged " } else { "        " }, Style::default().fg(faint())),
+                        Span::styled(
+                            if selected { "▍ " } else { "  " },
+                            Style::default().fg(accent()),
+                        ),
+                        Span::styled(
+                            format!("{} ", if code == "?" { "U" } else { code.as_str() }),
+                            Style::default()
+                                .fg(git_color(&code))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            pad(&s(e, "path"), width.saturating_sub(12)),
+                            Style::default().fg(if selected { text() } else { soft() }),
+                        ),
+                        Span::styled(
+                            if staged { " staged " } else { "        " },
+                            Style::default().fg(faint()),
+                        ),
                     ])
                     .style(selected_bg(selected))
                 })
@@ -518,7 +651,10 @@ pub(crate) fn panel_lines(app: &App, tab: PaneTab, width: usize) -> Vec<Line<'st
         }
         PaneTab::Files => {
             let root = app.files_root();
-            let shown = match std::env::var("HOME").ok().and_then(|h| root.strip_prefix(h).ok().map(|r| r.to_path_buf())) {
+            let shown = match std::env::var("HOME")
+                .ok()
+                .and_then(|h| root.strip_prefix(h).ok().map(|r| r.to_path_buf()))
+            {
                 Some(rel) => format!("~/{}", rel.display()),
                 None => root.display().to_string(),
             };
@@ -536,7 +672,11 @@ pub(crate) fn panel_lines(app: &App, tab: PaneTab, width: usize) -> Vec<Line<'st
                 .enumerate()
                 .map(|(i, e)| {
                     let dir = e.get("is_dir").and_then(Value::as_bool).unwrap_or(false);
-                    let name = if dir { format!("{}/", s(e, "name")) } else { s(e, "name") };
+                    let name = if dir {
+                        format!("{}/", s(e, "name"))
+                    } else {
+                        s(e, "name")
+                    };
                     super::chrome::Row {
                         selected: focused && i == sel,
                         dot: None,
@@ -560,8 +700,13 @@ fn detail_lines(app: &App, tab: PaneTab, item: &Value, width: usize) -> Vec<Line
     let session = app.current_session_id();
     match tab {
         PaneTab::Procs => {
-            let mut lines = vec![back_line(&proc_name(item), &format!("pid {}", s(item, "pid"))), Line::from("")];
-            let f = app.boards.get(&format!("proclog:{session}:{}", s(item, "id")));
+            let mut lines = vec![
+                back_line(&proc_name(item), &format!("pid {}", s(item, "pid"))),
+                Line::from(""),
+            ];
+            let f = app
+                .boards
+                .get(&format!("proclog:{session}:{}", s(item, "id")));
             match f.value.as_ref() {
                 None => lines.extend(state(&f, "", false).unwrap_or_default()),
                 Some(v) => {
@@ -570,18 +715,36 @@ fn detail_lines(app: &App, tab: PaneTab, item: &Value, width: usize) -> Vec<Line
                         lines.push(faint_line("No output yet."));
                     }
                     for l in log.lines() {
-                        lines.push(Line::from(Span::styled(pad(l, width), Style::default().fg(soft()))));
+                        lines.push(Line::from(Span::styled(
+                            pad(l, width),
+                            Style::default().fg(soft()),
+                        )));
                     }
                 }
             }
             lines
         }
         PaneTab::Git => {
-            let untracked = item.get("untracked").and_then(Value::as_bool).unwrap_or(false);
-            let staged = !untracked && !item.get("unstaged").and_then(Value::as_bool).unwrap_or(false);
-            let meta = if untracked { "new file" } else if staged { "staged" } else { "unstaged" };
+            let untracked = item
+                .get("untracked")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let staged = !untracked
+                && !item
+                    .get("unstaged")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+            let meta = if untracked {
+                "new file"
+            } else if staged {
+                "staged"
+            } else {
+                "unstaged"
+            };
             let mut lines = vec![back_line(&s(item, "path"), meta), Line::from("")];
-            let f = app.boards.get(&format!("diff:{session}:{}:{staged}", s(item, "path")));
+            let f = app
+                .boards
+                .get(&format!("diff:{session}:{}:{staged}", s(item, "path")));
             match f.value.as_ref() {
                 None => lines.extend(state(&f, "", false).unwrap_or_default()),
                 Some(v) => {
@@ -599,7 +762,10 @@ fn detail_lines(app: &App, tab: PaneTab, item: &Value, width: usize) -> Vec<Line
                         } else {
                             soft()
                         };
-                        lines.push(Line::from(Span::styled(pad(l, width), Style::default().fg(color))));
+                        lines.push(Line::from(Span::styled(
+                            pad(l, width),
+                            Style::default().fg(color),
+                        )));
                     }
                 }
             }
@@ -619,8 +785,14 @@ fn detail_lines(app: &App, tab: PaneTab, item: &Value, width: usize) -> Vec<Line
                     let gutter = total.to_string().len();
                     for (n, l) in content.lines().enumerate() {
                         lines.push(Line::from(vec![
-                            Span::styled(format!("{:>gutter$} ", n + 1), Style::default().fg(faint())),
-                            Span::styled(pad(&l.replace('\t', "    "), width.saturating_sub(gutter + 1)), Style::default().fg(soft())),
+                            Span::styled(
+                                format!("{:>gutter$} ", n + 1),
+                                Style::default().fg(faint()),
+                            ),
+                            Span::styled(
+                                pad(&l.replace('\t', "    "), width.saturating_sub(gutter + 1)),
+                                Style::default().fg(soft()),
+                            ),
                         ]));
                     }
                     if v.get("truncated").and_then(Value::as_bool).unwrap_or(false) {
@@ -636,7 +808,9 @@ fn detail_lines(app: &App, tab: PaneTab, item: &Value, width: usize) -> Vec<Line
 
 pub(crate) fn tab_badge(app: &App, tab: PaneTab) -> Option<(String, ratatui::style::Color)> {
     match tab {
-        PaneTab::Inbox if app.panels.inbox_unseen > 0 => Some((format!(" {}", app.panels.inbox_unseen), warn())),
+        PaneTab::Inbox if app.panels.inbox_unseen > 0 => {
+            Some((format!(" {}", app.panels.inbox_unseen), warn()))
+        }
         PaneTab::Git => {
             let n = app.panel_len(PaneTab::Git);
             (n > 0).then(|| (format!(" {n}"), faint()))

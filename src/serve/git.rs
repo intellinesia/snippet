@@ -55,9 +55,7 @@ pub(super) struct GitReq {
 }
 
 // GET /git/status?session — branch, upstream, ahead/behind, and changed files.
-pub(super) async fn git_status(
-    Query(req): Query<GitReq>,
-) -> Response {
+pub(super) async fn git_status(Query(req): Query<GitReq>) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -124,10 +122,11 @@ fn parse_status(z: &str) -> serde_json::Value {
             // Rename/copy entries carry the original path in the NEXT NUL field.
             let mut orig: Option<String> = None;
             if (x == 'R' || x == 'C')
-                && let Some(o) = parts.get(i + 1) {
-                    orig = Some((*o).to_string());
-                    i += 1;
-                }
+                && let Some(o) = parts.get(i + 1)
+            {
+                orig = Some((*o).to_string());
+                i += 1;
+            }
             files.push(serde_json::json!({
                 "path": path,
                 "orig": orig,
@@ -165,9 +164,7 @@ pub(super) struct GitDiffReq {
 }
 
 // GET /git/diff?session&file?&staged?&untracked? — unified diff (clipped).
-pub(super) async fn git_diff(
-    Query(req): Query<GitDiffReq>,
-) -> Response {
+pub(super) async fn git_diff(Query(req): Query<GitDiffReq>) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -217,9 +214,7 @@ pub(super) struct GitLogReq {
 }
 
 // GET /git/log?session&limit? — recent commits as structured records.
-pub(super) async fn git_log(
-    Query(req): Query<GitLogReq>,
-) -> Response {
+pub(super) async fn git_log(Query(req): Query<GitLogReq>) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -250,9 +245,7 @@ pub(super) async fn git_log(
 }
 
 // GET /git/branches?session — local + remote-tracking branches + current.
-pub(super) async fn git_branches(
-    Query(req): Query<GitReq>,
-) -> Response {
+pub(super) async fn git_branches(Query(req): Query<GitReq>) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -312,10 +305,7 @@ pub(super) struct GitStageReq {
 }
 
 // POST /git/stage {session, paths?, all?} — `git add`.
-pub(super) async fn git_stage(
-    State(d): State<Shared>,
-    Json(req): Json<GitStageReq>,
-) -> Response {
+pub(super) async fn git_stage(State(d): State<Shared>, Json(req): Json<GitStageReq>) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -327,7 +317,10 @@ pub(super) async fn git_stage(
         args.push("--".into());
         args.extend(req.paths.iter().cloned());
     } else {
-        return api_error(StatusCode::BAD_REQUEST, "no paths (pass paths[] or all:true)");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "no paths (pass paths[] or all:true)",
+        );
     }
     let _lock = d.git_write.lock().await;
     match run_git(&dir, &args).await {
@@ -374,10 +367,7 @@ pub(super) struct GitCommitReq {
 }
 
 // POST /git/commit {session, message, amend?} — commit the staged index.
-pub(super) async fn git_commit(
-    State(d): State<Shared>,
-    Json(req): Json<GitCommitReq>,
-) -> Response {
+pub(super) async fn git_commit(State(d): State<Shared>, Json(req): Json<GitCommitReq>) -> Response {
     if req.message.trim().is_empty() && !req.amend {
         return api_error(StatusCode::BAD_REQUEST, "empty commit message");
     }
@@ -429,10 +419,7 @@ pub(super) async fn git_checkout(
 }
 
 // POST /git/push {session} — push the current branch (uses the box's git creds).
-pub(super) async fn git_push(
-    State(d): State<Shared>,
-    Json(req): Json<GitReq>,
-) -> Response {
+pub(super) async fn git_push(State(d): State<Shared>, Json(req): Json<GitReq>) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -445,10 +432,7 @@ pub(super) async fn git_push(
 }
 
 // POST /git/pull {session} — fast-forward-only pull (surfaces non-ff for the user).
-pub(super) async fn git_pull(
-    State(d): State<Shared>,
-    Json(req): Json<GitReq>,
-) -> Response {
+pub(super) async fn git_pull(State(d): State<Shared>, Json(req): Json<GitReq>) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -468,10 +452,7 @@ pub(super) struct GitStashReq {
 }
 
 // POST /git/stash {session, op?} — op = push (default) | pop | list | drop.
-pub(super) async fn git_stash(
-    State(d): State<Shared>,
-    Json(req): Json<GitStashReq>,
-) -> Response {
+pub(super) async fn git_stash(State(d): State<Shared>, Json(req): Json<GitStashReq>) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,
@@ -482,7 +463,10 @@ pub(super) async fn git_stash(
         "drop" => "drop",
         "push" | "save" | "" => "push",
         other => {
-            return api_error(StatusCode::BAD_REQUEST, format!("unknown stash op `{other}`"));
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                format!("unknown stash op `{other}`"),
+            );
         }
     };
     let _lock = d.git_write.lock().await;
@@ -527,9 +511,7 @@ pub(super) struct WorktreesQuery {
 /// would belong to and its linked worktrees, so a client can offer "new
 /// worktree", "this folder", or an existing worktree. `repo` is null outside a
 /// git repository.
-pub(super) async fn git_worktrees(
-    Query(q): Query<WorktreesQuery>,
-) -> Response {
+pub(super) async fn git_worktrees(Query(q): Query<WorktreesQuery>) -> Response {
     let folder = std::path::PathBuf::from(&q.folder);
     if !folder.is_dir() {
         return api_error(StatusCode::BAD_REQUEST, "not a directory");
@@ -548,10 +530,7 @@ pub(super) async fn git_worktrees(
 
 // POST /git/init — start a repository in the session's folder, then keep
 // `.snippet/` out of it like every session start does.
-pub(super) async fn git_init(
-    State(d): State<Shared>,
-    Json(req): Json<GitReq>,
-) -> Response {
+pub(super) async fn git_init(State(d): State<Shared>, Json(req): Json<GitReq>) -> Response {
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,
         Err(r) => return r,

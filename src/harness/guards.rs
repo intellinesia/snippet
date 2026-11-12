@@ -151,7 +151,10 @@ pub(super) fn note_bash_command(vars: &mut LoopVars, command: &str, cwd: &std::p
         if !is_read {
             continue;
         }
-        for arg in words[1..].iter().filter(|w| !w.starts_with('-') && !w.is_empty()) {
+        for arg in words[1..]
+            .iter()
+            .filter(|w| !w.starts_with('-') && !w.is_empty())
+        {
             note_file_read(vars, arg, cwd);
         }
     }
@@ -170,7 +173,11 @@ fn note_file_read(vars: &mut LoopVars, arg: &str, cwd: &std::path::Path) {
             .join(rest),
         None => std::path::PathBuf::from(arg),
     };
-    let path = if expanded.is_absolute() { expanded } else { cwd.join(expanded) };
+    let path = if expanded.is_absolute() {
+        expanded
+    } else {
+        cwd.join(expanded)
+    };
     let Ok(meta) = std::fs::metadata(&path) else {
         return;
     };
@@ -183,14 +190,21 @@ fn note_file_read(vars: &mut LoopVars, arg: &str, cwd: &std::path::Path) {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut hasher);
     let fingerprint = hasher.finish();
-    let entry = vars.file_reads.entry(path.clone()).or_insert((fingerprint, 0));
+    let entry = vars
+        .file_reads
+        .entry(path.clone())
+        .or_insert((fingerprint, 0));
     if entry.0 == fingerprint {
         entry.1 += 1;
     } else {
         *entry = (fingerprint, 1);
     }
     if entry.1 == REPEATED_READ_AT {
-        let shown = path.strip_prefix(cwd).unwrap_or(&path).display().to_string();
+        let shown = path
+            .strip_prefix(cwd)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
         vars.pending_signals.push(RuntimeSignal::RepeatedRead {
             path: shown,
             count: REPEATED_READ_AT,
@@ -206,7 +220,11 @@ pub(super) fn note_file_change(vars: &mut LoopVars, arguments: &Value) {
     for change in changes.into_iter().flatten() {
         let rewrite = change.get("action").and_then(Value::as_str) == Some("create")
             && change.get("overwrite").and_then(Value::as_bool) == Some(true);
-        let Some(path) = change.get("path").and_then(Value::as_str).filter(|_| rewrite) else {
+        let Some(path) = change
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|_| rewrite)
+        else {
             continue;
         };
         let count = vars.rewrites.entry(path.to_string()).or_insert(0);

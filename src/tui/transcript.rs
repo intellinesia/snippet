@@ -102,16 +102,16 @@ pub(super) fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         && let Some(request) = state
             .initial_request()
             .filter(|text| !text.trim().is_empty())
-        {
-            speaker = Some(false);
-            tag_pending = true;
-            push_tagged(
-                &mut lines,
-                user_lines(request, content_w),
-                false,
-                &mut tag_pending,
-            );
-        }
+    {
+        speaker = Some(false);
+        tag_pending = true;
+        push_tagged(
+            &mut lines,
+            user_lines(request, content_w),
+            false,
+            &mut tag_pending,
+        );
+    }
 
     // After a compaction, clear the screen above it: render only from the last
     // compaction boundary down (a "✦ context compacted" divider, then any newer
@@ -151,15 +151,27 @@ pub(super) fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         if matches!(event, HarnessEvent::ToolCall { .. }) {
             let mut run: Vec<RunStep> = Vec::new();
             let mut cur = Some(event);
-            while let Some(HarnessEvent::ToolCall { tool_name, arguments }) = cur {
+            while let Some(HarnessEvent::ToolCall {
+                tool_name,
+                arguments,
+            }) = cur
+            {
                 let mut result = None;
-                if let Some(HarnessEvent::ToolResult { tool_name: rn, result: r }) = events.peek()
-                    && rn == tool_name {
-                        result = Some(r.clone());
-                        events.next();
-                    }
+                if let Some(HarnessEvent::ToolResult {
+                    tool_name: rn,
+                    result: r,
+                }) = events.peek()
+                    && rn == tool_name
+                {
+                    result = Some(r.clone());
+                    events.next();
+                }
                 if !HIDDEN_TOOL_ROWS.contains(&tool_name.as_str()) {
-                    run.push(RunStep { tool: tool_name.clone(), args: arguments.clone(), result });
+                    run.push(RunStep {
+                        tool: tool_name.clone(),
+                        args: arguments.clone(),
+                        result,
+                    });
                 }
                 cur = if matches!(events.peek(), Some(HarnessEvent::ToolCall { .. })) {
                     events.next()
@@ -191,7 +203,9 @@ pub(super) fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                         None if live => ToolRowStatus::Running,
                         _ => ToolRowStatus::Done,
                     };
-                    lines.extend(tool_call_head_lines_status(&step.tool, &step.args, content_w, status));
+                    lines.extend(tool_call_head_lines_status(
+                        &step.tool, &step.args, content_w, status,
+                    ));
                     if expanded {
                         lines.extend(tool_call_preview(&step.tool, &step.args, content_w));
                         if let Some(result) = &step.result {
@@ -515,16 +529,24 @@ pub(super) fn event_lines(event: &HarnessEvent, width: usize) -> Vec<Line<'stati
             &format!("{from} hit its usage limit. Continuing on {to}."),
             width,
         ),
-        HarnessEvent::LimitReached { profile, resets_at, .. } => marker_block(
+        HarnessEvent::LimitReached {
+            profile, resets_at, ..
+        } => marker_block(
             "!",
             muted(),
-            &format!("{profile} hit its usage limit (resets {}). Pick another model with /model, or wait.", crate::routing::reset_label(*resets_at)),
+            &format!(
+                "{profile} hit its usage limit (resets {}). Pick another model with /model, or wait.",
+                crate::routing::reset_label(*resets_at)
+            ),
             width,
         ),
         HarnessEvent::LimitWait { profile, resets_at } => marker_block(
             "…",
             muted(),
-            &format!("Waiting for {profile} to reset at {}.", crate::routing::reset_label(*resets_at)),
+            &format!(
+                "Waiting for {profile} to reset at {}.",
+                crate::routing::reset_label(*resets_at)
+            ),
             width,
         ),
         HarnessEvent::SystemDecision { step, reasoning } => {
@@ -860,9 +882,11 @@ fn attachment_lines(text: &str, width: usize) -> Vec<Line<'static>> {
             "image"
         } else if caps[2].contains("pasted text") {
             "pasted"
-        } else if [".m4a", ".mp3", ".wav", ".ogg", ".opus", ".webm", ".aac", ".flac"]
-            .iter()
-            .any(|ext| lower.ends_with(ext))
+        } else if [
+            ".m4a", ".mp3", ".wav", ".ogg", ".opus", ".webm", ".aac", ".flac",
+        ]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
         {
             "audio"
         } else {
@@ -873,17 +897,27 @@ fn attachment_lines(text: &str, width: usize) -> Vec<Line<'static>> {
     for caps in PASTED_RE.captures_iter(text) {
         let body = &caps[1];
         let count = body.lines().count().max(1);
-        let first = body.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+        let first = body
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("");
         rows.push((
             "pasted".to_string(),
-            format!("{count} line{} · {first}", if count == 1 { "" } else { "s" }),
+            format!(
+                "{count} line{} · {first}",
+                if count == 1 { "" } else { "s" }
+            ),
         ));
     }
     let room = width.saturating_sub(SPINE + 8).max(8);
     rows.into_iter()
         .map(|(kind, text)| {
             let shown: String = if text.chars().count() > room {
-                text.chars().take(room.saturating_sub(1)).collect::<String>() + "…"
+                text.chars()
+                    .take(room.saturating_sub(1))
+                    .collect::<String>()
+                    + "…"
             } else {
                 text
             };
@@ -1175,10 +1209,10 @@ pub(super) fn tool_call_preview(
     result_block_verbatim(items, width)
 }
 
-
 fn artifact_text(path: &str, version: u32) -> Option<String> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Option<String>>>> =
-        std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
+    > = std::sync::OnceLock::new();
     let key = format!("{version}|{path}");
     let cache = CACHE.get_or_init(Default::default);
     if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
@@ -1195,15 +1229,29 @@ fn artifact_text(path: &str, version: u32) -> Option<String> {
 }
 
 fn csv_as_markdown(text: &str) -> String {
-    let sep = if text.lines().next().is_some_and(|l| l.contains('\t')) { '\t' } else { ',' };
+    let sep = if text.lines().next().is_some_and(|l| l.contains('\t')) {
+        '\t'
+    } else {
+        ','
+    };
     let rows: Vec<Vec<String>> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
         .take(201)
-        .map(|l| l.split(sep).map(|c| c.trim().trim_matches('"').replace('|', "/")).collect())
+        .map(|l| {
+            l.split(sep)
+                .map(|c| c.trim().trim_matches('"').replace('|', "/"))
+                .collect()
+        })
         .collect();
-    let Some(head) = rows.first() else { return String::new() };
-    let mut out = format!("| {} |\n|{}|\n", head.join(" | "), vec!["---"; head.len()].join("|"));
+    let Some(head) = rows.first() else {
+        return String::new();
+    };
+    let mut out = format!(
+        "| {} |\n|{}|\n",
+        head.join(" | "),
+        vec!["---"; head.len()].join("|")
+    );
     for row in rows.iter().skip(1) {
         out.push_str(&format!("| {} |\n", row.join(" | ")));
     }
@@ -1218,11 +1266,22 @@ fn artifact_link(kind: &str, path: &str) -> Vec<Line<'static>> {
     vec![Line::from(vec![
         Span::raw(" ".repeat(AGENT)),
         Span::styled("open ", Style::default().fg(muted())),
-        Span::styled(url, Style::default().fg(faint()).add_modifier(Modifier::UNDERLINED)),
+        Span::styled(
+            url,
+            Style::default()
+                .fg(faint())
+                .add_modifier(Modifier::UNDERLINED),
+        ),
     ])]
 }
 
-fn artifact_inline(kind: &str, path: &str, version: u32, display: Option<&str>, width: usize) -> Vec<Line<'static>> {
+fn artifact_inline(
+    kind: &str,
+    path: &str,
+    version: u32,
+    display: Option<&str>,
+    width: usize,
+) -> Vec<Line<'static>> {
     let inline = match display {
         Some("inline") => true,
         Some(_) => false,
@@ -1231,17 +1290,25 @@ fn artifact_inline(kind: &str, path: &str, version: u32, display: Option<&str>, 
     if !inline || !matches!(kind, "markdown" | "csv" | "code") {
         return Vec::new();
     }
-    let Some(text) = artifact_text(path, version) else { return Vec::new() };
+    let Some(text) = artifact_text(path, version) else {
+        return Vec::new();
+    };
     let source = match kind {
         "markdown" => text,
         "csv" => csv_as_markdown(&text),
         _ => {
-            let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+            let ext = std::path::Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
             format!("```{ext}\n{}\n```", text.trim_end())
         }
     };
     let mut rendered = render_prose(&source, width.saturating_sub(AGENT));
-    while rendered.last().is_some_and(|l| l.spans.iter().all(|s| s.content.trim().is_empty())) {
+    while rendered
+        .last()
+        .is_some_and(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
+    {
         rendered.pop();
     }
     rendered

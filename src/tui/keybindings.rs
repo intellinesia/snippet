@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::harness::LoopInput;
 use super::app::*;
 use super::views::*;
 use super::*;
+use crate::harness::LoopInput;
 
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     if app.vault_prompt_open() {
@@ -822,7 +822,11 @@ pub(crate) fn handle_question_key(app: &mut App, key: KeyEvent) -> bool {
 
     match key.code {
         KeyCode::Up if is_choice => {
-            app.q_sel = if app.q_sel == 0 { opts.len() - 1 } else { app.q_sel - 1 };
+            app.q_sel = if app.q_sel == 0 {
+                opts.len() - 1
+            } else {
+                app.q_sel - 1
+            };
             true
         }
         KeyCode::Down if is_choice => {
@@ -861,4 +865,3 @@ pub(crate) fn handle_question_key(app: &mut App, key: KeyEvent) -> bool {
         _ => false,
     }
 }
-

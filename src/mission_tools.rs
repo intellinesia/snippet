@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::coordination::{
-    types::CoordinationEvent, HandoffMode, NotificationMarker, Task, TaskResult, TaskStatus,
+    HandoffMode, NotificationMarker, Task, TaskResult, TaskStatus, types::CoordinationEvent,
 };
 use crate::llm::NativeToolDefinition;
 use crate::mission_control;
@@ -21,10 +21,8 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 
 fn root(ctx: &ToolContext) -> Result<PathBuf, ToolError> {
     ctx.mission_control_root().ok_or_else(|| {
-            ToolError::msg(
-                "Mission Control tools are only available in the Mission Control session.",
-            )
-        })
+        ToolError::msg("Mission Control tools are only available in the Mission Control session.")
+    })
 }
 
 /// The task store. Tasks live in SQLite alongside the rest of coordination —
@@ -127,24 +125,38 @@ impl Tool for ReadFile {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: ReadFileArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let args: ReadFileArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let raw = args.path.trim();
         let expanded = match raw.strip_prefix("~/") {
-            Some(rest) => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(rest),
+            Some(rest) => std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join(rest),
             None => PathBuf::from(raw),
         };
-        let path = if expanded.is_absolute() { expanded } else { ctx.workspace_root().join(expanded) };
+        let path = if expanded.is_absolute() {
+            expanded
+        } else {
+            ctx.workspace_root().join(expanded)
+        };
         if path.starts_with("/proc") || path.starts_with("/sys") || path.starts_with("/dev") {
-            return Err(ToolError::msg("read_file reads files, not processes or devices. To check on a running job, ask the session that owns it: route it a task to watch the job and report back."));
+            return Err(ToolError::msg(
+                "read_file reads files, not processes or devices. To check on a running job, ask the session that owns it: route it a task to watch the job and report back.",
+            ));
         }
-        let meta = std::fs::metadata(&path).map_err(|e| ToolError::msg(format!("{}: {e}", path.display())))?;
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| ToolError::msg(format!("{}: {e}", path.display())))?;
         if meta.is_dir() {
             let mut entries: Vec<String> = std::fs::read_dir(&path)
                 .map_err(|e| ToolError::msg(format!("{}: {e}", path.display())))?
                 .flatten()
                 .map(|entry| {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    let kind = entry.file_type().map(|t| if t.is_dir() { "/" } else { "" }).unwrap_or("");
+                    let kind = entry
+                        .file_type()
+                        .map(|t| if t.is_dir() { "/" } else { "" })
+                        .unwrap_or("");
                     let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                     format!("{name}{kind}\t{size}")
                 })
@@ -152,11 +164,16 @@ impl Tool for ReadFile {
             entries.sort();
             let total = entries.len();
             entries.truncate(500);
-            return Ok(ToolResult::success(json!({"path": path.display().to_string(), "entries": entries, "total": total})));
+            return Ok(ToolResult::success(
+                json!({"path": path.display().to_string(), "entries": entries, "total": total}),
+            ));
         }
-        let bytes = std::fs::read(&path).map_err(|e| ToolError::msg(format!("{}: {e}", path.display())))?;
+        let bytes =
+            std::fs::read(&path).map_err(|e| ToolError::msg(format!("{}: {e}", path.display())))?;
         if bytes.iter().take(8000).any(|b| *b == 0) {
-            return Ok(ToolResult::success(json!({"path": path.display().to_string(), "binary": true, "bytes": bytes.len()})));
+            return Ok(ToolResult::success(
+                json!({"path": path.display().to_string(), "binary": true, "bytes": bytes.len()}),
+            ));
         }
         let text = String::from_utf8_lossy(&bytes);
         let lines: Vec<&str> = text.lines().collect();
@@ -201,19 +218,32 @@ impl Tool for AnswerWorker {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: AnswerWorkerArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let session = args.session_id.trim().trim_start_matches("session:").to_string();
+        let args: AnswerWorkerArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let session = args
+            .session_id
+            .trim()
+            .trim_start_matches("session:")
+            .to_string();
         let waiting = crate::session::state_path_for_id(&session)
             .and_then(|path| crate::session::read_session_meta(&path))
-            .is_some_and(|state| state.status == crate::harness::HarnessStatus::WaitingForInput && state.pending_question.is_some());
+            .is_some_and(|state| {
+                state.status == crate::harness::HarnessStatus::WaitingForInput
+                    && state.pending_question.is_some()
+            });
         if !waiting {
-            return Err(ToolError::msg(format!("session `{session}` isn't waiting on a question right now")));
+            return Err(ToolError::msg(format!(
+                "session `{session}` isn't waiting on a question right now"
+            )));
         }
         if args.answer.trim().is_empty() {
             return Err(ToolError::msg("answer must not be empty"));
         }
-        crate::mission_autonomy::queue_answer(&session, args.answer.trim()).map_err(ToolError::msg)?;
-        Ok(ToolResult::success(json!({"queued": true, "note": "The worker receives it within a few seconds and continues."})))
+        crate::mission_autonomy::queue_answer(&session, args.answer.trim())
+            .map_err(ToolError::msg)?;
+        Ok(ToolResult::success(
+            json!({"queued": true, "note": "The worker receives it within a few seconds and continues."}),
+        ))
     }
 }
 
@@ -234,13 +264,18 @@ impl Tool for UpdateBrief {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: UpdateBriefArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let args: UpdateBriefArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         match args.content {
             Some(content) => {
                 crate::mission_autonomy::write_brief(content.trim()).map_err(ToolError::msg)?;
-                Ok(ToolResult::success(json!({"saved": true, "chars": content.trim().len()})))
+                Ok(ToolResult::success(
+                    json!({"saved": true, "chars": content.trim().len()}),
+                ))
             }
-            None => Ok(ToolResult::success(json!({"brief": crate::mission_autonomy::read_brief()}))),
+            None => Ok(ToolResult::success(
+                json!({"brief": crate::mission_autonomy::read_brief()}),
+            )),
         }
     }
 }
@@ -275,9 +310,12 @@ impl Tool for ScheduleFollowup {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: ScheduleFollowupArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let args: ScheduleFollowupArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         if args.note.trim().is_empty() {
-            return Err(ToolError::msg("note must say what to do when the wake-up is due"));
+            return Err(ToolError::msg(
+                "note must say what to do when the wake-up is due",
+            ));
         }
         if let Some(secs) = args.in_seconds {
             let secs = secs.clamp(3, 3600);
@@ -292,7 +330,9 @@ impl Tool for ScheduleFollowup {
         }
         let minutes = args.in_minutes.unwrap_or(1).clamp(1, 10080);
         let due_at = chrono::Utc::now().timestamp() + minutes * 60;
-        let followup = crate::mission_autonomy::schedule_followup(due_at, args.note.trim(), args.next_wake).map_err(ToolError::msg)?;
+        let followup =
+            crate::mission_autonomy::schedule_followup(due_at, args.note.trim(), args.next_wake)
+                .map_err(ToolError::msg)?;
         let on = crate::mission_autonomy::is_on();
         Ok(ToolResult::success(json!({
             "scheduled": true,
@@ -373,8 +413,11 @@ impl Tool for AmbientSearch {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: AmbientSearchArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let rows = crate::ambient::search(&args.query, args.limit.unwrap_or(15), args.include_hidden).map_err(ToolError::msg)?;
+        let args: AmbientSearchArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let rows =
+            crate::ambient::search(&args.query, args.limit.unwrap_or(15), args.include_hidden)
+                .map_err(ToolError::msg)?;
         Ok(ToolResult::success(json!({"lines": rows})))
     }
 }
@@ -403,14 +446,28 @@ impl Tool for Recordings {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: RecordingsArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let args: RecordingsArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let dir = crate::recordings::dir();
         match args.action.as_str() {
-            "list" => Ok(ToolResult::success(json!({"recordings": crate::recordings::list(&dir, args.limit.unwrap_or(20))}))),
+            "list" => Ok(ToolResult::success(
+                json!({"recordings": crate::recordings::list(&dir, args.limit.unwrap_or(20))}),
+            )),
             "delete" | "redact" => {
-                let id = args.id.as_deref().map(str::trim).filter(|i| !i.is_empty()).ok_or_else(|| ToolError::msg("id is required"))?;
+                let id = args
+                    .id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|i| !i.is_empty())
+                    .ok_or_else(|| ToolError::msg("id is required"))?;
                 let store = crate::ambient::store().map_err(ToolError::msg)?;
-                let out = crate::serve::call_track::delete_recording(&store, &dir, id, args.action == "redact").map_err(ToolError::msg)?;
+                let out = crate::serve::call_track::delete_recording(
+                    &store,
+                    &dir,
+                    id,
+                    args.action == "redact",
+                )
+                .map_err(ToolError::msg)?;
                 Ok(ToolResult::success(out))
             }
             _ => Err(ToolError::msg("action must be list, delete or redact")),
@@ -475,7 +532,8 @@ impl Tool for RecordingPolicyTool {
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         use crate::recording_policy as rp;
-        let a: PolicyArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let a: PolicyArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         fn err(m: impl ToString) -> ToolError {
             ToolError::msg(m.to_string())
         }
@@ -495,22 +553,53 @@ impl Tool for RecordingPolicyTool {
             }
             "stop" => crate::serve::call_track::voice_stop().await,
             "expect" | "block" => {
-                let mode = if a.action == "block" { "never".to_string() } else { a.mode.clone().unwrap_or_else(|| "auto".into()) };
-                let (from, to) = (rp::parse_when(&a.from).map_err(err)?, rp::parse_when(&a.to).map_err(err)?);
-                let (id, _) = rp::update(|p, now| p.add_window(&a.label, from, to, &mode, &a.basis, now)).await.map_err(err)?;
+                let mode = if a.action == "block" {
+                    "never".to_string()
+                } else {
+                    a.mode.clone().unwrap_or_else(|| "auto".into())
+                };
+                let (from, to) = (
+                    rp::parse_when(&a.from).map_err(err)?,
+                    rp::parse_when(&a.to).map_err(err)?,
+                );
+                let (id, _) =
+                    rp::update(|p, now| p.add_window(&a.label, from, to, &mode, &a.basis, now))
+                        .await
+                        .map_err(err)?;
                 let started = from <= chrono::Utc::now().timestamp_millis();
-                let tracked = if started && mode == "auto" { crate::serve::call_track::approve_pending().await } else { None };
-                let stopped = if started && mode == "never" { crate::serve::call_track::voice_stop().await } else { Value::Null };
+                let tracked = if started && mode == "auto" {
+                    crate::serve::call_track::approve_pending().await
+                } else {
+                    None
+                };
+                let stopped = if started && mode == "never" {
+                    crate::serve::call_track::voice_stop().await
+                } else {
+                    Value::Null
+                };
                 json!({"id": id, "label": a.label, "mode": mode, "from_ms": from, "to_ms": to, "tracking_call": tracked, "stopped": stopped})
             }
             "snooze" => {
-                let (until, _) = rp::update(|p, now| p.snooze(a.minutes, now)).await.map_err(err)?;
+                let (until, _) = rp::update(|p, now| p.snooze(a.minutes, now))
+                    .await
+                    .map_err(err)?;
                 json!({"snooze_until_ms": until, "stopped": crate::serve::call_track::voice_stop().await})
             }
             "set_rule" => {
                 let mode = a.mode.clone().ok_or_else(|| err("mode is required"))?;
-                let when = rp::When { keywords: a.keywords.clone(), weekdays: a.weekdays.clone(), from_hhmm: a.from_hhmm.clone(), to_hhmm: a.to_hhmm.clone() };
-                let until_str = if !a.until.trim().is_empty() { Some(a.until.as_str()) } else if !a.to.trim().is_empty() { Some(a.to.as_str()) } else { None };
+                let when = rp::When {
+                    keywords: a.keywords.clone(),
+                    weekdays: a.weekdays.clone(),
+                    from_hhmm: a.from_hhmm.clone(),
+                    to_hhmm: a.to_hhmm.clone(),
+                };
+                let until_str = if !a.until.trim().is_empty() {
+                    Some(a.until.as_str())
+                } else if !a.to.trim().is_empty() {
+                    Some(a.to.as_str())
+                } else {
+                    None
+                };
                 let parsed_until = match until_str {
                     Some(s) => Some(rp::parse_when(s).map_err(err)?),
                     None => None,
@@ -521,14 +610,26 @@ impl Tool for RecordingPolicyTool {
                         (None, m) if m > 0 => Some(now + m * 60_000),
                         _ => None,
                     };
-                    let id = p.set_rule_with(&a.label, &mode, &a.about, when, exp, &a.basis, now)?;
-                    let norm = p.rules.iter().find(|r| r.id == id).map(|r| r.mode.clone()).unwrap_or(mode.clone());
+                    let id =
+                        p.set_rule_with(&a.label, &mode, &a.about, when, exp, &a.basis, now)?;
+                    let norm = p
+                        .rules
+                        .iter()
+                        .find(|r| r.id == id)
+                        .map(|r| r.mode.clone())
+                        .unwrap_or(mode.clone());
                     Ok((id, exp, norm))
-                }).await.map_err(err)?;
+                })
+                .await
+                .map_err(err)?;
                 json!({"id": id, "label": a.label, "mode": norm_mode, "about": a.about, "expires_at_ms": expires_at_ms})
             }
-            "remove_rule" => json!({"removed": rp::update(|p, _| Ok(p.remove_rule(&a.id))).await.map_err(err)?.0}),
-            "remove_window" => json!({"removed": rp::update(|p, _| Ok(p.remove_window(&a.id))).await.map_err(err)?.0}),
+            "remove_rule" => {
+                json!({"removed": rp::update(|p, _| Ok(p.remove_rule(&a.id))).await.map_err(err)?.0})
+            }
+            "remove_window" => {
+                json!({"removed": rp::update(|p, _| Ok(p.remove_window(&a.id))).await.map_err(err)?.0})
+            }
             _ => return Err(err("unknown action")),
         };
         Ok(ToolResult::success(out))
@@ -559,7 +660,8 @@ impl Tool for UserOnCall {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: UserOnCallArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let args: UserOnCallArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         match args.state.trim() {
             "ended" => {
                 crate::mission_autonomy::set_user_call(None).map_err(ToolError::msg)?;
@@ -575,9 +677,13 @@ impl Tool for UserOnCall {
                 }))
                 .map_err(ToolError::msg)?;
                 crate::ambient::end_conversation();
-                Ok(ToolResult::success(json!({"on_call": true, "held_minutes": minutes, "note": "Say nothing more than a brief acknowledgement, in text."})))
+                Ok(ToolResult::success(
+                    json!({"on_call": true, "held_minutes": minutes, "note": "Say nothing more than a brief acknowledgement, in text."}),
+                ))
             }
-            other => Err(ToolError::msg(format!("state must be on_call or ended, got `{other}`"))),
+            other => Err(ToolError::msg(format!(
+                "state must be on_call or ended, got `{other}`"
+            ))),
         }
     }
 }
@@ -613,7 +719,10 @@ struct AmbientTuneArgs {
 
 fn tuning_result(t: &crate::ambient_tuning::Tuning) -> Value {
     let mut out = serde_json::to_value(t).unwrap_or_else(|_| json!({}));
-    out["expires_in_s"] = json!(t.expires_at.map(|e| (e - chrono::Utc::now().timestamp()).max(0)));
+    out["expires_in_s"] = json!(
+        t.expires_at
+            .map(|e| (e - chrono::Utc::now().timestamp()).max(0))
+    );
     out
 }
 
@@ -642,41 +751,82 @@ impl Tool for AmbientTune {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let a: AmbientTuneArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let a: AmbientTuneArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let device = crate::ambient_tuning::lease_device();
         match a.action.as_str() {
-            "get" => Ok(ToolResult::success(tuning_result(&crate::ambient_tuning::current(&device)))),
+            "get" => Ok(ToolResult::success(tuning_result(
+                &crate::ambient_tuning::current(&device),
+            ))),
             "clear" => {
                 crate::ambient_tuning::clear(&device);
                 crate::ambient::emit_state("tuning cleared");
-                Ok(ToolResult::success(tuning_result(&crate::ambient_tuning::current(&device))))
+                Ok(ToolResult::success(tuning_result(
+                    &crate::ambient_tuning::current(&device),
+                )))
             }
             "set" => {
-                let reason = a.reason.as_deref().map(str::trim).filter(|r| !r.is_empty()).ok_or_else(|| ToolError::msg("reason is required for set"))?;
+                let reason = a
+                    .reason
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                    .ok_or_else(|| ToolError::msg("reason is required for set"))?;
                 let profile = match a.profile.as_deref() {
-                    Some(p) => Some(crate::ambient_tuning::Profile::parse(p).ok_or_else(|| ToolError::msg(format!("unknown profile `{p}`")))?),
+                    Some(p) => Some(
+                        crate::ambient_tuning::Profile::parse(p)
+                            .ok_or_else(|| ToolError::msg(format!("unknown profile `{p}`")))?,
+                    ),
                     None => None,
                 };
                 let mut knobs = serde_json::Map::new();
-                if let Some(v) = a.address_threshold { knobs.insert("address_threshold".into(), json!(v)); }
-                if let Some(v) = a.only_my_voice { knobs.insert("only_my_voice".into(), json!(v)); }
-                if let Some(v) = &a.chattiness { knobs.insert("chattiness".into(), json!(v)); }
-                if let Some(v) = a.hold_ms { knobs.insert("hold_ms".into(), json!(v)); }
-                if let Some(v) = a.conversation_ttl_s { knobs.insert("conversation_ttl_s".into(), json!(v)); }
-                if let Some(v) = a.room_quiet_s { knobs.insert("room_quiet_s".into(), json!(v)); }
-                if let Some(v) = &a.note_policy { knobs.insert("note_policy".into(), json!(v)); }
-                if let Some(v) = &a.barge_words { knobs.insert("barge_words".into(), json!(v)); }
+                if let Some(v) = a.address_threshold {
+                    knobs.insert("address_threshold".into(), json!(v));
+                }
+                if let Some(v) = a.only_my_voice {
+                    knobs.insert("only_my_voice".into(), json!(v));
+                }
+                if let Some(v) = &a.chattiness {
+                    knobs.insert("chattiness".into(), json!(v));
+                }
+                if let Some(v) = a.hold_ms {
+                    knobs.insert("hold_ms".into(), json!(v));
+                }
+                if let Some(v) = a.conversation_ttl_s {
+                    knobs.insert("conversation_ttl_s".into(), json!(v));
+                }
+                if let Some(v) = a.room_quiet_s {
+                    knobs.insert("room_quiet_s".into(), json!(v));
+                }
+                if let Some(v) = &a.note_policy {
+                    knobs.insert("note_policy".into(), json!(v));
+                }
+                if let Some(v) = &a.barge_words {
+                    knobs.insert("barge_words".into(), json!(v));
+                }
                 let until = match a.until.as_deref() {
-                    Some(u) => Some(crate::recording_policy::parse_when(u).map_err(ToolError::msg)? / 1000),
+                    Some(u) => {
+                        Some(crate::recording_policy::parse_when(u).map_err(ToolError::msg)? / 1000)
+                    }
                     None => None,
                 };
-                let t = crate::ambient_tuning::set(&device, profile, Value::Object(knobs), a.minutes, until, "model", reason)
-                    .await
-                    .map_err(ToolError::msg)?;
+                let t = crate::ambient_tuning::set(
+                    &device,
+                    profile,
+                    Value::Object(knobs),
+                    a.minutes,
+                    until,
+                    "model",
+                    reason,
+                )
+                .await
+                .map_err(ToolError::msg)?;
                 crate::ambient::emit_state("tuning set");
                 Ok(ToolResult::success(tuning_result(&t)))
             }
-            other => Err(ToolError::msg(format!("action must be get, set or clear, got `{other}`"))),
+            other => Err(ToolError::msg(format!(
+                "action must be get, set or clear, got `{other}`"
+            ))),
         }
     }
 }
@@ -704,7 +854,8 @@ impl Tool for AmbientFeedback {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let a: AmbientFeedbackArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let a: AmbientFeedbackArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         if a.ids.is_empty() {
             return Err(ToolError::msg("ids must name at least one ambient event"));
         }
@@ -713,7 +864,8 @@ impl Tool for AmbientFeedback {
         if text.is_empty() {
             text = a.note.clone().unwrap_or_default();
         }
-        let t = crate::ambient_tuning::feedback(&device, &a.ids, &text, &a.was).map_err(ToolError::msg)?;
+        let t = crate::ambient_tuning::feedback(&device, &a.ids, &text, &a.was)
+            .map_err(ToolError::msg)?;
         crate::ambient::emit_state("tuning feedback");
         Ok(ToolResult::success(json!({
             "was": a.was,
@@ -738,8 +890,11 @@ impl Tool for AmbientMode {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: AmbientModeArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let out = crate::ambient::set_mode(&args.mode, args.reason.as_deref().unwrap_or("")).await.map_err(ToolError::msg)?;
+        let args: AmbientModeArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let out = crate::ambient::set_mode(&args.mode, args.reason.as_deref().unwrap_or(""))
+            .await
+            .map_err(ToolError::msg)?;
         Ok(ToolResult::success(out))
     }
 }
@@ -766,19 +921,30 @@ impl Tool for WaitForUser {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: WaitForUserArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let args: WaitForUserArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let max = args
             .max_seconds
             .filter(|s| s.is_finite() && *s > 0.0)
-            .map(|s| std::time::Duration::from_secs_f64(s.min(crate::ambient::WAIT_CAP.as_secs_f64())))
+            .map(|s| {
+                std::time::Duration::from_secs_f64(s.min(crate::ambient::WAIT_CAP.as_secs_f64()))
+            })
             .unwrap_or(crate::ambient::WAIT_DEFAULT);
         let started = std::time::Instant::now();
         let outcome = crate::ambient::wait_for_user(max).await;
-        Ok(ToolResult::success(wait_result(outcome, started.elapsed().as_millis() as u64, args.reason.as_deref())))
+        Ok(ToolResult::success(wait_result(
+            outcome,
+            started.elapsed().as_millis() as u64,
+            args.reason.as_deref(),
+        )))
     }
 }
 
-fn wait_result(outcome: crate::ambient::WaitOutcome, waited_ms: u64, reason: Option<&str>) -> Value {
+fn wait_result(
+    outcome: crate::ambient::WaitOutcome,
+    waited_ms: u64,
+    reason: Option<&str>,
+) -> Value {
     use crate::ambient::WaitOutcome;
     let mut out = match outcome {
         WaitOutcome::Speech(turn) => json!({
@@ -795,11 +961,17 @@ fn wait_result(outcome: crate::ambient::WaitOutcome, waited_ms: u64, reason: Opt
             if let Some(heard) = crate::speech::take_interruption() {
                 v["interrupted_reply"] = Value::String(heard.heard);
                 v["unsaid"] = Value::String(heard.unsaid);
-                v["heard_none"] = Value::Bool(v["interrupted_reply"].as_str().is_some_and(|h| h.trim().is_empty()));
+                v["heard_none"] = Value::Bool(
+                    v["interrupted_reply"]
+                        .as_str()
+                        .is_some_and(|h| h.trim().is_empty()),
+                );
             }
             v
         }
-        WaitOutcome::Cancelled(why) => json!({"continued": false, "result": format!("wait cancelled: {why}")}),
+        WaitOutcome::Cancelled(why) => {
+            json!({"continued": false, "result": format!("wait cancelled: {why}")})
+        }
     };
     out["waited_ms"] = json!(waited_ms);
     if let Some(r) = reason.map(str::trim).filter(|r| !r.is_empty()) {
@@ -823,10 +995,13 @@ impl Tool for AmbientExpect {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: AmbientExpectArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let args: AmbientExpectArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         crate::ambient::set_expectation(&args.kind, &args.about, args.minutes.unwrap_or(10));
         crate::ambient::emit_state("expectation set");
-        Ok(ToolResult::success(json!({"expecting": args.kind, "about": args.about})))
+        Ok(ToolResult::success(
+            json!({"expecting": args.kind, "about": args.about}),
+        ))
     }
 }
 
@@ -847,7 +1022,8 @@ impl Tool for Speak {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: SpeakArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let args: SpeakArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         if crate::ambient::conversation().is_some() && crate::ambient::floor_held() {
             crate::speech::abandon_stream();
             return Ok(ToolResult::success(json!({
@@ -859,11 +1035,28 @@ impl Tool for Speak {
         }
         let asking = crate::speech::asks_aloud(&args.text, args.expecting.as_deref());
         let expecting = args.expecting.as_deref().filter(|_| asking);
-        let mut out = crate::speech::speak(&args.text, expecting, args.about.as_deref(), args.mode.as_deref() == Some("replace"), args.urgent).await.map_err(ToolError::msg)?;
+        let mut out = crate::speech::speak(
+            &args.text,
+            expecting,
+            args.about.as_deref(),
+            args.mode.as_deref() == Some("replace"),
+            args.urgent,
+        )
+        .await
+        .map_err(ToolError::msg)?;
         if !asking {
-            let ignored = args.expecting.as_deref().is_some_and(|k| !k.is_empty() && k != "none");
-            let lead = if ignored { "Speech is playing; `expecting` was ignored because the line asks no question. " } else { "Speech is playing. " };
-            out["next"] = Value::String(format!("{lead}Your turn continues: if what you said promises an action or a check, make those tool calls now; if nothing is left to do, end without a chat line."));
+            let ignored = args
+                .expecting
+                .as_deref()
+                .is_some_and(|k| !k.is_empty() && k != "none");
+            let lead = if ignored {
+                "Speech is playing; `expecting` was ignored because the line asks no question. "
+            } else {
+                "Speech is playing. "
+            };
+            out["next"] = Value::String(format!(
+                "{lead}Your turn continues: if what you said promises an action or a check, make those tool calls now; if nothing is left to do, end without a chat line."
+            ));
         }
         Ok(ToolResult::success(out))
     }
@@ -884,11 +1077,14 @@ impl Tool for PingUser {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: PingUserArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let args: PingUserArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let kind = args.kind.as_deref().unwrap_or("update");
         let agent_id = resolve_reach_agent(ctx);
         if ctx.is_mission_control() || agent_id == crate::mission_control::SESSION_ID {
-            let outcome = crate::mission_autonomy::ping(args.title.trim(), args.message.trim(), kind).map_err(ToolError::msg)?;
+            let outcome =
+                crate::mission_autonomy::ping(args.title.trim(), args.message.trim(), kind)
+                    .map_err(ToolError::msg)?;
             return Ok(ToolResult::success(json!({
                 "ping": outcome,
                 "note": if outcome == "held" { "Held until quiet hours or their call end." } else { "Sent to the user's phone." },
@@ -911,9 +1107,15 @@ impl Tool for PingUser {
             origin,
             about_task.as_deref(),
         );
-        let outcome = if decision.used.contains(&crate::coordination::reach::Channel::Push) {
+        let outcome = if decision
+            .used
+            .contains(&crate::coordination::reach::Channel::Push)
+        {
             "sent"
-        } else if decision.held.contains(&crate::coordination::reach::Channel::Push) {
+        } else if decision
+            .held
+            .contains(&crate::coordination::reach::Channel::Push)
+        {
             "held"
         } else {
             decision.reason
@@ -921,7 +1123,9 @@ impl Tool for PingUser {
         let note = match outcome {
             "sent" => "Sent to the user's phone.",
             "held" => "Held until quiet hours or their call end.",
-            "disabled" => "Push notifications are disabled for this agent; delivered on fallback channels.",
+            "disabled" => {
+                "Push notifications are disabled for this agent; delivered on fallback channels."
+            }
             _ => "Delivered according to reach_policy.",
         };
         Ok(ToolResult::success(json!({
@@ -992,10 +1196,13 @@ impl Tool for SendVoiceMemo {
         let transcript = crate::speech::speakable(&args.text);
         let transcript = transcript.trim();
         if transcript.is_empty() {
-            return Err(ToolError::msg("nothing to say (bracketed notes are never spoken)"));
+            return Err(ToolError::msg(
+                "nothing to say (bracketed notes are never spoken)",
+            ));
         }
-        let (wav, duration_ms) =
-            crate::tts_stream::render_memo(transcript).await.map_err(ToolError::msg)?;
+        let (wav, duration_ms) = crate::tts_stream::render_memo(transcript)
+            .await
+            .map_err(ToolError::msg)?;
         let session = ctx
             .durable_session_id()
             .or(ctx.lane_origin().map(|(session, _)| session))
@@ -1009,9 +1216,14 @@ impl Tool for SendVoiceMemo {
             .map(str::to_string)
             .unwrap_or_else(|| transcript.chars().take(40).collect());
         let dir = crate::config::snippet_home().join("tmp");
-        std::fs::create_dir_all(&dir).map_err(|e| ToolError::msg(format!("create temp dir: {e}")))?;
-        let file = dir.join(format!("voice-memo-{}.wav", chrono::Utc::now().timestamp_millis()));
-        std::fs::write(&file, &wav).map_err(|e| ToolError::msg(format!("write memo audio: {e}")))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| ToolError::msg(format!("create temp dir: {e}")))?;
+        let file = dir.join(format!(
+            "voice-memo-{}.wav",
+            chrono::Utc::now().timestamp_millis()
+        ));
+        std::fs::write(&file, &wav)
+            .map_err(|e| ToolError::msg(format!("write memo audio: {e}")))?;
         let presented = crate::artifacts::present(&session, &file, Some(&title), None, None);
         let _ = std::fs::remove_file(&file);
         let presented = presented.map_err(ToolError::msg)?;
@@ -1019,9 +1231,16 @@ impl Tool for SendVoiceMemo {
             .artifact
             .latest()
             .ok_or_else(|| ToolError::msg("memo artifact has no version"))?;
-        let info = crate::serve::sidecar::read_daemon_info()
-            .ok_or_else(|| ToolError::msg("the daemon's address isn't available, so the memo can't be linked"))?;
-        let url = crate::artifacts::signed_path(&info.token, &session, &presented.artifact.id, version, 30 * 24 * 3600);
+        let info = crate::serve::sidecar::read_daemon_info().ok_or_else(|| {
+            ToolError::msg("the daemon's address isn't available, so the memo can't be linked")
+        })?;
+        let url = crate::artifacts::signed_path(
+            &info.token,
+            &session,
+            &presented.artifact.id,
+            version,
+            30 * 24 * 3600,
+        );
         let to = args
             .to
             .as_deref()
@@ -1043,7 +1262,9 @@ impl Tool for SendVoiceMemo {
                         "unknown agent `{to}` — list_coordination_agents shows the directory. Omit `to` or pass `human` for the user."
                     )));
                 }
-                Some(agent) if agent.status == crate::coordination::types::AgentStatus::Disabled => {
+                Some(agent)
+                    if agent.status == crate::coordination::types::AgentStatus::Disabled =>
+                {
                     return Err(ToolError::msg(format!("agent `{to}` is disabled")));
                 }
                 Some(_) => ("agent", to),
@@ -1215,7 +1436,10 @@ fn default_limit() -> usize {
 /// `[steering]`) text cannot be mistaken for instructions to Mission Control.
 fn strip_harness_markup(text: &str) -> String {
     let mut text = text.to_string();
-    for (open, close) in [("[steering]", "[/steering]"), ("<system-reminder>", "</system-reminder>")] {
+    for (open, close) in [
+        ("[steering]", "[/steering]"),
+        ("<system-reminder>", "</system-reminder>"),
+    ] {
         let mut out = String::new();
         let mut rest = text.as_str();
         while let Some(start) = rest.find(open) {
@@ -1366,7 +1590,12 @@ impl Tool for ListMissionTasks {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let store = db(ctx)?;
-        if let Some(id) = arguments.get("task_id").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(id) = arguments
+            .get("task_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             let task = store
                 .get_task(id)
                 .map_err(|e| ToolError::msg(format!("look up task: {e}")))?
@@ -1376,12 +1605,25 @@ impl Tool for ListMissionTasks {
             view["reason"] = json!(sub.status_reason);
             view["waiting_on"] = json!(sub.waiting_on);
             view["superseded_by"] = json!(task.superseded_by);
-            view["roster"] = json!(store.list_task_agents(id).unwrap_or_default().into_iter().filter(|m| m.removed_at.is_none()).map(|m| format!("{} ({}, {})", m.agent_id, m.role, m.status)).collect::<Vec<_>>());
+            view["roster"] = json!(
+                store
+                    .list_task_agents(id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|m| m.removed_at.is_none())
+                    .map(|m| format!("{} ({}, {})", m.agent_id, m.role, m.status))
+                    .collect::<Vec<_>>()
+            );
             view["links"] = json!(store.task_links(id).unwrap_or_default());
             return Ok(ToolResult::success(json!({"task": view})));
         }
-        let include_finished = arguments.get("include_finished").and_then(Value::as_bool).unwrap_or(false);
-        let tasks = store.list_tasks(None, None).map_err(|e| ToolError::msg(format!("list tasks: {e}")))?;
+        let include_finished = arguments
+            .get("include_finished")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let tasks = store
+            .list_tasks(None, None)
+            .map_err(|e| ToolError::msg(format!("list tasks: {e}")))?;
         let now = chrono::Utc::now();
         let cutoff = now - chrono::Duration::days(1);
         let recent = |task: &&Task| {
@@ -1394,12 +1636,16 @@ impl Tool for ListMissionTasks {
             .map(|task| board_row(&store, task, now))
             .collect();
         let hidden = tasks.len() - shown.len();
-        Ok(ToolResult::success(json!({"tasks": shown, "older_finished_hidden": hidden})))
+        Ok(ToolResult::success(
+            json!({"tasks": shown, "older_finished_hidden": hidden}),
+        ))
     }
 }
 
 fn compact_age(since: &str, now: chrono::DateTime<chrono::Utc>) -> String {
-    let secs = chrono::DateTime::parse_from_rfc3339(since).map_or(0, |at| (now - at.with_timezone(&chrono::Utc)).num_seconds().max(0));
+    let secs = chrono::DateTime::parse_from_rfc3339(since).map_or(0, |at| {
+        (now - at.with_timezone(&chrono::Utc)).num_seconds().max(0)
+    });
     match secs {
         s if s < 3600 => format!("{}m", s / 60),
         s if s < 172_800 => format!("{}h", s / 3600),
@@ -1426,7 +1672,12 @@ fn board_row(store: &Store, task: &Task, now: chrono::DateTime<chrono::Utc>) -> 
         row["blockers"] = json!(sub.waiting_on);
     }
     let roster = store.list_task_agents(&task.id).unwrap_or_default();
-    if let Some(m) = roster.iter().filter(|m| m.removed_at.is_none()).find(|m| m.status == "active").or_else(|| roster.iter().find(|m| m.status == "offered")) {
+    if let Some(m) = roster
+        .iter()
+        .filter(|m| m.removed_at.is_none())
+        .find(|m| m.status == "active")
+        .or_else(|| roster.iter().find(|m| m.status == "offered"))
+    {
         row["agent"] = json!(m.agent_id);
     }
     if let Some(note) = task.notifications.iter().rev().find(|n| !n.delivered) {
@@ -1499,9 +1750,15 @@ impl Tool for ViewTaskBoard {
     }
 }
 
-fn session_folder_outside_mission_control(raw: &str, title: &str) -> Result<(PathBuf, bool), String> {
+fn session_folder_outside_mission_control(
+    raw: &str,
+    title: &str,
+) -> Result<(PathBuf, bool), String> {
     let expanded = match raw.strip_prefix("~/") {
-        Some(rest) => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(rest),
+        Some(rest) => std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join(rest),
         None => PathBuf::from(raw),
     };
     let canon = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
@@ -1521,7 +1778,11 @@ fn session_folder_outside_mission_control(raw: &str, title: &str) -> Result<(Pat
         .collect::<Vec<_>>()
         .join("-");
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    let name = if name.is_empty() { format!("session-{stamp}") } else { format!("{name}-{stamp}") };
+    let name = if name.is_empty() {
+        format!("session-{stamp}")
+    } else {
+        format!("{name}-{stamp}")
+    };
     let dir = crate::config::snippet_home().join("tmp").join(name);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     Ok((dir, true))
@@ -1574,8 +1835,9 @@ impl Tool for CreateMissionSession {
         if args.folder.trim().is_empty() {
             return Err(ToolError::msg("folder must be a non-empty path"));
         }
-        let (folder, moved) = session_folder_outside_mission_control(args.folder.trim(), &args.title)
-            .map_err(ToolError::msg)?;
+        let (folder, moved) =
+            session_folder_outside_mission_control(args.folder.trim(), &args.title)
+                .map_err(ToolError::msg)?;
         if !moved && !args.force_new {
             let candidates = crate::session_resolve::routable_candidates();
             let recent = crate::session_resolve::recent_in_folder(
@@ -1592,13 +1854,18 @@ impl Tool for CreateMissionSession {
                 )));
             }
         }
-        let profile = args.profile.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
+        let profile = args
+            .profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string);
         if let Some(name) = profile.as_deref() {
             check_profile(name).await?;
         }
         let mut session =
             create_blank_session(&folder, &args.title, args.new_conversation, args.workspace)
-            .map_err(ToolError::msg)?;
+                .map_err(ToolError::msg)?;
         if let (Some(name), Some(path)) = (profile.as_deref(), state_path_for_id(&session.id)) {
             crate::session::write_session_profile(&path, name);
             session.profile = Some(name.to_string());
@@ -1687,7 +1954,8 @@ impl Tool for CreateMissionTask {
             serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
                 tool: "create_mission_task".into(),
             })?;
-        args.description.push_str(&crate::mission_autonomy::standing_rules_note());
+        args.description
+            .push_str(&crate::mission_autonomy::standing_rules_note());
         create_task(ctx, args, ("agent", crate::mission_control::SESSION_ID)).await
     }
 }
@@ -1708,16 +1976,16 @@ pub(crate) fn resolve_target_session(query: &str) -> Result<String, ToolError> {
     }
     match crate::session_resolve::resolve(q, &crate::session_resolve::routable_candidates()) {
         crate::session_resolve::Resolved::Found(id) => Ok(id),
-        crate::session_resolve::Resolved::Miss { reason, candidates } => Err(ToolError::msg(format!(
-            "{reason}. Nearest: {}",
-            candidate_list(&candidates)
-        ))),
+        crate::session_resolve::Resolved::Miss { reason, candidates } => Err(ToolError::msg(
+            format!("{reason}. Nearest: {}", candidate_list(&candidates)),
+        )),
     }
 }
 
 /// File one task from tool-shaped arguments; returns the tool's data (`task`, `waiting_on`, ...).
 pub(crate) async fn create_task_value(ctx: &ToolContext, args: Value) -> Result<Value, ToolError> {
-    let args: CreateTaskArgs = serde_json::from_value(args).map_err(|e| ToolError::msg(format!("slice arguments: {e}")))?;
+    let args: CreateTaskArgs = serde_json::from_value(args)
+        .map_err(|e| ToolError::msg(format!("slice arguments: {e}")))?;
     let out = create_task(ctx, args, ("agent", crate::mission_control::SESSION_ID)).await?;
     Ok(out.value["data"].clone())
 }
@@ -1729,19 +1997,34 @@ fn candidate_list(candidates: &[crate::session_resolve::Candidate]) -> String {
     let now = chrono::Utc::now().timestamp();
     candidates
         .iter()
-        .map(|c| format!("`{}` \"{}\" in {} (idle {}h)", c.id, c.title, c.folder, (now - c.last_active).max(0) / 3600))
+        .map(|c| {
+            format!(
+                "`{}` \"{}\" in {} (idle {}h)",
+                c.id,
+                c.title,
+                c.folder,
+                (now - c.last_active).max(0) / 3600
+            )
+        })
         .collect::<Vec<_>>()
         .join("; ")
 }
 
 pub(crate) fn open_goal_id(store: &Store, goal: Option<&str>) -> Result<Option<String>, ToolError> {
-    let Some(id) = goal.map(str::trim).filter(|g| !g.is_empty()) else { return Ok(None) };
+    let Some(id) = goal.map(str::trim).filter(|g| !g.is_empty()) else {
+        return Ok(None);
+    };
     let found = store
         .get_goal(id)
         .map_err(|e| ToolError::msg(format!("look up goal: {e}")))?
-        .ok_or_else(|| ToolError::msg(format!("goal names no goal `{id}`; list_goals shows them")))?;
+        .ok_or_else(|| {
+            ToolError::msg(format!("goal names no goal `{id}`; list_goals shows them"))
+        })?;
     if found.status != crate::coordination::GoalStatus::Open {
-        return Err(ToolError::msg(format!("goal `{id}` is {}; reopen it with update_goal first", found.status.as_str())));
+        return Err(ToolError::msg(format!(
+            "goal `{id}` is {}; reopen it with update_goal first",
+            found.status.as_str()
+        )));
     }
     Ok(Some(found.id))
 }
@@ -1761,7 +2044,8 @@ async fn create_task(
         }
         let store = db(ctx)?;
         let root = ctx
-            .mission_control_root().unwrap_or_else(mission_control::workspace_path);
+            .mission_control_root()
+            .unwrap_or_else(mission_control::workspace_path);
         // An agent's INBOX is a mailbox, not a workspace. It runs the
         // coordination runtime — no file or shell tools, and no
         // `report_mission_task` — so work routed there cannot be done and cannot
@@ -1775,8 +2059,8 @@ async fn create_task(
                  does not offer inboxes.",
             ));
         }
-        let path = state_path_for_id(&resolved)
-            .ok_or_else(|| ToolError::msg("unknown target session"))?;
+        let path =
+            state_path_for_id(&resolved).ok_or_else(|| ToolError::msg("unknown target session"))?;
         let state = read_session_state(&path)
             .ok_or_else(|| ToolError::msg(format!("no session `{resolved}`")))?;
         // Store the CANONICAL id.
@@ -1827,24 +2111,46 @@ async fn create_task(
             .into_iter()
             .filter(|t| !t.status.is_terminal())
             .filter(|t| t.title.trim().eq_ignore_ascii_case(args.title.trim()))
-            .find(|t| chrono::DateTime::parse_from_rfc3339(&t.created_at).is_ok_and(|at| at >= recent_cutoff))
+            .find(|t| {
+                chrono::DateTime::parse_from_rfc3339(&t.created_at)
+                    .is_ok_and(|at| at >= recent_cutoff)
+            })
         {
             return Ok(ToolResult::success(json!({
                 "task": task_view(&existing),
                 "note": "This task was already filed a moment ago and is on its way; nothing new was created.",
             })));
         }
-        let reviewer_seat = args.reviewer.as_deref().map(str::trim).filter(|r| !r.is_empty()).map(|id| CrewArg {
-            agent_id: id.to_string(),
-            role: Some("reviewer".to_string()),
-        });
-        let verify_mode = match args.verify_mode.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-            Some(raw) => crate::coordination::VerifyMode::parse(raw)
-                .ok_or_else(|| ToolError::msg(format!("verify_mode must be self, reviewer, mission_control or user, got `{raw}`")))?,
-            None if args.read_only && reviewer_seat.is_none() => crate::coordination::VerifyMode::SelfCheck,
+        let reviewer_seat = args
+            .reviewer
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(|id| CrewArg {
+                agent_id: id.to_string(),
+                role: Some("reviewer".to_string()),
+            });
+        let verify_mode = match args
+            .verify_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            Some(raw) => crate::coordination::VerifyMode::parse(raw).ok_or_else(|| {
+                ToolError::msg(format!(
+                    "verify_mode must be self, reviewer, mission_control or user, got `{raw}`"
+                ))
+            })?,
+            None if args.read_only && reviewer_seat.is_none() => {
+                crate::coordination::VerifyMode::SelfCheck
+            }
             None => crate::coordination::VerifyMode::Reviewer,
         };
-        let revises = args.revises_task_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let revises = args
+            .revises_task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         if let Some(old) = revises {
             store
                 .get_task(old)
@@ -1874,7 +2180,12 @@ async fn create_task(
         let owned_paths = crate::serve::validated_owned_paths(&args.owned_paths, &workspace)
             .map_err(ToolError::msg)?;
         let mut blockers: Vec<Task> = Vec::new();
-        for blocker in args.blocked_by.iter().map(|b| b.trim()).filter(|b| !b.is_empty()) {
+        for blocker in args
+            .blocked_by
+            .iter()
+            .map(|b| b.trim())
+            .filter(|b| !b.is_empty())
+        {
             let found = store
                 .get_task(blocker)
                 .map_err(|e| ToolError::msg(format!("look up blocker: {e}")))?
@@ -1889,14 +2200,21 @@ async fn create_task(
             }
         }
         let goal_id = open_goal_id(&store, args.goal.as_deref())?;
-        let supersedes = args.supersedes.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let supersedes = args
+            .supersedes
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         if let Some(old) = supersedes {
             let found = store
                 .get_task(old)
                 .map_err(|e| ToolError::msg(format!("look up superseded task: {e}")))?
                 .ok_or_else(|| ToolError::msg(format!("supersedes names no task `{old}`")))?;
             if !found.status.is_terminal() {
-                return Err(ToolError::msg(format!("task `{old}` is still {}; cancel it first", found.status)));
+                return Err(ToolError::msg(format!(
+                    "task `{old}` is still {}; cancel it first",
+                    found.status
+                )));
             }
         }
         let mut task = Task::dispatched_to(
@@ -1912,11 +2230,13 @@ async fn create_task(
         );
         task.profile = profile.clone();
         task.goal_id = goal_id;
-        task.expected_minutes = Some(args.expected_minutes.filter(|m| *m > 0).unwrap_or(match verify_mode {
-            crate::coordination::VerifyMode::SelfCheck => 10,
-            crate::coordination::VerifyMode::Reviewer => 20,
-            _ => 30,
-        }));
+        task.expected_minutes = Some(args.expected_minutes.filter(|m| *m > 0).unwrap_or(
+            match verify_mode {
+                crate::coordination::VerifyMode::SelfCheck => 10,
+                crate::coordination::VerifyMode::Reviewer => 20,
+                _ => 30,
+            },
+        ));
         if !blockers.is_empty() {
             task.status = TaskStatus::Blocked;
         }
@@ -1947,7 +2267,13 @@ async fn create_task(
                 work_session_id: None,
                 scope: String::new(),
                 status: "waiting".into(),
-                role: member.role.as_deref().map(str::trim).filter(|r| !r.is_empty()).unwrap_or("reviewer").to_string(),
+                role: member
+                    .role
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or("reviewer")
+                    .to_string(),
                 added_at: task.created_at.clone(),
                 removed_at: None,
             });
@@ -1957,7 +2283,9 @@ async fn create_task(
             .map_err(|e| ToolError::msg(format!("create task: {e}")))?;
         if let Some(old) = supersedes {
             store
-                .update_task_in(old, &task.created_at, |t| t.superseded_by = Some(task.id.clone()))
+                .update_task_in(old, &task.created_at, |t| {
+                    t.superseded_by = Some(task.id.clone())
+                })
                 .map_err(|e| ToolError::msg(format!("record supersedes: {e}")))?;
         }
         let ledger = crate::coordination::StatePatch {
@@ -1970,7 +2298,9 @@ async fn create_task(
             .patch_task_state(&task.id, &ledger, None, created_by.1, &task.created_at)
             .map_err(|e| ToolError::msg(format!("record ledger: {e}")))?;
         if let Some(old) = revises {
-            let _ = store.modify_task_state(&task.id, &task.created_at, |s| s.revises_task_id = old.to_string());
+            let _ = store.modify_task_state(&task.id, &task.created_at, |s| {
+                s.revises_task_id = old.to_string()
+            });
             let _ = store.link_tasks(&crate::coordination::TaskLink {
                 from_task_id: old.to_string(),
                 to_task_id: task.id.clone(),
@@ -1999,21 +2329,37 @@ async fn create_task(
                 .map_err(|e| ToolError::msg(format!("record requester: {e}")))?;
         }
         let note = if blockers.is_empty() {
-            format!("Offered to `{agent_id}`. The daemon sends the offer to its inbox; the task starts once the agent claims it (and restarts the target session on `profile` when one is given). The offer reaches the agent by itself.")
+            format!(
+                "Offered to `{agent_id}`. The daemon sends the offer to its inbox; the task starts once the agent claims it (and restarts the target session on `profile` when one is given). The offer reaches the agent by itself."
+            )
         } else {
             format!(
                 "Waiting on {}. It is offered to `{agent_id}` and starts by itself once every blocker is done; nothing to do meanwhile.",
-                blockers.iter().map(|b| format!("\"{}\" ({})", b.title, b.id)).collect::<Vec<_>>().join(", ")
+                blockers
+                    .iter()
+                    .map(|b| format!("\"{}\" ({})", b.title, b.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         };
         let mut note = note;
         if let Some(row) = target_row.as_ref() {
-            let idle = crate::settle::idle_secs(chrono::Utc::now().timestamp(), row.last_active.unwrap_or(0));
+            let idle = crate::settle::idle_secs(
+                chrono::Utc::now().timestamp(),
+                row.last_active.unwrap_or(0),
+            );
             if row.settled_at.is_some() {
                 crate::session::wake_settled(&session_id);
                 note.push_str(" The target session was settled; it has been woken because it is being addressed.");
             }
-            if crate::settle::cache_state(idle, crate::settle::ttl_for(&crate::settle::profile_cache_ttls(), row.profile.as_deref())) == "cold" {
+            if crate::settle::cache_state(
+                idle,
+                crate::settle::ttl_for(
+                    &crate::settle::profile_cache_ttls(),
+                    row.profile.as_deref(),
+                ),
+            ) == "cold"
+            {
                 note.push_str(&format!(
                     " Advisory: the target session was idle {} min, so its prompt cache is cold and the next turn re-reads its whole history at full price; a fresh session (create_mission_session, handoff_mode fresh) pointed at this one's saved memory may be cheaper.",
                     idle / 60
@@ -2078,30 +2424,53 @@ impl Tool for DeliverToSession {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let _ = root(ctx)?;
-        let args: DeliverArgs = serde_json::from_value(arguments)
-            .map_err(|_| ToolError::InvalidArguments { tool: "deliver_to_session".into() })?;
+        let args: DeliverArgs =
+            serde_json::from_value(arguments).map_err(|_| ToolError::InvalidArguments {
+                tool: "deliver_to_session".into(),
+            })?;
         if args.brief.trim().is_empty() {
             return Err(ToolError::msg("brief must be non-empty"));
         }
-        let reviewer = args.reviewer.as_deref().map(str::trim).filter(|r| !r.is_empty()).map(str::to_string);
-        let verify_mode = match args.verify_mode.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-            Some(raw) => Some(
-                crate::coordination::VerifyMode::parse(raw)
-                    .ok_or_else(|| ToolError::msg(format!("verify_mode must be self, reviewer, mission_control or user, got `{raw}`")))?,
-            ),
-            None => reviewer.is_some().then_some(crate::coordination::VerifyMode::Reviewer),
+        let reviewer = args
+            .reviewer
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(str::to_string);
+        let verify_mode = match args
+            .verify_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            Some(raw) => Some(crate::coordination::VerifyMode::parse(raw).ok_or_else(|| {
+                ToolError::msg(format!(
+                    "verify_mode must be self, reviewer, mission_control or user, got `{raw}`"
+                ))
+            })?),
+            None => reviewer
+                .is_some()
+                .then_some(crate::coordination::VerifyMode::Reviewer),
         };
-        let brief = format!("{}{}", args.brief.trim(), crate::mission_autonomy::standing_rules_note());
+        let brief = format!(
+            "{}{}",
+            args.brief.trim(),
+            crate::mission_autonomy::standing_rules_note()
+        );
         let brief = brief.as_str();
         let session_id = resolve_target_session(&args.session)?;
         if crate::session::is_inbox_session_id(&session_id)
             || crate::session::is_lane_session_id(&session_id)
             || mission_control::is_session_id(&session_id)
         {
-            return Err(ToolError::msg("deliver to a project session, not an inbox, a lane or Mission Control itself"));
+            return Err(ToolError::msg(
+                "deliver to a project session, not an inbox, a lane or Mission Control itself",
+            ));
         }
-        let path = state_path_for_id(&session_id).ok_or_else(|| ToolError::msg("unknown target session"))?;
-        let state = read_session_state(&path).ok_or_else(|| ToolError::msg(format!("no session `{session_id}`")))?;
+        let path = state_path_for_id(&session_id)
+            .ok_or_else(|| ToolError::msg("unknown target session"))?;
+        let state = read_session_state(&path)
+            .ok_or_else(|| ToolError::msg(format!("no session `{session_id}`")))?;
         let agent_id = crate::session::read_session_sidecar(&path)
             .and_then(|sidecar| sidecar.agent_id)
             .unwrap_or_else(|| crate::coordination::SNIPPET_AGENT_ID.to_string());
@@ -2109,7 +2478,9 @@ impl Tool for DeliverToSession {
         if let Some(id) = reviewer.as_deref() {
             require_working_agent(&store, id)?;
         }
-        let mc_root = ctx.mission_control_root().unwrap_or_else(mission_control::workspace_path);
+        let mc_root = ctx
+            .mission_control_root()
+            .unwrap_or_else(mission_control::workspace_path);
         if mission_control::get_session(&mc_root, &session_id).is_err() {
             let _ = mission_control::create_session(
                 &mc_root,
@@ -2121,10 +2492,16 @@ impl Tool for DeliverToSession {
         let now = now_rfc3339();
         let task = bind_direct_delivery(
             &store,
-            args.task_id.as_deref().map(str::trim).filter(|t| !t.is_empty()),
+            args.task_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty()),
             &session_id,
             &agent_id,
-            args.title.as_deref().map(str::trim).filter(|t| !t.is_empty()),
+            args.title
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty()),
             brief,
             &now,
         )?;
@@ -2135,16 +2512,35 @@ impl Tool for DeliverToSession {
         store
             .patch_task_state(&task.id, &check, None, mission_control::SESSION_ID, &now)
             .map_err(|e| ToolError::msg(format!("record ledger: {e}")))?;
-        let on_roster = |id: &str| store.list_task_agents(&task.id).unwrap_or_default().iter().any(|m| m.removed_at.is_none() && m.agent_id == id);
+        let on_roster = |id: &str| {
+            store
+                .list_task_agents(&task.id)
+                .unwrap_or_default()
+                .iter()
+                .any(|m| m.removed_at.is_none() && m.agent_id == id)
+        };
         if let Some(id) = reviewer.as_deref().filter(|id| !on_roster(id)) {
             store
                 .add_task_agent_full(&task.id, id, "reviewer", None, "", "waiting", &now)
                 .map_err(|e| ToolError::msg(format!("seat reviewer: {e}")))?;
         }
-        let ledger = crate::task_state_tools::dispatch_ledger(&store, &task, std::path::Path::new(&state.workspace), brief, &now);
+        let ledger = crate::task_state_tools::dispatch_ledger(
+            &store,
+            &task,
+            std::path::Path::new(&state.workspace),
+            brief,
+            &now,
+        );
         let envelope = direct_brief_envelope(&task, brief, &state.workspace, &ledger);
         store
-            .send_task_notice(("agent", mission_control::SESSION_ID), &session_id, &task.id, "task_brief", &envelope, &now)
+            .send_task_notice(
+                ("agent", mission_control::SESSION_ID),
+                &session_id,
+                &task.id,
+                "task_brief",
+                &envelope,
+                &now,
+            )
             .map_err(|e| ToolError::msg(format!("queue delivery: {e}")))?;
         Ok(ToolResult::success(json!({
             "task": task_view(&task),
@@ -2173,22 +2569,36 @@ fn bind_direct_delivery(
                 .map_err(|e| ToolError::msg(format!("look up task: {e}")))?
                 .ok_or_else(|| ToolError::msg(format!("no task `{id}`")))?;
             if current.status.is_terminal() {
-                return Err(ToolError::msg(format!("task `{id}` is already {}", current.status)));
+                return Err(ToolError::msg(format!(
+                    "task `{id}` is already {}",
+                    current.status
+                )));
             }
             if let Some(other) = current.reporting_session.as_deref()
                 && other != session_id
                 && session_is_running(store, other)
             {
-                return Err(ToolError::msg(format!("task `{id}` is being worked in `{other}`; stop it or wait")));
+                return Err(ToolError::msg(format!(
+                    "task `{id}` is being worked in `{other}`; stop it or wait"
+                )));
             }
             let waiting: Vec<String> = store
                 .blockers_of(id)
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|b| !store.get_task(b).ok().flatten().is_some_and(|t| t.status.releases_dependants()))
+                .filter(|b| {
+                    !store
+                        .get_task(b)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|t| t.status.releases_dependants())
+                })
                 .collect();
             if !waiting.is_empty() {
-                return Err(ToolError::msg(format!("task `{id}` still waits on {}", waiting.join(", "))));
+                return Err(ToolError::msg(format!(
+                    "task `{id}` still waits on {}",
+                    waiting.join(", ")
+                )));
             }
             store
                 .update_task_in(id, now, |t| {
@@ -2197,15 +2607,28 @@ fn bind_direct_delivery(
                     t.status = TaskStatus::InProgress;
                     t.dispatch_failures = 0;
                     t.notifications.retain(|n| {
-                        !matches!(n.kind.as_str(), "offered" | "offer_resent" | "offer_stuck" | "offer_unclaimed" | "blocked")
+                        !matches!(
+                            n.kind.as_str(),
+                            "offered"
+                                | "offer_resent"
+                                | "offer_stuck"
+                                | "offer_unclaimed"
+                                | "blocked"
+                        )
                     });
                 })
                 .map_err(|e| ToolError::msg(format!("bind task: {e}")))?
         }
         None => {
-            let title = title
-                .map(str::to_string)
-                .unwrap_or_else(|| brief.lines().next().unwrap_or(brief).chars().take(80).collect());
+            let title = title.map(str::to_string).unwrap_or_else(|| {
+                brief
+                    .lines()
+                    .next()
+                    .unwrap_or(brief)
+                    .chars()
+                    .take(80)
+                    .collect()
+            });
             let mut task = Task::dispatched_to(
                 uuid::Uuid::new_v4().to_string(),
                 session_id.to_string(),
@@ -2226,14 +2649,27 @@ fn bind_direct_delivery(
         }
     };
     let roster = store.list_task_agents(&task.id).unwrap_or_default();
-    let implementer = roster
-        .iter()
-        .filter(|m| m.removed_at.is_none())
-        .find(|m| m.status == "active" || (m.role == "implementer" && matches!(m.status.as_str(), "offered" | "withdrawn" | "pending")));
-    let worker = implementer.map(|m| m.agent_id.clone()).unwrap_or_else(|| agent_id.to_string());
-    let role = implementer.map(|m| m.role.clone()).unwrap_or_else(|| "implementer".into());
+    let implementer = roster.iter().filter(|m| m.removed_at.is_none()).find(|m| {
+        m.status == "active"
+            || (m.role == "implementer"
+                && matches!(m.status.as_str(), "offered" | "withdrawn" | "pending"))
+    });
+    let worker = implementer
+        .map(|m| m.agent_id.clone())
+        .unwrap_or_else(|| agent_id.to_string());
+    let role = implementer
+        .map(|m| m.role.clone())
+        .unwrap_or_else(|| "implementer".into());
     store
-        .add_task_agent_full(&task.id, &worker, &role, Some(session_id), "", "active", now)
+        .add_task_agent_full(
+            &task.id,
+            &worker,
+            &role,
+            Some(session_id),
+            "",
+            "active",
+            now,
+        )
         .map_err(|e| ToolError::msg(format!("seat worker: {e}")))?;
     Ok(task)
 }
@@ -2265,14 +2701,24 @@ impl Tool for FileFollowUpTask {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let text = |key: &str| arguments.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        let text = |key: &str| {
+            arguments
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
         let own = ctx
             .durable_session_id()
             .or(ctx.lane_origin().map(|(session, _)| session))
             .ok_or_else(|| ToolError::msg("file_follow_up_task needs a session"))?
             .to_string();
         let current = crate::coordination_tools::session_task(ctx, &own);
-        let after_current = arguments.get("after_current").and_then(Value::as_bool).unwrap_or(true);
+        let after_current = arguments
+            .get("after_current")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         let blocked_by = match (&current, after_current) {
             (Some((id, _)), true) => vec![id.clone()],
             _ => Vec::new(),
@@ -2351,7 +2797,11 @@ fn specialist_directory(store: &Store) -> String {
         .collect();
     format!(
         "No specialist or crew is on this task. Specialists available: {}. Seat one if the work needs a review, QA or research role; if no agent covers what it needs, ask the user whether to create one.",
-        if list.is_empty() { "none".to_string() } else { list.join(", ") }
+        if list.is_empty() {
+            "none".to_string()
+        } else {
+            list.join(", ")
+        }
     )
 }
 
@@ -2424,7 +2874,9 @@ impl Tool for UpdateMissionTask {
             Some("blocked") => Some(TaskStatus::Blocked),
             Some("done") => Some(TaskStatus::Done),
             Some(other) => {
-                return Err(ToolError::msg(format!("status must be todo, blocked, or done, got `{other}`")));
+                return Err(ToolError::msg(format!(
+                    "status must be todo, blocked, or done, got `{other}`"
+                )));
             }
         };
         let profile = args.profile.as_deref().map(str::trim);
@@ -2434,30 +2886,58 @@ impl Tool for UpdateMissionTask {
         let store = db(ctx)?;
         let now = now_rfc3339();
         if let Some(revise) = args.revise.as_ref() {
-            let reopened = crate::review_tools::revise_task(&store, task_id, &revise.feedback, crate::mission_control::SESSION_ID, &now)?;
-            return Ok(ToolResult::success(json!({"task": task_view(&reopened), "revised": true, "note": "Reopened in the same session; it was sent the feedback and its previous result."})));
+            let reopened = crate::review_tools::revise_task(
+                &store,
+                task_id,
+                &revise.feedback,
+                crate::mission_control::SESSION_ID,
+                &now,
+            )?;
+            return Ok(ToolResult::success(
+                json!({"task": task_view(&reopened), "revised": true, "note": "Reopened in the same session; it was sent the feedback and its previous result."}),
+            ));
         }
-        if let Some(reason) = args.waive_verification.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        if let Some(reason) = args
+            .waive_verification
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+        {
             let state = store
                 .modify_task_state(task_id, &now, |s| s.waiver = reason.to_string())
                 .map_err(|e| ToolError::msg(format!("record waiver: {e}")))?;
-            let patch = crate::coordination::StatePatch { add_decisions: vec![format!("verification waived: {reason}")], ..Default::default() };
+            let patch = crate::coordination::StatePatch {
+                add_decisions: vec![format!("verification waived: {reason}")],
+                ..Default::default()
+            };
             let _ = store.patch_task_state(task_id, &patch, None, "user", &now);
-            let held = store.get_task(task_id).map_err(|e| ToolError::msg(e.to_string()))?;
+            let held = store
+                .get_task(task_id)
+                .map_err(|e| ToolError::msg(e.to_string()))?;
             if let Some(held) = held.filter(|t| t.status == TaskStatus::InReview) {
-                crate::review_tools::approve_pending(ctx, &store, &held, &state, "user", "accepted without review at the user's word", now.clone())?;
+                crate::review_tools::approve_pending(
+                    ctx,
+                    &store,
+                    &held,
+                    &state,
+                    "user",
+                    "accepted without review at the user's word",
+                    now.clone(),
+                )?;
             }
         }
         let mut updated_task = store
             .update_task_in(task_id, &now, |t| {
                 if let Some(ref title) = args.title
-                    && !title.trim().is_empty() {
-                        t.title = title.trim().to_string();
-                    }
+                    && !title.trim().is_empty()
+                {
+                    t.title = title.trim().to_string();
+                }
                 if let Some(ref desc) = args.description
-                    && !desc.trim().is_empty() {
-                        t.description = desc.trim().to_string();
-                    }
+                    && !desc.trim().is_empty()
+                {
+                    t.description = desc.trim().to_string();
+                }
                 if let Some(ref plan) = args.plan {
                     t.plan = plan.trim().to_string();
                 }
@@ -2486,11 +2966,22 @@ impl Tool for UpdateMissionTask {
                     .complete_task(
                         task_id,
                         TaskStatus::Done,
-                        TaskResult { summary: summary.clone(), artifacts, authoritative: true },
+                        TaskResult {
+                            summary: summary.clone(),
+                            artifacts,
+                            authoritative: true,
+                        },
                         &now,
                     )
                     .map_err(|e| ToolError::msg(format!("complete task: {e}")))?;
-                announce_report(ctx, &store, &updated_task, TaskStatus::Done, &summary, now.clone());
+                announce_report(
+                    ctx,
+                    &store,
+                    &updated_task,
+                    TaskStatus::Done,
+                    &summary,
+                    now.clone(),
+                );
             } else {
                 updated_task = store
                     .move_task(task_id, status, "", &now)
@@ -2508,10 +2999,13 @@ impl Tool for UpdateMissionTask {
                 actor_kind: "agent".into(),
                 actor_id: crate::mission_control::SESSION_ID.into(),
                 payload_version: 1,
-                payload: crate::coordination_tools::stamp_origin(ctx, json!({
-                    "body": format!("Task updated by Mission Control: {body}"),
-                    "task_id": task_id,
-                })),
+                payload: crate::coordination_tools::stamp_origin(
+                    ctx,
+                    json!({
+                        "body": format!("Task updated by Mission Control: {body}"),
+                        "task_id": task_id,
+                    }),
+                ),
                 causation_id: None,
                 correlation_id: Some(task_id.to_string()),
                 idempotency_key: uuid::Uuid::new_v4().to_string(),
@@ -2580,18 +3074,31 @@ impl Tool for AssignTaskAgent {
         let role = args.role.as_deref().unwrap_or("implementer");
         let scope = args.scope.as_deref().unwrap_or("");
         let existing = store.list_task_agents(task_id).unwrap_or_default();
-        let has_active = existing.iter().any(|m| m.status == "active" && m.removed_at.is_none());
+        let has_active = existing
+            .iter()
+            .any(|m| m.status == "active" && m.removed_at.is_none());
         let status = match args.status.as_deref() {
             Some("active") => "active",
             Some("waiting") => "waiting",
-            _ => if has_active { "waiting" } else { "active" },
+            _ => {
+                if has_active {
+                    "waiting"
+                } else {
+                    "active"
+                }
+            }
         };
-        let status = if status == "active" && task.status != TaskStatus::InProgress { "offered" } else { status };
+        let status = if status == "active" && task.status != TaskStatus::InProgress {
+            "offered"
+        } else {
+            status
+        };
         if status == "active" {
             require_working_agent(&store, agent_id)?;
         }
         let now = now_rfc3339();
-        store.add_task_agent_full(task_id, agent_id, role, None, scope, status, &now)
+        store
+            .add_task_agent_full(task_id, agent_id, role, None, scope, status, &now)
             .map_err(|e| ToolError::msg(format!("assign agent: {e}")))?;
 
         let event = CoordinationEvent {
@@ -2603,13 +3110,16 @@ impl Tool for AssignTaskAgent {
             actor_kind: "agent".into(),
             actor_id: crate::mission_control::SESSION_ID.into(),
             payload_version: 1,
-            payload: crate::coordination_tools::stamp_origin(ctx, json!({
-                "body": format!("Agent `{agent_id}` assigned to task as `{role}` (status: {status})"),
-                "task_id": task_id,
-                "agent_id": agent_id,
-                "role": role,
-                "status": status,
-            })),
+            payload: crate::coordination_tools::stamp_origin(
+                ctx,
+                json!({
+                    "body": format!("Agent `{agent_id}` assigned to task as `{role}` (status: {status})"),
+                    "task_id": task_id,
+                    "agent_id": agent_id,
+                    "role": role,
+                    "status": status,
+                }),
+            ),
             causation_id: None,
             correlation_id: Some(task_id.to_string()),
             idempotency_key: uuid::Uuid::new_v4().to_string(),
@@ -2664,13 +3174,19 @@ impl Tool for InviteTaskAgent {
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let (task_id, agent_id, ask) = (args.task_id.trim(), args.agent_id.trim(), args.ask.trim());
         if task_id.is_empty() || agent_id.is_empty() || ask.is_empty() {
-            return Err(ToolError::msg("task_id, agent_id and ask must not be empty"));
+            return Err(ToolError::msg(
+                "task_id, agent_id and ask must not be empty",
+            ));
         }
         if agent_id == crate::mission_control::SESSION_ID {
-            return Err(ToolError::msg("Mission Control is not a task collaborator; send_agent_message to mission-control instead"));
+            return Err(ToolError::msg(
+                "Mission Control is not a task collaborator; send_agent_message to mission-control instead",
+            ));
         }
         let Some(caller) = ctx.durable_session_id() else {
-            return Err(ToolError::msg("only the session working a task can invite collaborators"));
+            return Err(ToolError::msg(
+                "only the session working a task can invite collaborators",
+            ));
         };
         let store = db(ctx)?;
         let task = store
@@ -2679,16 +3195,28 @@ impl Tool for InviteTaskAgent {
             .ok_or_else(|| ToolError::msg(format!("task `{task_id}` not found")))?;
         let canonical = |id: &str| crate::conversations::canonical_session_id(id);
         let caller = canonical(caller);
-        let seated = store.member_by_session(&caller).ok().flatten().is_some_and(|m| m.task_id == task.id);
-        let works_it = seated || match task.reporting_session.as_deref() {
-            Some(bound) => canonical(bound) == caller,
-            None => canonical(&task.session_id) == caller,
-        };
+        let seated = store
+            .member_by_session(&caller)
+            .ok()
+            .flatten()
+            .is_some_and(|m| m.task_id == task.id);
+        let works_it = seated
+            || match task.reporting_session.as_deref() {
+                Some(bound) => canonical(bound) == caller,
+                None => canonical(&task.session_id) == caller,
+            };
         if !works_it || task.status.is_terminal() {
-            return Err(ToolError::msg("you can only invite collaborators to an open task this session is working"));
+            return Err(ToolError::msg(
+                "you can only invite collaborators to an open task this session is working",
+            ));
         }
         require_working_agent(&store, agent_id)?;
-        let role = args.role.as_deref().map(str::trim).filter(|r| !r.is_empty()).unwrap_or("reviewer");
+        let role = args
+            .role
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .unwrap_or("reviewer");
         let now = now_rfc3339();
         let already = store
             .list_task_agents(task_id)
@@ -2715,12 +3243,15 @@ impl Tool for InviteTaskAgent {
             actor_kind: actor_kind.into(),
             actor_id,
             payload_version: 1,
-            payload: crate::coordination_tools::stamp_origin(ctx, json!({
-                "body": format!("@{agent_id} joined as {role}. {ask}"),
-                "task_id": task_id,
-                "invited": agent_id,
-                "to": [agent_id],
-            })),
+            payload: crate::coordination_tools::stamp_origin(
+                ctx,
+                json!({
+                    "body": format!("@{agent_id} joined as {role}. {ask}"),
+                    "task_id": task_id,
+                    "invited": agent_id,
+                    "to": [agent_id],
+                }),
+            ),
             causation_id: None,
             correlation_id: Some(task_id.to_string()),
             idempotency_key: uuid::Uuid::new_v4().to_string(),
@@ -2729,7 +3260,9 @@ impl Tool for InviteTaskAgent {
         let saved = store
             .append_event(&event)
             .map_err(|e| ToolError::msg(format!("post invitation: {e}")))?;
-        crate::session::emit_device_event(json!({"kind": "coordination_event", "event": saved.clone()}));
+        crate::session::emit_device_event(
+            json!({"kind": "coordination_event", "event": saved.clone()}),
+        );
         crate::serve::queue_coordination_wake(&store, saved);
         Ok(ToolResult::success(json!({
             "invited": agent_id,
@@ -2778,7 +3311,11 @@ impl Tool for TransferMissionTaskLease {
             .ok_or_else(|| ToolError::msg(format!("task `{task_id}` not found")))?;
         require_working_agent(&store, to_agent)?;
         let roster = store.list_task_agents(task_id).unwrap_or_default();
-        let current_active = roster.iter().find(|m| m.status == "active" && m.removed_at.is_none()).map(|m| m.agent_id.as_str()).unwrap_or("none");
+        let current_active = roster
+            .iter()
+            .find(|m| m.status == "active" && m.removed_at.is_none())
+            .map(|m| m.agent_id.as_str())
+            .unwrap_or("none");
         if task.status != TaskStatus::InProgress || current_active == "none" {
             return Err(ToolError::msg(
                 "a lease hands running work from one agent to another. This task hasn't been claimed yet: the offered agent takes it on from its inbox. To give it to someone else instead, assign that agent (assign_task_agent) and retry the task.",
@@ -2786,8 +3323,12 @@ impl Tool for TransferMissionTaskLease {
         }
         let now = now_rfc3339();
 
-        if !roster.iter().any(|m| m.agent_id == to_agent && m.removed_at.is_none()) {
-            store.add_task_agent_full(task_id, to_agent, "collaborator", None, "", "waiting", &now)
+        if !roster
+            .iter()
+            .any(|m| m.agent_id == to_agent && m.removed_at.is_none())
+        {
+            store
+                .add_task_agent_full(task_id, to_agent, "collaborator", None, "", "waiting", &now)
                 .map_err(|e| ToolError::msg(format!("add agent to roster: {e}")))?;
         }
 
@@ -2803,7 +3344,8 @@ impl Tool for TransferMissionTaskLease {
             created_at: now.clone(),
             acked_at: None,
         };
-        let passed = crate::members::pass_turn(&store, &task, to_agent, &handover, &now).map_err(ToolError::msg)?;
+        let passed = crate::members::pass_turn(&store, &task, to_agent, &handover, &now)
+            .map_err(ToolError::msg)?;
         let body = crate::members::handover_body(&handover, &passed);
         let event = CoordinationEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
@@ -2814,12 +3356,15 @@ impl Tool for TransferMissionTaskLease {
             actor_kind: "agent".into(),
             actor_id: crate::mission_control::SESSION_ID.into(),
             payload_version: 1,
-            payload: crate::coordination_tools::stamp_origin(ctx, json!({
-                "body": body,
-                "task_id": task_id,
-                "from_agent_id": current_active,
-                "to_agent_id": to_agent,
-            })),
+            payload: crate::coordination_tools::stamp_origin(
+                ctx,
+                json!({
+                    "body": body,
+                    "task_id": task_id,
+                    "from_agent_id": current_active,
+                    "to_agent_id": to_agent,
+                }),
+            ),
             causation_id: None,
             correlation_id: Some(task_id.to_string()),
             idempotency_key: uuid::Uuid::new_v4().to_string(),
@@ -2916,14 +3461,22 @@ impl Tool for CancelMissionTask {
             })?;
         let (task_id, reason) = (args.task_id.trim(), args.reason.trim());
         if task_id.is_empty() || reason.is_empty() {
-            return Err(ToolError::msg("cancel_mission_task needs task_id and reason"));
+            return Err(ToolError::msg(
+                "cancel_mission_task needs task_id and reason",
+            ));
         }
         let store = db(ctx)?;
-        let superseded_by = args.superseded_by.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let superseded_by = args
+            .superseded_by
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         if let Some(next) = superseded_by
             && (next == task_id || store.get_task(next).ok().flatten().is_none())
         {
-            return Err(ToolError::msg(format!("superseded_by names no other task `{next}`")));
+            return Err(ToolError::msg(format!(
+                "superseded_by names no other task `{next}`"
+            )));
         }
         let before = store
             .get_task(task_id)
@@ -2934,7 +3487,11 @@ impl Tool for CancelMissionTask {
             .complete_task(
                 task_id,
                 TaskStatus::Cancelled,
-                TaskResult { summary: reason.to_string(), artifacts: Vec::new(), authoritative: true },
+                TaskResult {
+                    summary: reason.to_string(),
+                    artifacts: Vec::new(),
+                    authoritative: true,
+                },
                 &now,
             )
             .map_err(|e| ToolError::msg(format!("cancel task: {e}")))?;
@@ -2948,10 +3505,22 @@ impl Tool for CancelMissionTask {
         if let Some(session) = worker.as_deref() {
             let body = cancelled_envelope(&before, reason, superseded_by);
             store
-                .send_task_notice(("agent", crate::mission_control::SESSION_ID), session, task_id, "task_cancelled", &body, &now)
+                .send_task_notice(
+                    ("agent", crate::mission_control::SESSION_ID),
+                    session,
+                    task_id,
+                    "task_cancelled",
+                    &body,
+                    &now,
+                )
                 .map_err(|e| ToolError::msg(format!("notify worker: {e}")))?;
             if session_is_running(&store, session) {
-                stopped = match interrupt_session(session, &format!("task {task_id} cancelled: {reason}")).await {
+                stopped = match interrupt_session(
+                    session,
+                    &format!("task {task_id} cancelled: {reason}"),
+                )
+                .await
+                {
                     Ok(_) => json!(session),
                     Err(e) => json!({"session": session, "error": e.to_string()}),
                 };
@@ -2961,19 +3530,34 @@ impl Tool for CancelMissionTask {
             .task_links(task_id)
             .unwrap_or_default()
             .into_iter()
-            .filter(|l| l.kind == crate::coordination::TaskLinkKind::Blocks && l.from_task_id == task_id)
+            .filter(|l| {
+                l.kind == crate::coordination::TaskLinkKind::Blocks && l.from_task_id == task_id
+            })
             .map(|l| l.to_task_id)
-            .filter(|id| store.get_task(id).ok().flatten().is_some_and(|t| !t.status.is_terminal()))
+            .filter(|id| {
+                store
+                    .get_task(id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|t| !t.status.is_terminal())
+            })
             .filter(|id| {
                 store.blockers_of(id).unwrap_or_default().iter().all(|b| {
-                    store.get_task(b).ok().flatten().is_some_and(|t| t.status.releases_dependants())
+                    store
+                        .get_task(b)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|t| t.status.releases_dependants())
                 })
             })
             .collect();
         let note = if released.is_empty() {
             "Cancelled.".to_string()
         } else {
-            format!("Cancelled. {} waiting task(s) now start, told this blocker was cancelled.", released.len())
+            format!(
+                "Cancelled. {} waiting task(s) now start, told this blocker was cancelled.",
+                released.len()
+            )
         };
         Ok(ToolResult::success(json!({
             "task": task_view(&task),
@@ -2988,13 +3572,16 @@ impl Tool for CancelMissionTask {
 /// The session a cancelled task was bound to, if it had one to tell.
 fn cancelled_worker(task: &Task) -> Option<String> {
     let session = task.reporting_session.clone().or_else(|| {
-        (task.status == TaskStatus::InProgress && !task.session_id.is_empty()).then(|| task.session_id.clone())
+        (task.status == TaskStatus::InProgress && !task.session_id.is_empty())
+            .then(|| task.session_id.clone())
     })?;
     (!crate::mission_control::is_session_id(&session)).then_some(session)
 }
 
 fn cancelled_envelope(task: &Task, reason: &str, superseded_by: Option<&str>) -> String {
-    let next = superseded_by.map(|id| format!("superseded_by: {id}\n")).unwrap_or_default();
+    let next = superseded_by
+        .map(|id| format!("superseded_by: {id}\n"))
+        .unwrap_or_default();
     format!(
         "[task_cancelled]\ntask_id: {}\ntitle: {}\nreason: {reason}\n{next}note: Mission Control cancelled this task. Stop work on it and don't report it; keep what's done. Ask Mission Control if anything is unclear.\n[/task_cancelled]",
         task.id, task.title
@@ -3013,7 +3600,11 @@ fn session_is_running(store: &Store, session: &str) -> bool {
 async fn interrupt_session(id: &str, reason: &str) -> Result<Value, ToolError> {
     let info = crate::serve::sidecar::read_daemon_info()
         .ok_or_else(|| ToolError::msg("the daemon's address isn't available"))?;
-    let url = format!("{}/session/interrupt?token={}", info.api_url.trim_end_matches('/'), info.token);
+    let url = format!(
+        "{}/session/interrupt?token={}",
+        info.api_url.trim_end_matches('/'),
+        info.token
+    );
     let response = reqwest::Client::new()
         .post(&url)
         .json(&json!({"session": id, "reason": reason}))
@@ -3024,7 +3615,10 @@ async fn interrupt_session(id: &str, reason: &str) -> Result<Value, ToolError> {
         return Err(ToolError::msg(format!("no session `{id}`")));
     }
     if !response.status().is_success() {
-        return Err(ToolError::msg(format!("stop failed: HTTP {}", response.status())));
+        return Err(ToolError::msg(format!(
+            "stop failed: HTTP {}",
+            response.status()
+        )));
     }
     Ok(response.json().await.unwrap_or_default())
 }
@@ -3046,7 +3640,9 @@ fn stale_sessions(store: &Store, idle_days: i64) -> Vec<crate::session::SessionI
         .filter(|s| !matches!(s.status.as_str(), "running" | "waiting_for_input"))
         .filter(|s| now - s.last_active > idle_days * 86_400)
         .filter(|s| !open.contains(&s.id))
-        .filter(|s| !mission_control::is_session_id(&s.id) && !crate::session::is_inbox_session_id(&s.id))
+        .filter(|s| {
+            !mission_control::is_session_id(&s.id) && !crate::session::is_inbox_session_id(&s.id)
+        })
         .collect()
 }
 
@@ -3069,21 +3665,32 @@ impl Tool for CleanUpSessions {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let store = db(ctx)?;
-        let action = arguments.get("action").and_then(Value::as_str).unwrap_or("list");
+        let action = arguments
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("list");
         let now = chrono::Utc::now().timestamp();
         if action == "list" {
-            let idle_days = arguments.get("idle_days").and_then(Value::as_i64).unwrap_or(14).max(1);
+            let idle_days = arguments
+                .get("idle_days")
+                .and_then(Value::as_i64)
+                .unwrap_or(14)
+                .max(1);
             let stale: Vec<Value> = stale_sessions(&store, idle_days)
                 .into_iter()
-                .map(|s| json!({
-                    "session_id": s.id,
-                    "title": s.title,
-                    "workspace": s.folder,
-                    "idle_days": (now - s.last_active) / 86_400,
-                    "agent_id": s.agent_id,
-                }))
+                .map(|s| {
+                    json!({
+                        "session_id": s.id,
+                        "title": s.title,
+                        "workspace": s.folder,
+                        "idle_days": (now - s.last_active) / 86_400,
+                        "agent_id": s.agent_id,
+                    })
+                })
                 .collect();
-            return Ok(ToolResult::success(json!({"stale": stale, "idle_days": idle_days})));
+            return Ok(ToolResult::success(
+                json!({"stale": stale, "idle_days": idle_days}),
+            ));
         }
         if action != "delete" {
             return Err(ToolError::msg("action must be list or delete"));
@@ -3091,13 +3698,20 @@ impl Tool for CleanUpSessions {
         let ids: Vec<String> = arguments
             .get("session_ids")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default();
         if ids.is_empty() {
             return Err(ToolError::msg("delete needs session_ids"));
         }
-        let eligible: std::collections::HashSet<String> =
-            stale_sessions(&store, 0).into_iter().map(|s| s.id).collect();
+        let eligible: std::collections::HashSet<String> = stale_sessions(&store, 0)
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
         let info = crate::serve::sidecar::read_daemon_info()
             .ok_or_else(|| ToolError::msg("the daemon's address isn't available"))?;
         let client = reqwest::Client::new();
@@ -3108,14 +3722,20 @@ impl Tool for CleanUpSessions {
                 refused.push(json!({"session_id": id, "reason": "running, has open work, or isn't a deletable session"}));
                 continue;
             }
-            let url = format!("{}/session/delete?token={}", info.api_url.trim_end_matches('/'), info.token);
+            let url = format!(
+                "{}/session/delete?token={}",
+                info.api_url.trim_end_matches('/'),
+                info.token
+            );
             match client.post(&url).json(&json!({"session": id})).send().await {
                 Ok(response) if response.status().is_success() => deleted.push(id),
                 Ok(response) => refused.push(json!({"session_id": id, "reason": format!("delete failed: HTTP {}", response.status())})),
                 Err(e) => refused.push(json!({"session_id": id, "reason": format!("delete failed: {e}")})),
             }
         }
-        Ok(ToolResult::success(json!({"deleted": deleted, "refused": refused})))
+        Ok(ToolResult::success(
+            json!({"deleted": deleted, "refused": refused}),
+        ))
     }
 }
 
@@ -3136,13 +3756,23 @@ impl Tool for StopSession {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let id = arguments.get("session_id").and_then(Value::as_str).map(str::trim).unwrap_or("");
-        let reason = arguments.get("reason").and_then(Value::as_str).map(str::trim).unwrap_or("");
+        let id = arguments
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        let reason = arguments
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
         if id.is_empty() || reason.is_empty() {
             return Err(ToolError::msg("stop_session needs session_id and reason"));
         }
         if id == crate::mission_control::SESSION_ID {
-            return Err(ToolError::msg("that's your own session; end your turn instead"));
+            return Err(ToolError::msg(
+                "that's your own session; end your turn instead",
+            ));
         }
         Ok(ToolResult::success(interrupt_session(id, reason).await?))
     }
@@ -3159,11 +3789,17 @@ async fn settle_call(path: &str, id: &str, on: Option<bool>) -> Result<Value, To
 async fn session_post(path: &str, id: &str, body_in: Value) -> Result<Value, ToolError> {
     let info = crate::serve::sidecar::read_daemon_info()
         .ok_or_else(|| ToolError::msg("the daemon's address isn't available"))?;
-    let url = format!("{}{path}?token={}", info.api_url.trim_end_matches('/'), info.token);
+    let url = format!(
+        "{}{path}?token={}",
+        info.api_url.trim_end_matches('/'),
+        info.token
+    );
     let response = reqwest::Client::new()
         .post(&url)
         .json(&body_in)
-        .timeout(std::time::Duration::from_secs(crate::settle::REFLECT_TIMEOUT_SECS + 60))
+        .timeout(std::time::Duration::from_secs(
+            crate::settle::REFLECT_TIMEOUT_SECS + 60,
+        ))
         .send()
         .await
         .map_err(|e| ToolError::msg(format!("session_state failed: {e}")))?;
@@ -3173,7 +3809,10 @@ async fn session_post(path: &str, id: &str, body_in: Value) -> Result<Value, Too
         return Err(ToolError::msg(format!("no session `{id}`")));
     }
     if !status.is_success() {
-        let reason = body.get("error").and_then(Value::as_str).unwrap_or("refused");
+        let reason = body
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("refused");
         return Err(ToolError::msg(reason.to_string()));
     }
     Ok(body)
@@ -3195,7 +3834,11 @@ impl Tool for SessionState {
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let id = arguments.get("session_id").and_then(Value::as_str).map(str::trim).unwrap_or("");
+        let id = arguments
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
         if id.is_empty() {
             return Err(ToolError::msg("session_state needs session_id"));
         }
@@ -3204,20 +3847,38 @@ impl Tool for SessionState {
         }
         let settled = arguments.get("settled").and_then(Value::as_bool);
         let keep = arguments.get("keep_awake").and_then(Value::as_bool);
-        let title = arguments.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
+        let title = arguments
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
         if settled.is_none() && keep.is_none() && title.is_none() {
             return Err(ToolError::msg("give settled, keep_awake or title"));
         }
         let mut out = json!({});
         if let Some(title) = title {
             let title: String = title.chars().take(80).collect();
-            out["title"] = session_post("/session/rename", id, json!({"session": id, "title": title})).await?;
+            out["title"] = session_post(
+                "/session/rename",
+                id,
+                json!({"session": id, "title": title}),
+            )
+            .await?;
         }
         if let Some(on) = keep {
             out["keep_awake"] = settle_call("/session/keep_awake", id, Some(on)).await?;
         }
         if let Some(on) = settled {
-            out["settled"] = settle_call(if on { "/session/settle" } else { "/session/unsettle" }, id, None).await?;
+            out["settled"] = settle_call(
+                if on {
+                    "/session/settle"
+                } else {
+                    "/session/unsettle"
+                },
+                id,
+                None,
+            )
+            .await?;
         }
         Ok(ToolResult::success(out))
     }
@@ -3267,10 +3928,20 @@ impl Tool for RegisterAgent {
                 "identity is too thin: write the agent's mandate, how it works and how it reports",
             ));
         }
-        if args.id == crate::coordination::SNIPPET_AGENT_ID || args.id == mission_control::SESSION_ID {
-            return Err(ToolError::msg(format!("`{}` is a built-in agent id", args.id)));
+        if args.id == crate::coordination::SNIPPET_AGENT_ID
+            || args.id == mission_control::SESSION_ID
+        {
+            return Err(ToolError::msg(format!(
+                "`{}` is a built-in agent id",
+                args.id
+            )));
         }
-        let profile = args.profile.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
+        let profile = args
+            .profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string);
         if let Some(name) = profile.as_deref() {
             check_profile(name).await?;
         }
@@ -3297,7 +3968,12 @@ impl Tool for RegisterAgent {
                 .set_agent_profile(&args.id, Some(name))
                 .map_err(|e| ToolError::msg(format!("set agent profile: {e}")))?;
         }
-        if let Some(nickname) = args.nickname.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        if let Some(nickname) = args
+            .nickname
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
             db(ctx)?
                 .set_agent_nickname(&args.id, Some(nickname))
                 .map_err(|e| ToolError::msg(format!("set agent nickname: {e}")))?;
@@ -3381,12 +4057,15 @@ pub(crate) fn announce_report(
         actor_kind: "agent".into(),
         actor_id: reporter.unwrap_or_else(|| "worker".into()),
         payload_version: 1,
-        payload: crate::coordination_tools::stamp_origin(ctx, json!({
-            "body": format!("Task reported {status_for_board}: {summary_for_board}"),
-            "task_id": task.id,
-            "status": status_for_board.to_string(),
-            "summary": summary_for_board,
-        })),
+        payload: crate::coordination_tools::stamp_origin(
+            ctx,
+            json!({
+                "body": format!("Task reported {status_for_board}: {summary_for_board}"),
+                "task_id": task.id,
+                "status": status_for_board.to_string(),
+                "summary": summary_for_board,
+            }),
+        ),
         causation_id: None,
         correlation_id: Some(task.id.clone()),
         idempotency_key: uuid::Uuid::new_v4().to_string(),
@@ -3422,21 +4101,41 @@ const REPORT_PART_CHARS: usize = 400;
 /// A done report is its three short parts; blocked and failed reports, and
 /// Mission Control's own, may be a plain summary.
 fn report_text(args: &ReportArgs, status: &TaskStatus, is_mc: bool) -> Result<String, ToolError> {
-    let parts = [("Scope", args.scope.trim()), ("Done", args.done.trim()), ("How", args.how.trim())];
+    let parts = [
+        ("Scope", args.scope.trim()),
+        ("Done", args.done.trim()),
+        ("How", args.how.trim()),
+    ];
     if parts.iter().all(|(_, text)| text.is_empty()) && (is_mc || *status != TaskStatus::Done) {
         let summary = args.summary.trim();
         if summary.is_empty() {
-            return Err(ToolError::msg("say what happened: blocked and failed reports need a summary"));
+            return Err(ToolError::msg(
+                "say what happened: blocked and failed reports need a summary",
+            ));
         }
         return Ok(summary.to_string());
     }
     if let Some((label, _)) = parts.iter().find(|(_, text)| text.is_empty()) {
-        return Err(ToolError::msg(format!("report refused: `{}` is missing. A done report needs scope, done and how, a sentence or two each.", label.to_lowercase())));
+        return Err(ToolError::msg(format!(
+            "report refused: `{}` is missing. A done report needs scope, done and how, a sentence or two each.",
+            label.to_lowercase()
+        )));
     }
-    if let Some((label, text)) = parts.iter().find(|(_, text)| text.chars().count() > REPORT_PART_CHARS) {
-        return Err(ToolError::msg(format!("report refused: `{}` is {} characters; keep each part under {REPORT_PART_CHARS}. Changed files and commits are measured for you, so leave them out.", label.to_lowercase(), text.chars().count())));
+    if let Some((label, text)) = parts
+        .iter()
+        .find(|(_, text)| text.chars().count() > REPORT_PART_CHARS)
+    {
+        return Err(ToolError::msg(format!(
+            "report refused: `{}` is {} characters; keep each part under {REPORT_PART_CHARS}. Changed files and commits are measured for you, so leave them out.",
+            label.to_lowercase(),
+            text.chars().count()
+        )));
     }
-    Ok(parts.iter().map(|(label, text)| format!("{label}: {text}")).collect::<Vec<_>>().join("\n"))
+    Ok(parts
+        .iter()
+        .map(|(label, text)| format!("{label}: {text}"))
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 pub struct ReportMissionTask;
 #[async_trait]
@@ -3504,7 +4203,15 @@ impl Tool for ReportMissionTask {
                 .map_err(|e| ToolError::msg(format!("load task: {e}")))?
                 .ok_or_else(|| ToolError::msg("unknown task"))?;
             if let Some(mode) = crate::review_tools::gate_done(&store, &current, &now)? {
-                let held = crate::review_tools::submit_for_review(ctx, &store, &current, mode, &summary, &args.artifacts, &now)?;
+                let held = crate::review_tools::submit_for_review(
+                    ctx,
+                    &store,
+                    &current,
+                    mode,
+                    &summary,
+                    &args.artifacts,
+                    &now,
+                )?;
                 return Ok(ToolResult::success(json!({
                     "task": task_view(&held),
                     "in_review": mode.as_str(),
@@ -3546,7 +4253,14 @@ impl Tool for ReportMissionTask {
                 })
                 .map_err(|e| ToolError::msg(format!("update task: {e}")))?
         };
-        announce_report(ctx, &store, &task, status_for_board, &summary_for_board, now);
+        announce_report(
+            ctx,
+            &store,
+            &task,
+            status_for_board,
+            &summary_for_board,
+            now,
+        );
 
         Ok(ToolResult::success(json!({"task": task_view(&task)})))
     }
@@ -3574,19 +4288,26 @@ impl Tool for ListRecurringJobs {
             input_schema: schema(json!({}), &[]),
         }
     }
-    async fn execute(&self, _ctx: &ToolContext, _arguments: Value) -> Result<ToolResult, ToolError> {
-        let jobs = crate::recurring::list_jobs(&crate::recurring::default_root()).map_err(ToolError::msg)?;
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _arguments: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let jobs = crate::recurring::list_jobs(&crate::recurring::default_root())
+            .map_err(ToolError::msg)?;
         let rows: Vec<Value> = jobs
             .iter()
-            .map(|job| json!({
-                "id": job.id,
-                "title": job.title,
-                "session_id": job.session_id,
-                "schedule": job.schedule.display(),
-                "plan_path": job.plan_path,
-                "enabled": job.enabled,
-                "next_run_at": job.next_run_at,
-            }))
+            .map(|job| {
+                json!({
+                    "id": job.id,
+                    "title": job.title,
+                    "session_id": job.session_id,
+                    "schedule": job.schedule.display(),
+                    "plan_path": job.plan_path,
+                    "enabled": job.enabled,
+                    "next_run_at": job.next_run_at,
+                })
+            })
             .collect();
         Ok(ToolResult::success(json!({"jobs": rows})))
     }
@@ -3603,21 +4324,32 @@ impl Tool for CancelRecurringJob {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "cancel_recurring_job".into(),
-            description: "Stop a recurring job for good, by its id from list_recurring_jobs.".into(),
+            description: "Stop a recurring job for good, by its id from list_recurring_jobs."
+                .into(),
             input_schema: schema(json!({"id": {"type": "string"}}), &["id"]),
         }
     }
     async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: CancelRecurringArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let args: CancelRecurringArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let user_wake = crate::recurring::list_jobs(&crate::recurring::default_root())
             .unwrap_or_default()
             .into_iter()
-            .any(|j| j.id == args.id.trim() && j.wake.is_some_and(|w| w.set_by == crate::agent_wakes::Setter::User));
+            .any(|j| {
+                j.id == args.id.trim()
+                    && j.wake
+                        .is_some_and(|w| w.set_by == crate::agent_wakes::Setter::User)
+            });
         if user_wake {
-            return Err(ToolError::msg("the user set this wake schedule; ask them to change it"));
+            return Err(ToolError::msg(
+                "the user set this wake schedule; ask them to change it",
+            ));
         }
-        crate::recurring::delete_job(&crate::recurring::default_root(), args.id.trim()).map_err(ToolError::msg)?;
-        Ok(ToolResult::success(json!({"cancelled": true, "id": args.id.trim()})))
+        crate::recurring::delete_job(&crate::recurring::default_root(), args.id.trim())
+            .map_err(ToolError::msg)?;
+        Ok(ToolResult::success(
+            json!({"cancelled": true, "id": args.id.trim()}),
+        ))
     }
 }
 
@@ -3664,20 +4396,25 @@ impl Tool for CreateRecurringJob {
                 "a recurring job can't run in Mission Control's own chat: pass session_id of a worker session (list_sessions, or create one), and the run reports back to you",
             ));
         }
-        if state_path_for_id(session_id).is_none()
-        {
+        if state_path_for_id(session_id).is_none() {
             return Err(ToolError::msg(
                 "unknown target session — pass an id from list_sessions or omit to target current session",
             ));
         }
         let schedule = crate::recurring::Schedule::parse(&args.schedule).map_err(ToolError::msg)?;
         let title = args.title.trim().to_lowercase();
-        let plan = args.plan_path.as_deref().map(str::trim).filter(|p| !p.is_empty());
-        let existing = crate::recurring::list_jobs(&crate::recurring::default_root()).unwrap_or_default();
+        let plan = args
+            .plan_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        let existing =
+            crate::recurring::list_jobs(&crate::recurring::default_root()).unwrap_or_default();
         if let Some(twin) = existing.iter().find(|job| {
             job.enabled
                 && job.session_id == session_id
-                && (job.title.trim().to_lowercase() == title || (plan.is_some() && job.plan_path.as_deref() == plan))
+                && (job.title.trim().to_lowercase() == title
+                    || (plan.is_some() && job.plan_path.as_deref() == plan))
         }) {
             return Err(ToolError::msg(format!(
                 "session `{session_id}` already has a recurring job for this: `{}` ({}, {}). Keep it, or cancel_recurring_job it first if this one should replace it.",
@@ -3729,7 +4466,15 @@ mod tests {
             hash: "abc".into(),
             source: "/tmp/standup.wav".into(),
         };
-        let extra = voice_memo_fields("s1", &artifact, &version, "/a/1/sig/x", 1234, "hello there", true);
+        let extra = voice_memo_fields(
+            "s1",
+            &artifact,
+            &version,
+            "/a/1/sig/x",
+            1234,
+            "hello there",
+            true,
+        );
         let value = Value::Object(extra);
         let round: Value = serde_json::from_str(&serde_json::to_string(&value).unwrap()).unwrap();
         assert_eq!(round, value);
@@ -3753,7 +4498,11 @@ mod tests {
     #[test]
     fn turn_changes_is_not_shown_to_mission_control() {
         let event = crate::harness::HarnessEvent::TurnChanges {
-            files: vec![crate::harness::FileChange { path: "a.rs".into(), add: 1, del: 0 }],
+            files: vec![crate::harness::FileChange {
+                path: "a.rs".into(),
+                add: 1,
+                del: 0,
+            }],
             total_files: 1,
             add: 1,
             del: 0,
@@ -3870,11 +4619,7 @@ mod tests {
 
         // AND the worker's own board carries the report.
         let rows = db
-            .read_board(
-                "snippet",
-                &crate::coordination::BoardQuery::default(),
-                10,
-            )
+            .read_board("snippet", &crate::coordination::BoardQuery::default(), 10)
             .unwrap();
         assert_eq!(rows.len(), 1, "exactly one entry on the worker's board");
         assert_eq!(rows[0].kind, "reported");
@@ -3912,7 +4657,6 @@ mod tests {
         assert_eq!(roster[0].agent_id, "rust-pr-reviewer");
     }
 
-
     #[tokio::test]
     async fn recurring_job_refuses_mission_control_as_its_session() {
         let dir = tempfile::tempdir().unwrap();
@@ -3924,7 +4668,10 @@ mod tests {
             json!({"title": "digest", "schedule": "daily 08:30", "prompt": "x", "session_id": crate::mission_control::SESSION_ID}),
         ] {
             let err = CreateRecurringJob.execute(&ctx, args).await.unwrap_err();
-            assert!(err.to_string().contains("Mission Control's own chat"), "{err}");
+            assert!(
+                err.to_string().contains("Mission Control's own chat"),
+                "{err}"
+            );
         }
     }
 
@@ -3973,12 +4720,15 @@ mod tests {
         assert_eq!(r.status, "waiting");
 
         let res = UpdateMissionTask
-            .execute(&ctx, json!({
-                "task_id": "t-mc",
-                "title": "Updated title",
-                "plan": "Step 1: Code\nStep 2: Review",
-                "context_note": "Added instructions for reviewer"
-            }))
+            .execute(
+                &ctx,
+                json!({
+                    "task_id": "t-mc",
+                    "title": "Updated title",
+                    "plan": "Step 1: Code\nStep 2: Review",
+                    "context_note": "Added instructions for reviewer"
+                }),
+            )
             .await
             .unwrap();
         assert_eq!(res.value["status"], "success");
@@ -3987,8 +4737,20 @@ mod tests {
         assert_eq!(updated.title, "Updated title");
         assert_eq!(updated.plan, "Step 1: Code\nStep 2: Review");
 
-        db.add_task_agent_full("t-mc", "snippet", "implementer", None, "", "active", &now_rfc3339()).unwrap();
-        db.update_task_in("t-mc", &now_rfc3339(), |t| t.status = TaskStatus::InProgress).unwrap();
+        db.add_task_agent_full(
+            "t-mc",
+            "snippet",
+            "implementer",
+            None,
+            "",
+            "active",
+            &now_rfc3339(),
+        )
+        .unwrap();
+        db.update_task_in("t-mc", &now_rfc3339(), |t| {
+            t.status = TaskStatus::InProgress
+        })
+        .unwrap();
         db.create_conversation(
             &crate::conversations::SessionRow {
                 id: "s-mc".into(),
@@ -4011,7 +4773,8 @@ mod tests {
             },
             &[],
             "[]",
-        ).unwrap();
+        )
+        .unwrap();
         let res = TransferMissionTaskLease
             .execute(&ctx, json!({"task_id": "t-mc", "to_agent_id": "reviewer"}))
             .await
@@ -4025,12 +4788,14 @@ mod tests {
         assert_eq!(r.status, "active");
 
         // Now reviewer reports task completion
-        db.set_session_role("s-mc", "specialized", Some("reviewer")).unwrap();
+        db.set_session_role("s-mc", "specialized", Some("reviewer"))
+            .unwrap();
 
         db.update_task_in("t-mc", "2026-01-01T00:00:00Z", |t| {
             t.status = TaskStatus::InProgress;
             t.reporting_session = Some("s-mc".into());
-        }).unwrap();
+        })
+        .unwrap();
 
         let ctx_worker = ToolContext::new(dir.path())
             .unwrap()
@@ -4039,13 +4804,16 @@ mod tests {
             .with_store_path(dir.path().join("snippet.db"));
 
         let report_res = ReportMissionTask
-            .execute(&ctx_worker, json!({
-                "task_id": "t-mc",
-                "status": "done",
-                "scope": "the review",
-                "done": "all of it",
-                "how": "Review approved cleanly"
-            }))
+            .execute(
+                &ctx_worker,
+                json!({
+                    "task_id": "t-mc",
+                    "status": "done",
+                    "scope": "the review",
+                    "done": "all of it",
+                    "how": "Review approved cleanly"
+                }),
+            )
             .await
             .unwrap();
         assert_eq!(report_res.value["status"], "success");
@@ -4057,13 +4825,13 @@ mod tests {
 
         // Credited to the agent holding the lease, not the first one on the roster.
         let reviewer_board = db
-            .read_board(
-                "reviewer",
-                &crate::coordination::BoardQuery::default(),
-                10,
-            )
+            .read_board("reviewer", &crate::coordination::BoardQuery::default(), 10)
             .unwrap();
-        assert!(reviewer_board.iter().any(|e| e.summary.contains("finished")));
+        assert!(
+            reviewer_board
+                .iter()
+                .any(|e| e.summary.contains("finished"))
+        );
 
         // Verify thread event was emitted
         let events = db.events_for_thread(&task.thread_id, 0, 10).unwrap();
@@ -4075,30 +4843,57 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Store::open(dir.path().join("snippet.db")).unwrap();
         db.create_agent(&worker("snippet")).unwrap();
-        let mk = |id: &str| Task::dispatched_to(
-            id.into(), "s-w".into(), id.into(), "do it".into(), vec![], HandoffMode::Resume,
-            "agent", crate::mission_control::SESSION_ID, "2026-01-01T00:00:00Z".into(),
-        );
+        let mk = |id: &str| {
+            Task::dispatched_to(
+                id.into(),
+                "s-w".into(),
+                id.into(),
+                "do it".into(),
+                vec![],
+                HandoffMode::Resume,
+                "agent",
+                crate::mission_control::SESSION_ID,
+                "2026-01-01T00:00:00Z".into(),
+            )
+        };
         db.create_task(&mk("t-old")).unwrap();
         db.create_task(&mk("t-new")).unwrap();
         let mut waiter = mk("t-wait");
         waiter.status = TaskStatus::Blocked;
         db.create_task(&waiter).unwrap();
         db.link_tasks(&crate::coordination::TaskLink {
-            from_task_id: "t-old".into(), to_task_id: "t-wait".into(),
-            kind: crate::coordination::TaskLinkKind::Blocks, created_at: "2026-01-01T00:00:00Z".into(),
-        }).unwrap();
-        db.add_task_agent_full("t-old", "snippet", "implementer", None, "", "offered", "2026-01-01T00:00:00Z").unwrap();
+            from_task_id: "t-old".into(),
+            to_task_id: "t-wait".into(),
+            kind: crate::coordination::TaskLinkKind::Blocks,
+            created_at: "2026-01-01T00:00:00Z".into(),
+        })
+        .unwrap();
+        db.add_task_agent_full(
+            "t-old",
+            "snippet",
+            "implementer",
+            None,
+            "",
+            "offered",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
         db.update_task_in("t-old", "2026-01-01T00:00:01Z", |t| {
             t.status = TaskStatus::InProgress;
             t.reporting_session = Some("s-w".into());
-        }).unwrap();
+        })
+        .unwrap();
         let ctx = ToolContext::mission_control(dir.path())
             .unwrap()
             .with_durable_session_id("mc")
             .with_store_path(dir.path().join("snippet.db"));
 
-        assert!(CancelMissionTask.execute(&ctx, json!({"task_id": "t-old"})).await.is_err());
+        assert!(
+            CancelMissionTask
+                .execute(&ctx, json!({"task_id": "t-old"}))
+                .await
+                .is_err()
+        );
         let res = CancelMissionTask
             .execute(&ctx, json!({"task_id": "t-old", "reason": "user changed plan", "superseded_by": "t-new"}))
             .await
@@ -4112,13 +4907,20 @@ mod tests {
         assert_eq!(old.superseded_by.as_deref(), Some("t-new"));
         assert_eq!(db.list_task_agents("t-old").unwrap()[0].status, "withdrawn");
 
-        let pending = db.list_pending_direct_deliveries(10, "2026-12-01T00:00:00Z").unwrap();
+        let pending = db
+            .list_pending_direct_deliveries(10, "2026-12-01T00:00:00Z")
+            .unwrap();
         let notice = pending
             .iter()
             .find(|m| m.recipient_kind == "session" && m.recipient_id == "s-w")
             .expect("worker notice queued");
         assert_eq!(notice.event.payload["notice"], "task_cancelled");
-        assert!(notice.event.payload["body"].as_str().unwrap().contains("[task_cancelled]"));
+        assert!(
+            notice.event.payload["body"]
+                .as_str()
+                .unwrap()
+                .contains("[task_cancelled]")
+        );
     }
 
     #[test]
@@ -4128,38 +4930,96 @@ mod tests {
         db.create_agent(&worker("snippet")).unwrap();
         db.create_agent(&worker("designer")).unwrap();
         let queued = Task::dispatched_to(
-            "t-q".into(), "s-old".into(), "Polish".into(), "polish it".into(), vec![], HandoffMode::Resume,
-            "agent", crate::mission_control::SESSION_ID, "2026-01-01T00:00:00Z".into(),
+            "t-q".into(),
+            "s-old".into(),
+            "Polish".into(),
+            "polish it".into(),
+            vec![],
+            HandoffMode::Resume,
+            "agent",
+            crate::mission_control::SESSION_ID,
+            "2026-01-01T00:00:00Z".into(),
         );
         db.create_task(&queued).unwrap();
-        db.add_task_agent_full("t-q", "designer", "implementer", None, "", "offered", "2026-01-01T00:00:00Z").unwrap();
-        db.update_task_in("t-q", "2026-01-01T00:00:00Z", |t| t.notify_once("offered", "2026-01-01T00:00:00Z")).unwrap();
+        db.add_task_agent_full(
+            "t-q",
+            "designer",
+            "implementer",
+            None,
+            "",
+            "offered",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        db.update_task_in("t-q", "2026-01-01T00:00:00Z", |t| {
+            t.notify_once("offered", "2026-01-01T00:00:00Z")
+        })
+        .unwrap();
 
-        let bound = bind_direct_delivery(&db, Some("t-q"), "s-new", "snippet", None, "polish it now", "2026-01-01T00:00:01Z").unwrap();
+        let bound = bind_direct_delivery(
+            &db,
+            Some("t-q"),
+            "s-new",
+            "snippet",
+            None,
+            "polish it now",
+            "2026-01-01T00:00:01Z",
+        )
+        .unwrap();
         assert_eq!(bound.status, TaskStatus::InProgress);
         assert_eq!(bound.session_id, "s-new");
         assert_eq!(bound.reporting_session.as_deref(), Some("s-new"));
         assert!(bound.notifications.iter().all(|n| n.kind != "offered"));
         let roster = db.list_task_agents("t-q").unwrap();
-        assert_eq!(roster.len(), 1, "the offered specialist takes it, not the default agent");
+        assert_eq!(
+            roster.len(),
+            1,
+            "the offered specialist takes it, not the default agent"
+        );
         assert_eq!(roster[0].status, "active");
         assert_eq!(roster[0].work_session_id.as_deref(), Some("s-new"));
 
-        let filed = bind_direct_delivery(&db, None, "s-new", "snippet", None, "Fix the header\nmore detail", "2026-01-01T00:00:02Z").unwrap();
+        let filed = bind_direct_delivery(
+            &db,
+            None,
+            "s-new",
+            "snippet",
+            None,
+            "Fix the header\nmore detail",
+            "2026-01-01T00:00:02Z",
+        )
+        .unwrap();
         assert_eq!(filed.title, "Fix the header");
         assert_eq!(filed.reporting_session.as_deref(), Some("s-new"));
         assert_eq!(db.list_task_agents(&filed.id).unwrap()[0].status, "active");
-        assert!(direct_brief_envelope(&filed, "Fix the header", "/w", "").contains(&format!("report_mission_task (task_id {})", filed.id)));
+        assert!(
+            direct_brief_envelope(&filed, "Fix the header", "/w", "")
+                .contains(&format!("report_mission_task (task_id {})", filed.id))
+        );
 
         let mut blocked = queued.clone();
         blocked.id = "t-b".into();
         blocked.thread_id = Task::thread_for("t-b");
         db.create_task(&blocked).unwrap();
         db.link_tasks(&crate::coordination::TaskLink {
-            from_task_id: filed.id.clone(), to_task_id: "t-b".into(),
-            kind: crate::coordination::TaskLinkKind::Blocks, created_at: "2026-01-01T00:00:00Z".into(),
-        }).unwrap();
-        assert!(bind_direct_delivery(&db, Some("t-b"), "s-new", "snippet", None, "go", "2026-01-01T00:00:03Z").is_err());
+            from_task_id: filed.id.clone(),
+            to_task_id: "t-b".into(),
+            kind: crate::coordination::TaskLinkKind::Blocks,
+            created_at: "2026-01-01T00:00:00Z".into(),
+        })
+        .unwrap();
+        assert!(
+            bind_direct_delivery(
+                &db,
+                Some("t-b"),
+                "s-new",
+                "snippet",
+                None,
+                "go",
+                "2026-01-01T00:00:03Z"
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -4170,14 +5030,37 @@ mod tests {
         let long = "x".repeat(4000);
         for i in 0..20 {
             let mut t = Task::dispatched_to(
-                format!("00000000-0000-0000-0000-{i:012}"), "research-beb1adba29b2f946/conversations/275420ba-17b3-427c-8a47-bda2be9b6933".into(),
-                format!("Task {i}: {}", "a fairly long descriptive title ".repeat(4)), long.clone(), vec![], HandoffMode::Fresh,
-                "agent", crate::mission_control::SESSION_ID, now_rfc3339(),
+                format!("00000000-0000-0000-0000-{i:012}"),
+                "research-beb1adba29b2f946/conversations/275420ba-17b3-427c-8a47-bda2be9b6933"
+                    .into(),
+                format!("Task {i}: {}", "a fairly long descriptive title ".repeat(4)),
+                long.clone(),
+                vec![],
+                HandoffMode::Fresh,
+                "agent",
+                crate::mission_control::SESSION_ID,
+                now_rfc3339(),
             );
             t.notify_once("blocked", &long);
             db.create_task(&t).unwrap();
-            db.set_task_work_plan(&t.id, &[crate::coordination::WorkStep { step: "step ".repeat(40), status: "in_progress".into() }]).unwrap();
-            db.add_task_agent_full(&t.id, "snippet", "implementer", None, "", "offered", &now_rfc3339()).unwrap();
+            db.set_task_work_plan(
+                &t.id,
+                &[crate::coordination::WorkStep {
+                    step: "step ".repeat(40),
+                    status: "in_progress".into(),
+                }],
+            )
+            .unwrap();
+            db.add_task_agent_full(
+                &t.id,
+                "snippet",
+                "implementer",
+                None,
+                "",
+                "offered",
+                &now_rfc3339(),
+            )
+            .unwrap();
         }
         let ctx = ToolContext::mission_control(dir.path())
             .unwrap()
@@ -4193,10 +5076,19 @@ mod tests {
         assert!(rows[0]["step"].as_str().unwrap().starts_with("step"));
 
         let one = ListMissionTasks
-            .execute(&ctx, json!({"task_id": "00000000-0000-0000-0000-000000000003"}))
+            .execute(
+                &ctx,
+                json!({"task_id": "00000000-0000-0000-0000-000000000003"}),
+            )
             .await
             .unwrap();
-        assert_eq!(one.value["data"]["task"]["description"].as_str().unwrap().len(), 4000);
+        assert_eq!(
+            one.value["data"]["task"]["description"]
+                .as_str()
+                .unwrap()
+                .len(),
+            4000
+        );
         assert_eq!(one.value["data"]["task"]["reason"], "offered");
     }
 }
@@ -4211,7 +5103,15 @@ mod surface_tests {
         for kept in ["session_state", "recordings", "recording_policy"] {
             assert!(names.iter().any(|n| n == kept), "{kept}");
         }
-        for gone in ["settle_session", "unsettle_session", "keep_session_awake", "list_recordings", "delete_recording", "expect_recording", "set_recording_rule"] {
+        for gone in [
+            "settle_session",
+            "unsettle_session",
+            "keep_session_awake",
+            "list_recordings",
+            "delete_recording",
+            "expect_recording",
+            "set_recording_rule",
+        ] {
             assert!(!names.iter().any(|n| n == gone), "{gone}");
         }
     }

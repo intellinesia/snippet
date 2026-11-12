@@ -180,15 +180,24 @@ pub struct SnippetConfig {
     pub memory_reflect: bool,
     #[serde(default = "default_keep_task_profile")]
     pub keep_task_profile: bool,
-    #[serde(default = "default_lane_timeout_mins", skip_serializing_if = "is_default_lane_timeout")]
+    #[serde(
+        default = "default_lane_timeout_mins",
+        skip_serializing_if = "is_default_lane_timeout"
+    )]
     pub lane_timeout_mins: u32,
-    #[serde(default, skip_serializing_if = "crate::routing::RoutingConfig::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::routing::RoutingConfig::is_empty"
+    )]
     pub routing: crate::routing::RoutingConfig,
     #[serde(default, skip_serializing_if = "VoiceConfig::is_default")]
     pub voice: VoiceConfig,
     #[serde(default, skip_serializing_if = "AmbientConfig::is_default")]
     pub ambient: AmbientConfig,
-    #[serde(default, skip_serializing_if = "crate::recording_policy::RecordingPolicy::is_default")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::recording_policy::RecordingPolicy::is_default"
+    )]
     pub recording: crate::recording_policy::RecordingPolicy,
     /// Saved provider profiles, keyed by name. Multiple can be configured; one is
     /// active (`active_setup`). Declared after the scalar keys so the emitted TOML
@@ -317,15 +326,30 @@ pub struct AmbientConfig {
     pub wake_phrases: Vec<String>,
     #[serde(default = "default_tts_voice")]
     pub tts_voice: String,
-    #[serde(default = "default_tts_speed", skip_serializing_if = "is_default_tts_speed")]
+    #[serde(
+        default = "default_tts_speed",
+        skip_serializing_if = "is_default_tts_speed"
+    )]
     pub tts_speed: u32,
-    #[serde(default = "default_tts_provider", skip_serializing_if = "is_default_tts_provider")]
+    #[serde(
+        default = "default_tts_provider",
+        skip_serializing_if = "is_default_tts_provider"
+    )]
     pub tts_provider: String,
-    #[serde(default = "default_rime_model", skip_serializing_if = "is_default_rime_model")]
+    #[serde(
+        default = "default_rime_model",
+        skip_serializing_if = "is_default_rime_model"
+    )]
     pub rime_model: String,
-    #[serde(default = "default_rime_voice", skip_serializing_if = "is_default_rime_voice")]
+    #[serde(
+        default = "default_rime_voice",
+        skip_serializing_if = "is_default_rime_voice"
+    )]
     pub rime_voice: String,
-    #[serde(default = "default_deepgram_host", skip_serializing_if = "is_default_deepgram_host")]
+    #[serde(
+        default = "default_deepgram_host",
+        skip_serializing_if = "is_default_deepgram_host"
+    )]
     pub deepgram_host: String,
     #[serde(default = "default_stt", skip_serializing_if = "is_default_stt")]
     pub stt: String,
@@ -430,26 +454,41 @@ impl AmbientConfig {
             self.watcher = "classifier".into();
         }
         if !AMBIENT_WATCHERS.contains(&self.watcher.as_str()) {
-            return Err(format!("voice classifier setting must be one of: {}", AMBIENT_WATCHERS.join(", ")));
+            return Err(format!(
+                "voice classifier setting must be one of: {}",
+                AMBIENT_WATCHERS.join(", ")
+            ));
         }
         self.stt = self.stt.trim().to_ascii_lowercase();
         if !AMBIENT_STT.contains(&self.stt.as_str()) {
-            return Err(format!("speech recognition must be one of: {}", AMBIENT_STT.join(", ")));
+            return Err(format!(
+                "speech recognition must be one of: {}",
+                AMBIENT_STT.join(", ")
+            ));
         }
         self.conversation_timeout_secs = self.conversation_timeout_secs.clamp(20, 600);
         self.tts_speed = self.tts_speed.clamp(80, 150);
         self.tts_provider = self.tts_provider.trim().to_ascii_lowercase();
         if !TTS_PROVIDERS.contains(&self.tts_provider.as_str()) {
-            return Err(format!("voice provider must be one of: {}", TTS_PROVIDERS.join(", ")));
+            return Err(format!(
+                "voice provider must be one of: {}",
+                TTS_PROVIDERS.join(", ")
+            ));
         }
         self.rime_model = self.rime_model.trim().to_ascii_lowercase();
         if !RIME_MODELS.contains(&self.rime_model.as_str()) {
-            return Err(format!("Rime model must be one of: {}", RIME_MODELS.join(", ")));
+            return Err(format!(
+                "Rime model must be one of: {}",
+                RIME_MODELS.join(", ")
+            ));
         }
         self.rime_voice = self.rime_voice.trim().to_ascii_lowercase();
         if self.rime_voice.is_empty()
             || self.rime_voice.len() > 40
-            || !self.rime_voice.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            || !self
+                .rime_voice
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
             return Err("Rime voice must be a short name such as cove or lyra".into());
         }
@@ -712,7 +751,6 @@ impl SnippetConfig {
             }
         }
     }
-
 }
 
 impl InferenceProfileConfig {
@@ -731,8 +769,11 @@ impl InferenceProfileConfig {
             self.model.clone()
         };
         let mut resolved = self.clone();
-        resolved.reasoning_effort =
-            crate::reasoning::effective(&self.provider, &self.model, self.reasoning_effort.as_deref());
+        resolved.reasoning_effort = crate::reasoning::effective(
+            &self.provider,
+            &self.model,
+            self.reasoning_effort.as_deref(),
+        );
         Box::new(
             crate::usage_ledger::MeteredModel::new(
                 resolved.build_adapter(session_id.clone()),
@@ -746,7 +787,9 @@ impl InferenceProfileConfig {
 
     fn build_adapter(&self, session_id: Option<String>) -> Box<dyn AgentModel> {
         match self.provider.as_str() {
-            "claude-code" | "antigravity" | "devin" => Box::new(crate::harness::CliAgentModel::new(self.clone())),
+            "claude-code" | "antigravity" | "devin" => {
+                Box::new(crate::harness::CliAgentModel::new(self.clone()))
+            }
             "openai" => {
                 let mut config: OpenAiCompatibleConfig = self.clone().into();
                 if config.base_url == "https://api.openai.com/v1"
@@ -936,7 +979,10 @@ pub fn provider_supported(provider: &str) -> bool {
 /// snapshot. So this exists to let the Usage screen distinguish "cannot report"
 /// from "hasn't reported yet" instead of one generic empty state for both.
 pub fn provider_reports_rate_limits(provider: &str) -> bool {
-    matches!(provider, "chatgpt" | "claude-code" | "antigravity" | "devin")
+    matches!(
+        provider,
+        "chatgpt" | "claude-code" | "antigravity" | "devin"
+    )
 }
 
 fn default_provider() -> String {

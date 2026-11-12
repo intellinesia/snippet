@@ -242,7 +242,15 @@ pub fn tree_snapshot(workspace: &Path) -> Result<String, String> {
 pub fn numstat(workspace: &Path, from: &str, to: &str) -> Option<Vec<(String, u64, u64)>> {
     let out = git(
         workspace,
-        &["-c", "core.quotepath=off", "diff", "--numstat", "--no-renames", from, to],
+        &[
+            "-c",
+            "core.quotepath=off",
+            "diff",
+            "--numstat",
+            "--no-renames",
+            from,
+            to,
+        ],
     )
     .ok()?;
     Some(parse_numstat(&out))
@@ -256,7 +264,13 @@ pub fn parse_numstat(text: &str) -> Vec<(String, u64, u64)> {
             let add = parts.next()?;
             let del = parts.next()?;
             let path = parts.next()?.trim();
-            (!path.is_empty()).then(|| (path.to_string(), add.parse().unwrap_or(0), del.parse().unwrap_or(0)))
+            (!path.is_empty()).then(|| {
+                (
+                    path.to_string(),
+                    add.parse().unwrap_or(0),
+                    del.parse().unwrap_or(0),
+                )
+            })
         })
         .collect()
 }
@@ -352,7 +366,10 @@ mod numstat_tests {
         let end = tree_snapshot(dir.path()).unwrap();
         let mut got = numstat(dir.path(), &start, &end).unwrap();
         got.sort();
-        assert_eq!(got, vec![("a.txt".to_string(), 2, 0), ("new.txt".to_string(), 1, 0)]);
+        assert_eq!(
+            got,
+            vec![("a.txt".to_string(), 2, 0), ("new.txt".to_string(), 1, 0)]
+        );
         assert!(numstat(dir.path(), &end, &end).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(shadow_dir(dir.path()));
     }
@@ -367,21 +384,39 @@ mod numstat_tests {
         let nested = dir.path().join("fresh-repo");
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(nested.join("x.txt"), "x\n").unwrap();
-        assert!(Command::new("git").arg("init").arg("-q").current_dir(&nested).status().unwrap().success());
-        let first = snapshot_diagnostic(dir.path(), "first").expect("snapshot survives an unborn nested repo");
+        assert!(
+            Command::new("git")
+                .arg("init")
+                .arg("-q")
+                .current_dir(&nested)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let first = snapshot_diagnostic(dir.path(), "first")
+            .expect("snapshot survives an unborn nested repo");
         std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").unwrap();
         let second = snapshot_diagnostic(dir.path(), "second").unwrap();
         let got = numstat(dir.path(), &first, &second).unwrap();
         assert_eq!(got, vec![("a.txt".to_string(), 1, 0)]);
-        assert_eq!(unborn_repos("error: 'llm-rust/' does not have a commit checked out"), vec!["llm-rust"]);
+        assert_eq!(
+            unborn_repos("error: 'llm-rust/' does not have a commit checked out"),
+            vec!["llm-rust"]
+        );
         let _ = std::fs::remove_dir_all(shadow_dir(dir.path()));
     }
 
     #[test]
     fn summary_totals_cover_every_file() {
-        let (top, total, add, del) =
-            summarize_numstat(vec![("a".into(), 1, 1), ("b".into(), 5, 0), ("c".into(), 0, 3)], 2).unwrap();
-        assert_eq!(top.iter().map(|e| e.0.as_str()).collect::<Vec<_>>(), ["b", "c"]);
+        let (top, total, add, del) = summarize_numstat(
+            vec![("a".into(), 1, 1), ("b".into(), 5, 0), ("c".into(), 0, 3)],
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            top.iter().map(|e| e.0.as_str()).collect::<Vec<_>>(),
+            ["b", "c"]
+        );
         assert_eq!((total, add, del), (3, 6, 4));
         assert!(summarize_numstat(vec![], 2).is_none());
     }

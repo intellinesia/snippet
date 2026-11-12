@@ -136,7 +136,9 @@ const ENTRY_COLUMNS: &str = "id, agent_id, kind, session_id, workspace, summary,
 
 // Stored rather than resolved on read: session worktrees are deleted when a session settles.
 fn project_of(workspace: &str) -> String {
-    crate::memory::repository_root(std::path::Path::new(workspace)).display().to_string()
+    crate::memory::repository_root(std::path::Path::new(workspace))
+        .display()
+        .to_string()
 }
 
 fn entry_from_row(row: &rusqlite::Row<'_>) -> Result<BoardEntry, rusqlite::Error> {
@@ -164,7 +166,10 @@ impl Store {
         kind: BoardEntryKind,
         entry: &NewBoardEntry<'_>,
     ) -> Result<i64, StoreError> {
-        let folder = entry.workspace.filter(|w| !w.trim().is_empty()).map(project_of);
+        let folder = entry
+            .workspace
+            .filter(|w| !w.trim().is_empty())
+            .map(project_of);
         let id = self.with_connection(|conn| {
             conn.execute(
                 "INSERT INTO agent_board
@@ -273,7 +278,10 @@ impl Store {
             self.fill_board_folders()?;
         }
         let contains = query.contains.map(|text| {
-            let escaped = text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            let escaped = text
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
             format!("%{escaped}%")
         });
         self.with_connection(|conn| {
@@ -292,7 +300,13 @@ impl Store {
                  LIMIT ?5"
             ))?;
             let rows = stmt.query_map(
-                params![agent_id, query.kind.map(|k| k.as_str()), contains, query.before_id, limit],
+                params![
+                    agent_id,
+                    query.kind.map(|k| k.as_str()),
+                    contains,
+                    query.before_id,
+                    limit
+                ],
                 |row| {
                     Ok(BoardGroup {
                         latest: entry_from_row(row)?,
@@ -352,7 +366,12 @@ impl Store {
     }
 
     /// One task's running log across everyone who worked on it, newest first.
-    pub fn task_log(&self, task_id: &str, before_id: Option<i64>, limit: u32) -> Result<Vec<BoardEntry>, StoreError> {
+    pub fn task_log(
+        &self,
+        task_id: &str,
+        before_id: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<BoardEntry>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(&format!(
                 "SELECT {ENTRY_COLUMNS} FROM agent_board
@@ -442,12 +461,8 @@ mod tests {
     fn recall_is_newest_first() {
         let db = Store::open_in_memory().unwrap();
         for (i, text) in ["oldest", "middle", "newest"].iter().enumerate() {
-            db.record_board_entry(
-                "a",
-                BoardEntryKind::Noted,
-                &entry(text, &format!("t{i}")),
-            )
-            .unwrap();
+            db.record_board_entry("a", BoardEntryKind::Noted, &entry(text, &format!("t{i}")))
+                .unwrap();
         }
         let rows = db.read_board("a", &BoardQuery::default(), 50).unwrap();
         assert_eq!(
@@ -505,8 +520,12 @@ mod tests {
             &entry("refactored the file picker", "t1"),
         )
         .unwrap();
-        db.record_board_entry("a", BoardEntryKind::Noted, &entry("tuned the retry logic", "t2"))
-            .unwrap();
+        db.record_board_entry(
+            "a",
+            BoardEntryKind::Noted,
+            &entry("tuned the retry logic", "t2"),
+        )
+        .unwrap();
 
         let hits = db
             .read_board(

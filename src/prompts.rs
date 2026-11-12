@@ -47,11 +47,7 @@ impl PromptContext {
     /// Detect the capability/environment snapshot for `workspace`. Memory
     /// enablement is supplied by the caller (it owns that fact); skills and
     /// vault are probed here.
-    pub fn detect(
-        workspace: &std::path::Path,
-        memory: bool,
-        memory_writable: bool,
-    ) -> Self {
+    pub fn detect(workspace: &std::path::Path, memory: bool, memory_writable: bool) -> Self {
         Self {
             worktree: crate::session::workspace_is_worktree(workspace),
             memory,
@@ -75,7 +71,11 @@ impl PromptContext {
         if self.vault {
             layers.push(VAULT_LAYER.trim());
         }
-        layers.push(if self.images { VISION_LAYER.trim() } else { NO_VISION_LAYER.trim() });
+        layers.push(if self.images {
+            VISION_LAYER.trim()
+        } else {
+            NO_VISION_LAYER.trim()
+        });
         if self.memory {
             layers.push(MEMORY_GUIDANCE_LAYER.trim());
         }
@@ -122,7 +122,12 @@ pub fn coordination_prompt(_context: &PromptContext) -> String {
     // No vault layer: it is about commands this session has no
     // shell to run. COORDINATION_LAYER is last so its statements about what
     // this session can and cannot do are the final word.
-    [CONVERSATION_AGENT_LAYER.trim(), ECOSYSTEM_LAYER.trim(), COORDINATION_LAYER.trim()].join("\n\n")
+    [
+        CONVERSATION_AGENT_LAYER.trim(),
+        ECOSYSTEM_LAYER.trim(),
+        COORDINATION_LAYER.trim(),
+    ]
+    .join("\n\n")
 }
 
 pub fn mission_control_system_prompt() -> String {
@@ -133,7 +138,11 @@ pub fn mission_control_system_prompt() -> String {
     if brief.trim().is_empty() {
         MISSION_CONTROL_LAYER.to_string()
     } else {
-        format!("{}\n\n## Your brief (as of this session's start)\n\n{}", MISSION_CONTROL_LAYER.trim_end(), brief.trim())
+        format!(
+            "{}\n\n## Your brief (as of this session's start)\n\n{}",
+            MISSION_CONTROL_LAYER.trim_end(),
+            brief.trim()
+        )
     }
 }
 
@@ -213,6 +222,9 @@ mod self_improvement_tests {
         assert!(section.contains("harness_map"));
         assert!(!section.contains("\n- ") && !section.contains("\n* "));
         let sentences = section.split('.').filter(|s| !s.trim().is_empty()).count();
-        assert!(sentences <= 4, "expected at most 4 sentences, got {sentences}: {section}");
+        assert!(
+            sentences <= 4,
+            "expected at most 4 sentences, got {sentences}: {section}"
+        );
     }
 }

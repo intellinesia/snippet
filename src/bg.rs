@@ -60,7 +60,10 @@ pub fn record(
     let entry = BgEntry {
         id: id.to_string(),
         command: command.to_string(),
-        label: label.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+        label: label
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
         pid,
         started_at: chrono::Utc::now().to_rfc3339(),
         log: log_path(workspace, id).display().to_string(),
@@ -285,9 +288,10 @@ pub fn kill_by_id(workspace: &Path, id: &str) -> std::io::Result<bool> {
 pub fn tail_log(workspace: &Path, id: &str, max_lines: usize) -> std::io::Result<(String, bool)> {
     let (out, truncated) = tail_file(&log_path(workspace, id), max_lines)?;
     match tail_file(&err_path(workspace, id), max_lines) {
-        Ok((err, err_truncated)) if !err.trim().is_empty() => {
-            Ok((format!("{out}\n--- stderr ---\n{err}"), truncated || err_truncated))
-        }
+        Ok((err, err_truncated)) if !err.trim().is_empty() => Ok((
+            format!("{out}\n--- stderr ---\n{err}"),
+            truncated || err_truncated,
+        )),
         _ => Ok((out, truncated)),
     }
 }
@@ -407,7 +411,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let ws = temp.path();
         let id = "srv9999";
-        record(ws, id, "cargo run --bin auth", Some("Start Auth Server"), 77777).unwrap();
+        record(
+            ws,
+            id,
+            "cargo run --bin auth",
+            Some("Start Auth Server"),
+            77777,
+        )
+        .unwrap();
         // Record is dead (pid 77777 doesn't exist), so render_live reports it exited
         std::fs::write(status_path(ws, id), "0").unwrap();
 

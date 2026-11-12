@@ -20,7 +20,11 @@ pub struct Handover {
 
 impl Handover {
     pub fn state(&self) -> &'static str {
-        if self.acked_at.is_some() { "acked" } else { "pending" }
+        if self.acked_at.is_some() {
+            "acked"
+        } else {
+            "pending"
+        }
     }
 
     /// The handover as the task API shows it.
@@ -32,7 +36,8 @@ impl Handover {
     }
 }
 
-const COLUMNS: &str = "id, task_id, from_agent, to_agent, done, next, risks, files_json, created_at, acked_at";
+const COLUMNS: &str =
+    "id, task_id, from_agent, to_agent, done, next, risks, files_json, created_at, acked_at";
 
 fn from_row(r: &rusqlite::Row<'_>) -> Result<Handover, rusqlite::Error> {
     Ok(Handover {
@@ -60,10 +65,19 @@ impl Store {
         }
         self.with_connection(|c| {
             c.execute(
-                &format!("INSERT INTO handoffs ({COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL)"),
+                &format!(
+                    "INSERT INTO handoffs ({COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL)"
+                ),
                 params![
-                    h.id, h.task_id, h.from_agent, h.to_agent, h.done, h.next, h.risks,
-                    serde_json::to_string(&h.files).unwrap_or_else(|_| "[]".into()), h.created_at
+                    h.id,
+                    h.task_id,
+                    h.from_agent,
+                    h.to_agent,
+                    h.done,
+                    h.next,
+                    h.risks,
+                    serde_json::to_string(&h.files).unwrap_or_else(|_| "[]".into()),
+                    h.created_at
                 ],
             )?;
             Ok(())
@@ -94,15 +108,30 @@ impl Store {
     }
 
     /// The incoming agent acknowledges: the lease moves and a new token is minted.
-    pub fn ack_handoff(&self, task_id: &str, by_agent: &str, now: &str) -> Result<Handover, StoreError> {
+    pub fn ack_handoff(
+        &self,
+        task_id: &str,
+        by_agent: &str,
+        now: &str,
+    ) -> Result<Handover, StoreError> {
         let Some(mut h) = self.pending_handoff(task_id)? else {
-            return Err(StoreError::InvalidInput("no handover is waiting on this task".into()));
+            return Err(StoreError::InvalidInput(
+                "no handover is waiting on this task".into(),
+            ));
         };
         if h.to_agent != by_agent {
-            return Err(StoreError::InvalidInput(format!("the handover is addressed to `{}`", h.to_agent)));
+            return Err(StoreError::InvalidInput(format!(
+                "the handover is addressed to `{}`",
+                h.to_agent
+            )));
         }
         self.transfer_task_session_lease(task_id, &h.from_agent, &h.to_agent)?;
-        self.with_connection(|c| c.execute("UPDATE handoffs SET acked_at = ?2 WHERE id = ?1", params![h.id, now]))?;
+        self.with_connection(|c| {
+            c.execute(
+                "UPDATE handoffs SET acked_at = ?2 WHERE id = ?1",
+                params![h.id, now],
+            )
+        })?;
         h.acked_at = Some(now.to_string());
         Ok(h)
     }
@@ -115,32 +144,73 @@ mod tests {
 
     fn handover(task: &str, to: &str) -> Handover {
         Handover {
-            id: format!("h-{task}-{to}"), task_id: task.into(), from_agent: "a".into(), to_agent: to.into(),
-            done: "wrote it".into(), next: "review".into(), risks: "flaky".into(), files: vec!["src/a.rs".into()],
-            created_at: "2026-01-01T00:00:00Z".into(), acked_at: None,
+            id: format!("h-{task}-{to}"),
+            task_id: task.into(),
+            from_agent: "a".into(),
+            to_agent: to.into(),
+            done: "wrote it".into(),
+            next: "review".into(),
+            risks: "flaky".into(),
+            files: vec!["src/a.rs".into()],
+            created_at: "2026-01-01T00:00:00Z".into(),
+            acked_at: None,
         }
     }
 
     #[test]
     fn the_old_holder_keeps_the_lease_until_the_new_one_acks() {
         let db = Store::open_in_memory().unwrap();
-        db.create_task(&Task::filed_by_human("t".into(), "t".into(), "d".into(), "s".into(), 0, "2026-01-01T00:00:00Z".into())).unwrap();
+        db.create_task(&Task::filed_by_human(
+            "t".into(),
+            "t".into(),
+            "d".into(),
+            "s".into(),
+            0,
+            "2026-01-01T00:00:00Z".into(),
+        ))
+        .unwrap();
         for id in ["a", "b"] {
             db.create_agent(&crate::coordination::types::Agent {
-                id: id.into(), display_name: id.into(), handle: id.into(),
+                id: id.into(),
+                display_name: id.into(),
+                handle: id.into(),
                 kind: crate::coordination::types::AgentKind::Worker,
                 status: crate::coordination::types::AgentStatus::Active,
-capabilities: vec![],
+                capabilities: vec![],
             })
             .unwrap();
         }
-        db.add_task_agent_full("t", "a", "implementer", None, "", "active", "2026-01-01T00:00:00Z").unwrap();
-        db.add_task_agent_full("t", "b", "reviewer", None, "", "waiting", "2026-01-01T00:00:00Z").unwrap();
+        db.add_task_agent_full(
+            "t",
+            "a",
+            "implementer",
+            None,
+            "",
+            "active",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        db.add_task_agent_full(
+            "t",
+            "b",
+            "reviewer",
+            None,
+            "",
+            "waiting",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
         db.create_handoff(&handover("t", "b")).unwrap();
-        assert!(db.create_handoff(&handover("t", "b")).is_err(), "one open handover at a time");
+        assert!(
+            db.create_handoff(&handover("t", "b")).is_err(),
+            "one open handover at a time"
+        );
         assert_eq!(db.current_lease("t").unwrap().unwrap().agent_id, "a");
 
-        assert!(db.ack_handoff("t", "a", "2026-01-01T00:12:00Z").is_err(), "only the addressee acks");
+        assert!(
+            db.ack_handoff("t", "a", "2026-01-01T00:12:00Z").is_err(),
+            "only the addressee acks"
+        );
         let acked = db.ack_handoff("t", "b", "2026-01-01T00:12:00Z").unwrap();
         assert_eq!(acked.state(), "acked");
         let lease = db.current_lease("t").unwrap().unwrap();

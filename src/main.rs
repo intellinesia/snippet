@@ -392,13 +392,22 @@ async fn agent_cli(action: AgentAction) -> Result<(), Box<dyn std::error::Error>
                 println!("no agents in the directory");
             }
             for agent in agents {
-                let id = agent.get("id").and_then(serde_json::Value::as_str).unwrap_or("?");
+                let id = agent
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("?");
                 let name = agent
                     .get("display_name")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or(id);
-                let kind = agent.get("kind").and_then(serde_json::Value::as_str).unwrap_or("");
-                let role = agent.get("role").and_then(serde_json::Value::as_str).unwrap_or("");
+                let kind = agent
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let role = agent
+                    .get("role")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
                 let status = agent
                     .get("status")
                     .and_then(serde_json::Value::as_str)

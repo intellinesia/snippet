@@ -202,7 +202,7 @@ pub(super) fn answered_since_last_user(events: &[HarnessEvent]) -> bool {
                 if tool_name == "speak"
                     && result.get("status").and_then(Value::as_str) == Some("success") =>
             {
-                return true
+                return true;
             }
             _ => {}
         }
@@ -253,8 +253,7 @@ pub(super) fn empty_turn_needs_reply(events: &[HarnessEvent], mission_control: b
     if replied_since_last_user(events) {
         return false;
     }
-    !(mission_control
-        && (answered_since_last_user(events) || last_input_allows_silence(events)))
+    !(mission_control && (answered_since_last_user(events) || last_input_allows_silence(events)))
 }
 
 /// Record an assistant turn. Near-duplicate *narration* (text accompanying
@@ -284,7 +283,9 @@ pub(super) fn record_assistant_text(
         });
     }
     if !redundant && !text.trim().is_empty() {
-        state.events.push(HarnessEvent::AssistantText { text, quiet: false });
+        state
+            .events
+            .push(HarnessEvent::AssistantText { text, quiet: false });
     }
 }
 

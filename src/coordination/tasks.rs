@@ -235,11 +235,19 @@ fn minutes_since(stamp: &str, now: chrono::DateTime<chrono::Utc>) -> i64 {
 
 /// How long an in-progress task has gone without progress, once that passes
 /// the threshold (`waiting` lowers it for a worker paused on a question).
-pub fn stalled_minutes(task: &Task, now: chrono::DateTime<chrono::Utc>, waiting: bool) -> Option<i64> {
+pub fn stalled_minutes(
+    task: &Task,
+    now: chrono::DateTime<chrono::Utc>,
+    waiting: bool,
+) -> Option<i64> {
     if task.status != TaskStatus::InProgress {
         return None;
     }
-    let limit = if waiting { WAITING_ESCALATE_MINUTES } else { stall_threshold_minutes(task) };
+    let limit = if waiting {
+        WAITING_ESCALATE_MINUTES
+    } else {
+        stall_threshold_minutes(task)
+    };
     let age = minutes_since(progress_stamp(task), now);
     (age >= limit).then_some(age)
 }
@@ -248,12 +256,19 @@ pub fn stalled_minutes(task: &Task, now: chrono::DateTime<chrono::Utc>, waiting:
 /// the progress stamp, so new progress retires it without clearing anything.
 pub fn stall_marker_for_current_spell(task: &Task) -> Option<&NotificationMarker> {
     let stamp = progress_stamp(task);
-    task.notifications.iter().find(|n| n.kind == "stalled" && n.message.contains(stamp))
+    task.notifications
+        .iter()
+        .find(|n| n.kind == "stalled" && n.message.contains(stamp))
 }
 
 /// Pure, so the rules are testable. `path_owners` are other in-progress tasks
 /// holding this one's paths.
-pub fn board_reason(task: &Task, roster: &[TaskAgent], waiting_on: &[String], path_owners: &[String]) -> Option<String> {
+pub fn board_reason(
+    task: &Task,
+    roster: &[TaskAgent],
+    waiting_on: &[String],
+    path_owners: &[String],
+) -> Option<String> {
     if task.status.is_terminal() {
         return None;
     }
@@ -274,7 +289,13 @@ pub fn board_reason(task: &Task, roster: &[TaskAgent], waiting_on: &[String], pa
         TaskStatus::Blocked if task.dispatch_failures > 0 => "dispatch_failed",
         TaskStatus::Blocked => "blocked",
         _ if !path_owners.is_empty() => "awaiting_paths",
-        _ if task.notifications.iter().any(|n| n.message.contains("is not taking work")) => "awaiting_agent",
+        _ if task
+            .notifications
+            .iter()
+            .any(|n| n.message.contains("is not taking work")) =>
+        {
+            "awaiting_agent"
+        }
         _ if current.iter().any(|m| m.status == "active") => "queued",
         _ if noted("offer_stuck") || noted("offer_unclaimed") => "offer_stuck",
         _ if current.iter().any(|m| m.status == "offered") => "offered",
@@ -288,7 +309,11 @@ pub fn current_step(task: &Task) -> Option<String> {
     task.work_plan
         .iter()
         .find(|s| s.status == "in_progress")
-        .or_else(|| task.work_plan.iter().find(|s| s.status != "done" && s.status != "completed"))
+        .or_else(|| {
+            task.work_plan
+                .iter()
+                .find(|s| s.status != "done" && s.status != "completed")
+        })
         .map(|s| s.step.clone())
 }
 
@@ -302,7 +327,11 @@ impl Task {
     /// Queue a notice for Mission Control unless the same one is already on the
     /// task, so a condition that persists across ticks is reported once.
     pub fn notify_once(&mut self, kind: &str, message: &str) {
-        if self.notifications.iter().any(|n| n.kind == kind && n.message == message) {
+        if self
+            .notifications
+            .iter()
+            .any(|n| n.kind == kind && n.message == message)
+        {
             return;
         }
         self.notifications.push(NotificationMarker {
@@ -469,21 +498,13 @@ fn link_text(kind: &TaskLinkKind) -> String {
 
 fn parse_status(value: String, column: usize) -> Result<TaskStatus, rusqlite::Error> {
     serde_json::from_str(&format!("\"{value}\"")).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(
-            column,
-            rusqlite::types::Type::Text,
-            Box::new(e),
-        )
+        rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, Box::new(e))
     })
 }
 
 fn parse_link_kind(value: String, column: usize) -> Result<TaskLinkKind, rusqlite::Error> {
     serde_json::from_str(&format!("\"{value}\"")).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(
-            column,
-            rusqlite::types::Type::Text,
-            Box::new(e),
-        )
+        rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, Box::new(e))
     })
 }
 
@@ -779,11 +800,7 @@ impl Store {
     /// (the loop and a REST path) race through it and only one wins. Returning
     /// the task unchanged when it is already claimed lets the loser exit without
     /// delivering a second envelope.
-    pub fn claim_task_for_dispatch(
-        &self,
-        id: &str,
-        now: &str,
-    ) -> Result<Task, StoreError> {
+    pub fn claim_task_for_dispatch(&self, id: &str, now: &str) -> Result<Task, StoreError> {
         self.update_task_in(id, now, |task| {
             if task.status != TaskStatus::Todo {
                 return;
@@ -870,7 +887,10 @@ impl Store {
             task.reporting_session = Some(task.session_id.clone());
         })?;
         match refused {
-            Some(status) => Err(StoreError::NotRevisable { id: id.to_string(), status: status.to_string() }),
+            Some(status) => Err(StoreError::NotRevisable {
+                id: id.to_string(),
+                status: status.to_string(),
+            }),
             None => Ok(task),
         }
     }
@@ -910,7 +930,10 @@ impl Store {
             task.completed_at = None;
             task.result = None;
             task.notifications.retain(|n| {
-                !matches!(n.kind.as_str(), "stalled" | "offer_stuck" | "offer_unclaimed") && !n.target.starts_with("offer:")
+                !matches!(
+                    n.kind.as_str(),
+                    "stalled" | "offer_stuck" | "offer_unclaimed"
+                ) && !n.target.starts_with("offer:")
             });
         })?;
         if let Some(status) = refused {
@@ -988,7 +1011,11 @@ impl Store {
     /// progress, not a change on the board, and must not start a round. The
     /// first plan for a task also leaves a notification for Mission Control.
     /// Returns whether this was the first plan.
-    pub fn set_task_work_plan(&self, task_id: &str, steps: &[WorkStep]) -> Result<bool, StoreError> {
+    pub fn set_task_work_plan(
+        &self,
+        task_id: &str,
+        steps: &[WorkStep],
+    ) -> Result<bool, StoreError> {
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let current: Option<(String, String)> = tx
@@ -1038,10 +1065,7 @@ impl Store {
     ///
     /// Tasks parked by the dispatch retry ceiling are excluded: they are blocked
     /// with no dependencies, and re-queuing them would spin the loop forever.
-    pub fn unblock_ready_tasks(
-        &self,
-        now: &str,
-    ) -> Result<Vec<String>, StoreError> {
+    pub fn unblock_ready_tasks(&self, now: &str) -> Result<Vec<String>, StoreError> {
         let blocked = self.list_tasks(None, Some(&TaskStatus::Blocked))?;
         let mut unblocked = Vec::new();
         for task in blocked {
@@ -1135,7 +1159,14 @@ impl Store {
                  LIMIT ?6"
             ))?;
             let rows = stmt.query_map(
-                params![after_priority, after_created, after_id, status, filter.agent_id, limit],
+                params![
+                    after_priority,
+                    after_created,
+                    after_id,
+                    status,
+                    filter.agent_id,
+                    limit
+                ],
                 task_from_row,
             )?;
             rows.collect()
@@ -1162,8 +1193,10 @@ impl Store {
                  ORDER BY updated_at DESC, id DESC
                  LIMIT ?3 OFFSET ?4"
             ))?;
-            let rows =
-                stmt.query_map(params![status, filter.agent_id, limit, offset], task_from_row)?;
+            let rows = stmt.query_map(
+                params![status, filter.agent_id, limit, offset],
+                task_from_row,
+            )?;
             rows.collect()
         })
     }
@@ -1231,7 +1264,9 @@ impl Store {
     /// task blocking itself) is refused: every task on the cycle would wait on
     /// another forever.
     pub fn link_tasks(&self, link: &TaskLink) -> Result<(), StoreError> {
-        if link.kind == TaskLinkKind::Blocks && self.blocks_path(&link.to_task_id, &link.from_task_id)? {
+        if link.kind == TaskLinkKind::Blocks
+            && self.blocks_path(&link.to_task_id, &link.from_task_id)?
+        {
             return Err(StoreError::DependencyCycle {
                 from: link.from_task_id.clone(),
                 to: link.to_task_id.clone(),
@@ -1337,32 +1372,48 @@ impl Store {
     /// step its worker is on.
     pub fn board_sub_status(&self, task: &Task) -> TaskSubStatus {
         if task.status.is_terminal() {
-            return TaskSubStatus { current_step: current_step(task), ..Default::default() };
+            return TaskSubStatus {
+                current_step: current_step(task),
+                ..Default::default()
+            };
         }
         let waiting_on: Vec<String> = self
             .blockers_of(&task.id)
             .unwrap_or_default()
             .into_iter()
-            .filter(|id| !self.get_task(id).ok().flatten().is_some_and(|t| t.status.releases_dependants()))
+            .filter(|id| {
+                !self
+                    .get_task(id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|t| t.status.releases_dependants())
+            })
             .collect();
-        let path_owners: Vec<String> = if task.status == TaskStatus::Todo && !task.owned_paths.is_empty() {
-            self.task_path_conflicts(&task.id, &task.owned_paths)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(owner, _)| owner)
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let path_owners: Vec<String> =
+            if task.status == TaskStatus::Todo && !task.owned_paths.is_empty() {
+                self.task_path_conflicts(&task.id, &task.owned_paths)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(owner, _)| owner)
+                    .collect()
+            } else {
+                Vec::new()
+            };
         let roster = self.list_task_agents(&task.id).unwrap_or_default();
         TaskSubStatus {
             status_reason: board_reason(task, &roster, &waiting_on, &path_owners),
             waiting_on,
             current_step: current_step(task),
-            stalled_minutes: stalled_minutes(task, chrono::Utc::now(), false)
-                .or_else(|| stall_marker_for_current_spell(task).map(|_| minutes_since(progress_stamp(task), chrono::Utc::now()))),
+            stalled_minutes: stalled_minutes(task, chrono::Utc::now(), false).or_else(|| {
+                stall_marker_for_current_spell(task)
+                    .map(|_| minutes_since(progress_stamp(task), chrono::Utc::now()))
+            }),
             lease: self.lease_of(&task.id).ok().flatten(),
-            handover: self.latest_handoff(&task.id).ok().flatten().map(|h| h.view()),
+            handover: self
+                .latest_handoff(&task.id)
+                .ok()
+                .flatten()
+                .map(|h| h.view()),
         }
     }
 
@@ -1504,7 +1555,8 @@ impl Store {
                  WHERE session_id = ?1 AND status IN ('todo', 'in_progress', 'blocked', 'in_review')
                  ORDER BY updated_at DESC, id DESC LIMIT 1"
             ))?;
-            stmt.query_row(params![session_id], task_from_row).optional()
+            stmt.query_row(params![session_id], task_from_row)
+                .optional()
         })
     }
 
@@ -1560,9 +1612,7 @@ impl Store {
                  WHERE thread_id = ?1
                  ORDER BY actor_id",
             )?;
-            let rows = stmt.query_map(params![thread_id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?;
+            let rows = stmt.query_map(params![thread_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
             rows.collect()
         })
     }
@@ -1634,10 +1684,18 @@ impl Store {
 
     /// Add paths a task has written to its owned set, so path conflicts see them.
     /// Leaves `updated_at` alone.
-    pub fn add_owned_paths(&self, task_id: &str, paths: &[std::path::PathBuf]) -> Result<(), StoreError> {
+    pub fn add_owned_paths(
+        &self,
+        task_id: &str,
+        paths: &[std::path::PathBuf],
+    ) -> Result<(), StoreError> {
         self.with_connection(|conn| {
             let raw: Option<String> = conn
-                .query_row("SELECT owned_paths_json FROM tasks WHERE id = ?1 AND status = 'in_progress'", params![task_id], |r| r.get(0))
+                .query_row(
+                    "SELECT owned_paths_json FROM tasks WHERE id = ?1 AND status = 'in_progress'",
+                    params![task_id],
+                    |r| r.get(0),
+                )
                 .optional()?;
             let Some(raw) = raw else { return Ok(()) };
             let mut owned: Vec<std::path::PathBuf> = serde_json::from_str(&raw).unwrap_or_default();
@@ -1650,7 +1708,10 @@ impl Store {
             if owned.len() != before {
                 conn.execute(
                     "UPDATE tasks SET owned_paths_json = ?2 WHERE id = ?1",
-                    params![task_id, serde_json::to_string(&owned).unwrap_or_else(|_| "[]".into())],
+                    params![
+                        task_id,
+                        serde_json::to_string(&owned).unwrap_or_else(|_| "[]".into())
+                    ],
                 )?;
             }
             Ok(())
@@ -1891,7 +1952,10 @@ mod tests {
             .unwrap();
         db.remove_task_agent("t1", "a1", "2026-01-01T00:01:00Z")
             .unwrap();
-        assert_eq!(db.list_task_agents("t1").unwrap()[0].removed_at.is_some(), true);
+        assert_eq!(
+            db.list_task_agents("t1").unwrap()[0].removed_at.is_some(),
+            true
+        );
 
         db.add_task_agent("t1", "a1", "reviewer", "2026-01-01T00:02:00Z")
             .unwrap();
@@ -1934,19 +1998,50 @@ mod tests {
         let db = db();
         db.create_task(&task("t1")).unwrap();
         assert_eq!(db.get_task("t1").unwrap().unwrap().last_progress_at, None);
-        db.claim_task_for_dispatch("t1", "2026-01-01T00:00:01Z").unwrap();
+        db.claim_task_for_dispatch("t1", "2026-01-01T00:00:01Z")
+            .unwrap();
         let get = || db.get_task("t1").unwrap().unwrap();
-        assert_eq!(get().last_progress_at.as_deref(), Some("2026-01-01T00:00:01Z"), "claiming starts the clock");
+        assert_eq!(
+            get().last_progress_at.as_deref(),
+            Some("2026-01-01T00:00:01Z"),
+            "claiming starts the clock"
+        );
 
-        db.set_task_work_plan("t1", &[WorkStep { step: "a".into(), status: "pending".into() }]).unwrap();
+        db.set_task_work_plan(
+            "t1",
+            &[WorkStep {
+                step: "a".into(),
+                status: "pending".into(),
+            }],
+        )
+        .unwrap();
         let after_plan = get().last_progress_at.unwrap();
         assert_ne!(after_plan, "2026-01-01T00:00:01Z");
-        db.touch_session_progress("s1", "2030-01-01T00:00:00Z").unwrap();
-        assert_eq!(get().last_progress_at.as_deref(), Some("2030-01-01T00:00:00Z"));
-        db.set_task_work_plan("t1", &[WorkStep { step: "a".into(), status: "pending".into() }]).unwrap();
-        assert_eq!(get().last_progress_at.as_deref(), Some("2030-01-01T00:00:00Z"), "an unchanged plan is not progress");
-        db.touch_session_progress("other", "2031-01-01T00:00:00Z").unwrap();
-        assert_eq!(get().last_progress_at.as_deref(), Some("2030-01-01T00:00:00Z"));
+        db.touch_session_progress("s1", "2030-01-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(
+            get().last_progress_at.as_deref(),
+            Some("2030-01-01T00:00:00Z")
+        );
+        db.set_task_work_plan(
+            "t1",
+            &[WorkStep {
+                step: "a".into(),
+                status: "pending".into(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            get().last_progress_at.as_deref(),
+            Some("2030-01-01T00:00:00Z"),
+            "an unchanged plan is not progress"
+        );
+        db.touch_session_progress("other", "2031-01-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(
+            get().last_progress_at.as_deref(),
+            Some("2030-01-01T00:00:00Z")
+        );
         assert_eq!(get().updated_at, "2026-01-01T00:00:01Z");
 
         let post = |actor: &str, key: &str| crate::coordination::types::CoordinationEvent {
@@ -1965,9 +2060,16 @@ mod tests {
             created_at: "2032-01-01T00:00:00Z".into(),
         };
         db.append_event(&post("human", "k1")).unwrap();
-        assert_eq!(get().last_progress_at.as_deref(), Some("2030-01-01T00:00:00Z"), "a human post is not worker progress");
+        assert_eq!(
+            get().last_progress_at.as_deref(),
+            Some("2030-01-01T00:00:00Z"),
+            "a human post is not worker progress"
+        );
         db.append_event(&post("agent", "k2")).unwrap();
-        assert_eq!(get().last_progress_at.as_deref(), Some("2032-01-01T00:00:00Z"));
+        assert_eq!(
+            get().last_progress_at.as_deref(),
+            Some("2032-01-01T00:00:00Z")
+        );
     }
 
     #[test]
@@ -1975,28 +2077,51 @@ mod tests {
         let db = db();
         db.create_task(&task("t1")).unwrap();
         db.add_owned_paths("t1", &["/w/a.rs".into()]).unwrap();
-        assert!(db.get_task("t1").unwrap().unwrap().owned_paths.is_empty(), "only in-progress work owns paths");
-        db.claim_task_for_dispatch("t1", "2026-01-01T00:00:01Z").unwrap();
-        db.add_owned_paths("t1", &["/w/src".into(), "/w/src/b.rs".into(), "/w/a.rs".into()]).unwrap();
+        assert!(
+            db.get_task("t1").unwrap().unwrap().owned_paths.is_empty(),
+            "only in-progress work owns paths"
+        );
+        db.claim_task_for_dispatch("t1", "2026-01-01T00:00:01Z")
+            .unwrap();
+        db.add_owned_paths(
+            "t1",
+            &["/w/src".into(), "/w/src/b.rs".into(), "/w/a.rs".into()],
+        )
+        .unwrap();
         let owned = db.get_task("t1").unwrap().unwrap().owned_paths;
-        assert_eq!(owned, vec![std::path::PathBuf::from("/w/src"), "/w/a.rs".into()]);
+        assert_eq!(
+            owned,
+            vec![std::path::PathBuf::from("/w/src"), "/w/a.rs".into()]
+        );
         let mut other = task("t2");
         other.session_id = "s2".into();
         db.create_task(&other).unwrap();
-        assert_eq!(db.task_path_conflicts("t2", &["/w/src/c.rs".into()]).unwrap().len(), 1);
+        assert_eq!(
+            db.task_path_conflicts("t2", &["/w/src/c.rs".into()])
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
     fn retry_takes_back_stuck_work_but_not_finished_work() {
         let db = db();
         db.create_task(&task("t1")).unwrap();
-        db.claim_task_for_dispatch("t1", "2026-01-01T00:00:01Z").unwrap();
+        db.claim_task_for_dispatch("t1", "2026-01-01T00:00:01Z")
+            .unwrap();
 
         let retried = db.retry_task("t1", "2026-01-01T00:00:04Z").unwrap();
         assert_eq!(retried.status, TaskStatus::Todo);
         assert!(retried.notifications.iter().all(|n| n.kind != "stalled"));
 
-        db.move_task("t1", TaskStatus::Cancelled, "dropped", "2026-01-01T00:00:05Z").unwrap();
+        db.move_task(
+            "t1",
+            TaskStatus::Cancelled,
+            "dropped",
+            "2026-01-01T00:00:05Z",
+        )
+        .unwrap();
         assert!(matches!(
             db.retry_task("t1", "2026-01-01T00:00:06Z"),
             Err(StoreError::NotRetryable { .. })
@@ -2037,11 +2162,29 @@ mod tests {
         }
         blocks(&db, "cancelled", "after-cancel");
         blocks(&db, "failed", "after-fail");
-        db.move_task("cancelled", TaskStatus::Cancelled, "dropped", "2026-01-01T00:00:01Z").unwrap();
-        db.move_task("failed", TaskStatus::Failed, "broke", "2026-01-01T00:00:01Z").unwrap();
+        db.move_task(
+            "cancelled",
+            TaskStatus::Cancelled,
+            "dropped",
+            "2026-01-01T00:00:01Z",
+        )
+        .unwrap();
+        db.move_task(
+            "failed",
+            TaskStatus::Failed,
+            "broke",
+            "2026-01-01T00:00:01Z",
+        )
+        .unwrap();
 
-        assert_eq!(db.unblock_ready_tasks("2026-01-01T00:00:02Z").unwrap(), vec!["after-cancel".to_string()]);
-        assert_eq!(db.get_task("after-fail").unwrap().unwrap().status, TaskStatus::Blocked);
+        assert_eq!(
+            db.unblock_ready_tasks("2026-01-01T00:00:02Z").unwrap(),
+            vec!["after-cancel".to_string()]
+        );
+        assert_eq!(
+            db.get_task("after-fail").unwrap().unwrap().status,
+            TaskStatus::Blocked
+        );
     }
 
     #[test]
@@ -2051,12 +2194,36 @@ mod tests {
         db.create_task(&task("gone")).unwrap();
         db.create_task(&task("kept")).unwrap();
         db.create_task(&task("waiter")).unwrap();
-        db.add_task_agent_full("waiter", "a1", "implementer", None, "", "offered", "2026-01-01T00:00:00Z").unwrap();
+        db.add_task_agent_full(
+            "waiter",
+            "a1",
+            "implementer",
+            None,
+            "",
+            "offered",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
         blocks(&db, "gone", "waiter");
         blocks(&db, "kept", "waiter");
-        db.move_task("gone", TaskStatus::Cancelled, "dropped", "2026-01-01T00:00:01Z").unwrap();
-        db.move_task("waiter", TaskStatus::Failed, "broke", "2026-01-01T00:00:02Z").unwrap();
-        assert_eq!(db.list_task_agents("waiter").unwrap()[0].status, "withdrawn");
+        db.move_task(
+            "gone",
+            TaskStatus::Cancelled,
+            "dropped",
+            "2026-01-01T00:00:01Z",
+        )
+        .unwrap();
+        db.move_task(
+            "waiter",
+            TaskStatus::Failed,
+            "broke",
+            "2026-01-01T00:00:02Z",
+        )
+        .unwrap();
+        assert_eq!(
+            db.list_task_agents("waiter").unwrap()[0].status,
+            "withdrawn"
+        );
 
         db.retry_task("waiter", "2026-01-01T00:00:03Z").unwrap();
         assert_eq!(db.blockers_of("waiter").unwrap(), vec!["kept".to_string()]);
@@ -2065,20 +2232,64 @@ mod tests {
 
     #[test]
     fn finishing_settles_every_member_and_releases_the_lease() {
-        for (status, active, rest) in [(TaskStatus::Done, "done", "done"), (TaskStatus::Cancelled, "withdrawn", "withdrawn")] {
+        for (status, active, rest) in [
+            (TaskStatus::Done, "done", "done"),
+            (TaskStatus::Cancelled, "withdrawn", "withdrawn"),
+        ] {
             let db = db();
             for a in ["a1", "a2", "a3"] {
                 agent(&db, a);
             }
             db.create_task(&task("t")).unwrap();
-            db.add_task_agent_full("t", "a1", "implementer", None, "", "active", "2026-01-01T00:00:00Z").unwrap();
-            db.add_task_agent_full("t", "a2", "reviewer", None, "", "waiting", "2026-01-01T00:00:00Z").unwrap();
-            db.add_task_agent_full("t", "a3", "reviewer", None, "", "pending", "2026-01-01T00:00:00Z").unwrap();
-            assert!(db.sync_task_lease("t", "2026-01-01T00:00:01Z").unwrap().is_some());
-            db.move_task("t", status, "x", "2026-01-01T00:00:02Z").unwrap();
+            db.add_task_agent_full(
+                "t",
+                "a1",
+                "implementer",
+                None,
+                "",
+                "active",
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+            db.add_task_agent_full(
+                "t",
+                "a2",
+                "reviewer",
+                None,
+                "",
+                "waiting",
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+            db.add_task_agent_full(
+                "t",
+                "a3",
+                "reviewer",
+                None,
+                "",
+                "pending",
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+            assert!(
+                db.sync_task_lease("t", "2026-01-01T00:00:01Z")
+                    .unwrap()
+                    .is_some()
+            );
+            db.move_task("t", status, "x", "2026-01-01T00:00:02Z")
+                .unwrap();
             let roster = db.list_task_agents("t").unwrap();
-            assert_eq!(roster.iter().find(|m| m.agent_id == "a1").unwrap().status, active);
-            assert!(roster.iter().filter(|m| m.agent_id != "a1").all(|m| m.status == "withdrawn"), "{rest}");
+            assert_eq!(
+                roster.iter().find(|m| m.agent_id == "a1").unwrap().status,
+                active
+            );
+            assert!(
+                roster
+                    .iter()
+                    .filter(|m| m.agent_id != "a1")
+                    .all(|m| m.status == "withdrawn"),
+                "{rest}"
+            );
             assert!(db.lease_of("t").unwrap().is_none());
         }
     }
@@ -2089,10 +2300,32 @@ mod tests {
         let db = Store::open(std::env::var("HYG_REPLAY_DB").unwrap()).unwrap();
         agent(&db, "hyg-probe");
         db.create_task(&task("hyg-probe-task")).unwrap();
-        db.add_task_agent_full("hyg-probe-task", "hyg-probe", "implementer", None, "", "active", "2026-01-01T00:00:00Z").unwrap();
-        assert!(db.sync_task_lease("hyg-probe-task", "2026-01-01T00:00:01Z").unwrap().is_some());
-        db.move_task("hyg-probe-task", TaskStatus::Done, "x", "2026-01-01T00:00:02Z").unwrap();
-        assert_eq!(db.list_task_agents("hyg-probe-task").unwrap()[0].status, "done");
+        db.add_task_agent_full(
+            "hyg-probe-task",
+            "hyg-probe",
+            "implementer",
+            None,
+            "",
+            "active",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        assert!(
+            db.sync_task_lease("hyg-probe-task", "2026-01-01T00:00:01Z")
+                .unwrap()
+                .is_some()
+        );
+        db.move_task(
+            "hyg-probe-task",
+            TaskStatus::Done,
+            "x",
+            "2026-01-01T00:00:02Z",
+        )
+        .unwrap();
+        assert_eq!(
+            db.list_task_agents("hyg-probe-task").unwrap()[0].status,
+            "done"
+        );
         assert!(db.lease_of("hyg-probe-task").unwrap().is_none());
     }
 
@@ -2102,11 +2335,37 @@ mod tests {
         agent(&db, "a1");
         agent(&db, "a2");
         db.create_task(&task("t1")).unwrap();
-        db.add_task_agent_full("t1", "a1", "implementer", None, "", "offered", "2026-01-01T00:00:00Z").unwrap();
-        db.add_task_agent_full("t1", "a2", "reviewer", None, "", "waiting", "2026-01-01T00:00:00Z").unwrap();
-        db.move_task("t1", TaskStatus::Done, "shipped", "2026-01-01T00:00:01Z").unwrap();
+        db.add_task_agent_full(
+            "t1",
+            "a1",
+            "implementer",
+            None,
+            "",
+            "offered",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        db.add_task_agent_full(
+            "t1",
+            "a2",
+            "reviewer",
+            None,
+            "",
+            "waiting",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        db.move_task("t1", TaskStatus::Done, "shipped", "2026-01-01T00:00:01Z")
+            .unwrap();
         let roster = db.list_task_agents("t1").unwrap();
-        let status = |id: &str| roster.iter().find(|m| m.agent_id == id).unwrap().status.clone();
+        let status = |id: &str| {
+            roster
+                .iter()
+                .find(|m| m.agent_id == id)
+                .unwrap()
+                .status
+                .clone()
+        };
         assert_eq!(status("a1"), "done");
         assert_eq!(status("a2"), "withdrawn");
     }
@@ -2117,9 +2376,26 @@ mod tests {
         let mut t = task("old");
         t.superseded_by = Some("seed".into());
         db.create_task(&t).unwrap();
-        assert_eq!(db.get_task("old").unwrap().unwrap().superseded_by.as_deref(), Some("seed"));
-        db.update_task_in("old", "2026-01-01T00:00:01Z", |t| t.superseded_by = Some("new".into())).unwrap();
-        assert_eq!(db.get_task("old").unwrap().unwrap().superseded_by.as_deref(), Some("new"));
+        assert_eq!(
+            db.get_task("old")
+                .unwrap()
+                .unwrap()
+                .superseded_by
+                .as_deref(),
+            Some("seed")
+        );
+        db.update_task_in("old", "2026-01-01T00:00:01Z", |t| {
+            t.superseded_by = Some("new".into())
+        })
+        .unwrap();
+        assert_eq!(
+            db.get_task("old")
+                .unwrap()
+                .unwrap()
+                .superseded_by
+                .as_deref(),
+            Some("new")
+        );
     }
 
     #[test]
@@ -2135,30 +2411,61 @@ mod tests {
             removed_at: None,
         };
         let mut t = task("t");
-        assert_eq!(board_reason(&t, &[member("offered")], &[], &[]).as_deref(), Some("offered"));
-        assert_eq!(board_reason(&t, &[member("active")], &[], &["owner".into()]).as_deref(), Some("awaiting_paths"));
-        assert_eq!(board_reason(&t, &[], &["dep".into()], &[]).as_deref(), Some("awaiting_dependency(dep)"));
+        assert_eq!(
+            board_reason(&t, &[member("offered")], &[], &[]).as_deref(),
+            Some("offered")
+        );
+        assert_eq!(
+            board_reason(&t, &[member("active")], &[], &["owner".into()]).as_deref(),
+            Some("awaiting_paths")
+        );
+        assert_eq!(
+            board_reason(&t, &[], &["dep".into()], &[]).as_deref(),
+            Some("awaiting_dependency(dep)")
+        );
         t.notify_once("offer_unclaimed", "no answer");
-        assert_eq!(board_reason(&t, &[member("offered")], &[], &[]).as_deref(), Some("offer_stuck"));
+        assert_eq!(
+            board_reason(&t, &[member("offered")], &[], &[]).as_deref(),
+            Some("offer_stuck")
+        );
         t.notifications.clear();
-        t.notify_once("blocked", "agent a1 is not taking work; activate it or move the lease");
-        assert_eq!(board_reason(&t, &[member("active")], &[], &[]).as_deref(), Some("awaiting_agent"));
+        t.notify_once(
+            "blocked",
+            "agent a1 is not taking work; activate it or move the lease",
+        );
+        assert_eq!(
+            board_reason(&t, &[member("active")], &[], &[]).as_deref(),
+            Some("awaiting_agent")
+        );
         t.status = TaskStatus::InProgress;
         t.last_progress_at = Some(chrono::Utc::now().to_rfc3339());
-        assert_eq!(board_reason(&t, &[member("active")], &[], &[]).as_deref(), Some("working"));
+        assert_eq!(
+            board_reason(&t, &[member("active")], &[], &[]).as_deref(),
+            Some("working")
+        );
         t.last_progress_at = Some(chrono::Utc::now().to_rfc3339());
         assert_eq!(board_reason(&t, &[], &[], &[]).as_deref(), Some("working"));
-        t.last_progress_at = Some((chrono::Utc::now() - chrono::Duration::minutes(25)).to_rfc3339());
+        t.last_progress_at =
+            Some((chrono::Utc::now() - chrono::Duration::minutes(25)).to_rfc3339());
         assert_eq!(board_reason(&t, &[], &[], &[]).as_deref(), Some("stalled"));
         t.status = TaskStatus::Blocked;
         t.dispatch_failures = 3;
-        assert_eq!(board_reason(&t, &[], &[], &[]).as_deref(), Some("dispatch_failed"));
+        assert_eq!(
+            board_reason(&t, &[], &[], &[]).as_deref(),
+            Some("dispatch_failed")
+        );
         t.status = TaskStatus::Done;
         assert_eq!(board_reason(&t, &[], &[], &[]), None);
 
         t.work_plan = vec![
-            WorkStep { step: "read".into(), status: "done".into() },
-            WorkStep { step: "build".into(), status: "pending".into() },
+            WorkStep {
+                step: "read".into(),
+                status: "done".into(),
+            },
+            WorkStep {
+                step: "build".into(),
+                status: "pending".into(),
+            },
         ];
         assert_eq!(current_step(&t).as_deref(), Some("build"));
     }
@@ -2234,8 +2541,14 @@ mod tests {
         };
         blocks("a", "b").unwrap();
         blocks("b", "c").unwrap();
-        assert!(matches!(blocks("c", "a"), Err(StoreError::DependencyCycle { .. })));
-        assert!(matches!(blocks("a", "a"), Err(StoreError::DependencyCycle { .. })));
+        assert!(matches!(
+            blocks("c", "a"),
+            Err(StoreError::DependencyCycle { .. })
+        ));
+        assert!(matches!(
+            blocks("a", "a"),
+            Err(StoreError::DependencyCycle { .. })
+        ));
     }
 
     #[test]
@@ -2251,9 +2564,13 @@ mod tests {
             capabilities: vec![],
         })
         .unwrap();
-        db.add_task_agent("t1", "a1", "implementer", "2026-01-01T00:00:00Z").unwrap();
-        db.remove_task_agent("t1", "a1", "2026-01-01T00:01:00Z").unwrap();
-        let members = db.list_thread_participants(&Task::thread_for("t1")).unwrap();
+        db.add_task_agent("t1", "a1", "implementer", "2026-01-01T00:00:00Z")
+            .unwrap();
+        db.remove_task_agent("t1", "a1", "2026-01-01T00:01:00Z")
+            .unwrap();
+        let members = db
+            .list_thread_participants(&Task::thread_for("t1"))
+            .unwrap();
         assert!(members.iter().all(|(id, _)| id != "a1"));
     }
 
@@ -2265,11 +2582,15 @@ mod tests {
         owner.owned_paths = vec!["/w/src".into()];
         db.create_task(&owner).unwrap();
 
-        let inside = db.task_path_conflicts("other", &["/w/src/a.rs".into()]).unwrap();
+        let inside = db
+            .task_path_conflicts("other", &["/w/src/a.rs".into()])
+            .unwrap();
         assert_eq!(inside.len(), 1);
         let around = db.task_path_conflicts("other", &["/w".into()]).unwrap();
         assert_eq!(around.len(), 1);
-        let sibling = db.task_path_conflicts("other", &["/w/srcx".into()]).unwrap();
+        let sibling = db
+            .task_path_conflicts("other", &["/w/srcx".into()])
+            .unwrap();
         assert!(sibling.is_empty(), "a shared name prefix is not nesting");
     }
 
@@ -2348,8 +2669,16 @@ mod tests {
         .unwrap();
 
         let participants = db.list_thread_participants(&t.thread_id).unwrap();
-        assert!(participants.iter().any(|(id, kind)| id == "a1" && kind == "agent"));
-        assert!(participants.iter().any(|(id, kind)| id == "a2" && kind == "agent"));
+        assert!(
+            participants
+                .iter()
+                .any(|(id, kind)| id == "a1" && kind == "agent")
+        );
+        assert!(
+            participants
+                .iter()
+                .any(|(id, kind)| id == "a2" && kind == "agent")
+        );
 
         let found_task = db.get_task_by_thread(&t.thread_id).unwrap().unwrap();
         assert_eq!(found_task.id, "t1");
