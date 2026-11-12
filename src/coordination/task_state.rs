@@ -112,6 +112,10 @@ pub struct TaskState {
     pub review_started_at: String,
     #[serde(default)]
     pub review_escalated: bool,
+    /// review_due envelopes already sent while Mission Control or the user
+    /// held the verdict; persisted so a restart does not re-nag.
+    #[serde(default)]
+    pub review_nudges: u32,
     /// Why verification was waived (set by Mission Control on the user's word).
     #[serde(default)]
     pub waiver: String,

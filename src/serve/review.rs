@@ -3,7 +3,7 @@
 use crate::coordination::{Task, TaskState, TaskStatus, VerifyMode};
 use crate::harness::{LaneSpawn, LoopInput};
 
-use super::Daemon;
+use super::{Daemon, Shared};
 
 /// With nobody seated to review, the agent doing the work checks it from a fresh
 /// read-only lane, which hasn't seen its reasoning.
@@ -61,9 +61,45 @@ pub(super) fn review_brief(task: &Task, state: &TaskState, workspace: &std::path
     )
 }
 
-/// Start a reviewer for every task waiting on one, and hand tasks whose
-/// reviewer went quiet to Mission Control.
-pub(super) async fn drive_reviews(d: &Daemon) {
+/// review_due envelopes Mission Control gets before the task goes to the user.
+const MAX_REVIEW_NUDGES: u32 = 3;
+
+/// What the review clock owes a Mission Control or user verdict: one
+/// `[review_due]` envelope per further timeout (at most three), then the user.
+/// `None` while the current window is still open or the task was escalated.
+pub(super) fn review_due_action(
+    state: &crate::coordination::TaskState,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<ReviewDue> {
+    if state.review_escalated {
+        return None;
+    }
+    // A report held before the clock existed has no start; treat it as due now.
+    let elapsed = chrono::DateTime::parse_from_rfc3339(&state.review_started_at)
+        .map(|at| (now - at.with_timezone(&chrono::Utc)).num_seconds())
+        .unwrap_or(crate::review_tools::REVIEW_TIMEOUT_SECS + 1);
+    let period = crate::review_tools::REVIEW_TIMEOUT_SECS;
+    let due = elapsed > (state.review_nudges as i64 + 1) * period;
+    if !due {
+        return None;
+    }
+    Some(if state.review_nudges < MAX_REVIEW_NUDGES {
+        ReviewDue::Nudge
+    } else {
+        ReviewDue::Escalate
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ReviewDue {
+    Nudge,
+    Escalate,
+}
+
+/// Start a reviewer for every task waiting on one, drive the Mission Control
+/// and user verdicts on their clock, and hand tasks whose reviewer went quiet
+/// to Mission Control.
+pub(super) async fn drive_reviews(d: &Shared) {
     let Ok(tasks) = d.store.list_tasks(None, Some(&TaskStatus::InReview)) else {
         return;
     };
@@ -73,14 +109,21 @@ pub(super) async fn drive_reviews(d: &Daemon) {
         let Ok(Some(state)) = d.store.task_state(&task.id) else {
             continue;
         };
-        if state.review_escalated
-            || crate::review_tools::review_route(&d.store, &task, &state) != VerifyMode::Reviewer
-        {
-            continue;
-        }
-        if state.review_started_at.is_empty() {
-            start_review(d, &task, &state, &stamp).await;
-            continue;
+        match crate::review_tools::review_route(&d.store, &task, &state) {
+            VerifyMode::Reviewer => {
+                if state.review_escalated {
+                    continue;
+                }
+                if state.review_started_at.is_empty() {
+                    start_review(d.as_ref(), &task, &state, &stamp).await;
+                    continue;
+                }
+            }
+            VerifyMode::MissionControl | VerifyMode::User => {
+                review_due(d, &task, &state, now).await;
+                continue;
+            }
+            VerifyMode::SelfCheck => continue,
         }
         let elapsed_secs = chrono::DateTime::parse_from_rfc3339(&state.review_started_at)
             .map(|at| (now - at.with_timezone(&chrono::Utc)).num_seconds())
@@ -100,6 +143,60 @@ pub(super) async fn drive_reviews(d: &Daemon) {
                 &task.id,
                 "the reviewer gave no verdict in time; check the work and submit_review yourself",
                 &stamp,
+            );
+        }
+    }
+}
+
+/// One step of the Mission Control / user review clock: nag Mission Control
+/// with the report, or after the last nudge put the question to the user.
+async fn review_due(
+    d: &Shared,
+    task: &Task,
+    state: &crate::coordination::TaskState,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let Some(action) = review_due_action(state, now) else {
+        return;
+    };
+    let stamp = now.to_rfc3339();
+    let report = state
+        .pending_report
+        .as_ref()
+        .map(|r| r.summary.as_str())
+        .unwrap_or("");
+    let age_minutes = chrono::DateTime::parse_from_rfc3339(&state.review_started_at)
+        .map(|at| (now - at.with_timezone(&chrono::Utc)).num_minutes())
+        .unwrap_or(0);
+    match action {
+        ReviewDue::Nudge => {
+            let nudges = state.review_nudges + 1;
+            let _ = d
+                .store
+                .modify_task_state(&task.id, &stamp, |s| s.review_nudges = nudges);
+            let envelope = format!(
+                "[review_due]\ntask_id: {}\ntitle: {}\nin review for: {age_minutes} minutes\nworker's report:\n{report}\nNo verdict has arrived. Call submit_review with verdict approve, or changes with findings; if neither fits, hand it to the user.\n[/review_due]",
+                task.id, task.title
+            );
+            super::autonomy::deliver_to_mission_control(d, envelope).await;
+        }
+        ReviewDue::Escalate => {
+            let _ = d
+                .store
+                .modify_task_state(&task.id, &stamp, |s| s.review_escalated = true);
+            let body = format!(
+                "\"{}\" has been in review for {age_minutes} minutes with no verdict from Mission Control.\n\nWorker's report:\n{report}\n\nApprove it or send it back?",
+                task.title
+            );
+            crate::coordination::reach::reach(
+                &d.store,
+                crate::mission_control::SESSION_ID,
+                crate::coordination::reach::Kind::Question,
+                &task.title,
+                &body,
+                false,
+                None,
+                Some(&task.id),
             );
         }
     }
@@ -226,5 +323,52 @@ mod tests {
             !brief.contains("+two"),
             "the diff itself stays out of the brief: {brief}"
         );
+    }
+
+    #[test]
+    fn review_due_nudges_once_per_timeout_then_goes_to_the_user() {
+        let now = chrono::Utc::now();
+        let t = crate::review_tools::REVIEW_TIMEOUT_SECS;
+        let mut state = crate::coordination::TaskState::default();
+        state.review_started_at = (now - chrono::Duration::seconds(t + 1)).to_rfc3339();
+        assert_eq!(review_due_action(&state, now), Some(ReviewDue::Nudge));
+        // A restart inside the next window must not re-fire: the nudge count
+        // is what the ledger persisted.
+        state.review_nudges = 1;
+        state.review_started_at = (now - chrono::Duration::seconds(t + t / 2)).to_rfc3339();
+        assert_eq!(review_due_action(&state, now), None);
+        state.review_started_at = (now - chrono::Duration::seconds(2 * t + 1)).to_rfc3339();
+        assert_eq!(review_due_action(&state, now), Some(ReviewDue::Nudge));
+        state.review_nudges = 3;
+        state.review_started_at = (now - chrono::Duration::seconds(4 * t + 1)).to_rfc3339();
+        assert_eq!(review_due_action(&state, now), Some(ReviewDue::Escalate));
+        state.review_escalated = true;
+        assert_eq!(review_due_action(&state, now), None);
+    }
+
+    #[test]
+    fn review_nudges_survive_a_store_round_trip() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let task = Task::filed_by_human(
+            "rd1".into(),
+            "T".into(),
+            "d".into(),
+            "s1".into(),
+            0,
+            "2026-01-01T00:00:00Z".into(),
+        );
+        store.create_task(&task).unwrap();
+        store
+            .modify_task_state("rd1", "t", |s| {
+                s.review_nudges = 2;
+                s.review_started_at =
+                    (chrono::Utc::now() - chrono::Duration::seconds(2 * 60 * 60)).to_rfc3339();
+            })
+            .unwrap();
+        let state = store.task_state("rd1").unwrap().unwrap();
+        assert_eq!(state.review_nudges, 2);
+        let now = chrono::Utc::now();
+        // 2h in with 2 nudges recorded: inside the third window, nothing due.
+        assert_eq!(review_due_action(&state, now), None);
     }
 }
