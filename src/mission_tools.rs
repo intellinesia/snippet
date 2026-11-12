@@ -3781,6 +3781,7 @@ mod tests {
                 kind: "conversation".into(),
                 settled_at: None,
                 keep_awake: false,
+                resume_mode: "ask".into(),
                 last_changes: None,
                 total_changes: None,
             },

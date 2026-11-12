@@ -529,6 +529,11 @@ async fn handle_ws(
                     ) {
                         crate::speech::cancel_all("interrupted");
                     }
+                    if matches!(input, LoopInput::UserMessage(_))
+                        && resume_lean(&session, true)
+                    {
+                        daemon.deliver(&session, LoopInput::ContinueLean).await;
+                    }
                     daemon.deliver(&session, input).await;
                 }
             }

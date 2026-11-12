@@ -83,6 +83,8 @@ pub fn ensure_schema(connection: &rusqlite::Connection) -> Result<(), rusqlite::
              settled_at INTEGER,
              -- 1 opts the session out of AUTOMATIC settling (manual settle still works).
              keep_awake INTEGER NOT NULL DEFAULT 0,
+             -- How the session resumes once its prompt cache lapses: ask|lean|full.
+             resume_mode TEXT NOT NULL DEFAULT 'ask',
              -- JSON {files, added, removed} of the last turn that changed files, or NULL.
              last_changes TEXT,
              -- JSON {files, added, removed} summed over every turn since the session began.
@@ -173,6 +175,8 @@ pub struct SessionRow {
     pub settled_at: Option<i64>,
     /// Opted out of automatic settling.
     pub keep_awake: bool,
+    /// `ask` | `lean` | `full`: how the session resumes after its cache lapses.
+    pub resume_mode: String,
     /// JSON totals of the last turn that changed files.
     pub last_changes: Option<String>,
     /// JSON lifetime totals over all turns that changed files.
@@ -562,6 +566,23 @@ impl Store {
         })
     }
 
+    /// Set how a session resumes after its prompt cache lapses. Returns whether
+    /// it exists; an unknown mode is refused.
+    pub fn set_session_resume_mode(&self, id: &str, mode: &str) -> Result<bool, StoreError> {
+        if !matches!(mode, "ask" | "lean" | "full") {
+            return Err(StoreError::InvalidInput(format!(
+                "resume mode must be ask, lean or full, got {mode:?}"
+            )));
+        }
+        self.with_connection(|conn| {
+            let changed = conn.execute(
+                "UPDATE sessions SET resume_mode = ?2 WHERE id = ?1",
+                params![id, mode],
+            )?;
+            Ok(changed > 0)
+        })
+    }
+
     /// Ids of sessions settled strictly before `cutoff` (unix seconds).
     pub fn sessions_settled_before(&self, cutoff: i64) -> Result<Vec<String>, StoreError> {
         self.with_connection(|conn| {
@@ -680,7 +701,7 @@ impl Store {
 }
 
 const SESSION_COLUMNS: &str = "id, workspace_key, workspace, title, status, created_at, \
-     updated_at, last_active, profile, role, agent_id, kind, settled_at, keep_awake, last_changes, total_changes";
+     updated_at, last_active, profile, role, agent_id, kind, settled_at, keep_awake, resume_mode, last_changes, total_changes";
 
 impl Store {
     /// Save a session's scalar state, creating the row on first write.
@@ -1120,8 +1141,9 @@ fn session_row_from(row: &rusqlite::Row<'_>) -> Result<SessionRow, rusqlite::Err
         kind: row.get(11)?,
         settled_at: row.get(12)?,
         keep_awake: row.get::<_, i64>(13)? != 0,
-        last_changes: row.get(14)?,
-        total_changes: row.get(15)?,
+        resume_mode: row.get(14)?,
+        last_changes: row.get(15)?,
+        total_changes: row.get(16)?,
     })
 }
 
@@ -1179,6 +1201,7 @@ mod tests {
             kind: "conversation".into(),
             settled_at: None,
             keep_awake: false,
+            resume_mode: "ask".into(),
             last_changes: None,
             total_changes: None,
         }

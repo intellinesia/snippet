@@ -136,6 +136,17 @@ pub fn refusal(f: &SettleFacts) -> Option<String> {
     None
 }
 
+/// Whether a user turn should continue lean first, given the session's persisted
+/// resume mode. `ask` keeps the old split: unattended wakes go lean, attended
+/// messages leave the choice to the app.
+pub fn resume_action(mode: &str, lapsed: bool, attended: bool) -> bool {
+    match mode {
+        "lean" => lapsed,
+        "full" => false,
+        _ => lapsed && !attended,
+    }
+}
+
 /// Whether the auto-sweep should try to settle this session now.
 pub fn sweep_eligible(settled: bool, keep_awake: bool, idle: i64, status: &str) -> bool {
     !settled && !keep_awake && idle >= AUTO_SETTLE_AFTER_SECS && status != "running"
@@ -281,6 +292,7 @@ mod tests {
             kind: "conversation".into(),
             settled_at: None,
             keep_awake: false,
+            resume_mode: "ask".into(),
             last_changes: None,
             total_changes: None,
         }
@@ -375,6 +387,56 @@ mod tests {
         assert!(!db.set_session_keep_awake("missing", true).unwrap());
         db.set_session_last_active("legacy", 9).unwrap();
         assert!(db.get_session_row("legacy").unwrap().unwrap().keep_awake, "waking keeps the flag");
+    }
+
+    #[test]
+    fn resume_mode_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fresh.db");
+        let db = Store::open(&path).unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions (id, workspace_key, workspace, status, created_at, updated_at)
+                 VALUES ('s1', 'k', '/w', 'idle', 'a', 'b')",
+                [],
+            )
+            .unwrap();
+        let row = db.get_session_row("s1").unwrap().unwrap();
+        assert_eq!(row.resume_mode, "ask");
+        assert!(db.set_session_resume_mode("s1", "lean").unwrap());
+        assert_eq!(db.get_session_row("s1").unwrap().unwrap().resume_mode, "lean");
+        assert!(db.set_session_resume_mode("s1", "full").unwrap());
+        assert_eq!(db.get_session_row("s1").unwrap().unwrap().resume_mode, "full");
+        assert!(!db.set_session_resume_mode("missing", "lean").unwrap());
+        assert!(db.set_session_resume_mode("s1", "bogus").is_err());
+        assert_eq!(db.get_session_row("s1").unwrap().unwrap().resume_mode, "full");
+    }
+
+    #[test]
+    fn resume_action_table() {
+        for mode in ["ask", "lean", "full", "bogus"] {
+            for lapsed in [false, true] {
+                for attended in [false, true] {
+                    let want = match mode {
+                        "lean" => lapsed,
+                        "full" => false,
+                        _ => lapsed && !attended,
+                    };
+                    assert_eq!(
+                        resume_action(mode, lapsed, attended),
+                        want,
+                        "mode={mode} lapsed={lapsed} attended={attended}"
+                    );
+                }
+            }
+        }
+        assert!(resume_action("lean", true, true));
+        assert!(!resume_action("lean", false, false));
+        assert!(!resume_action("full", true, false));
+        assert!(resume_action("ask", true, false));
+        assert!(!resume_action("ask", true, true));
+        assert!(!resume_action("ask", false, false));
     }
 
     #[test]

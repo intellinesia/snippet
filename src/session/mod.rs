@@ -750,6 +750,8 @@ pub struct SessionInfo {
     pub settled_at: Option<i64>,
     /// Opted out of automatic settling.
     pub keep_awake: bool,
+    /// `ask` | `lean` | `full`: how the session resumes once its cache lapses.
+    pub resume_mode: String,
     /// Uncommitted change size of the workspace; filled for the session list only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changes: Option<crate::session_stats::Changes>,
@@ -1023,6 +1025,7 @@ pub fn all_device_sessions() -> Vec<SessionInfo> {
                 settled: row.settled_at.is_some(),
                 settled_at: row.settled_at,
                 keep_awake: row.keep_awake,
+                resume_mode: row.resume_mode.clone(),
                 git: false,
                 changes: row.last_changes.as_deref().and_then(|j| serde_json::from_str(j).ok()),
                 total_changes: row.total_changes.as_deref().and_then(|j| serde_json::from_str(j).ok()),
@@ -1800,6 +1803,7 @@ pub fn create_blank_session_in(
         settled: false,
         settled_at: None,
         keep_awake: false,
+        resume_mode: "ask".into(),
         git: false,
         changes: None,
         total_changes: None,

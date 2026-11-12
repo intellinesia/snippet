@@ -119,8 +119,20 @@ impl CodingHarness {
     }
 
     /// Archive everything after the system prompt and continue from a handover.
-    /// Returns the handover, or `None` when there was nothing to fold.
+    /// Returns the handover, or `None` when there was nothing to fold — including
+    /// a repeat right after a lean handover, which an old app can still send.
     pub(super) fn continue_lean(&self, state: &mut HarnessState) -> Option<String> {
+        let last_real = state
+            .messages
+            .iter()
+            .rev()
+            .find(|m| !matches!(m, HarnessMessage::System { .. }));
+        if matches!(
+            last_real,
+            Some(HarnessMessage::Summary { kind, .. }) if kind == "lean_handover"
+        ) {
+            return None;
+        }
         let (older, pointers) = self.archive_history(state)?;
         let branch = crate::session_stats::git_branch(&self.context.current_dir());
         let text = handover(&older, state, branch.as_deref(), &pointers);

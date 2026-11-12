@@ -720,9 +720,10 @@ impl Daemon {
         }
     }
 
-    /// A wake with nobody there to choose: once the cache has lapsed, continue lean.
+    /// A wake with nobody there to choose: the session's resume mode decides
+    /// whether a lapsed cache continues lean first.
     pub(crate) async fn deliver_wake(&self, id: &str, input: LoopInput) {
-        if matches!(input, LoopInput::UserMessage(_)) && cache_lapsed(id) {
+        if matches!(input, LoopInput::UserMessage(_)) && resume_lean(id, false) {
             Box::pin(self.deliver(id, LoopInput::ContinueLean)).await;
         }
         Box::pin(self.deliver(id, input)).await;
@@ -1103,6 +1104,7 @@ pub async fn run_serve(
         .route("/session/delete", post(delete_session))
         .route("/session/settle", post(settle_routes::settle_route))
         .route("/session/keep_awake", post(settle_routes::keep_awake_route))
+        .route("/session/resume_mode", post(settle_routes::resume_mode_route))
         .route("/session/cache", get(settle_routes::cache_route))
         .route("/session/unsettle", post(settle_routes::unsettle_route))
         .route("/session/interrupt", post(session_routes::interrupt_session))
@@ -1581,7 +1583,10 @@ async fn get_config(State(d): State<Shared>) -> Response {
 }
 
 
-fn cache_lapsed(id: &str) -> bool {
+/// Whether the next user turn should continue lean first: the session's stored
+/// resume mode over its prompt-cache state. `attended` marks a live client
+/// send, where `ask` leaves the choice to the app.
+fn resume_lean(id: &str, attended: bool) -> bool {
     let Some(store) = crate::session::store_for_sessions() else {
         return false;
     };
@@ -1592,7 +1597,9 @@ fn cache_lapsed(id: &str) -> bool {
         return false;
     };
     let ttl = crate::settle::ttl_for(&crate::settle::profile_cache_ttls(), row.profile.as_deref());
-    context > 0 && crate::settle::idle_secs(chrono::Utc::now().timestamp(), touched) >= ttl
+    let lapsed = context > 0
+        && crate::settle::idle_secs(chrono::Utc::now().timestamp(), touched) >= ttl;
+    crate::settle::resume_action(&row.resume_mode, lapsed, attended)
 }
 
 #[cfg(test)]

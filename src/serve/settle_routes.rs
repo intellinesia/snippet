@@ -265,6 +265,29 @@ pub(crate) async fn keep_awake_route(
 }
 
 #[derive(Deserialize)]
+pub(crate) struct ResumeModeReq {
+    session: String,
+    mode: String,
+}
+
+// POST /session/resume_mode {session, mode}
+pub(crate) async fn resume_mode_route(Json(req): Json<ResumeModeReq>) -> Response {
+    let Some(store) = crate::session::store_for_sessions() else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "no store");
+    };
+    let Some(row) = store.get_session_row(&req.session).ok().flatten() else {
+        return api_error(StatusCode::NOT_FOUND, "no such session");
+    };
+    if let Err(e) = store.set_session_resume_mode(&row.id, &req.mode) {
+        return match e {
+            crate::store::StoreError::InvalidInput(m) => api_error(StatusCode::BAD_REQUEST, m),
+            e => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        };
+    }
+    Json(serde_json::json!({"ok": true, "session": session_json(&row.id)})).into_response()
+}
+
+#[derive(Deserialize)]
 pub(crate) struct CacheQuery {
     id: String,
 }
@@ -288,6 +311,7 @@ pub(crate) async fn cache_route(
         "idle_secs": idle,
         "cache_ttl_secs": ttl,
         "resume_tokens": context,
+        "resume_mode": row.resume_mode,
     }))
     .into_response()
 }
