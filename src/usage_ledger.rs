@@ -321,6 +321,7 @@ pub struct MeteredModel {
     provider: String,
     model: String,
     session_id: String,
+    context: Option<(u64, u8)>,
 }
 
 impl MeteredModel {
@@ -335,7 +336,13 @@ impl MeteredModel {
             provider: provider.into(),
             model: model.into(),
             session_id: session_id.unwrap_or_default(),
+            context: None,
         }
+    }
+
+    pub fn with_context(mut self, window: u64, pct: u8) -> Self {
+        self.context = (window > 0).then_some((window, pct));
+        self
     }
 
     fn record(&self, usage: &TokenUsage) {
@@ -376,6 +383,10 @@ impl AgentModel for MeteredModel {
 
     fn cli_agent_profile(&self) -> Option<crate::config::InferenceProfileConfig> {
         self.inner.cli_agent_profile()
+    }
+
+    fn context_settings(&self) -> Option<(u64, u8)> {
+        self.context.or_else(|| self.inner.context_settings())
     }
 
     fn keep_warm_support(&self) -> Result<(), String> {

@@ -587,6 +587,10 @@ pub trait AgentModel: Send + Sync {
         None
     }
 
+    fn context_settings(&self) -> Option<(u64, u8)> {
+        None
+    }
+
     /// Whether a keep-warm request can hold this model's prompt cache for an
     /// hour; the error says why not.
     fn keep_warm_support(&self) -> Result<(), String> {
@@ -630,6 +634,10 @@ impl<T: ?Sized + AgentModel + Send> AgentModel for Box<T> {
 
     fn cli_agent_profile(&self) -> Option<crate::config::InferenceProfileConfig> {
         (**self).cli_agent_profile()
+    }
+
+    fn context_settings(&self) -> Option<(u64, u8)> {
+        (**self).context_settings()
     }
 
     fn keep_warm_support(&self) -> Result<(), String> {

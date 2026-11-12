@@ -733,12 +733,15 @@ impl InferenceProfileConfig {
         let mut resolved = self.clone();
         resolved.reasoning_effort =
             crate::reasoning::effective(&self.provider, &self.model, self.reasoning_effort.as_deref());
-        Box::new(crate::usage_ledger::MeteredModel::new(
-            resolved.build_adapter(session_id.clone()),
-            self.provider.clone(),
-            model,
-            session_id,
-        ))
+        Box::new(
+            crate::usage_ledger::MeteredModel::new(
+                resolved.build_adapter(session_id.clone()),
+                self.provider.clone(),
+                model,
+                session_id,
+            )
+            .with_context(resolved.context_window, resolved.compact_at_pct),
+        )
     }
 
     fn build_adapter(&self, session_id: Option<String>) -> Box<dyn AgentModel> {
@@ -1016,4 +1019,22 @@ pub fn save_config(config: &SnippetConfig, path: &Path) -> Result<(), String> {
     std::fs::write(path, toml_str).map_err(|e| format!("write {}: {e}", path.display()))?;
     set_private(path);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn built_model_reports_profile_context_settings() {
+        let profile = InferenceProfileConfig {
+            provider: "gemini".to_string(),
+            model: "gemini-4-carbon".to_string(),
+            context_window: 1_048_576,
+            compact_at_pct: 90,
+            ..InferenceProfileConfig::default()
+        };
+        let model = profile.build_model_for_session(Some("session-1".to_string()));
+        assert_eq!(model.context_settings(), Some((1_048_576, 90)));
+    }
 }
