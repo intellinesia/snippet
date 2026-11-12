@@ -3631,7 +3631,7 @@ impl Tool for CreateRecurringJob {
             input_schema: schema(
                 json!({
                     "title": {"type": "string"},
-                    "session_id": {"type": "string", "description": "Target session id (defaults to current session)"},
+                    "session_id": {"type": "string", "description": "Target worker session id (defaults to current session; never Mission Control)"},
                     "schedule": {"type": "string", "description": "e.g. `every 1h`, `daily 09:00`, `at 14:00`, `in 30m`"},
                     "prompt": {"type": "string"},
                     "plan_path": {"type": "string"}
@@ -3659,8 +3659,12 @@ impl Tool for CreateRecurringJob {
             },
         };
         let session_id = target_session_id.as_str();
-        if !crate::mission_control::is_session_id(session_id)
-            && state_path_for_id(session_id).is_none()
+        if crate::mission_control::is_session_id(session_id) {
+            return Err(ToolError::msg(
+                "a recurring job can't run in Mission Control's own chat: pass session_id of a worker session (list_sessions, or create one), and the run reports back to you",
+            ));
+        }
+        if state_path_for_id(session_id).is_none()
         {
             return Err(ToolError::msg(
                 "unknown target session — pass an id from list_sessions or omit to target current session",
@@ -3906,6 +3910,22 @@ mod tests {
         let roster = db.list_task_agents("t2").unwrap();
         assert_eq!(roster.len(), 1);
         assert_eq!(roster[0].agent_id, "rust-pr-reviewer");
+    }
+
+
+    #[tokio::test]
+    async fn recurring_job_refuses_mission_control_as_its_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::mission_control(dir.path())
+            .unwrap()
+            .with_durable_session_id(crate::mission_control::SESSION_ID);
+        for args in [
+            json!({"title": "digest", "schedule": "daily 08:30", "prompt": "x"}),
+            json!({"title": "digest", "schedule": "daily 08:30", "prompt": "x", "session_id": crate::mission_control::SESSION_ID}),
+        ] {
+            let err = CreateRecurringJob.execute(&ctx, args).await.unwrap_err();
+            assert!(err.to_string().contains("Mission Control's own chat"), "{err}");
+        }
     }
 
     #[tokio::test]
