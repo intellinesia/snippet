@@ -238,6 +238,9 @@ impl CodingHarness {
                                 && state.pending_question.is_some()
                                 && is_held_envelope(&text);
                             had_user_msg |= !hold;
+                            if !hold {
+                                crate::coordination::direct_consumed(&text);
+                            }
                             if was_running {
                                 // Mid-run steer: the step continues; fold it in.
                                 state.messages.push(HarnessMessage::User {
@@ -612,6 +615,7 @@ impl CodingHarness {
                                 self.persist(&mut state, &lanes).await?;
                                 continue;
                             }
+                            crate::coordination::direct_consumed(&text);
                             self.accept_user_message(&mut state, &mut vars, text).await;
                             consecutive_errors = 0;
                             self.persist(&mut state, &lanes).await?;

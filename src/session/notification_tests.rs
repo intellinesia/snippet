@@ -63,6 +63,12 @@ fn actionable_candidates_do_not_include_ui_only_events() {
     assert!(notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":"direct_message.sent","thread_id":"thread","payload":{"recipient":"human:local"}}})).is_none());
     let task = notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":"task.message","event_id":"source","correlation_id":"task","payload":{"body":"help"}}})).unwrap();
     assert_eq!(task["destination"]["type"], "task");
+    for event_type in ["direct_message.read", "direct_message.delivered"] {
+        assert!(
+            notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":event_type,"event_id":"e","thread_id":"t"}})).is_none(),
+            "{event_type} must not become a notification"
+        );
+    }
 }
 
 #[test]

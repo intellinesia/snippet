@@ -51,12 +51,25 @@ async fn drain_room_wakes(d: &Shared) {
         if !stale {
             wake_coordination_thread_participants(d, &event).await;
         }
-        let _ = d.store.mark_direct_delivered(
-            &event.event_id,
-            "room",
-            &event.thread_id,
-            &chrono::Utc::now().to_rfc3339(),
-        );
+        if d
+            .store
+            .mark_direct_delivered(
+                &event.event_id,
+                "room",
+                &event.thread_id,
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .is_ok()
+        {
+            crate::session::emit_device_event(serde_json::json!({
+                "kind": "coordination_event",
+                "event": {
+                    "event_type": "direct_message.delivered",
+                    "event_id": event.event_id,
+                    "thread_id": event.thread_id,
+                },
+            }));
+        }
     }
 }
 

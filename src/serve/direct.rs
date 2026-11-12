@@ -27,9 +27,6 @@ use super::{Shared};
 /// current exchange, small enough to keep the wake cheap.
 pub(super) const DIRECT_HISTORY_ON_WAKE: u32 = 10;
 
-/// How long an agent desk has to answer a human before the daemon says it has the message.
-const ACK_AFTER: std::time::Duration = std::time::Duration::from_secs(8);
-
 /// How many pending deliveries one pass of the loop takes.
 const DELIVER_BATCH: u32 = 50;
 
@@ -557,28 +554,6 @@ pub(super) async fn deliver_by_urgency(
     }
 }
 
-/// After `delay`, tell the human the agent has their message, unless the agent
-/// already answered on the thread. Keyed on the message, so it posts at most once.
-async fn ack_if_silent(
-    store: crate::store::Store,
-    agent_id: String,
-    session_id: String,
-    event_id: String,
-    thread_id: String,
-    since: String,
-    delay: std::time::Duration,
-) {
-    tokio::time::sleep(delay).await;
-    if store.agent_replied_on_thread_since(&thread_id, &agent_id, &since).unwrap_or(true) {
-        return;
-    }
-    let (_, name) = relay_identity(&store, &session_id);
-    let text = format!("{name} has your message and is working on it.");
-    let mut extra = serde_json::Map::new();
-    extra.insert("auto".into(), json!("ack"));
-    post_to_human(&store, &agent_id, &session_id, Some(&session_id), None, &format!("ack:{event_id}"), &text, extra);
-}
-
 /// Hand a human message to the agent's single in-progress task session instead
 /// of its desk. False when there is no such task or its session will not start.
 async fn route_to_working_task(
@@ -772,17 +747,6 @@ async fn deliver_direct(
         if !route_to_working_task(d, event, &history, agent_id, &session_id).await {
             deliver_by_urgency(d, &session_id, envelope, &event.payload, true).await;
         }
-        if agent_id != crate::mission_control::SESSION_ID {
-            tokio::spawn(ack_if_silent(
-                d.store.clone(),
-                agent_id.to_string(),
-                session_id.clone(),
-                event.event_id.clone(),
-                event.thread_id.clone(),
-                event.created_at.clone(),
-                ACK_AFTER,
-            ));
-        }
     } else {
         deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
     }
@@ -845,12 +809,25 @@ pub(super) async fn direct_dispatch_loop(d: Shared) {
                     let at = chrono::Utc::now().to_rfc3339();
                     match deliver_direct(&d, &message).await {
                         Ok(()) => {
-                            let _ = d.store.mark_direct_delivered(
-                                &message.event.event_id,
-                                &message.recipient_kind,
-                                &message.recipient_id,
-                                &at,
-                            );
+                            if d
+                                .store
+                                .mark_direct_delivered(
+                                    &message.event.event_id,
+                                    &message.recipient_kind,
+                                    &message.recipient_id,
+                                    &at,
+                                )
+                                .is_ok()
+                            {
+                                crate::session::emit_device_event(json!({
+                                    "kind": "coordination_event",
+                                    "event": {
+                                        "event_type": "direct_message.delivered",
+                                        "event_id": message.event.event_id,
+                                        "thread_id": message.event.thread_id,
+                                    },
+                                }));
+                            }
                         }
                         Err(error) => {
                             eprintln!("[coordination] direct message not delivered: {error}");
@@ -1104,11 +1081,33 @@ pub(super) async fn direct_list_messages(
         .store
         .direct_thread_events(&thread_id, q.after_sequence, q.limit.clamp(1, 200))
     {
-        Ok(events) => Json(json!({
-            "thread_id": thread_id,
-            "events": events,
-        }))
-        .into_response(),
+        Ok(events) => {
+            let event_ids: Vec<String> =
+                events.iter().map(|event| event.event_id.clone()).collect();
+            let deliveries = match d.store.direct_deliveries(&event_ids) {
+                Ok(deliveries) => deliveries
+                    .into_iter()
+                    .map(|(event_id, (delivered_at, read_at))| {
+                        (
+                            event_id,
+                            json!({"delivered_at": delivered_at, "read_at": read_at}),
+                        )
+                    })
+                    .collect::<serde_json::Map<String, serde_json::Value>>(),
+                Err(error) => {
+                    return api_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("read direct deliveries: {error}"),
+                    )
+                }
+            };
+            Json(json!({
+                "thread_id": thread_id,
+                "events": events,
+                "deliveries": deliveries,
+            }))
+            .into_response()
+        }
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read direct messages: {error}")),
     }
 }
@@ -1465,6 +1464,42 @@ mod tests {
             other => panic!("expected Queue for reaction on busy session, got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn direct_messages_page_carries_agent_delivery_state() {
+        use axum::body::to_bytes;
+        let d = test_daemon();
+        d.store.create_agent(&agent("a")).unwrap();
+        let event = human_says(&d.store, "hello", "k-page-deliveries");
+        d.store
+            .mark_direct_delivered(&event.event_id, "agent", "a", "2026-01-01T00:00:01Z")
+            .unwrap();
+        d.store
+            .mark_direct_read_event(&event.event_id, "2026-01-01T00:00:02Z")
+            .unwrap();
+
+        let response = super::direct_list_messages(
+            State(d),
+            Query(super::DirectMessagesQuery {
+                actor_kind: "human".into(),
+                actor_id: "local".into(),
+                peer_kind: "agent".into(),
+                peer_id: "a".into(),
+                after_sequence: 0,
+                limit: 50,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(page["events"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            page["deliveries"][event.event_id.as_str()],
+            json!({"delivered_at": "2026-01-01T00:00:01Z", "read_at": "2026-01-01T00:00:02Z"})
+        );
+    }
+
     fn test_daemon() -> super::Shared {
         std::sync::Arc::new(crate::serve::Daemon {
             config: std::sync::Mutex::new(crate::config::SnippetConfig::default()),
@@ -1507,54 +1542,6 @@ mod tests {
         store
             .send_direct_message_typed(("human", "local"), ("agent", "a"), body, key, "2026-01-01T00:00:00Z", None, None, None, Default::default())
             .unwrap()
-    }
-
-    fn acks(store: &crate::store::Store, thread: &str) -> Vec<crate::coordination::types::CoordinationEvent> {
-        store
-            .recent_direct_thread_events(thread, 20)
-            .unwrap()
-            .into_iter()
-            .filter(|e| e.payload.get("auto").is_some())
-            .collect()
-    }
-
-    async fn run_ack(store: &crate::store::Store, event: &crate::coordination::types::CoordinationEvent) {
-        super::ack_if_silent(
-            store.clone(),
-            "a".into(),
-            "inbox-a".into(),
-            event.event_id.clone(),
-            event.thread_id.clone(),
-            event.created_at.clone(),
-            std::time::Duration::ZERO,
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn ack_is_posted_once_when_nothing_came_back() {
-        let store = crate::store::Store::open_in_memory().unwrap();
-        store.create_agent(&agent("a")).unwrap();
-        let event = human_says(&store, "hello", "k1");
-        run_ack(&store, &event).await;
-        run_ack(&store, &event).await;
-        let found = acks(&store, &event.thread_id);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].payload["auto"], "ack");
-        assert_eq!(found[0].payload["body"], "Scout has your message and is working on it.");
-        assert_eq!(found[0].actor_id, "a");
-    }
-
-    #[tokio::test]
-    async fn no_ack_when_the_agent_replied_in_time() {
-        let store = crate::store::Store::open_in_memory().unwrap();
-        store.create_agent(&agent("a")).unwrap();
-        let event = human_says(&store, "hello", "k1");
-        store
-            .send_direct_message_typed(("agent", "a"), ("human", "local"), "on it", "r1", "2026-01-01T00:00:03Z", None, None, None, Default::default())
-            .unwrap();
-        run_ack(&store, &event).await;
-        assert!(acks(&store, &event.thread_id).is_empty());
     }
 
     #[test]

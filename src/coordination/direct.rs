@@ -9,6 +9,8 @@
 //! delivery row was never written (a crash between the event insert and the
 //! delivery insert) is still discovered and delivered once.
 
+use std::collections::HashMap;
+
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
@@ -759,6 +761,54 @@ impl Store {
         })
     }
 
+    /// Delivery state of the given events for their agent *recipient*, as
+    /// `(delivered_at, read_at)`. Events with no such `message_deliveries` row —
+    /// including the agent's own outgoing messages — are absent.
+    pub fn direct_deliveries(
+        &self,
+        event_ids: &[String],
+    ) -> Result<HashMap<String, (Option<String>, Option<String>)>, StoreError> {
+        if event_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        self.with_connection(|conn| {
+            let marks = vec!["?"; event_ids.len()].join(",");
+            let mut stmt = conn.prepare(&format!(
+                "SELECT d.event_id, d.delivered_at, d.read_at
+                 FROM message_deliveries d
+                 JOIN board_events e ON e.event_id = d.event_id
+                 WHERE d.recipient_kind = 'agent'
+                   AND 'agent:' || d.recipient_id = json_extract(e.payload_json, '$.recipient')
+                   AND d.event_id IN ({marks})"
+            ))?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(event_ids.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?;
+            let mut found = HashMap::new();
+            for row in rows {
+                let (event_id, delivered_at, read_at) = row?;
+                found.insert(event_id, (delivered_at, read_at));
+            }
+            Ok(found)
+        })
+    }
+
+    /// Mark one event read for every agent recipient, the first time only.
+    pub fn mark_direct_read_event(&self, event_id: &str, at: &str) -> Result<(), StoreError> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE message_deliveries SET read_at = ?1
+                 WHERE event_id = ?2 AND recipient_kind = 'agent' AND read_at IS NULL",
+                params![at, event_id],
+            )?;
+            Ok(())
+        })
+    }
+
     /// One participant's direct conversations, most recent first.
     pub fn list_direct_threads(
         &self,
@@ -1282,5 +1332,82 @@ mod tests {
         .unwrap();
         let human_threads = db.list_direct_threads("human", LOCAL_HUMAN_ID).unwrap();
         assert_eq!(human_threads[0].unread, 0, "reactions do not count as unread for human");
+    }
+
+    #[test]
+    fn direct_deliveries_reports_agent_recipients_and_omits_the_rest() {
+        let db = Store::open_in_memory().unwrap();
+        db.create_agent(&worker("b")).unwrap();
+        let to_b = db
+            .send_direct_message_typed(
+                ("human", LOCAL_HUMAN_ID),
+                ("agent", "b"),
+                "hi",
+                "k-deliveries-1",
+                "2026-01-01T00:00:00Z",
+                None,
+                None,
+                None,
+                Default::default(),
+            )
+            .unwrap();
+        db.mark_direct_delivered(&to_b.event_id, "agent", "b", "2026-01-01T00:00:01Z")
+            .unwrap();
+        // The agent's own reply has an agent *sender* row but no agent
+        // recipient, so it must not show up as the human's outgoing message.
+        let from_b = db
+            .send_direct_message_typed(
+                ("agent", "b"),
+                ("human", LOCAL_HUMAN_ID),
+                "yo",
+                "k-deliveries-2",
+                "2026-01-01T00:00:02Z",
+                None,
+                None,
+                None,
+                Default::default(),
+            )
+            .unwrap();
+
+        let found = db
+            .direct_deliveries(&[
+                to_b.event_id.clone(),
+                from_b.event_id.clone(),
+                "no-such-event".to_string(),
+            ])
+            .unwrap();
+        assert_eq!(found.len(), 1, "only the human's message has an agent recipient");
+        let (delivered, read) = &found[&to_b.event_id];
+        assert_eq!(delivered.as_deref(), Some("2026-01-01T00:00:01Z"));
+        assert_eq!(read.as_deref(), None);
+    }
+
+    #[test]
+    fn mark_direct_read_event_sets_read_at_once_and_keeps_delivered_at() {
+        let db = Store::open_in_memory().unwrap();
+        db.create_agent(&worker("b")).unwrap();
+        let sent = db
+            .send_direct_message_typed(
+                ("human", LOCAL_HUMAN_ID),
+                ("agent", "b"),
+                "hi",
+                "k-read-event",
+                "2026-01-01T00:00:00Z",
+                None,
+                None,
+                None,
+                Default::default(),
+            )
+            .unwrap();
+        db.mark_direct_delivered(&sent.event_id, "agent", "b", "2026-01-01T00:00:01Z")
+            .unwrap();
+        db.mark_direct_read_event(&sent.event_id, "2026-01-01T00:00:02Z")
+            .unwrap();
+        db.mark_direct_read_event(&sent.event_id, "2026-01-01T00:00:03Z")
+            .unwrap();
+        let found = db.direct_deliveries(&[sent.event_id.clone()]).unwrap();
+        let (delivered, read) = &found[&sent.event_id];
+        assert_eq!(delivered.as_deref(), Some("2026-01-01T00:00:01Z"));
+        assert_eq!(read.as_deref(), Some("2026-01-01T00:00:02Z"), "first read wins");
     }
 }

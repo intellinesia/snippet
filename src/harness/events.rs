@@ -543,6 +543,7 @@ impl CodingHarness {
             LoopInput::UserMessage(text) | LoopInput::Answer(text) => {
                 let text = text.trim().to_string();
                 if !text.is_empty() {
+                    crate::coordination::direct_consumed(&text);
                     state.messages.push(HarnessMessage::User {
                         content: steer_message(&text),
                     });

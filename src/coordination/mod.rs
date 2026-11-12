@@ -8,6 +8,7 @@
 
 mod agents;
 pub mod board;
+mod consumed;
 pub mod direct;
 pub mod typed;
 mod events;
@@ -34,6 +35,7 @@ pub use direct::{
     InboxEntry, InboxKind, InboxQuery, OwedReply,
     DirectThreadSummary, LOCAL_HUMAN_ID, PendingDirectMessage, actor_ref, direct_thread_id,
 };
+pub use consumed::direct_consumed;
 pub use agents::AgentRemoval;
 pub use goals::{Goal, GoalCriterion, GoalStatus};
 pub use groups::{GroupMember, GroupSummary};
