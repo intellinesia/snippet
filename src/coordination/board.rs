@@ -340,6 +340,17 @@ impl Store {
         Ok(())
     }
 
+    pub fn count_board_entries(&self, agent_id: &str) -> Result<u64, StoreError> {
+        self.with_connection(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM agent_board WHERE (?1 = '*' OR agent_id = ?1)",
+                params![agent_id],
+                |row| row.get(0),
+            )?;
+            Ok(count.max(0) as u64)
+        })
+    }
+
     /// One task's running log across everyone who worked on it, newest first.
     pub fn task_log(&self, task_id: &str, before_id: Option<i64>, limit: u32) -> Result<Vec<BoardEntry>, StoreError> {
         self.with_connection(|conn| {

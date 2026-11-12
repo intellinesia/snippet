@@ -36,6 +36,8 @@ pub fn add_coordination_tools(registry: &mut ToolRegistry) {
     registry.insert(crate::agent_context::ContextLimitTool);
     registry.insert(crate::keep_warm::KeepWarmTool);
     registry.insert(crate::mission_tools::ReachPolicyTool);
+    registry.insert(crate::harness_map::HarnessMapTool);
+    registry.insert(ShareArtifactTool);
 }
 
 
@@ -1710,6 +1712,189 @@ fn now_rfc3339() -> String {
 
 
 /// Record the session an event was posted from, so the room's wake-up skips it.
+const SHARE_ARTIFACT_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+
+fn artifact_signing_secret() -> String {
+    let home = crate::config::snippet_home();
+    if let Ok(bytes) = std::fs::read(home.join("serve.json"))
+        && let Ok(val) = serde_json::from_slice::<Value>(&bytes)
+        && let Some(tok) = val.get("token").and_then(Value::as_str).map(str::trim)
+        && !tok.is_empty()
+    {
+        return tok.to_string();
+    }
+    if let Ok(tok) = std::fs::read_to_string(home.join("serve.token")) {
+        let tok = tok.trim();
+        if tok.len() >= 16 {
+            return tok.to_string();
+        }
+    }
+    crate::serve::resolve_token(None)
+}
+
+#[derive(Deserialize)]
+struct ShareArtifactArgs {
+    artifact_id: String,
+    to: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+pub struct ShareArtifactTool;
+
+#[async_trait]
+impl Tool for ShareArtifactTool {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "share_artifact".into(),
+            description: "Share an artifact from this session (latest version, 30-day signed link) with `human`, an agent id, or `channel:<id>` (`channel:chat` or `channel:push`).".into(),
+            input_schema: schema(
+                json!({
+                    "artifact_id": {"type": "string"},
+                    "to": {"type": "string", "description": "`human`, an agent id, or `channel:<id>`"},
+                    "note": {"type": "string"}
+                }),
+                &["artifact_id", "to"],
+            ),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let args: ShareArtifactArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let artifact_id = args.artifact_id.trim();
+        let target = args.to.trim();
+        if artifact_id.is_empty() {
+            return Err(ToolError::msg("artifact_id must not be empty"));
+        }
+        if target.is_empty() {
+            return Err(ToolError::msg("to must not be empty"));
+        }
+        let session = ctx
+            .durable_session_id()
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| ToolError::msg("share_artifact requires a durable session"))?;
+        let artifact = crate::artifacts::get(session, artifact_id)
+            .ok_or_else(|| ToolError::msg(format!("unknown artifact `{artifact_id}` in session `{session}`")))?;
+        let version = artifact
+            .latest()
+            .ok_or_else(|| ToolError::msg(format!("artifact `{artifact_id}` has no versions")))?;
+
+        let secret = artifact_signing_secret();
+        let url = crate::artifacts::signed_path(
+            &secret,
+            session,
+            &artifact.id,
+            version,
+            SHARE_ARTIFACT_TTL_SECS,
+        );
+        let body = args
+            .note
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&artifact.title)
+            .to_string();
+        let artifact_payload = json!({
+            "session": session,
+            "id": artifact.id,
+            "title": artifact.title,
+            "version": version.n,
+            "url": url,
+            "kind": artifact.kind,
+        });
+
+        let db = db(ctx)?;
+        let (sender_kind, sender_id) = actor(ctx)?;
+        let about_task = session_task(ctx, session).map(|(id, _)| id);
+        let mut extra = crate::coordination::typed::payload_fields(
+            Some("result"),
+            crate::coordination::typed::Urgency::Normal,
+            about_task.as_deref(),
+        );
+        extra.insert("artifact".into(), artifact_payload.clone());
+
+        let saved = if let Some(raw_ch) = target.strip_prefix("channel:") {
+            crate::coordination::reach::deliver_channel(
+                &db,
+                (sender_kind, &sender_id),
+                raw_ch.trim(),
+                &body,
+                Some(session),
+                ctx.lane_origin().map(|(_, lane)| lane),
+                about_task.as_deref(),
+                extra,
+            )
+            .map_err(ToolError::msg)?
+        } else if target == "human" {
+            extra.insert("channel".into(), json!("chat"));
+            if sender_kind == "agent" && sender_id != crate::mission_control::SESSION_ID {
+                crate::coordination::reach::apply_outbound_human(&db, &sender_id, &body, &mut extra);
+            }
+            let key = Uuid::new_v4().to_string();
+            let ev = db
+                .send_direct_message_typed(
+                    (sender_kind, &sender_id),
+                    ("human", crate::coordination::LOCAL_HUMAN_ID),
+                    &body,
+                    &key,
+                    &chrono::Utc::now().to_rfc3339(),
+                    Some(session),
+                    ctx.lane_origin().map(|(_, lane)| lane),
+                    about_task.as_deref(),
+                    extra,
+                )
+                .map_err(|e| ToolError::msg(format!("share artifact: {e}")))?;
+            crate::session::emit_device_event(json!({
+                "kind": "coordination_event",
+                "event": ev.clone(),
+            }));
+            ev
+        } else {
+            match db
+                .get_agent(target)
+                .map_err(|e| ToolError::msg(format!("look up agent: {e}")))?
+            {
+                None => {
+                    return Err(ToolError::msg(format!(
+                        "unknown target `{target}`; supported targets are `human`, a directory agent id, `channel:chat`, or `channel:push`"
+                    )));
+                }
+                Some(agent) if agent.status == crate::coordination::types::AgentStatus::Disabled => {
+                    return Err(ToolError::msg(format!("agent `{target}` is disabled")));
+                }
+                Some(_) => {}
+            }
+            let key = Uuid::new_v4().to_string();
+            let ev = db
+                .send_direct_message_typed(
+                    (sender_kind, &sender_id),
+                    ("agent", target),
+                    &body,
+                    &key,
+                    &chrono::Utc::now().to_rfc3339(),
+                    Some(session),
+                    ctx.lane_origin().map(|(_, lane)| lane),
+                    about_task.as_deref(),
+                    extra,
+                )
+                .map_err(|e| ToolError::msg(format!("share artifact: {e}")))?;
+            crate::session::emit_device_event(json!({
+                "kind": "coordination_event",
+                "event": ev.clone(),
+            }));
+            ev
+        };
+
+        Ok(ToolResult::success(json!({
+            "event_id": saved.event_id,
+            "thread_id": saved.thread_id,
+            "to": target,
+            "artifact": artifact_payload,
+        })))
+    }
+}
+
 pub(crate) fn stamp_origin(ctx: &ToolContext, mut payload: Value) -> Value {
     if let Some(session) = ctx.durable_session_id() {
         payload["origin_session"] = json!(session);
@@ -2307,5 +2492,119 @@ mod tests {
         assert_eq!(events[1].payload["reply_to"], target_id);
         assert_eq!(events[2].payload["body"], "all set");
         assert_eq!(events[2].payload["reply_to"], target_id);
+    }
+
+    #[tokio::test]
+    async fn share_artifact_payload_shape_channels_and_unknown_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = migrate(dir.path());
+        for id in ["sender", "peer"] {
+            db.create_agent(&Agent {
+                id: id.into(),
+                display_name: id.into(),
+                handle: id.into(),
+                kind: AgentKind::Worker,
+                status: AgentStatus::Active,
+                capabilities: vec![],
+            })
+            .unwrap();
+        }
+        let session = format!("test-share-{}", Uuid::new_v4());
+        let ctx = context(dir.path(), &session).with_agent_id("sender");
+
+        let err = ShareArtifactTool
+            .execute(&ctx, json!({"artifact_id": "missing", "to": "human"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown artifact"), "{err}");
+
+        let page = dir.path().join("report.html");
+        std::fs::write(&page, "<!doctype html><title>Weekly Report</title><h1>Hi</h1>").unwrap();
+        let presented = crate::artifacts::present(
+            &session,
+            &page,
+            Some("Weekly Report"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(presented.version, 1);
+        let aid = presented.artifact.id.clone();
+
+        let shared_human = ShareArtifactTool
+            .execute(&ctx, json!({"artifact_id": aid, "to": "human"}))
+            .await
+            .unwrap();
+        let art = &shared_human.value["data"]["artifact"];
+        assert_eq!(art["session"], session);
+        assert_eq!(art["id"], aid);
+        assert_eq!(art["title"], "Weekly Report");
+        assert_eq!(art["version"], 1);
+        assert_eq!(art["kind"], "html");
+        let url = art["url"].as_str().unwrap();
+        assert!(url.starts_with("/a/"), "{url}");
+
+        let parts: Vec<&str> = url.trim_start_matches("/a/").splitn(3, '/').collect();
+        let exp: i64 = parts[0].parse().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        assert!(exp >= now + 29 * 86_400 && exp <= now + 31 * 86_400, "exp={exp}, now={now}");
+        let resolved = crate::artifacts::resolve_signed(&artifact_signing_secret(), exp, parts[1], parts[2]);
+        assert!(resolved.is_some_and(|p| p.is_file()));
+
+        let human_thread = crate::coordination::direct_thread_id(
+            ("agent", "sender"),
+            ("human", crate::coordination::LOCAL_HUMAN_ID),
+        );
+        let human_events = db.direct_thread_events(&human_thread, 0, 10).unwrap();
+        assert_eq!(human_events.len(), 1);
+        assert_eq!(human_events[0].payload["body"], "Weekly Report");
+        assert_eq!(human_events[0].payload["artifact"], *art);
+
+        ShareArtifactTool
+            .execute(
+                &ctx,
+                json!({
+                    "artifact_id": aid,
+                    "to": "peer",
+                    "note": "Check this chart"
+                }),
+            )
+            .await
+            .unwrap();
+        let peer_thread = crate::coordination::direct_thread_id(("agent", "sender"), ("agent", "peer"));
+        let peer_events = db.direct_thread_events(&peer_thread, 0, 10).unwrap();
+        assert_eq!(peer_events.len(), 1);
+        assert_eq!(peer_events[0].payload["body"], "Check this chart");
+        assert_eq!(peer_events[0].payload["artifact"]["id"], aid);
+
+        ShareArtifactTool
+            .execute(
+                &ctx,
+                json!({
+                    "artifact_id": aid,
+                    "to": "channel:chat",
+                    "note": "Posted on chat"
+                }),
+            )
+            .await
+            .unwrap();
+        let human_events = db.direct_thread_events(&human_thread, 0, 10).unwrap();
+        assert_eq!(human_events.len(), 2);
+        assert_eq!(human_events[1].payload["body"], "Posted on chat");
+        assert_eq!(human_events[1].payload["channel"], "chat");
+        assert_eq!(human_events[1].payload["artifact"]["id"], aid);
+
+        let bad_chan = ShareArtifactTool
+            .execute(
+                &ctx,
+                json!({"artifact_id": aid, "to": "channel:voice"}),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(bad_chan.contains("supported targets"), "{bad_chan}");
+
+        crate::artifacts::delete_session(&session);
     }
 }
