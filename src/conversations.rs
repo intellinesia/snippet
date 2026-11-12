@@ -81,6 +81,8 @@ pub fn ensure_schema(connection: &rusqlite::Connection) -> Result<(), rusqlite::
              -- Unix seconds when the session was settled (parked: not routed to,
              -- deleted 15 days later), or NULL while it is awake.
              settled_at INTEGER,
+             -- Unix seconds the session last went to sleep; kept after it wakes.
+             slept_at INTEGER,
              -- 1 opts the session out of AUTOMATIC settling (manual settle still works).
              keep_awake INTEGER NOT NULL DEFAULT 0,
              -- How the session resumes once its prompt cache lapses: ask|lean|full.
@@ -513,7 +515,8 @@ impl Store {
     ) -> Result<bool, StoreError> {
         self.with_connection(|conn| {
             let changed = conn.execute(
-                "UPDATE sessions SET settled_at = ?2 WHERE id = ?1 AND settled_at IS NOT ?2",
+                "UPDATE sessions SET settled_at = ?2, slept_at = COALESCE(?2, slept_at)
+                 WHERE id = ?1 AND settled_at IS NOT ?2",
                 params![id, settled_at],
             )?;
             Ok(changed > 0)

@@ -1742,7 +1742,8 @@ fn resume_lean(id: &str, attended: bool) -> bool {
     let ttl = crate::settle::ttl_for(&crate::settle::profile_cache_ttls(), row.profile.as_deref());
     let lapsed =
         context > 0 && crate::settle::idle_secs(chrono::Utc::now().timestamp(), touched) >= ttl;
-    crate::settle::resume_action(&row.resume_mode, lapsed, attended)
+    let slept = store.slept_since_turn(&row.id).unwrap_or(false);
+    crate::settle::resume_action(&row.resume_mode, lapsed, attended, slept)
 }
 
 #[cfg(test)]

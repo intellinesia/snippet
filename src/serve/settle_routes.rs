@@ -341,7 +341,9 @@ pub(crate) async fn cache_route(Query(q): Query<CacheQuery>) -> Response {
     let (touched, context) = store.cache_touch(&row.id).unwrap_or((None, None));
     let ttl = ttl_for(&profile_cache_ttls(), row.profile.as_deref());
     let idle = touched.map(|t| idle_secs(now(), t));
+    let slept = row.settled_at.is_some() || store.slept_since_turn(&row.id).unwrap_or(false);
     let cold = !crate::settle::never_cold(&row.id)
+        && !slept
         && idle.is_some_and(|i| i >= ttl)
         && context.unwrap_or(0) > 0;
     Json(serde_json::json!({

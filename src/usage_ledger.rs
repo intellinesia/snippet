@@ -266,6 +266,19 @@ impl Store {
         })
     }
 
+    /// Whether the session went to sleep after its last turn. Its memory was saved then,
+    /// so it resumes lean instead of being offered a cold resume.
+    pub fn slept_since_turn(&self, session_id: &str) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT COALESCE((SELECT slept_at FROM sessions WHERE id = ?1), 0)
+                      > COALESCE((SELECT MAX(at) FROM usage_ledger WHERE session_id = ?1 AND purpose = ?2), 0)",
+                params![session_id, PURPOSE_TURN],
+                |row| row.get::<_, bool>(0),
+            )
+        })
+    }
+
     /// Keep-warm calls and their tokens since `since`, per session.
     pub fn keep_warm_totals(&self, since: i64) -> Result<Vec<serde_json::Value>, StoreError> {
         self.with_connection(|conn| {

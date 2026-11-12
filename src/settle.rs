@@ -153,10 +153,11 @@ pub fn refusal(f: &SettleFacts) -> Option<String> {
 /// Whether a user turn should continue lean first, given the session's persisted
 /// resume mode. `ask` keeps the old split: unattended wakes go lean, attended
 /// messages leave the choice to the app.
-pub fn resume_action(mode: &str, lapsed: bool, attended: bool) -> bool {
+pub fn resume_action(mode: &str, lapsed: bool, attended: bool, slept: bool) -> bool {
     match mode {
-        "lean" => lapsed,
         "full" => false,
+        "lean" => lapsed,
+        _ if slept => lapsed,
         _ => lapsed && !attended,
     }
 }
@@ -442,6 +443,30 @@ mod tests {
     }
 
     #[test]
+    fn sleeping_after_the_last_turn_is_remembered_past_waking() {
+        let db = Store::open_in_memory().unwrap();
+        db.create_conversation(&row("s"), &[], "[]").unwrap();
+        let usage = crate::llm::TokenUsage {
+            prompt_tokens: 50_000,
+            ..Default::default()
+        };
+        db.record_usage("s", "claude-code", "opus", &usage).unwrap();
+        assert!(!db.slept_since_turn("s").unwrap());
+        let later = chrono::Utc::now().timestamp() + 10;
+        db.set_session_settled("s", Some(later)).unwrap();
+        db.set_session_last_active("s", later + 5).unwrap();
+        assert!(
+            db.get_session_row("s")
+                .unwrap()
+                .unwrap()
+                .settled_at
+                .is_none()
+        );
+        assert!(db.slept_since_turn("s").unwrap());
+        db.record_usage("s", "claude-code", "opus", &usage).unwrap();
+    }
+
+    #[test]
     fn last_changes_is_stored_on_the_row_and_survives_settling() {
         let db = Store::open_in_memory().unwrap();
         db.create_conversation(&row("c1"), &[], "[]").unwrap();
@@ -547,19 +572,22 @@ mod tests {
                         _ => lapsed && !attended,
                     };
                     assert_eq!(
-                        resume_action(mode, lapsed, attended),
+                        resume_action(mode, lapsed, attended, false),
                         want,
                         "mode={mode} lapsed={lapsed} attended={attended}"
                     );
                 }
             }
         }
-        assert!(resume_action("lean", true, true));
-        assert!(!resume_action("lean", false, false));
-        assert!(!resume_action("full", true, false));
-        assert!(resume_action("ask", true, false));
-        assert!(!resume_action("ask", true, true));
-        assert!(!resume_action("ask", false, false));
+        assert!(resume_action("lean", true, true, false));
+        assert!(!resume_action("lean", false, false, false));
+        assert!(!resume_action("full", true, false, false));
+        assert!(resume_action("ask", true, false, false));
+        assert!(!resume_action("ask", true, true, false));
+        assert!(!resume_action("ask", false, false, false));
+        assert!(resume_action("ask", true, true, true));
+        assert!(!resume_action("ask", false, true, true));
+        assert!(!resume_action("full", true, true, true));
     }
 
     #[test]
