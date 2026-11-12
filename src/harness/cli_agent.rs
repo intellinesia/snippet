@@ -749,7 +749,7 @@ fn tool_prompt_preamble(kind: CliKind) -> String {
             "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{MCP_SERVER}` MCP server. Call them via `mcp_call_tool` with `server_name: \"{MCP_SERVER}\"`, `tool_name` set to the exact tool name (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate_task`, and the rest), and `arguments` matching its schema (call `mcp_list_tools` for `{MCP_SERVER}` once first if your runtime requires it). Every built-in tool of yours (`exec`, `read`, `write`, `edit`, `grep`, `glob`, `skill`, `ask_user_question`, `todo_write`) is disabled in this session: read and search files with `bash` (`cat`, `sed -n`, `rg`, `ls`), edit files with `change_files`, and make every command, question and delegation through the `{MCP_SERVER}` MCP tools."
         ),
         CliKind::Antigravity => format!(
-            "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{}` MCP server: call them with call_mcp_tool, ServerName `{}` and ToolName exactly as named here (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate_task`, and the rest). Every call_mcp_tool call also needs `toolSummary` (a few words on what the call does) and `toolAction` (a short verb phrase, such as `Running tests`); a call without them is rejected before it runs. These are your only working tools: every built-in tool of yours is switched off in this session. Read and search files with the snippet `bash` tool (cat, sed -n, rg, ls), research with its `web_search` and `web_read`, and make every change, command, question and delegation through the snippet tools. The one exception: when a tool result says its output was saved to a file inside your own Antigravity folder, read that file with view_file.",
+            "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{}` MCP server: call them with call_mcp_tool, ServerName `{}` and ToolName exactly as named here (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate_task`, and the rest). These are your only working tools: every built-in tool of yours is switched off in this session. Read and search files with the snippet `bash` tool (cat, sed -n, rg, ls), research with its `web_search` and `web_read`, and make every change, command, question and delegation through the snippet tools. The one exception: when a tool result says its output was saved to a file inside your own Antigravity folder, read that file with view_file.",
             crate::antigravity::MCP_SERVER_NAME,
             crate::antigravity::MCP_SERVER_NAME,
         ),
@@ -762,34 +762,13 @@ fn tool_guide(kind: CliKind, defs: &[NativeToolDefinition]) -> String {
             "## Snippet tools and their arguments\n\nCall each through `mcp_call_tool` with `server_name: \"snippet\"` and `tool_name` set to the name below. Pass every required argument by its exact name; optional ones in brackets.\n"
         }
         _ => {
-            "## Snippet tools and their arguments\n\nCall each through call_mcp_tool with ServerName `snippet_snippet`, plus `toolSummary` and `toolAction` on every call. Pass every required argument by its exact name; optional ones in brackets.\n"
+            "## Snippet tools and their arguments\n\nCall each through call_mcp_tool with ServerName `snippet_snippet`. Pass every required argument by its exact name; optional ones in brackets.\n"
         }
     };
     let mut out = String::from(header);
     for def in defs {
         let schema = &def.input_schema;
-        let required: Vec<&str> = schema
-            .get("required")
-            .and_then(Value::as_array)
-            .map(|r| r.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
-        let args: Vec<String> = schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .map(|props| {
-                props
-                    .iter()
-                    .map(|(name, prop)| {
-                        let ty = prop.get("type").and_then(Value::as_str).unwrap_or("any");
-                        if required.contains(&name.as_str()) {
-                            format!("{name}: {ty}")
-                        } else {
-                            format!("[{name}: {ty}]")
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let args = guide_args(schema, 0);
         let summary: String = def
             .description
             .split(". ")
@@ -806,6 +785,51 @@ fn tool_guide(kind: CliKind, defs: &[NativeToolDefinition]) -> String {
         ));
     }
     out
+}
+
+fn guide_args(schema: &Value, depth: usize) -> Vec<String> {
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|r| r.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let Some(props) = schema.get("properties").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    props
+        .iter()
+        .map(|(name, prop)| {
+            let ty = guide_type(prop, depth);
+            if required.contains(&name.as_str()) {
+                format!("{name}: {ty}")
+            } else {
+                format!("[{name}: {ty}]")
+            }
+        })
+        .collect()
+}
+
+fn guide_type(prop: &Value, depth: usize) -> String {
+    if let Some(values) = prop.get("enum").and_then(Value::as_array) {
+        let names: Vec<&str> = values.iter().filter_map(Value::as_str).collect();
+        if !names.is_empty() {
+            return names.join("|");
+        }
+    }
+    let ty = prop.get("type").and_then(Value::as_str).unwrap_or("any");
+    match ty {
+        "array" if depth == 0 => match prop.get("items") {
+            Some(items) if items.get("properties").is_some() => {
+                format!("[{{{}}}]", guide_args(items, depth + 1).join(", "))
+            }
+            Some(items) => format!("[{}]", guide_type(items, depth + 1)),
+            None => "array".to_string(),
+        },
+        "object" if depth == 0 && prop.get("properties").is_some() => {
+            format!("{{{}}}", guide_args(prop, depth + 1).join(", "))
+        }
+        _ => ty.to_string(),
+    }
 }
 
 fn vault_names(arguments: &Value) -> Vec<String> {
@@ -4450,6 +4474,29 @@ mod devinrel_tests {
             .iter()
             .map(|s| s.to_string())
             .collect()
+    }
+
+    #[test]
+    fn guide_shows_enum_values_and_array_item_fields() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "changes": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["create", "replace"]},
+                        "path": {"type": "string"},
+                        "find": {"type": "string"}
+                    },
+                    "required": ["action", "path"]
+                }}
+            },
+            "required": ["changes"]
+        });
+        assert_eq!(
+            guide_args(&schema, 0),
+            vec!["changes: [{action: create|replace, [find: string], path: string}]"]
+        );
     }
 
     #[test]
