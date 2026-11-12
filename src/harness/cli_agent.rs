@@ -1869,6 +1869,7 @@ impl CodingHarness {
                                 held_envelopes.push(text);
                                 continue;
                             }
+                            crate::coordination::direct_consumed(&text);
                             if state.pending_question.is_some() {
                                 let mid_turn = state.status == HarnessStatus::Running && process.is_some();
                                 state.status = HarnessStatus::WaitingForInput;
