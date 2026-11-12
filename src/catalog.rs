@@ -59,7 +59,10 @@ pub async fn fetch_models(cfg: &InferenceProfileConfig) -> Result<Vec<CatalogMod
         "chatgpt" | "claude-code" | "antigravity" | "devin" | "gemini" | "openai" | "xai" | "grok"
     ) {
         for model in &mut models {
-            if matches!(cfg.provider.as_str(), "claude-code" | "devin") && model.display_name.is_some() && model.efforts.is_some() {
+            if matches!(cfg.provider.as_str(), "claude-code" | "devin")
+                && model.display_name.is_some()
+                && model.efforts.is_some()
+            {
                 continue;
             }
             let spec = crate::reasoning::spec(&cfg.provider, &model.id);
@@ -103,7 +106,9 @@ async fn fetch_provider_models(cfg: &InferenceProfileConfig) -> Result<Vec<Catal
         // Codex subscription backend has no models endpoint — offer the
         // known slugs so the editor picker is not empty.
         "chatgpt" => Ok(chatgpt_catalog()),
-        "claude-code" => Ok(claude_code_live_catalog().await.unwrap_or_else(|_| claude_code_catalog())),
+        "claude-code" => Ok(claude_code_live_catalog()
+            .await
+            .unwrap_or_else(|_| claude_code_catalog())),
         "antigravity" => Ok(crate::antigravity::models()
             .await?
             .into_iter()
@@ -116,7 +121,9 @@ async fn fetch_provider_models(cfg: &InferenceProfileConfig) -> Result<Vec<Catal
                 supports_images: Some(true),
             })
             .collect()),
-        "devin" => Ok(devin_live_catalog().await.unwrap_or_else(|_| devin_catalog())),
+        "devin" => Ok(devin_live_catalog()
+            .await
+            .unwrap_or_else(|_| devin_catalog())),
         other => Err(format!("no model catalog for provider `{other}`")),
     }
 }
@@ -125,7 +132,9 @@ type CachedModels = (std::time::Instant, Option<String>, Vec<CatalogModel>);
 static CLAUDE_CODE_MODELS: std::sync::Mutex<Option<CachedModels>> = std::sync::Mutex::new(None);
 static CLAUDE_CODE_FETCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn cached_claude_code_models(account: &Option<String>) -> Option<Result<Vec<CatalogModel>, String>> {
+fn cached_claude_code_models(
+    account: &Option<String>,
+) -> Option<Result<Vec<CatalogModel>, String>> {
     let guard = CLAUDE_CODE_MODELS.lock().unwrap();
     let (at, acct, models) = guard.as_ref()?;
     if acct != account {
@@ -158,7 +167,8 @@ async fn claude_code_live_catalog() -> Result<Vec<CatalogModel>, String> {
         Ok(m) => m.clone(),
         Err(_) => Vec::new(),
     };
-    *CLAUDE_CODE_MODELS.lock().unwrap() = Some((std::time::Instant::now(), account, models.clone()));
+    *CLAUDE_CODE_MODELS.lock().unwrap() =
+        Some((std::time::Instant::now(), account, models.clone()));
     match fetched {
         Err(e) => Err(e),
         Ok(_) if models.is_empty() => Err("Claude Code listed no models".into()),
@@ -181,13 +191,21 @@ fn parse_claude_code_models(raw: &[Value]) -> Vec<CatalogModel> {
             let efforts = m
                 .get("supportedEffortLevels")
                 .and_then(Value::as_array)
-                .map(|l| l.iter().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>())
+                .map(|l| {
+                    l.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
             Some(CatalogModel {
                 id: id.to_string(),
                 display_name: Some(display_name),
                 context_window: None,
-                reasoning: Some(!efforts.is_empty() || m.get("supportsAdaptiveThinking").and_then(Value::as_bool) == Some(true)),
+                reasoning: Some(
+                    !efforts.is_empty()
+                        || m.get("supportsAdaptiveThinking").and_then(Value::as_bool) == Some(true),
+                ),
                 efforts: Some(efforts),
                 supports_images: Some(true),
             })
@@ -244,14 +262,32 @@ fn parse_devin_models(raw: &Value) -> Vec<CatalogModel> {
         return out;
     };
     for family in families {
-        let slug = family.get("slug").and_then(Value::as_str).unwrap_or("").trim();
+        let slug = family
+            .get("slug")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
         if slug == "fusion" {
             continue;
         }
-        let family_label = family.get("family_label").and_then(Value::as_str).unwrap_or(slug).trim();
-        let variants = family.get("variants").and_then(Value::as_array).cloned().unwrap_or_default();
-        if !slug.is_empty() && variants.len() > 1 && !out.iter().any(|m: &CatalogModel| m.id == slug) {
-            let max_ctx = variants.iter().filter_map(|v| v.get("max_context_tokens").and_then(Value::as_u64)).max();
+        let family_label = family
+            .get("family_label")
+            .and_then(Value::as_str)
+            .unwrap_or(slug)
+            .trim();
+        let variants = family
+            .get("variants")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if !slug.is_empty()
+            && variants.len() > 1
+            && !out.iter().any(|m: &CatalogModel| m.id == slug)
+        {
+            let max_ctx = variants
+                .iter()
+                .filter_map(|v| v.get("max_context_tokens").and_then(Value::as_u64))
+                .max();
             let spec = crate::reasoning::spec("devin", slug);
             let efforts = (spec.control == crate::reasoning::Control::Effort)
                 .then(|| spec.options.iter().map(|s| s.to_string()).collect());
@@ -265,12 +301,21 @@ fn parse_devin_models(raw: &Value) -> Vec<CatalogModel> {
             });
         }
         for v in variants {
-            let Some(uid) = v.get("model_uid").and_then(Value::as_str).map(str::trim) else { continue };
-            if uid.is_empty() || uid.starts_with("MODEL_") || out.iter().any(|m: &CatalogModel| m.id == uid) {
+            let Some(uid) = v.get("model_uid").and_then(Value::as_str).map(str::trim) else {
+                continue;
+            };
+            if uid.is_empty()
+                || uid.starts_with("MODEL_")
+                || out.iter().any(|m: &CatalogModel| m.id == uid)
+            {
                 continue;
             }
             let label = v.get("label").and_then(Value::as_str).unwrap_or(uid);
-            let display_name = match v.get("description").and_then(Value::as_str).filter(|d| !d.is_empty()) {
+            let display_name = match v
+                .get("description")
+                .and_then(Value::as_str)
+                .filter(|d| !d.is_empty())
+            {
                 Some(desc) => format!("{label} · {desc}"),
                 None => label.to_string(),
             };
@@ -289,12 +334,36 @@ fn parse_devin_models(raw: &Value) -> Vec<CatalogModel> {
 
 fn devin_catalog() -> Vec<CatalogModel> {
     [
-        ("swe-2", "SWE-2", None, Some(vec!["medium".into(), "high".into(), "max".into()]), false),
+        (
+            "swe-2",
+            "SWE-2",
+            None,
+            Some(vec!["medium".into(), "high".into(), "max".into()]),
+            false,
+        ),
         ("swe-2-high", "SWE-2 High", None, Some(Vec::new()), false),
-        ("swe-2-medium", "SWE-2 Medium", None, Some(Vec::new()), false),
+        (
+            "swe-2-medium",
+            "SWE-2 Medium",
+            None,
+            Some(Vec::new()),
+            false,
+        ),
         ("swe-2-max", "SWE-2 Max", None, Some(Vec::new()), false),
-        ("swe-2-flash", "SWE-2 Flash", Some(262_144), Some(vec!["medium".into(), "high".into(), "max".into()]), false),
-        ("swe-2-flash-medium", "SWE-2 Flash Medium", Some(262_144), Some(Vec::new()), false),
+        (
+            "swe-2-flash",
+            "SWE-2 Flash",
+            Some(262_144),
+            Some(vec!["medium".into(), "high".into(), "max".into()]),
+            false,
+        ),
+        (
+            "swe-2-flash-medium",
+            "SWE-2 Flash Medium",
+            Some(262_144),
+            Some(Vec::new()),
+            false,
+        ),
         ("adaptive", "Adaptive", None, Some(Vec::new()), true),
         ("opus", "Claude Opus", None, Some(Vec::new()), true),
         ("sonnet", "Claude Sonnet", None, Some(Vec::new()), true),
@@ -319,7 +388,11 @@ fn claude_code_catalog() -> Vec<CatalogModel> {
             id: id.to_string(),
             display_name: None,
             context_window: None,
-            efforts: Some(["low", "medium", "high", "xhigh", "max"].map(String::from).to_vec()),
+            efforts: Some(
+                ["low", "medium", "high", "xhigh", "max"]
+                    .map(String::from)
+                    .to_vec(),
+            ),
             reasoning: Some(true),
             supports_images: Some(true),
         })
@@ -405,7 +478,9 @@ fn openai_models_url(base_url: &str) -> String {
     format!("{}models", chat.trim_end_matches("chat/completions"))
 }
 
-async fn fetch_openai_compatible(cfg: &InferenceProfileConfig) -> Result<Vec<CatalogModel>, String> {
+async fn fetch_openai_compatible(
+    cfg: &InferenceProfileConfig,
+) -> Result<Vec<CatalogModel>, String> {
     let url = openai_models_url(&cfg.base_url);
     let is_openrouter = cfg.base_url.to_ascii_lowercase().contains("openrouter");
     let mut req = catalog_client().get(&url);
@@ -482,9 +557,9 @@ async fn fetch_gemini(cfg: &InferenceProfileConfig) -> Result<Vec<CatalogModel>,
                 && !methods
                     .iter()
                     .any(|x| x.as_str() == Some("generateContent"))
-                {
-                    return None;
-                }
+            {
+                return None;
+            }
             Some(CatalogModel {
                 id,
                 display_name: m["displayName"].as_str().map(str::to_string),
@@ -513,10 +588,19 @@ mod tests {
         )
         .unwrap();
         let models = parse_claude_code_models(&raw);
-        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["default", "claude-opus-4-6", "claude-haiku-4-5-20251001"]);
-        assert_eq!(models[0].display_name.as_deref(), Some("Default (recommended) · Opus 5.5 · Best for everyday, complex tasks"));
+        assert_eq!(
+            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["default", "claude-opus-4-6", "claude-haiku-4-5-20251001"]
+        );
+        assert_eq!(
+            models[0].display_name.as_deref(),
+            Some("Default (recommended) · Opus 5.5 · Best for everyday, complex tasks")
+        );
         assert_eq!(models[1].display_name.as_deref(), Some("Opus 4.6"));
-        assert_eq!(models[1].efforts.as_deref().unwrap(), ["low", "medium", "high", "max"]);
+        assert_eq!(
+            models[1].efforts.as_deref().unwrap(),
+            ["low", "medium", "high", "max"]
+        );
         assert_eq!(models[2].efforts.as_deref(), Some(&[][..]));
         assert_eq!(models[2].reasoning, Some(false));
     }
@@ -556,10 +640,20 @@ mod tests {
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["swe-2", "swe-2-high", "swe-2-medium", "swe-2-flash", "swe-2-flash-medium", "swe-2-flash-high"]
+            [
+                "swe-2",
+                "swe-2-high",
+                "swe-2-medium",
+                "swe-2-flash",
+                "swe-2-flash-medium",
+                "swe-2-flash-high"
+            ]
         );
         let swe2 = models.iter().find(|m| m.id == "swe-2").unwrap();
-        assert_eq!(swe2.efforts.as_deref(), Some(&["medium".into(), "high".into(), "max".into()][..]));
+        assert_eq!(
+            swe2.efforts.as_deref(),
+            Some(&["medium".into(), "high".into(), "max".into()][..])
+        );
         assert_eq!(swe2.supports_images, Some(false));
         let flash = models.iter().find(|m| m.id == "swe-2-flash").unwrap();
         assert_eq!(flash.context_window, Some(262_144));

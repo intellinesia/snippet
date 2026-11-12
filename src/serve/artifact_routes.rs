@@ -1,13 +1,13 @@
 use super::api_error;
 use axum::extract::{Path as AxPath, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Shared};
+use super::Shared;
 
 const LINK_TTL_SECS: i64 = 6 * 60 * 60;
 
@@ -85,7 +85,11 @@ async fn serve(
                 (suffix > 0).then(|| (len.saturating_sub(suffix), len.saturating_sub(1)))
             } else {
                 let start: u64 = a.parse().ok()?;
-                let end = if b.is_empty() { len.saturating_sub(1) } else { b.parse::<u64>().ok()?.min(len.saturating_sub(1)) };
+                let end = if b.is_empty() {
+                    len.saturating_sub(1)
+                } else {
+                    b.parse::<u64>().ok()?.min(len.saturating_sub(1))
+                };
                 Some((start, end))
             }
         });
@@ -113,9 +117,7 @@ struct ZipArtifactReq {
     version: Option<u32>,
 }
 
-async fn zip_artifact(
-    Json(req): Json<ZipArtifactReq>,
-) -> Response {
+async fn zip_artifact(Json(req): Json<ZipArtifactReq>) -> Response {
     let Some(artifact) = crate::artifacts::get(&req.session, &req.id) else {
         return api_error(StatusCode::NOT_FOUND, "no such artifact");
     };
@@ -134,7 +136,8 @@ async fn zip_artifact(
         .map(|rd| rd.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
     let name = format!("{}-v{}", artifact.id, version.n);
-    match tokio::task::spawn_blocking(move || crate::artifacts::zip_to_temp(&name, &sources)).await {
+    match tokio::task::spawn_blocking(move || crate::artifacts::zip_to_temp(&name, &sources)).await
+    {
         Ok(Ok(path)) => Json(json!({ "path": path.display().to_string() })).into_response(),
         Ok(Err(e)) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -147,9 +150,7 @@ struct ZipFilesReq {
     paths: Vec<String>,
 }
 
-async fn zip_files(
-    Json(req): Json<ZipFilesReq>,
-) -> Response {
+async fn zip_files(Json(req): Json<ZipFilesReq>) -> Response {
     let sources: Vec<std::path::PathBuf> = req
         .paths
         .iter()
@@ -160,7 +161,8 @@ async fn zip_files(
         return api_error(StatusCode::BAD_REQUEST, "none of the paths exist");
     }
     let name = req.name.unwrap_or_else(|| "files".to_string());
-    match tokio::task::spawn_blocking(move || crate::artifacts::zip_to_temp(&name, &sources)).await {
+    match tokio::task::spawn_blocking(move || crate::artifacts::zip_to_temp(&name, &sources)).await
+    {
         Ok(Ok(path)) => Json(json!({ "path": path.display().to_string() })).into_response(),
         Ok(Err(e)) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),

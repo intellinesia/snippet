@@ -52,7 +52,9 @@ impl CodingHarness {
             state.iterations = iteration;
             if let Some(mailbox) = &self.config.lane_mailbox {
                 for text in mailbox.drain() {
-                    state.messages.push(HarnessMessage::User { content: text.clone() });
+                    state.messages.push(HarnessMessage::User {
+                        content: text.clone(),
+                    });
                     state.events.push(HarnessEvent::Steer { text });
                 }
             }
@@ -238,6 +240,9 @@ impl CodingHarness {
                                 && state.pending_question.is_some()
                                 && is_held_envelope(&text);
                             had_user_msg |= !hold;
+                            if !hold {
+                                crate::coordination::direct_consumed(&text);
+                            }
                             if was_running {
                                 // Mid-run steer: the step continues; fold it in.
                                 state.messages.push(HarnessMessage::User {
@@ -465,12 +470,16 @@ impl CodingHarness {
                             .iter()
                             .rev()
                             .find_map(|m| match m {
-                                HarnessMessage::User { content } => Some(content.contains("<ambient_turn")),
+                                HarnessMessage::User { content } => {
+                                    Some(content.contains("<ambient_turn"))
+                                }
                                 _ => None,
                             })
                             .unwrap_or(false);
                         if voice_turn {
-                            if let Some((ids, outcome)) = classify_voice_turn(&state.messages, &mut state.events) {
+                            if let Some((ids, outcome)) =
+                                classify_voice_turn(&state.messages, &mut state.events)
+                            {
                                 crate::ambient::record_outcome(&ids, outcome);
                                 if outcome != "spoken" {
                                     self.persist(&mut state, &lanes).await?;
@@ -491,7 +500,9 @@ impl CodingHarness {
                                     self.persist(&mut state, &lanes).await?;
                                 }
                                 Ok(false) => {}
-                                Err(e) => self.debug_log(&format!("memory reflection failed (non-fatal): {e}")),
+                                Err(e) => self.debug_log(&format!(
+                                    "memory reflection failed (non-fatal): {e}"
+                                )),
                             }
                         }
                     }
@@ -508,22 +519,22 @@ impl CodingHarness {
                                 .goal
                                 .as_mut()
                                 .filter(|g| g.status == GoalStatus::Active)
-                            {
-                                goal.status = GoalStatus::Paused;
-                                goal.resume_at = state
-                                    .rate_limit
-                                    .as_ref()
-                                    .and_then(earliest_reset)
-                                    .unwrap_or(0);
-                                let text = goal.text.clone();
-                                state.events.push(HarnessEvent::SystemDecision {
-                                    step: "goal_paused".to_string(),
-                                    reasoning: format!("rate limited — goal paused: {text}"),
-                                });
-                                state.status = HarnessStatus::Idle;
-                                self.persist(&mut state, &lanes).await?;
-                                continue;
-                            }
+                        {
+                            goal.status = GoalStatus::Paused;
+                            goal.resume_at = state
+                                .rate_limit
+                                .as_ref()
+                                .and_then(earliest_reset)
+                                .unwrap_or(0);
+                            let text = goal.text.clone();
+                            state.events.push(HarnessEvent::SystemDecision {
+                                step: "goal_paused".to_string(),
+                                reasoning: format!("rate limited — goal paused: {text}"),
+                            });
+                            state.status = HarnessStatus::Idle;
+                            self.persist(&mut state, &lanes).await?;
+                            continue;
+                        }
                         if crate::routing::is_limit_error(&message) {
                             state.status = HarnessStatus::Idle;
                             self.persist(&mut state, &lanes).await?;
@@ -612,6 +623,7 @@ impl CodingHarness {
                                 self.persist(&mut state, &lanes).await?;
                                 continue;
                             }
+                            crate::coordination::direct_consumed(&text);
                             self.accept_user_message(&mut state, &mut vars, text).await;
                             consecutive_errors = 0;
                             self.persist(&mut state, &lanes).await?;
@@ -832,10 +844,12 @@ pub(super) fn backoff_delay(attempt: usize, base_ms: u64, max_ms: u64) -> Durati
     Duration::from_millis(delay)
 }
 
-
-
 impl CodingHarness {
-    async fn park_interrupted(&self, state: &mut HarnessState, lanes: &LaneManager) -> Result<(), ToolError> {
+    async fn park_interrupted(
+        &self,
+        state: &mut HarnessState,
+        lanes: &LaneManager,
+    ) -> Result<(), ToolError> {
         state.pending_question = None;
         pause_goal_on_interrupt(state);
         state.status = HarnessStatus::Interrupted;
@@ -852,7 +866,11 @@ impl CodingHarness {
 /// A manual stop must also stop the goal: left Active, the idle loop re-drives it
 /// and a scheduled job's later runs stay blocked behind it.
 pub(super) fn pause_goal_on_interrupt(state: &mut HarnessState) {
-    if let Some(goal) = state.goal.as_mut().filter(|g| g.status == GoalStatus::Active) {
+    if let Some(goal) = state
+        .goal
+        .as_mut()
+        .filter(|g| g.status == GoalStatus::Active)
+    {
         goal.status = GoalStatus::Paused;
         goal.resume_at = 0;
         let text = goal.text.clone();
@@ -873,7 +891,12 @@ fn trim_spoken_calls(state: &mut HarnessState, evt_mark: usize) {
             HarnessMessage::User { .. } => break,
             HarnessMessage::Assistant { tool_calls, .. } => {
                 for call in tool_calls.iter_mut().filter(|c| is_speak_tool(&c.name)) {
-                    if let Some((heard, note)) = call.arguments.get("text").and_then(|t| t.as_str()).and_then(crate::speech::cut_view) {
+                    if let Some((heard, note)) = call
+                        .arguments
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .and_then(crate::speech::cut_view)
+                    {
                         call.arguments["text"] = serde_json::Value::String(heard);
                         call.arguments["cut_off_by_user"] = serde_json::Value::String(note.into());
                     }
@@ -884,12 +907,19 @@ fn trim_spoken_calls(state: &mut HarnessState, evt_mark: usize) {
     }
     let from = evt_mark.min(state.events.len());
     for event in state.events[from..].iter_mut() {
-        if let HarnessEvent::ToolCall { tool_name, arguments } = event
+        if let HarnessEvent::ToolCall {
+            tool_name,
+            arguments,
+        } = event
             && is_speak_tool(tool_name)
-                && let Some((heard, note)) = arguments.get("text").and_then(|t| t.as_str()).and_then(crate::speech::cut_view) {
-                    arguments["text"] = serde_json::Value::String(heard);
-                    arguments["cut_off_by_user"] = serde_json::Value::String(note.into());
-                }
+            && let Some((heard, note)) = arguments
+                .get("text")
+                .and_then(|t| t.as_str())
+                .and_then(crate::speech::cut_view)
+        {
+            arguments["text"] = serde_json::Value::String(heard);
+            arguments["cut_off_by_user"] = serde_json::Value::String(note.into());
+        }
     }
 }
 
@@ -907,13 +937,22 @@ fn voice_turn_ids(messages: &[HarnessMessage]) -> Option<(Vec<String>, bool)> {
         .find(" ids=\"")
         .map(|i| &content[i + 6..])
         .and_then(|rest| rest.split('"').next())
-        .map(|v| v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect())
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
     Some((ids, turn))
 }
 
 /// Outcome of a delivered voice turn; marks its closing assistant text quiet when nothing was spoken.
-fn classify_voice_turn(messages: &[HarnessMessage], events: &mut [HarnessEvent]) -> Option<(Vec<String>, &'static str)> {
+fn classify_voice_turn(
+    messages: &[HarnessMessage],
+    events: &mut [HarnessEvent],
+) -> Option<(Vec<String>, &'static str)> {
     let (ids, turn) = voice_turn_ids(messages)?;
     if !turn {
         return None;
@@ -949,44 +988,90 @@ mod outcome_tests {
     use crate::llm::ToolCallRecord;
 
     fn user() -> HarnessMessage {
-        HarnessMessage::User { content: "<ambient_turn mode=\"active\" ids=\"x,y\" parts=\"2\">hi</ambient_turn>".into() }
+        HarnessMessage::User {
+            content: "<ambient_turn mode=\"active\" ids=\"x,y\" parts=\"2\">hi</ambient_turn>"
+                .into(),
+        }
     }
 
     fn text(s: &str) -> HarnessEvent {
-        HarnessEvent::AssistantText { text: s.into(), quiet: false }
+        HarnessEvent::AssistantText {
+            text: s.into(),
+            quiet: false,
+        }
     }
 
     fn quiet_flags(events: &[HarnessEvent]) -> Vec<bool> {
-        events.iter().filter_map(|e| if let HarnessEvent::AssistantText { quiet, .. } = e { Some(*quiet) } else { None }).collect()
+        events
+            .iter()
+            .filter_map(|e| {
+                if let HarnessEvent::AssistantText { quiet, .. } = e {
+                    Some(*quiet)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     #[test]
     fn outcomes_spoken_typed_quiet() {
         let speak = HarnessMessage::Assistant {
             content: String::new(),
-            tool_calls: vec![ToolCallRecord { id: "1".into(), name: "speak".into(), arguments: serde_json::json!({"text": "hi"}), signature: None, origin_model: None }],
+            tool_calls: vec![ToolCallRecord {
+                id: "1".into(),
+                name: "speak".into(),
+                arguments: serde_json::json!({"text": "hi"}),
+                signature: None,
+                origin_model: None,
+            }],
         };
         let mut events = vec![HarnessEvent::UserInput { text: "t".into() }, text("done")];
         let (ids, outcome) = classify_voice_turn(&[user(), speak], &mut events).unwrap();
-        assert_eq!((ids, outcome), (vec!["x".to_string(), "y".to_string()], "spoken"));
+        assert_eq!(
+            (ids, outcome),
+            (vec!["x".to_string(), "y".to_string()], "spoken")
+        );
         assert_eq!(quiet_flags(&events), vec![false]);
 
-        let reply = HarnessMessage::Assistant { content: "no reply needed".into(), tool_calls: vec![] };
-        let mut events = vec![HarnessEvent::UserInput { text: "t".into() }, text("no reply needed")];
-        assert_eq!(classify_voice_turn(&[user(), reply.clone()], &mut events).unwrap().1, "typed");
+        let reply = HarnessMessage::Assistant {
+            content: "no reply needed".into(),
+            tool_calls: vec![],
+        };
+        let mut events = vec![
+            HarnessEvent::UserInput { text: "t".into() },
+            text("no reply needed"),
+        ];
+        assert_eq!(
+            classify_voice_turn(&[user(), reply.clone()], &mut events)
+                .unwrap()
+                .1,
+            "typed"
+        );
         assert_eq!(quiet_flags(&events), vec![true]);
 
         let mut events = vec![HarnessEvent::UserInput { text: "t".into() }];
-        assert_eq!(classify_voice_turn(&[user()], &mut events).unwrap().1, "quiet");
+        assert_eq!(
+            classify_voice_turn(&[user()], &mut events).unwrap().1,
+            "quiet"
+        );
 
-        let typed = [HarnessMessage::User { content: "hello".into() }, reply];
+        let typed = [
+            HarnessMessage::User {
+                content: "hello".into(),
+            },
+            reply,
+        ];
         assert!(classify_voice_turn(&typed, &mut []).is_none());
     }
 
     #[test]
     fn quiet_is_omitted_from_json_when_false() {
         assert_eq!(serde_json::to_value(text("a")).unwrap().get("quiet"), None);
-        let q = HarnessEvent::AssistantText { text: "a".into(), quiet: true };
+        let q = HarnessEvent::AssistantText {
+            text: "a".into(),
+            quiet: true,
+        };
         assert_eq!(serde_json::to_value(q).unwrap()["quiet"], true);
     }
 }

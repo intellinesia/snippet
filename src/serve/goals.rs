@@ -2,11 +2,11 @@
 //! for the app to render.
 
 use super::api_error;
+use axum::Router;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -14,10 +14,12 @@ use crate::coordination::goals::{self, attention, progress};
 use crate::coordination::{Goal, GoalStatus, Task, TaskStatus};
 use crate::store::Store;
 
-use super::{Shared};
+use super::Shared;
 
 pub fn router() -> Router<Shared> {
-    Router::new().route("/goals", get(list)).route("/goals/{id}", get(detail))
+    Router::new()
+        .route("/goals", get(list))
+        .route("/goals/{id}", get(detail))
 }
 
 #[derive(Deserialize)]
@@ -27,7 +29,11 @@ struct ListQuery {
 
 fn summary(goal: &Goal, tasks: &[Task]) -> Value {
     let (done, total) = progress(tasks);
-    let in_force = goal.acceptance.iter().filter(|c| c.dropped.is_empty()).count();
+    let in_force = goal
+        .acceptance
+        .iter()
+        .filter(|c| c.dropped.is_empty())
+        .count();
     json!({
         "id": goal.id, "title": goal.title, "outcome": goal.outcome, "status": goal.status,
         "requester": goal.requester, "created_at": goal.created_at, "closed_at": goal.closed_at,
@@ -81,7 +87,12 @@ async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
         None | Some("") | Some("all") => None,
         Some(s) => match GoalStatus::parse(s) {
             Some(parsed) => Some(parsed),
-            None => return api_error(StatusCode::BAD_REQUEST, "status must be open, closed, cancelled or all"),
+            None => {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    "status must be open, closed, cancelled or all",
+                );
+            }
         },
     };
     match d.store.list_goals(status) {
@@ -114,14 +125,33 @@ mod tests {
     fn the_detail_shows_progress_blockers_plan_and_attention() {
         let store = Store::open_in_memory().unwrap();
         let mut goal = Goal::new(
-            "g".into(), "Launch".into(), "Live".into(),
-            vec![GoalCriterion { criterion: "loads".into(), method: VerifyMethod::Command, evidence: String::new(), dropped: String::new() }],
-            "user".into(), "2026-01-01T00:00:00Z".into(),
+            "g".into(),
+            "Launch".into(),
+            "Live".into(),
+            vec![GoalCriterion {
+                criterion: "loads".into(),
+                method: VerifyMethod::Command,
+                evidence: String::new(),
+                dropped: String::new(),
+            }],
+            "user".into(),
+            "2026-01-01T00:00:00Z".into(),
         );
         goal.plan = json!({"slices": [{"n": 0, "task_id": "a", "title": "A", "depends_on": []}, {"n": 1, "task_id": "b", "title": "B", "depends_on": [0]}]});
         store.create_goal(&goal).unwrap();
-        for (id, st) in [("a", TaskStatus::Done), ("b", TaskStatus::Failed), ("c", TaskStatus::Cancelled)] {
-            let mut t = Task::filed_by_human(id.into(), id.to_uppercase(), "d".into(), "s".into(), 0, "2026-01-01T00:00:00Z".into());
+        for (id, st) in [
+            ("a", TaskStatus::Done),
+            ("b", TaskStatus::Failed),
+            ("c", TaskStatus::Cancelled),
+        ] {
+            let mut t = Task::filed_by_human(
+                id.into(),
+                id.to_uppercase(),
+                "d".into(),
+                "s".into(),
+                0,
+                "2026-01-01T00:00:00Z".into(),
+            );
             t.goal_id = Some("g".into());
             t.status = st;
             store.create_task(&t).unwrap();
@@ -134,17 +164,39 @@ mod tests {
         assert_eq!(v["tasks"][1]["slice"], 1);
         assert_eq!(v["plan"][1]["depends_on"], json!([0]));
         assert_eq!(v["acceptance"][0]["criterion"], "loads");
-        assert_eq!(summary(&goal, &[])["progress"], json!({"done": 0, "total": 0}));
+        assert_eq!(
+            summary(&goal, &[])["progress"],
+            json!({"done": 0, "total": 0})
+        );
     }
 
     #[test]
     fn task_json_carries_the_goal() {
         let store = Store::open_in_memory().unwrap();
-        store.create_goal(&Goal::new("g".into(), "Launch".into(), "Live".into(), vec![], "u".into(), "2026-01-01T00:00:00Z".into())).unwrap();
-        let mut t = Task::filed_by_human("a".into(), "A".into(), "d".into(), "s".into(), 0, "2026-01-01T00:00:00Z".into());
+        store
+            .create_goal(&Goal::new(
+                "g".into(),
+                "Launch".into(),
+                "Live".into(),
+                vec![],
+                "u".into(),
+                "2026-01-01T00:00:00Z".into(),
+            ))
+            .unwrap();
+        let mut t = Task::filed_by_human(
+            "a".into(),
+            "A".into(),
+            "d".into(),
+            "s".into(),
+            0,
+            "2026-01-01T00:00:00Z".into(),
+        );
         t.goal_id = Some("g".into());
         let fields = crate::task_state_tools::api_fields(&store, &t);
-        assert_eq!((fields["goal_id"].as_str(), fields["goal_title"].as_str()), (Some("g"), Some("Launch")));
+        assert_eq!(
+            (fields["goal_id"].as_str(), fields["goal_title"].as_str()),
+            (Some("g"), Some("Launch"))
+        );
         t.goal_id = None;
         let fields = crate::task_state_tools::api_fields(&store, &t);
         assert!(fields["goal_id"].is_null() && fields["goal_title"].is_null());

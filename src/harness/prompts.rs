@@ -513,4 +513,3 @@ pub(super) fn render_window(
     }
     out
 }
-

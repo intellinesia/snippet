@@ -250,7 +250,8 @@ pub async fn refresh(prior: &XaiTokens) -> Result<XaiTokens, String> {
 /// A valid access token for a request on the account currently in rotation,
 /// refreshing it when stale. Returns the account id with the bearer value.
 pub async fn access_token() -> Result<(String, String), String> {
-    let id = crate::accounts::active("xai").ok_or("not signed in to xAI — run `snippet xai login`")?;
+    let id =
+        crate::accounts::active("xai").ok_or("not signed in to xAI — run `snippet xai login`")?;
     let tokens = load_account(&id).ok_or("not signed in to xAI — run `snippet xai login`")?;
     if !tokens.is_stale() {
         return Ok((id, tokens.access_token));

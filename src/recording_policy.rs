@@ -9,7 +9,8 @@ pub const MAX_RULE_MINUTES: i64 = 43_200;
 pub const MAX_RETENTION_DAYS: u32 = 3650;
 pub const REFUSAL_COOLDOWN_MS: i64 = 600_000;
 
-static LIVE: std::sync::OnceLock<std::sync::Mutex<Option<RecordingPolicy>>> = std::sync::OnceLock::new();
+static LIVE: std::sync::OnceLock<std::sync::Mutex<Option<RecordingPolicy>>> =
+    std::sync::OnceLock::new();
 
 pub fn sync(policy: &RecordingPolicy) {
     *LIVE.get_or_init(Default::default).lock().unwrap() = Some(policy.clone());
@@ -40,7 +41,12 @@ pub struct RecordingPolicy {
 
 impl Default for RecordingPolicy {
     fn default() -> Self {
-        RecordingPolicy { retention_days: default_retention(), snooze_until_ms: None, rules: Vec::new(), windows: Vec::new() }
+        RecordingPolicy {
+            retention_days: default_retention(),
+            snooze_until_ms: None,
+            rules: Vec::new(),
+            windows: Vec::new(),
+        }
     }
 }
 
@@ -84,12 +90,21 @@ impl Rule {
         self.expires_at_ms.is_none_or(|t| t > now_ms)
     }
 
-    pub fn matches_deterministic(&self, text_lower: &str, local: NaiveDateTime, now_ms: i64) -> bool {
+    pub fn matches_deterministic(
+        &self,
+        text_lower: &str,
+        local: NaiveDateTime,
+        now_ms: i64,
+    ) -> bool {
         if !self.is_live(now_ms) || !self.when.matches_schedule(local) {
             return false;
         }
         if !self.when.keywords.is_empty() {
-            return self.when.keywords.iter().any(|k| text_lower.contains(&k.to_lowercase()));
+            return self
+                .when
+                .keywords
+                .iter()
+                .any(|k| text_lower.contains(&k.to_lowercase()));
         }
         self.about.is_empty() || self.mode == "auto"
     }
@@ -123,17 +138,32 @@ fn minutes(hhmm: &str) -> Option<u32> {
 
 pub fn local_at(ms: i64) -> NaiveDateTime {
     use chrono::TimeZone;
-    chrono::Local.timestamp_millis_opt(ms).single().map(|t| t.naive_local()).unwrap_or_default()
+    chrono::Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|t| t.naive_local())
+        .unwrap_or_default()
 }
 
 impl When {
     pub fn matches_schedule(&self, local: NaiveDateTime) -> bool {
-        if !self.weekdays.is_empty() && !self.weekdays.contains(&(local.weekday().num_days_from_sunday() as u8)) {
+        if !self.weekdays.is_empty()
+            && !self
+                .weekdays
+                .contains(&(local.weekday().num_days_from_sunday() as u8))
+        {
             return false;
         }
-        if let (Some(from), Some(to)) = (self.from_hhmm.as_deref().and_then(minutes), self.to_hhmm.as_deref().and_then(minutes)) {
+        if let (Some(from), Some(to)) = (
+            self.from_hhmm.as_deref().and_then(minutes),
+            self.to_hhmm.as_deref().and_then(minutes),
+        ) {
             let now = local.hour() * 60 + local.minute();
-            let inside = if from <= to { now >= from && now < to } else { now >= from || now < to };
+            let inside = if from <= to {
+                now >= from && now < to
+            } else {
+                now >= from || now < to
+            };
             if !inside {
                 return false;
             }
@@ -142,7 +172,12 @@ impl When {
     }
 
     pub fn matches(&self, text_lower: &str, local: NaiveDateTime) -> bool {
-        if !self.keywords.is_empty() && !self.keywords.iter().any(|k| text_lower.contains(&k.to_lowercase())) {
+        if !self.keywords.is_empty()
+            && !self
+                .keywords
+                .iter()
+                .any(|k| text_lower.contains(&k.to_lowercase()))
+        {
             return false;
         }
         self.matches_schedule(local)
@@ -166,7 +201,10 @@ impl RecordingPolicy {
     }
 
     pub fn active_rules(&self, now_ms: i64, local: NaiveDateTime) -> Vec<&Rule> {
-        self.rules.iter().filter(|r| r.is_live(now_ms) && r.when.matches_schedule(local)).collect()
+        self.rules
+            .iter()
+            .filter(|r| r.is_live(now_ms) && r.when.matches_schedule(local))
+            .collect()
     }
 
     pub fn matches_never(&self, now_ms: i64, local: NaiveDateTime, heard: &str) -> bool {
@@ -176,7 +214,10 @@ impl RecordingPolicy {
         let text = heard.to_lowercase();
         let live = |w: &&Window| w.from_ms <= now_ms && now_ms < w.to_ms;
         self.windows.iter().filter(live).any(|w| w.mode == "never")
-            || self.rules.iter().any(|r| r.mode == "never" && r.matches_deterministic(&text, local, now_ms))
+            || self
+                .rules
+                .iter()
+                .any(|r| r.mode == "never" && r.matches_deterministic(&text, local, now_ms))
     }
 
     /// The first address or meeting rule whose keywords appear in `heard`.
@@ -184,7 +225,11 @@ impl RecordingPolicy {
         let text = heard.to_lowercase();
         self.rules
             .iter()
-            .find(|r| matches!(r.mode.as_str(), "address" | "meeting") && !r.when.keywords.is_empty() && r.matches_deterministic(&text, local, now_ms))
+            .find(|r| {
+                matches!(r.mode.as_str(), "address" | "meeting")
+                    && !r.when.keywords.is_empty()
+                    && r.matches_deterministic(&text, local, now_ms)
+            })
             .map(|r| r.mode.as_str())
     }
 
@@ -201,7 +246,13 @@ impl RecordingPolicy {
     }
 
     /// Snooze or never beats auto beats ask. A live refusal drops the call, unless the approval came after it.
-    pub fn decide(&self, now_ms: i64, local: NaiveDateTime, heard: &str, refused_at: Option<i64>) -> Decision {
+    pub fn decide(
+        &self,
+        now_ms: i64,
+        local: NaiveDateTime,
+        heard: &str,
+        refused_at: Option<i64>,
+    ) -> Decision {
         if self.matches_never(now_ms, local, heard) {
             return Decision::Drop;
         }
@@ -209,17 +260,39 @@ impl RecordingPolicy {
         let newer = |created_at: i64| refused_at.is_none_or(|t| created_at > t);
         let live = |w: &&Window| w.from_ms <= now_ms && now_ms < w.to_ms;
         let hit = |r: &&Rule| r.matches_deterministic(&text, local, now_ms);
-        if let Some(w) = self.windows.iter().filter(live).find(|w| w.mode == "auto" && newer(w.created_at)) {
-            return Decision::Auto { label: w.label.clone() };
+        if let Some(w) = self
+            .windows
+            .iter()
+            .filter(live)
+            .find(|w| w.mode == "auto" && newer(w.created_at))
+        {
+            return Decision::Auto {
+                label: w.label.clone(),
+            };
         }
-        match self.rules.iter().filter(hit).find(|r| r.mode == "auto" && newer(r.created_at)) {
-            Some(r) => Decision::Auto { label: r.label.clone() },
+        match self
+            .rules
+            .iter()
+            .filter(hit)
+            .find(|r| r.mode == "auto" && newer(r.created_at))
+        {
+            Some(r) => Decision::Auto {
+                label: r.label.clone(),
+            },
             None if refused_at.is_some() => Decision::Drop,
             None => Decision::Ask,
         }
     }
 
-    pub fn add_window(&mut self, label: &str, from_ms: i64, to_ms: i64, mode: &str, basis: &str, now_ms: i64) -> Result<String, String> {
+    pub fn add_window(
+        &mut self,
+        label: &str,
+        from_ms: i64,
+        to_ms: i64,
+        mode: &str,
+        basis: &str,
+        now_ms: i64,
+    ) -> Result<String, String> {
         mode_ok(mode)?;
         need_basis(basis)?;
         let label = need_label(label)?;
@@ -234,7 +307,15 @@ impl RecordingPolicy {
         }
         self.prune(now_ms);
         let id = uuid::Uuid::new_v4().to_string();
-        self.windows.push(Window { id: id.clone(), label, from_ms, to_ms, mode: mode.into(), basis: basis.trim().into(), created_at: now_ms });
+        self.windows.push(Window {
+            id: id.clone(),
+            label,
+            from_ms,
+            to_ms,
+            mode: mode.into(),
+            basis: basis.trim().into(),
+            created_at: now_ms,
+        });
         Ok(id)
     }
 
@@ -247,7 +328,14 @@ impl RecordingPolicy {
         Ok(until)
     }
 
-    pub fn set_rule(&mut self, label: &str, mode: &str, when: When, basis: &str, now_ms: i64) -> Result<String, String> {
+    pub fn set_rule(
+        &mut self,
+        label: &str,
+        mode: &str,
+        when: When,
+        basis: &str,
+        now_ms: i64,
+    ) -> Result<String, String> {
         self.set_rule_with(label, mode, "", when, None, basis, now_ms)
     }
 
@@ -267,14 +355,27 @@ impl RecordingPolicy {
             "for_assistant" => "address",
             other => other,
         };
-        if !matches!(mode, "auto" | "note" | "ask" | "never" | "address" | "meeting") {
+        if !matches!(
+            mode,
+            "auto" | "note" | "ask" | "never" | "address" | "meeting"
+        ) {
             return Err("mode must be auto, note (include), ask, never (ignore), address (for_assistant) or meeting".into());
         }
-        if mode == "auto" && !about.trim().is_empty() && when.keywords.is_empty() && when.weekdays.is_empty() && when.from_hhmm.is_none() {
+        if mode == "auto"
+            && !about.trim().is_empty()
+            && when.keywords.is_empty()
+            && when.weekdays.is_empty()
+            && when.from_hhmm.is_none()
+        {
             return Err("an auto rule needs keywords or a schedule: `about` alone can't start a recording. To record the conversation happening now, use action start".into());
         }
-        if matches!(mode, "address" | "meeting") && about.trim().is_empty() && when.keywords.is_empty() {
-            return Err("this rule needs `about` or `keywords` to say what speech it covers".into());
+        if matches!(mode, "address" | "meeting")
+            && about.trim().is_empty()
+            && when.keywords.is_empty()
+        {
+            return Err(
+                "this rule needs `about` or `keywords` to say what speech it covers".into(),
+            );
         }
         if mode != "ask" {
             need_basis(basis)?;
@@ -320,12 +421,19 @@ impl RecordingPolicy {
 }
 
 fn mode_ok(mode: &str) -> Result<(), String> {
-    if matches!(mode, "auto" | "never") { Ok(()) } else { Err("mode must be auto or never".into()) }
+    if matches!(mode, "auto" | "never") {
+        Ok(())
+    } else {
+        Err("mode must be auto or never".into())
+    }
 }
 
 fn need_basis(basis: &str) -> Result<(), String> {
     if basis.trim().is_empty() {
-        Err("basis is required: quote what the user said or the standing approval this rests on".into())
+        Err(
+            "basis is required: quote what the user said or the standing approval this rests on"
+                .into(),
+        )
     } else {
         Ok(())
     }
@@ -333,11 +441,20 @@ fn need_basis(basis: &str) -> Result<(), String> {
 
 fn need_label(label: &str) -> Result<String, String> {
     let label = label.trim();
-    if label.is_empty() { Err("label is required".into()) } else { Ok(label.chars().take(80).collect()) }
+    if label.is_empty() {
+        Err("label is required".into())
+    } else {
+        Ok(label.chars().take(80).collect())
+    }
 }
 
 fn clean_when(mut when: When) -> Result<When, String> {
-    when.keywords = when.keywords.iter().map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()).collect();
+    when.keywords = when
+        .keywords
+        .iter()
+        .map(|k| k.trim().to_lowercase())
+        .filter(|k| !k.is_empty())
+        .collect();
     if when.weekdays.iter().any(|d| *d > 6) {
         return Err("weekdays are 0 (Sunday) to 6 (Saturday)".into());
     }
@@ -360,11 +477,14 @@ pub fn parse_when(text: &str) -> Result<i64, String> {
     }
     for fmt in ["%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"] {
         if let Ok(n) = NaiveDateTime::parse_from_str(t, fmt)
-            && let Some(dt) = chrono::Local.from_local_datetime(&n).single() {
-                return Ok(dt.timestamp_millis());
-            }
+            && let Some(dt) = chrono::Local.from_local_datetime(&n).single()
+        {
+            return Ok(dt.timestamp_millis());
+        }
     }
-    Err(format!("could not read the time \"{t}\": use RFC 3339 or YYYY-MM-DD HH:MM"))
+    Err(format!(
+        "could not read the time \"{t}\": use RFC 3339 or YYYY-MM-DD HH:MM"
+    ))
 }
 
 pub fn clamp_retention(days: u32) -> u32 {
@@ -376,9 +496,13 @@ pub fn now_ms() -> i64 {
 }
 
 /// Load the config, apply `f`, save it. Used by the Mission Control tools.
-pub async fn update<T>(f: impl FnOnce(&mut RecordingPolicy, i64) -> Result<T, String>) -> Result<(T, RecordingPolicy), String> {
+pub async fn update<T>(
+    f: impl FnOnce(&mut RecordingPolicy, i64) -> Result<T, String>,
+) -> Result<(T, RecordingPolicy), String> {
     let path = crate::config::default_config_path();
-    let mut config = crate::config::SnippetConfig::load(&path).await.map_err(|e| e.to_string())?;
+    let mut config = crate::config::SnippetConfig::load(&path)
+        .await
+        .map_err(|e| e.to_string())?;
     let now = now_ms();
     config.recording.prune(now);
     let out = f(&mut config.recording, now)?;
@@ -388,7 +512,10 @@ pub async fn update<T>(f: impl FnOnce(&mut RecordingPolicy, i64) -> Result<T, St
 }
 
 pub async fn current() -> RecordingPolicy {
-    let mut p = crate::config::SnippetConfig::load(crate::config::default_config_path()).await.map(|c| c.recording).unwrap_or_default();
+    let mut p = crate::config::SnippetConfig::load(crate::config::default_config_path())
+        .await
+        .map(|c| c.recording)
+        .unwrap_or_default();
     p.prune(now_ms());
     sync(&p);
     p
@@ -402,15 +529,30 @@ mod tests {
     const NOW: i64 = 1_800_000_000_000;
 
     fn at(day: u32, h: u32, m: u32) -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(2026, 11, day).unwrap().and_hms_opt(h, m, 0).unwrap()
+        NaiveDate::from_ymd_opt(2026, 11, day)
+            .unwrap()
+            .and_hms_opt(h, m, 0)
+            .unwrap()
     }
 
     fn rule(mode: &str, when: When) -> Rule {
-        Rule { id: "r".into(), label: format!("{mode} rule"), mode: mode.into(), about: String::new(), when, expires_at_ms: None, basis: "b".into(), created_at: 0 }
+        Rule {
+            id: "r".into(),
+            label: format!("{mode} rule"),
+            mode: mode.into(),
+            about: String::new(),
+            when,
+            expires_at_ms: None,
+            basis: "b".into(),
+            created_at: 0,
+        }
     }
 
     fn kw(k: &str) -> When {
-        When { keywords: vec![k.into()], ..When::default() }
+        When {
+            keywords: vec![k.into()],
+            ..When::default()
+        }
     }
 
     #[test]
@@ -418,16 +560,45 @@ mod tests {
         let mut p = RecordingPolicy::default();
         assert_eq!(p.decide(NOW, at(2, 10, 0), "standup", None), Decision::Ask);
         p.rules.push(rule("auto", kw("standup")));
-        assert_eq!(p.decide(NOW, at(2, 10, 0), "Daily STANDUP time", None), Decision::Auto { label: "auto rule".into() });
-        assert_eq!(p.decide(NOW, at(2, 10, 0), "standup", Some(NOW - 1)), Decision::Drop);
+        assert_eq!(
+            p.decide(NOW, at(2, 10, 0), "Daily STANDUP time", None),
+            Decision::Auto {
+                label: "auto rule".into()
+            }
+        );
+        assert_eq!(
+            p.decide(NOW, at(2, 10, 0), "standup", Some(NOW - 1)),
+            Decision::Drop
+        );
         p.rules[0].created_at = NOW;
-        assert_eq!(p.decide(NOW, at(2, 10, 0), "standup", Some(NOW - 1)), Decision::Auto { label: "auto rule".into() });
+        assert_eq!(
+            p.decide(NOW, at(2, 10, 0), "standup", Some(NOW - 1)),
+            Decision::Auto {
+                label: "auto rule".into()
+            }
+        );
         p.rules.push(rule("never", kw("standup")));
         assert_eq!(p.decide(NOW, at(2, 10, 0), "standup", None), Decision::Drop);
         p.rules.pop();
-        p.windows.push(Window { id: "w".into(), label: "retro".into(), from_ms: NOW - 1, to_ms: NOW + 1000, mode: "auto".into(), basis: "b".into(), created_at: 0 });
-        assert_eq!(p.decide(NOW, at(2, 10, 0), "unrelated", None), Decision::Auto { label: "retro".into() });
-        assert_eq!(p.decide(NOW + 1000, at(2, 10, 0), "unrelated", None), Decision::Ask);
+        p.windows.push(Window {
+            id: "w".into(),
+            label: "retro".into(),
+            from_ms: NOW - 1,
+            to_ms: NOW + 1000,
+            mode: "auto".into(),
+            basis: "b".into(),
+            created_at: 0,
+        });
+        assert_eq!(
+            p.decide(NOW, at(2, 10, 0), "unrelated", None),
+            Decision::Auto {
+                label: "retro".into()
+            }
+        );
+        assert_eq!(
+            p.decide(NOW + 1000, at(2, 10, 0), "unrelated", None),
+            Decision::Ask
+        );
         p.windows[0].mode = "never".into();
         assert_eq!(p.decide(NOW, at(2, 10, 0), "standup", None), Decision::Drop);
         p.windows[0].mode = "auto".into();
@@ -438,13 +609,22 @@ mod tests {
 
     #[test]
     fn keywords_weekdays_and_times_including_midnight_wrap() {
-        let when = When { keywords: vec!["Board".into()], weekdays: vec![1], from_hhmm: Some("09:00".into()), to_hhmm: Some("10:30".into()) };
+        let when = When {
+            keywords: vec!["Board".into()],
+            weekdays: vec![1],
+            from_hhmm: Some("09:00".into()),
+            to_hhmm: Some("10:30".into()),
+        };
         let monday = at(2, 9, 30);
         assert!(when.matches("board review", monday));
         assert!(!when.matches("lunch", monday));
         assert!(!when.matches("board", at(3, 9, 30)));
         assert!(!when.matches("board", at(2, 10, 30)));
-        let night = When { from_hhmm: Some("22:00".into()), to_hhmm: Some("02:00".into()), ..When::default() };
+        let night = When {
+            from_hhmm: Some("22:00".into()),
+            to_hhmm: Some("02:00".into()),
+            ..When::default()
+        };
         assert!(night.matches("", at(2, 23, 0)) && night.matches("", at(3, 1, 59)));
         assert!(!night.matches("", at(2, 12, 0)) && !night.matches("", at(3, 2, 0)));
         assert!(When::default().matches("anything", monday));
@@ -453,10 +633,17 @@ mod tests {
     #[test]
     fn windows_expire_and_are_capped_at_twelve_hours() {
         let mut p = RecordingPolicy::default();
-        assert!(p.add_window("x", NOW, NOW + MAX_WINDOW_MS + 1, "auto", "b", NOW).is_err());
+        assert!(
+            p.add_window("x", NOW, NOW + MAX_WINDOW_MS + 1, "auto", "b", NOW)
+                .is_err()
+        );
         assert!(p.add_window("x", NOW, NOW, "auto", "b", NOW).is_err());
-        assert!(p.add_window("x", NOW - 2000, NOW - 1000, "auto", "b", NOW).is_err());
-        p.add_window("x", NOW, NOW + MAX_WINDOW_MS, "auto", "b", NOW).unwrap();
+        assert!(
+            p.add_window("x", NOW - 2000, NOW - 1000, "auto", "b", NOW)
+                .is_err()
+        );
+        p.add_window("x", NOW, NOW + MAX_WINDOW_MS, "auto", "b", NOW)
+            .unwrap();
         assert!(!p.prune(NOW + MAX_WINDOW_MS - 1));
         assert!(p.prune(NOW + MAX_WINDOW_MS));
         assert!(p.windows.is_empty());
@@ -465,16 +652,54 @@ mod tests {
     #[test]
     fn basis_is_required_for_auto_and_never_entries() {
         let mut p = RecordingPolicy::default();
-        assert!(p.add_window("x", NOW, NOW + 1000, "auto", "  ", NOW).is_err());
-        assert!(p.add_window("x", NOW, NOW + 1000, "never", "", NOW).is_err());
+        assert!(
+            p.add_window("x", NOW, NOW + 1000, "auto", "  ", NOW)
+                .is_err()
+        );
+        assert!(
+            p.add_window("x", NOW, NOW + 1000, "never", "", NOW)
+                .is_err()
+        );
         assert!(p.set_rule("r", "auto", When::default(), "", NOW).is_err());
         assert!(p.set_rule("r", "never", When::default(), " ", NOW).is_err());
         assert!(p.set_rule("r", "ask", When::default(), "", NOW).is_ok());
-        let id = p.set_rule("r", "auto", kw(" Standup "), "user: always record standup", NOW).unwrap();
+        let id = p
+            .set_rule(
+                "r",
+                "auto",
+                kw(" Standup "),
+                "user: always record standup",
+                NOW,
+            )
+            .unwrap();
         assert_eq!(p.rules.len(), 1, "same label replaces");
         assert_eq!(p.rules[0].when.keywords, ["standup"]);
-        assert!(p.set_rule("bad", "auto", When { weekdays: vec![7], ..When::default() }, "b", NOW).is_err());
-        assert!(p.set_rule("bad", "auto", When { from_hhmm: Some("09:00".into()), ..When::default() }, "b", NOW).is_err());
+        assert!(
+            p.set_rule(
+                "bad",
+                "auto",
+                When {
+                    weekdays: vec![7],
+                    ..When::default()
+                },
+                "b",
+                NOW
+            )
+            .is_err()
+        );
+        assert!(
+            p.set_rule(
+                "bad",
+                "auto",
+                When {
+                    from_hhmm: Some("09:00".into()),
+                    ..When::default()
+                },
+                "b",
+                NOW
+            )
+            .is_err()
+        );
         assert!(p.remove_rule(&id) && !p.remove_rule(&id));
     }
 
@@ -483,31 +708,102 @@ mod tests {
         let mut p = RecordingPolicy::default();
         assert!(p.snooze(0, NOW).is_err() && p.snooze(721, NOW).is_err());
         assert_eq!(p.snooze(60, NOW).unwrap(), NOW + 3_600_000);
-        p.set_rule("r", "auto", When { keywords: vec!["a".into()], weekdays: vec![1, 2], from_hhmm: Some("09:00".into()), to_hhmm: Some("10:00".into()) }, "b", NOW).unwrap();
-        p.add_window("w", NOW, NOW + 1000, "never", "b", NOW).unwrap();
+        p.set_rule(
+            "r",
+            "auto",
+            When {
+                keywords: vec!["a".into()],
+                weekdays: vec![1, 2],
+                from_hhmm: Some("09:00".into()),
+                to_hhmm: Some("10:00".into()),
+            },
+            "b",
+            NOW,
+        )
+        .unwrap();
+        p.add_window("w", NOW, NOW + 1000, "never", "b", NOW)
+            .unwrap();
         let mut c = crate::config::SnippetConfig::default();
         c.recording = p.clone();
         let text = toml::to_string_pretty(&c).unwrap();
-        assert_eq!(toml::from_str::<crate::config::SnippetConfig>(&text).unwrap().recording, p);
-        assert!(!toml::to_string_pretty(&crate::config::SnippetConfig::default()).unwrap().contains("recording"));
+        assert_eq!(
+            toml::from_str::<crate::config::SnippetConfig>(&text)
+                .unwrap()
+                .recording,
+            p
+        );
+        assert!(
+            !toml::to_string_pretty(&crate::config::SnippetConfig::default())
+                .unwrap()
+                .contains("recording")
+        );
         assert_eq!(clamp_retention(99_999), 3650);
-        assert!(parse_when("2026-11-02 09:30").is_ok() && parse_when("2026-11-02T09:30:00+00:00").is_ok() && parse_when("tomorrow").is_err());
+        assert!(
+            parse_when("2026-11-02 09:30").is_ok()
+                && parse_when("2026-11-02T09:30:00+00:00").is_ok()
+                && parse_when("tomorrow").is_err()
+        );
     }
 
     #[test]
     fn steering_rules_and_auto_rules_that_could_never_fire() {
         let mut p = RecordingPolicy::default();
-        assert!(p.set_rule_with("Calls", "auto", "sales calls", When::default(), None, "b", NOW).is_err(), "about alone can't start a recording");
-        let weekdays = When { weekdays: vec![1, 2, 3], ..When::default() };
-        p.set_rule_with("Work calls", "auto", "work calls", weekdays, None, "b", NOW).unwrap();
-        assert!(matches!(p.decide(NOW, at(2, 10, 0), "anything", None), Decision::Auto { .. }));
-        assert!(p.set_rule_with("Empty", "address", "", When::default(), None, "b", NOW).is_err());
-        p.set_rule_with("Mine", "for_assistant", "", kw("okay so"), Some(NOW + 60_000), "b", NOW).unwrap();
-        p.set_rule_with("Standup", "meeting", "", kw("standup"), None, "b", NOW).unwrap();
-        assert_eq!(p.rules.iter().find(|r| r.label == "Mine").unwrap().mode, "address");
-        assert_eq!(p.matches_steer(NOW, at(2, 10, 0), "Okay so what next"), Some("address"));
-        assert_eq!(p.matches_steer(NOW + 60_000, at(2, 10, 0), "Okay so what next"), None, "a short-term rule lapses");
-        assert_eq!(p.matches_steer(NOW, at(2, 10, 0), "the standup ran over"), Some("meeting"));
+        assert!(
+            p.set_rule_with(
+                "Calls",
+                "auto",
+                "sales calls",
+                When::default(),
+                None,
+                "b",
+                NOW
+            )
+            .is_err(),
+            "about alone can't start a recording"
+        );
+        let weekdays = When {
+            weekdays: vec![1, 2, 3],
+            ..When::default()
+        };
+        p.set_rule_with("Work calls", "auto", "work calls", weekdays, None, "b", NOW)
+            .unwrap();
+        assert!(matches!(
+            p.decide(NOW, at(2, 10, 0), "anything", None),
+            Decision::Auto { .. }
+        ));
+        assert!(
+            p.set_rule_with("Empty", "address", "", When::default(), None, "b", NOW)
+                .is_err()
+        );
+        p.set_rule_with(
+            "Mine",
+            "for_assistant",
+            "",
+            kw("okay so"),
+            Some(NOW + 60_000),
+            "b",
+            NOW,
+        )
+        .unwrap();
+        p.set_rule_with("Standup", "meeting", "", kw("standup"), None, "b", NOW)
+            .unwrap();
+        assert_eq!(
+            p.rules.iter().find(|r| r.label == "Mine").unwrap().mode,
+            "address"
+        );
+        assert_eq!(
+            p.matches_steer(NOW, at(2, 10, 0), "Okay so what next"),
+            Some("address")
+        );
+        assert_eq!(
+            p.matches_steer(NOW + 60_000, at(2, 10, 0), "Okay so what next"),
+            None,
+            "a short-term rule lapses"
+        );
+        assert_eq!(
+            p.matches_steer(NOW, at(2, 10, 0), "the standup ran over"),
+            Some("meeting")
+        );
     }
 
     #[test]

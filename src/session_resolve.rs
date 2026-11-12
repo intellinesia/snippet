@@ -33,7 +33,10 @@ impl From<&crate::session::SessionInfo> for Candidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved {
     Found(String),
-    Miss { reason: String, candidates: Vec<Candidate> },
+    Miss {
+        reason: String,
+        candidates: Vec<Candidate>,
+    },
 }
 
 const NEAREST: usize = 3;
@@ -47,11 +50,16 @@ fn trim_path(p: &str) -> String {
 }
 
 fn in_folder(c: &Candidate, folder: &str) -> bool {
-    trim_path(&c.folder) == folder || c.origin_folder.as_deref().is_some_and(|o| trim_path(o) == folder)
+    trim_path(&c.folder) == folder
+        || c.origin_folder
+            .as_deref()
+            .is_some_and(|o| trim_path(o) == folder)
 }
 
 fn looks_like_uuid(s: &str) -> bool {
-    s.len() == 36 && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-') && s.matches('-').count() == 4
+    s.len() == 36
+        && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        && s.matches('-').count() == 4
 }
 
 fn newest(mut found: Vec<&Candidate>) -> Option<&Candidate> {
@@ -77,7 +85,11 @@ pub fn resolve(query: &str, sessions: &[Candidate]) -> Resolved {
     let raw = rest.trim().trim_start_matches("session:").to_string();
     let rest = raw.trim_matches('/').to_string();
     let awake: Vec<&Candidate> = sessions.iter().filter(|c| !c.settled).collect();
-    let pool: Vec<&Candidate> = if awake.is_empty() { sessions.iter().collect() } else { awake };
+    let pool: Vec<&Candidate> = if awake.is_empty() {
+        sessions.iter().collect()
+    } else {
+        awake
+    };
 
     let matches: Vec<&Candidate> = if rest.is_empty() {
         if latest { pool.clone() } else { Vec::new() }
@@ -89,18 +101,31 @@ pub fn resolve(query: &str, sessions: &[Candidate]) -> Resolved {
             return Resolved::Found(exact.id.clone());
         }
     } else {
-        let uuid = rest.rsplit("conversations/").next().unwrap_or(&rest).trim_matches('/');
+        let uuid = rest
+            .rsplit("conversations/")
+            .next()
+            .unwrap_or(&rest)
+            .trim_matches('/');
         if looks_like_uuid(uuid) {
             let suffix = format!("conversations/{uuid}");
-            sessions.iter().filter(|c| c.id.ends_with(&suffix)).collect()
+            sessions
+                .iter()
+                .filter(|c| c.id.ends_with(&suffix))
+                .collect()
         } else if raw.starts_with('/') || raw.starts_with('~') {
             let folder = trim_path(&raw);
-            pool.iter().copied().filter(|c| in_folder(c, &folder)).collect()
+            pool.iter()
+                .copied()
+                .filter(|c| in_folder(c, &folder))
+                .collect()
         } else {
             let needle = rest.to_lowercase();
             pool.iter()
                 .copied()
-                .filter(|c| c.title.to_lowercase().contains(&needle) || c.id.to_lowercase().starts_with(&needle))
+                .filter(|c| {
+                    c.title.to_lowercase().contains(&needle)
+                        || c.id.to_lowercase().starts_with(&needle)
+                })
                 .collect()
         }
     };
@@ -112,7 +137,10 @@ pub fn resolve(query: &str, sessions: &[Candidate]) -> Resolved {
         },
         _ if latest => Resolved::Found(newest(matches).map(|c| c.id.clone()).unwrap_or_default()),
         n => Resolved::Miss {
-            reason: format!("`{}` matches {n} sessions; name one by id, or add `latest`", query.trim()),
+            reason: format!(
+                "`{}` matches {n} sessions; name one by id, or add `latest`",
+                query.trim()
+            ),
             candidates: top(matches),
         },
     }
@@ -130,16 +158,28 @@ fn nearest(query: &str, pool: &[&Candidate]) -> Vec<Candidate> {
         .iter()
         .map(|c| {
             let hay = format!("{} {} {}", c.title, c.folder, c.id).to_lowercase();
-            (words.iter().filter(|w| hay.contains(w.as_str())).count(), *c)
+            (
+                words.iter().filter(|w| hay.contains(w.as_str())).count(),
+                *c,
+            )
         })
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.last_active.cmp(&a.1.last_active)));
-    scored.into_iter().take(NEAREST).map(|(_, c)| c.clone()).collect()
+    scored
+        .into_iter()
+        .take(NEAREST)
+        .map(|(_, c)| c.clone())
+        .collect()
 }
 
 /// Sessions in `folder` that are awake and were active within `days`: the ones
 /// a new session there would most likely duplicate.
-pub fn recent_in_folder<'a>(folder: &str, sessions: &'a [Candidate], now: i64, days: i64) -> Vec<&'a Candidate> {
+pub fn recent_in_folder<'a>(
+    folder: &str,
+    sessions: &'a [Candidate],
+    now: i64,
+    days: i64,
+) -> Vec<&'a Candidate> {
     let folder = trim_path(folder);
     let mut found: Vec<&Candidate> = sessions
         .iter()
@@ -151,7 +191,10 @@ pub fn recent_in_folder<'a>(folder: &str, sessions: &'a [Candidate], now: i64, d
 
 /// Every routable session, as candidates.
 pub fn routable_candidates() -> Vec<Candidate> {
-    crate::session::list_routable_sessions().iter().map(Candidate::from).collect()
+    crate::session::list_routable_sessions()
+        .iter()
+        .map(Candidate::from)
+        .collect()
 }
 
 #[cfg(test)]
@@ -173,37 +216,68 @@ mod tests {
     fn board() -> Vec<Candidate> {
         vec![
             c("research-beb1", "Market research", "/code/research", 10),
-            c("research-beb1/conversations/275420ba-17b3-427c-8a47-bda2be9b6933", "Pricing deep dive", "/code/research", 30),
-            c("launch-video-4d7d", "Launch video edit", "/code/launch-video", 20),
+            c(
+                "research-beb1/conversations/275420ba-17b3-427c-8a47-bda2be9b6933",
+                "Pricing deep dive",
+                "/code/research",
+                30,
+            ),
+            c(
+                "launch-video-4d7d",
+                "Launch video edit",
+                "/code/launch-video",
+                20,
+            ),
         ]
     }
 
     #[test]
     fn exact_ids_in_either_form_resolve() {
         let s = board();
-        assert_eq!(resolve("research-beb1", &s), Resolved::Found("research-beb1".into()));
+        assert_eq!(
+            resolve("research-beb1", &s),
+            Resolved::Found("research-beb1".into())
+        );
         let conv = "research-beb1/conversations/275420ba-17b3-427c-8a47-bda2be9b6933";
-        assert_eq!(resolve(&format!("session:{conv}"), &s), Resolved::Found(conv.into()));
-        assert_eq!(resolve("/conversations/275420ba-17b3-427c-8a47-bda2be9b6933", &s), Resolved::Found(conv.into()));
-        assert_eq!(resolve("275420ba-17b3-427c-8a47-bda2be9b6933", &s), Resolved::Found(conv.into()));
+        assert_eq!(
+            resolve(&format!("session:{conv}"), &s),
+            Resolved::Found(conv.into())
+        );
+        assert_eq!(
+            resolve("/conversations/275420ba-17b3-427c-8a47-bda2be9b6933", &s),
+            Resolved::Found(conv.into())
+        );
+        assert_eq!(
+            resolve("275420ba-17b3-427c-8a47-bda2be9b6933", &s),
+            Resolved::Found(conv.into())
+        );
     }
 
     #[test]
     fn a_folder_id_with_latest_takes_the_newest_conversation_there() {
         let conv = "research-beb1/conversations/275420ba-17b3-427c-8a47-bda2be9b6933";
-        assert_eq!(resolve("research-beb1 latest", &board()), Resolved::Found(conv.into()));
+        assert_eq!(
+            resolve("research-beb1 latest", &board()),
+            Resolved::Found(conv.into())
+        );
     }
 
     #[test]
     fn a_path_or_title_fragment_resolves_and_ambiguity_lists_candidates() {
         let s = board();
-        assert_eq!(resolve("/code/launch-video/", &s), Resolved::Found("launch-video-4d7d".into()));
+        assert_eq!(
+            resolve("/code/launch-video/", &s),
+            Resolved::Found("launch-video-4d7d".into())
+        );
         assert_eq!(resolve("pricing", &s), Resolved::Found(s[1].id.clone()));
         match resolve("/code/research", &s) {
             Resolved::Miss { candidates, .. } => assert_eq!(candidates.len(), 2),
             other => panic!("expected ambiguity, got {other:?}"),
         }
-        assert_eq!(resolve("latest /code/research", &s), Resolved::Found(s[1].id.clone()));
+        assert_eq!(
+            resolve("latest /code/research", &s),
+            Resolved::Found(s[1].id.clone())
+        );
     }
 
     #[test]
@@ -224,7 +298,10 @@ mod tests {
     fn settled_sessions_lose_to_awake_ones() {
         let mut s = board();
         s[1].settled = true;
-        assert_eq!(resolve("/code/research", &s), Resolved::Found("research-beb1".into()));
+        assert_eq!(
+            resolve("/code/research", &s),
+            Resolved::Found("research-beb1".into())
+        );
     }
 
     #[test]

@@ -498,10 +498,11 @@ fn build_contents(
 fn push_content(contents: &mut Vec<Value>, role: &str, mut parts: Vec<Value>) {
     if let Some(last) = contents.last_mut()
         && last.get("role").and_then(Value::as_str) == Some(role)
-            && let Some(existing) = last.get_mut("parts").and_then(Value::as_array_mut) {
-                existing.append(&mut parts);
-                return;
-            }
+        && let Some(existing) = last.get_mut("parts").and_then(Value::as_array_mut)
+    {
+        existing.append(&mut parts);
+        return;
+    }
     contents.push(json!({ "role": role, "parts": parts }));
 }
 
@@ -833,8 +834,6 @@ fn is_invalid_argument(status: StatusCode, body: &str) -> bool {
         .unwrap_or(false)
 }
 
-
-
 fn rewrite_thought_signatures(body: &Value) -> Value {
     let mut copy = body.clone();
     if let Some(contents) = copy.get_mut("contents").and_then(Value::as_array_mut) {
@@ -1017,8 +1016,6 @@ struct UsageMetadata {
     total_token_count: u32,
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1072,7 +1069,10 @@ mod tests {
         });
 
         let rewritten = rewrite_thought_signatures(&original);
-        assert_eq!(rewritten["system_instruction"], original["system_instruction"]);
+        assert_eq!(
+            rewritten["system_instruction"],
+            original["system_instruction"]
+        );
         assert_eq!(rewritten["generationConfig"], original["generationConfig"]);
         assert_eq!(rewritten["contents"][0], original["contents"][0]);
         assert_eq!(
@@ -1227,10 +1227,7 @@ mod tests {
             }],
         }];
         let (_, normal) = build_contents(&messages, "gemini-4-carbon", false);
-        assert_eq!(
-            normal[0]["parts"][0]["thoughtSignature"],
-            json!("real-sig")
-        );
+        assert_eq!(normal[0]["parts"][0]["thoughtSignature"], json!("real-sig"));
 
         let (_, degraded) = build_contents(&messages, "gemini-4-carbon", true);
         assert_eq!(

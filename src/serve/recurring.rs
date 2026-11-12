@@ -1,16 +1,16 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::{Json, Path as AxumPath, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
-use axum::Router;
 use serde::Deserialize;
 
+use super::{Shared, mission_error};
 use crate::harness::{GoalStatus, LoopInput};
 use crate::recurring::{self, Schedule};
 use crate::session::{read_session_meta, state_path_for_id, status_str};
-use super::{mission_error, Shared};
 
 pub fn router() -> Router<Shared> {
     Router::new()
@@ -108,7 +108,12 @@ pub async fn tick_loop(daemon: Shared) {
 }
 
 /// Quiet hours and the daily cap; a deferred wake moves its next run.
-fn wake_may_fire(daemon: &Shared, job: &recurring::RecurringJob, wake: &crate::agent_wakes::WakePolicy, now: u64) -> bool {
+fn wake_may_fire(
+    daemon: &Shared,
+    job: &recurring::RecurringJob,
+    wake: &crate::agent_wakes::WakePolicy,
+    now: u64,
+) -> bool {
     let store = recurring::store_at(&daemon.recurring_root).ok();
     let day_ago = now as i64 - 86_400;
     let runs = store
@@ -117,10 +122,20 @@ fn wake_may_fire(daemon: &Shared, job: &recurring::RecurringJob, wake: &crate::a
         .unwrap_or(0);
     let oldest = store
         .as_ref()
-        .and_then(|s| s.list_recurring_runs(Some(&job.id), None, wake.max_runs_per_day).ok())
-        .and_then(|r| r.into_iter().filter(|r| r.fired_at >= day_ago).map(|r| r.fired_at as u64).min());
+        .and_then(|s| {
+            s.list_recurring_runs(Some(&job.id), None, wake.max_runs_per_day)
+                .ok()
+        })
+        .and_then(|r| {
+            r.into_iter()
+                .filter(|r| r.fired_at >= day_ago)
+                .map(|r| r.fired_at as u64)
+                .min()
+        });
     let offset = crate::agent_wakes::policy_offset(wake);
-    if let crate::agent_wakes::Gate::Defer { until, reason } = crate::agent_wakes::gate(wake, offset, now, runs, oldest) {
+    if let crate::agent_wakes::Gate::Defer { until, reason } =
+        crate::agent_wakes::gate(wake, offset, now, runs, oldest)
+    {
         eprintln!("[wakes] {} deferred until {until}: {reason}", wake.owner);
         let _ = recurring::update_job(&daemon.recurring_root, &job.id, |j| {
             j.next_run_at = until;
@@ -133,9 +148,13 @@ fn wake_may_fire(daemon: &Shared, job: &recurring::RecurringJob, wake: &crate::a
 
 async fn open_owner(daemon: &Shared, wake: &crate::agent_wakes::WakePolicy) -> Result<(), String> {
     match wake.owner_kind {
-        crate::agent_wakes::OwnerKind::Agent => super::direct::ensure_agent_inbox(daemon, &wake.owner).await,
+        crate::agent_wakes::OwnerKind::Agent => {
+            super::direct::ensure_agent_inbox(daemon, &wake.owner).await
+        }
         crate::agent_wakes::OwnerKind::MissionControl => {
-            super::mission_control::open_mission_control(daemon, None).await.map(|_| ())
+            super::mission_control::open_mission_control(daemon, None)
+                .await
+                .map(|_| ())
         }
         crate::agent_wakes::OwnerKind::Session => Ok(()),
     }
@@ -146,7 +165,13 @@ async fn open_owner(daemon: &Shared, wake: &crate::agent_wakes::WakePolicy) -> R
 async fn watch_run(daemon: Shared, job: recurring::RecurringJob, run_id: Option<i64>, seen: usize) {
     let finish = |status: &str, summary: Option<&str>, reported_to: Option<&str>| {
         if let (Some(id), Ok(store)) = (run_id, recurring::store_at(&daemon.recurring_root)) {
-            let _ = store.finish_recurring_run(id, status, summary, reported_to, chrono::Utc::now().timestamp());
+            let _ = store.finish_recurring_run(
+                id,
+                status,
+                summary,
+                reported_to,
+                chrono::Utc::now().timestamp(),
+            );
         }
     };
     let Some(sp) = state_path_for_id(&job.session_id) else {
@@ -155,26 +180,52 @@ async fn watch_run(daemon: Shared, job: recurring::RecurringJob, run_id: Option<
     };
     for _ in 0..(4 * 60 * 3) {
         tokio::time::sleep(Duration::from_secs(20)).await;
-        let Some(state) = crate::session::read_session_state(&sp) else { continue };
-        let outcome = state.events.iter().skip(seen).find_map(|event| match event {
-            crate::harness::HarnessEvent::SystemDecision { step, reasoning }
-                if matches!(step.as_str(), "goal_completed" | "goal_cancelled" | "goal_paused") =>
-            {
-                Some((step.trim_start_matches("goal_").to_string(), reasoning.clone()))
-            }
-            _ => None,
-        });
-        let Some((status, summary)) = outcome else { continue };
+        let Some(state) = crate::session::read_session_state(&sp) else {
+            continue;
+        };
+        let outcome = state
+            .events
+            .iter()
+            .skip(seen)
+            .find_map(|event| match event {
+                crate::harness::HarnessEvent::SystemDecision { step, reasoning }
+                    if matches!(
+                        step.as_str(),
+                        "goal_completed" | "goal_cancelled" | "goal_paused"
+                    ) =>
+                {
+                    Some((
+                        step.trim_start_matches("goal_").to_string(),
+                        reasoning.clone(),
+                    ))
+                }
+                _ => None,
+            });
+        let Some((status, summary)) = outcome else {
+            continue;
+        };
         let summary = summary.trim().to_string();
         let previous = job.last_result.clone();
         let _ = recurring::update_job(&daemon.recurring_root, &job.id, |j| {
-            j.last_result = Some(if status == "completed" { summary.clone() } else { format!("{status}: {summary}") });
+            j.last_result = Some(if status == "completed" {
+                summary.clone()
+            } else {
+                format!("{status}: {summary}")
+            });
         });
         let reported = match &job.wake {
-            Some(wake) => report_wake(&daemon, &job, wake, &status, &summary, previous.as_deref()).await,
-            None => report_run_to_mission_control(&daemon, &job.title, &job.session_id, &status, &summary)
-                .await
-                .to_string(),
+            Some(wake) => {
+                report_wake(&daemon, &job, wake, &status, &summary, previous.as_deref()).await
+            }
+            None => report_run_to_mission_control(
+                &daemon,
+                &job.title,
+                &job.session_id,
+                &status,
+                &summary,
+            )
+            .await
+            .to_string(),
         };
         finish(&status, Some(&summary), Some(&reported));
         return;
@@ -192,9 +243,17 @@ async fn report_wake(
 ) -> String {
     use crate::agent_wakes::ReportTo;
     let Some(to) = crate::agent_wakes::route(&wake.report, status, summary, previous) else {
-        return if wake.report.to == ReportTo::None { "none".into() } else { "suppressed: no change".into() };
+        return if wake.report.to == ReportTo::None {
+            "none".into()
+        } else {
+            "suppressed: no change".into()
+        };
     };
-    let label = if job.title.trim().is_empty() { wake.owner.as_str() } else { job.title.trim() };
+    let label = if job.title.trim().is_empty() {
+        wake.owner.as_str()
+    } else {
+        job.title.trim()
+    };
     match to {
         ReportTo::None => "none".into(),
         ReportTo::User => match crate::mission_autonomy::ping(label, summary, "update") {
@@ -208,8 +267,16 @@ async fn report_wake(
                 job.schedule.display(),
                 job.session_id,
             );
-            if super::mission_control::open_mission_control(daemon, None).await.is_ok() {
-                daemon.deliver_wake(crate::mission_control::SESSION_ID, LoopInput::UserMessage(text)).await;
+            if super::mission_control::open_mission_control(daemon, None)
+                .await
+                .is_ok()
+            {
+                daemon
+                    .deliver_wake(
+                        crate::mission_control::SESSION_ID,
+                        LoopInput::UserMessage(text),
+                    )
+                    .await;
                 "mission_control".into()
             } else {
                 "mission_control: unavailable".into()
@@ -217,7 +284,12 @@ async fn report_wake(
         }
         ReportTo::TaskRoom => {
             let task_id = wake.report.task_id.clone().unwrap_or_default();
-            match post_to_task_room(daemon, wake, &task_id, &format!("Scheduled wake ({status}): {summary}")) {
+            match post_to_task_room(
+                daemon,
+                wake,
+                &task_id,
+                &format!("Scheduled wake ({status}): {summary}"),
+            ) {
                 Ok(()) => format!("task_room: {task_id}"),
                 Err(error) => format!("task_room: failed: {error}"),
             }
@@ -225,7 +297,12 @@ async fn report_wake(
     }
 }
 
-fn post_to_task_room(daemon: &Shared, wake: &crate::agent_wakes::WakePolicy, task_id: &str, body: &str) -> Result<(), String> {
+fn post_to_task_room(
+    daemon: &Shared,
+    wake: &crate::agent_wakes::WakePolicy,
+    task_id: &str,
+    body: &str,
+) -> Result<(), String> {
     let task = daemon
         .store
         .get_task(task_id)
@@ -251,19 +328,34 @@ fn post_to_task_room(daemon: &Shared, wake: &crate::agent_wakes::WakePolicy, tas
         idempotency_key: uuid::Uuid::new_v4().to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
     };
-    let saved = daemon.store.append_event(&event).map_err(|e| e.to_string())?;
-    crate::session::emit_device_event(serde_json::json!({"kind": "coordination_event", "event": saved.clone()}));
+    let saved = daemon
+        .store
+        .append_event(&event)
+        .map_err(|e| e.to_string())?;
+    crate::session::emit_device_event(
+        serde_json::json!({"kind": "coordination_event", "event": saved.clone()}),
+    );
     super::queue_coordination_wake(&daemon.store, saved);
     Ok(())
 }
 
 /// A plain recurring run's outcome for Mission Control. Completed runs are
 /// noted for the next wake; others open a turn. Only while automated wakes are on.
-async fn report_run_to_mission_control(daemon: &Shared, title: &str, session_id: &str, status: &str, summary: &str) -> &'static str {
+async fn report_run_to_mission_control(
+    daemon: &Shared,
+    title: &str,
+    session_id: &str,
+    status: &str,
+    summary: &str,
+) -> &'static str {
     if !crate::mission_autonomy::is_on() {
         return "none: automated wakes off";
     }
-    let label = if title.trim().is_empty() { "untitled job" } else { title.trim() };
+    let label = if title.trim().is_empty() {
+        "untitled job"
+    } else {
+        title.trim()
+    };
     if status == "completed" {
         let line = summary.split_whitespace().collect::<Vec<_>>().join(" ");
         let line: String = line.chars().take(240).collect();
@@ -279,11 +371,17 @@ async fn report_run_to_mission_control(daemon: &Shared, title: &str, session_id:
         "[recurring_run_report]\njob: {label}\nsession_id: {session_id}\nstatus: {status}\nsummary: {}\n[/recurring_run_report]\nWorkflow W6 · recurring run report: pass on what's worth the user's attention, note it in your brief if it changes anything, then stop. Don't read the session's files or logs; this report is the outcome.",
         summary.trim()
     );
-    if super::mission_control::open_mission_control(daemon, None).await.is_err() {
+    if super::mission_control::open_mission_control(daemon, None)
+        .await
+        .is_err()
+    {
         return "mission_control: unavailable";
     }
     daemon
-        .deliver_wake(crate::mission_control::SESSION_ID, LoopInput::UserMessage(text))
+        .deliver_wake(
+            crate::mission_control::SESSION_ID,
+            LoopInput::UserMessage(text),
+        )
         .await;
     "mission_control"
 }
@@ -351,9 +449,7 @@ async fn create_recurring(
         req.plan_path.as_deref(),
         delivery,
     ) {
-        Ok(job) => {
-            Json(job).into_response()
-        }
+        Ok(job) => Json(job).into_response(),
         Err(error) => mission_error(error),
     }
 }
@@ -418,21 +514,14 @@ async fn update_recurring(
             }
         }
     }) {
-        Ok(job) => {
-            Json(job).into_response()
-        }
+        Ok(job) => Json(job).into_response(),
         Err(error) => mission_error(error),
     }
 }
 
-async fn delete_recurring(
-    State(d): State<Shared>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
+async fn delete_recurring(State(d): State<Shared>, AxumPath(id): AxumPath<String>) -> Response {
     match recurring::delete_job(&d.recurring_root, &id) {
-        Ok(()) => {
-            Json(serde_json::json!({ "ok": true })).into_response()
-        }
+        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
         Err(error) => mission_error(error),
     }
 }

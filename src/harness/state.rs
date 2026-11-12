@@ -23,8 +23,8 @@ pub fn state_from_scalar(
     messages: Vec<HarnessMessage>,
     events: Vec<HarnessEvent>,
 ) -> Result<HarnessState, String> {
-    let mut state: HarnessState = serde_json::from_str(scalar)
-        .map_err(|e| format!("deserialize session scalar: {e}"))?;
+    let mut state: HarnessState =
+        serde_json::from_str(scalar).map_err(|e| format!("deserialize session scalar: {e}"))?;
     state.messages = messages;
     state.events = events;
     state.history_rewritten = false;
@@ -60,11 +60,12 @@ pub fn deserialize_state(bytes: &[u8]) -> Result<HarnessState, String> {
     let mut decoder = GzDecoder::new(bytes);
     let mut decompressed_bytes = Vec::new();
     if decoder.read_to_end(&mut decompressed_bytes).is_ok()
-        && let Ok(state) = rmp_serde::from_slice::<HarnessState>(&decompressed_bytes) {
-            let mut state = state;
-            normalize_state_title(&mut state);
-            return Ok(state);
-        }
+        && let Ok(state) = rmp_serde::from_slice::<HarnessState>(&decompressed_bytes)
+    {
+        let mut state = state;
+        normalize_state_title(&mut state);
+        return Ok(state);
+    }
 
     // Fallback: try parsing as legacy JSON
     if let Ok(mut state) = serde_json::from_slice::<HarnessState>(bytes) {
@@ -77,4 +78,3 @@ pub fn deserialize_state(bytes: &[u8]) -> Result<HarnessState, String> {
             .to_string(),
     )
 }
-

@@ -1,25 +1,26 @@
 use super::api_error;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::{Json, Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
 use serde_json::json;
 
+use super::{Shared, mission_error};
 use crate::agent_wakes::Setter;
 use crate::harness::LoopInput;
 use crate::keep_warm::{self, Decision, KeepWarmSpec, Outcome};
-use super::{mission_error, Shared};
 
 const TICK: Duration = Duration::from_secs(60);
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(180);
 
 pub fn router() -> Router<Shared> {
-    Router::new()
-        .route("/keep-warm", get(list_entries))
-        .route("/keep-warm/{*owner}", get(get_entry).put(put_entry).delete(delete_entry))
+    Router::new().route("/keep-warm", get(list_entries)).route(
+        "/keep-warm/{*owner}",
+        get(get_entry).put(put_entry).delete(delete_entry),
+    )
 }
 
 fn now() -> i64 {
@@ -30,11 +31,15 @@ pub async fn tick_loop(daemon: Shared) {
     loop {
         tokio::time::sleep(TICK).await;
         let root = daemon.recurring_root.clone();
-        let Ok(entries) = keep_warm::list(&root) else { continue };
+        let Ok(entries) = keep_warm::list(&root) else {
+            continue;
+        };
         let ledger = crate::store::Store::open_cached(crate::store::default_db_path()).ok();
         for mut entry in entries {
             let now = now();
-            let last_turn = ledger.as_ref().and_then(|s| s.last_turn_at(&entry.session_id).ok().flatten());
+            let last_turn = ledger
+                .as_ref()
+                .and_then(|s| s.last_turn_at(&entry.session_id).ok().flatten());
             let quiet = keep_warm::quiet_now(&root, &entry.owner, now);
             let busy = super::recurring::session_busy_for_recurring(&entry.session_id);
             let decision = keep_warm::decide(&entry, now, last_turn, quiet, busy);
@@ -50,7 +55,9 @@ pub async fn tick_loop(daemon: Shared) {
                     "[keep-warm] {} warmed: cache_read={} cache_write={}",
                     entry.owner, usage.cache_read_tokens, usage.cache_creation_tokens
                 ),
-                Outcome::Unsupported(reason) | Outcome::Skipped(reason) | Outcome::Failed(reason) => {
+                Outcome::Unsupported(reason)
+                | Outcome::Skipped(reason)
+                | Outcome::Failed(reason) => {
                     eprintln!("[keep-warm] {} not warmed: {reason}", entry.owner)
                 }
             }
@@ -86,7 +93,11 @@ async fn ping(daemon: &Shared, session_id: &str) -> Outcome {
 }
 
 fn not_found(owner: &str) -> Response {
-    (StatusCode::NOT_FOUND, Json(json!({"owner": owner, "error": "no keep-warm"}))).into_response()
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({"owner": owner, "error": "no keep-warm"})),
+    )
+        .into_response()
 }
 
 async fn list_entries(State(d): State<Shared>) -> Response {
@@ -105,7 +116,7 @@ async fn list_entries(State(d): State<Shared>) -> Response {
     }
 }
 
-async fn get_entry(State(d): State<Shared>, AxumPath(owner): AxumPath<String>,) -> Response {
+async fn get_entry(State(d): State<Shared>, AxumPath(owner): AxumPath<String>) -> Response {
     match keep_warm::get(&d.recurring_root, &owner) {
         Ok(Some(entry)) => Json(keep_warm::view(&entry)).into_response(),
         Ok(None) => not_found(&owner),
@@ -128,7 +139,7 @@ async fn put_entry(
     }
 }
 
-async fn delete_entry(State(d): State<Shared>, AxumPath(owner): AxumPath<String>,) -> Response {
+async fn delete_entry(State(d): State<Shared>, AxumPath(owner): AxumPath<String>) -> Response {
     match keep_warm::clear(&d.recurring_root, &owner, Setter::User) {
         Ok(true) => Json(json!({"owner": owner, "deleted": true})).into_response(),
         Ok(false) => not_found(&owner),

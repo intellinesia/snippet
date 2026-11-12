@@ -106,14 +106,20 @@ async fn transcribe_audio_file(d: &Daemon, path: &Path) -> Result<String, String
         .assemblyai_api_key
         .clone()
         .filter(|k| !k.trim().is_empty())
-        .ok_or_else(|| "set assemblyai_api_key in the server config to transcribe voice notes".to_string())?;
+        .ok_or_else(|| {
+            "set assemblyai_api_key in the server config to transcribe voice notes".to_string()
+        })?;
     let duration = audio_duration_seconds(path).await?;
     let limit = voice.max_seconds.max(crate::config::VOICE_MIN_SECONDS);
     if duration >= limit as f64 + 1.0 {
         return Err(format!(
             "audio attachment `{}` is longer than the {} limit set in Settings → Voice",
             path.display(),
-            if limit % 60 == 0 { format!("{}-minute", limit / 60) } else { format!("{limit}-second") }
+            if limit % 60 == 0 {
+                format!("{}-minute", limit / 60)
+            } else {
+                format!("{limit}-second")
+            }
         ));
     }
     super::assembly::transcribe_file(&key, path).await
@@ -137,8 +143,17 @@ pub(super) async fn transcribe_ambient(d: &Shared, path: &Path) -> Result<Spoken
 }
 
 pub(super) fn finish_text(text: &str) -> Spoken {
-    let text = fix_wake_spelling(&collapse_repeats(text)).trim().to_string();
-    let text = if is_filler(&text) && crate::ambient::expectation().is_none() && crate::ambient::conversation().is_none() { String::new() } else { text };
+    let text = fix_wake_spelling(&collapse_repeats(text))
+        .trim()
+        .to_string();
+    let text = if is_filler(&text)
+        && crate::ambient::expectation().is_none()
+        && crate::ambient::conversation().is_none()
+    {
+        String::new()
+    } else {
+        text
+    };
     Spoken { text }
 }
 
@@ -146,8 +161,14 @@ fn collapse_repeats(text: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     let mut run = 0;
     for w in text.split_whitespace() {
-        let key = |x: &str| x.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
-        if out.last().is_some_and(|l| key(l) == key(w) && !key(w).is_empty()) {
+        let key = |x: &str| {
+            x.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        };
+        if out
+            .last()
+            .is_some_and(|l| key(l) == key(w) && !key(w).is_empty())
+        {
             run += 1;
             if run >= 3 {
                 continue;
@@ -161,7 +182,9 @@ fn collapse_repeats(text: &str) -> String {
 }
 
 fn is_filler(text: &str) -> bool {
-    const FILLER: [&str; 12] = ["uh", "um", "okay", "ok", "wow", "hmm", "well", "oh", "ah", "mm", "yeah", "huh"];
+    const FILLER: [&str; 12] = [
+        "uh", "um", "okay", "ok", "wow", "hmm", "well", "oh", "ah", "mm", "yeah", "huh",
+    ];
     let words: Vec<String> = text
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
@@ -173,8 +196,12 @@ fn is_filler(text: &str) -> bool {
 
 fn fix_wake_spelling(text: &str) -> String {
     let lower = text.to_lowercase();
-    for variant in ["snip it", "snip but", "snip bit", "snippit", "snipit", "snip pet"] {
-        if lower.starts_with(variant) && !lower[variant.len()..].starts_with(|c: char| c.is_alphanumeric()) {
+    for variant in [
+        "snip it", "snip but", "snip bit", "snippit", "snipit", "snip pet",
+    ] {
+        if lower.starts_with(variant)
+            && !lower[variant.len()..].starts_with(|c: char| c.is_alphanumeric())
+        {
             return format!("Snippet{}", &text[variant.len()..]);
         }
     }

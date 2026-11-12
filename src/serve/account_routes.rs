@@ -20,14 +20,20 @@ fn pooled(provider: &str) -> Result<(), Response> {
     if crate::accounts::is_pooled(provider) {
         Ok(())
     } else {
-        Err(api_error(StatusCode::BAD_REQUEST, "provider must be chatgpt, xai, claude-code or devin"))
+        Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "provider must be chatgpt, xai, claude-code or devin",
+        ))
     }
 }
 
 fn listing() -> serde_json::Value {
     let mut out = serde_json::Map::new();
     for provider in crate::accounts::PROVIDERS {
-        out.insert(provider.to_string(), serde_json::to_value(crate::accounts::list(provider)).unwrap_or_default());
+        out.insert(
+            provider.to_string(),
+            serde_json::to_value(crate::accounts::list(provider)).unwrap_or_default(),
+        );
     }
     serde_json::Value::Object(out)
 }
@@ -36,9 +42,7 @@ pub(crate) async fn list_accounts() -> Response {
     Json(listing()).into_response()
 }
 
-pub(crate) async fn add_account(
-    Json(req): Json<AccountReq>,
-) -> Response {
+pub(crate) async fn add_account(Json(req): Json<AccountReq>) -> Response {
     if let Err(r) = pooled(&req.provider) {
         return r;
     }
@@ -49,7 +53,10 @@ pub(crate) async fn add_account(
         "claude-code" => {
             let token = req.token.as_deref().map(str::trim).unwrap_or("");
             if !token.starts_with("sk-ant-") {
-                return api_error(StatusCode::BAD_REQUEST, "paste the token `claude setup-token` prints (it starts with sk-ant-)");
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    "paste the token `claude setup-token` prints (it starts with sk-ant-)",
+                );
             }
             let body = serde_json::json!({ "token": token }).to_string();
             if let Err(e) = crate::accounts::write_credential(&provider, &id, &body) {
@@ -90,10 +97,12 @@ pub(crate) async fn add_account(
                 let url = device.verification_url.clone();
                 let target = id.clone();
                 tokio::spawn(async move {
-                    if let Ok(tokens) = crate::chatgpt_auth::complete_device_code_login(device).await
-                        && crate::chatgpt_auth::save_account(&target, &tokens).is_ok() {
-                            crate::accounts::set_label("chatgpt", &target, &label);
-                        }
+                    if let Ok(tokens) =
+                        crate::chatgpt_auth::complete_device_code_login(device).await
+                        && crate::chatgpt_auth::save_account(&target, &tokens).is_ok()
+                    {
+                        crate::accounts::set_label("chatgpt", &target, &label);
+                    }
                 });
                 Json(serde_json::json!({ "id": id, "user_code": user_code, "verification_uri": url })).into_response()
             }
@@ -105,9 +114,10 @@ pub(crate) async fn add_account(
                 let target = id.clone();
                 tokio::spawn(async move {
                     if let Ok(tokens) = crate::xai_auth::poll_for_tokens(poll).await
-                        && crate::xai_auth::save_account(&target, &tokens).is_ok() {
-                            crate::accounts::set_label("xai", &target, &label);
-                        }
+                        && crate::xai_auth::save_account(&target, &tokens).is_ok()
+                    {
+                        crate::accounts::set_label("xai", &target, &label);
+                    }
                 });
                 Json(serde_json::json!({
                     "id": id,
@@ -122,9 +132,7 @@ pub(crate) async fn add_account(
     }
 }
 
-pub(crate) async fn complete_account(
-    Json(req): Json<AccountReq>,
-) -> Response {
+pub(crate) async fn complete_account(Json(req): Json<AccountReq>) -> Response {
     if req.provider != "devin" {
         return api_error(StatusCode::BAD_REQUEST, "provider must be devin");
     }
@@ -152,9 +160,7 @@ pub(crate) async fn complete_account(
     Json(serde_json::json!({ "id": id, "accounts": listing() })).into_response()
 }
 
-pub(crate) async fn remove_account(
-    Json(req): Json<AccountReq>,
-) -> Response {
+pub(crate) async fn remove_account(Json(req): Json<AccountReq>) -> Response {
     if let Err(r) = pooled(&req.provider) {
         return r;
     }
@@ -167,9 +173,7 @@ pub(crate) async fn remove_account(
     }
 }
 
-pub(crate) async fn update_account(
-    Json(req): Json<AccountReq>,
-) -> Response {
+pub(crate) async fn update_account(Json(req): Json<AccountReq>) -> Response {
     if let Err(r) = pooled(&req.provider) {
         return r;
     }

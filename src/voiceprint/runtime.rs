@@ -15,7 +15,9 @@ mod imp {
     pub const GLIBCXX: &str = "GLIBCXX_3.4.22";
 
     pub fn dir() -> PathBuf {
-        crate::config::snippet_home().join("lib").join(format!("onnxruntime-{VERSION}"))
+        crate::config::snippet_home()
+            .join("lib")
+            .join(format!("onnxruntime-{VERSION}"))
     }
 
     pub fn lib_path() -> PathBuf {
@@ -64,7 +66,9 @@ mod imp {
         for entry in archive.entries().map_err(|e| e.to_string())? {
             let mut entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path().map_err(|e| e.to_string())?.into_owned();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
             if name.starts_with("libonnxruntime.so") {
                 entry.unpack(to.join(name)).map_err(|e| e.to_string())?;
             }
@@ -80,14 +84,20 @@ mod imp {
             version: unsafe extern "C" fn() -> *const c_char,
         }
         let lib = unsafe { libloading::Library::new(path) }.map_err(|e| e.to_string())?;
-        let base = unsafe { lib.get::<unsafe extern "C" fn() -> *const ApiBase>(b"OrtGetApiBase") }.map_err(|e| e.to_string())?;
+        let base = unsafe { lib.get::<unsafe extern "C" fn() -> *const ApiBase>(b"OrtGetApiBase") }
+            .map_err(|e| e.to_string())?;
         let base = unsafe { base() };
         if base.is_null() {
             return Err("OrtGetApiBase returned null".into());
         }
-        let version = unsafe { CStr::from_ptr(((*base).version)()) }.to_string_lossy().into_owned();
+        let version = unsafe { CStr::from_ptr(((*base).version)()) }
+            .to_string_lossy()
+            .into_owned();
         if unsafe { ((*base).get_api)(ort::sys::ORT_API_VERSION) }.is_null() {
-            return Err(format!("onnxruntime {version} lacks API version {}", ort::sys::ORT_API_VERSION));
+            return Err(format!(
+                "onnxruntime {version} lacks API version {}",
+                ort::sys::ORT_API_VERSION
+            ));
         }
         // ONNX Runtime does not survive dlclose; ort reuses this handle anyway.
         std::mem::forget(lib);
@@ -99,11 +109,14 @@ mod imp {
         let path = install()?;
         match probe(&path) {
             Ok(v) => Ok((path, v)),
-            Err(e) if e.contains("GLIBC") || e.contains("libstdc++") => Err(format!("cannot load onnxruntime {VERSION} ({e})")),
+            Err(e) if e.contains("GLIBC") || e.contains("libstdc++") => {
+                Err(format!("cannot load onnxruntime {VERSION} ({e})"))
+            }
             Err(_) => {
                 let _ = std::fs::remove_dir_all(dir());
                 let path = install()?;
-                let v = probe(&path).map_err(|e| format!("cannot load onnxruntime {VERSION} ({e})"))?;
+                let v =
+                    probe(&path).map_err(|e| format!("cannot load onnxruntime {VERSION} ({e})"))?;
                 Ok((path, v))
             }
         }
@@ -120,7 +133,9 @@ mod imp {
             return Ok(());
         }
         let (path, _) = install_checked()?;
-        ort::init_from(path.to_string_lossy()).commit().map_err(|e| e.to_string())?;
+        ort::init_from(path.to_string_lossy())
+            .commit()
+            .map_err(|e| e.to_string())?;
         let _ = READY.set(());
         Ok(())
     }

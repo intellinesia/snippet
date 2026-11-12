@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::config::SnippetConfig;
-use crate::harness::LoopInput;
 use super::app::*;
 use super::settings::*;
 use super::*;
+use crate::config::SnippetConfig;
+use crate::harness::LoopInput;
 
 impl App {
     pub(crate) fn open_profiles(&mut self) {
@@ -76,10 +76,11 @@ impl App {
     pub(crate) fn effective_config(&self) -> SnippetConfig {
         let mut cfg = self.options.config.clone();
         if let Some(name) = crate::session::read_session_profile(&self.active_state_path)
-            && let Some(m) = cfg.setups.as_ref().and_then(|s| s.get(&name)).cloned() {
-                cfg.model = m;
-                cfg.active_setup = Some(name);
-            }
+            && let Some(m) = cfg.setups.as_ref().and_then(|s| s.get(&name)).cloned()
+        {
+            cfg.model = m;
+            cfg.active_setup = Some(name);
+        }
         cfg
     }
 
@@ -207,7 +208,11 @@ impl App {
         if name == "default" {
             self.options.config.state_path.clone()
         } else {
-            self.options.config.state_path.join("conversations").join(name)
+            self.options
+                .config
+                .state_path
+                .join("conversations")
+                .join(name)
         }
     }
 
@@ -236,9 +241,7 @@ impl App {
     /// Read from the store, which is the only inventory: a filesystem walk would
     /// miss every session that has no state file, which is all of them.
     pub(crate) fn find_last_active_conversation(&self) -> Option<String> {
-        let default_id = crate::session::session_id_for_state_path(
-            &self.options.config.state_path,
-        );
+        let default_id = crate::session::session_id_for_state_path(&self.options.config.state_path);
         let folder = self.options.config.workspace.clone();
         crate::session::list_device_sessions()
             .into_iter()
@@ -265,7 +268,9 @@ impl App {
             // so without this the entry the user just deleted keeps rendering
             // until the daemon round-trip lands.
             self.forget_session(&c.id);
-            self.pending_session_op = Some(PendingSessionOp::Delete { session_id: c.id.clone() });
+            self.pending_session_op = Some(PendingSessionOp::Delete {
+                session_id: c.id.clone(),
+            });
             return;
         }
         if let Some(path) = crate::session::state_path_for_id(&c.id) {
@@ -360,7 +365,9 @@ impl App {
             return Vec::new();
         };
         let text = state.events.iter().rev().find_map(|e| match e {
-            HarnessEvent::AssistantText { text, .. } if text.contains("](session:") => Some(text.as_str()),
+            HarnessEvent::AssistantText { text, .. } if text.contains("](session:") => {
+                Some(text.as_str())
+            }
             _ => None,
         });
         let mut ids: Vec<String> = Vec::new();
@@ -419,7 +426,11 @@ impl App {
         let home_str = home.display().to_string();
         let list: Vec<_> = rows
             .into_iter()
-            .filter(|s| !home_only || s.folder == home_str || s.origin_folder.as_deref() == Some(home_str.as_str()))
+            .filter(|s| {
+                !home_only
+                    || s.folder == home_str
+                    || s.origin_folder.as_deref() == Some(home_str.as_str())
+            })
             // A workspace's root `default` state exists before anyone uses it;
             // only a titled one is a session worth resuming.
             .filter(|s| {
@@ -431,9 +442,11 @@ impl App {
             .into_iter()
             .partition(|s| s.parent_session_id.is_some());
 
-        let mut members_by_parent: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
+        let mut members_by_parent: std::collections::HashMap<String, Vec<_>> =
+            std::collections::HashMap::new();
         let mut orphan_members = Vec::new();
-        let parent_ids: std::collections::HashSet<String> = parents.iter().map(|p| p.id.clone()).collect();
+        let parent_ids: std::collections::HashSet<String> =
+            parents.iter().map(|p| p.id.clone()).collect();
 
         for m in members {
             if let Some(ref pid) = m.parent_session_id {
@@ -484,7 +497,11 @@ impl App {
                     s.title.trim().to_string()
                 };
                 Conversation {
-                    desc: format!("({}) — {}", relative_age(s.last_active), shorten(title.clone())),
+                    desc: format!(
+                        "({}) — {}",
+                        relative_age(s.last_active),
+                        shorten(title.clone())
+                    ),
                     title,
                     status: s.status,
                     last_active: s.last_active,
@@ -910,9 +927,10 @@ impl App {
                             return;
                         }
                         if !self.session_known()
-                            && let Some(last_active) = self.find_last_active_conversation() {
-                                self.switch_conversation(&last_active);
-                            }
+                            && let Some(last_active) = self.find_last_active_conversation()
+                        {
+                            self.switch_conversation(&last_active);
+                        }
                     }
                 }
 
@@ -953,7 +971,8 @@ impl App {
                     Some(a) if a == "ask" || a == "manual" => true,
                     Some(a) if a == "yolo" || a == "auto" => false,
                     Some(other) => {
-                        self.status = format!("Unknown mode `{other}`. Use /mode ask or /mode yolo");
+                        self.status =
+                            format!("Unknown mode `{other}`. Use /mode ask or /mode yolo");
                         return;
                     }
                     None => !self.options.config.manual_approval,
@@ -1076,8 +1095,9 @@ impl App {
         let arg = parts.next().unwrap_or("").trim();
         let mut config = match std::fs::read_to_string(&self.options.config_path)
             .map_err(|e| e.to_string())
-            .and_then(|raw| toml::from_str::<crate::config::SnippetConfig>(&raw).map_err(|e| e.to_string()))
-        {
+            .and_then(|raw| {
+                toml::from_str::<crate::config::SnippetConfig>(&raw).map_err(|e| e.to_string())
+            }) {
             Ok(c) => c,
             Err(e) => {
                 self.status = format!("voice: could not read config: {e}");
@@ -1123,7 +1143,8 @@ impl App {
             let saved = toml::to_string_pretty(&config)
                 .map_err(|e| e.to_string())
                 .and_then(|out| {
-                    toml::from_str::<crate::config::SnippetConfig>(&out).map_err(|e| e.to_string())?;
+                    toml::from_str::<crate::config::SnippetConfig>(&out)
+                        .map_err(|e| e.to_string())?;
                     std::fs::write(&self.options.config_path, out).map_err(|e| e.to_string())
                 });
             if let Err(e) = saved {
@@ -1133,7 +1154,11 @@ impl App {
             crate::config::set_private(&self.options.config_path);
         }
         let v = &config.voice;
-        let max = if v.max_seconds % 60 == 0 { format!("{}m", v.max_seconds / 60) } else { format!("{}s", v.max_seconds) };
+        let max = if v.max_seconds % 60 == 0 {
+            format!("{}m", v.max_seconds / 60)
+        } else {
+            format!("{}s", v.max_seconds)
+        };
         self.status = format!(
             "{}Voice notes: {}\n  max       {}\n{usage}",
             if changed { "Saved. " } else { "" },
@@ -1283,8 +1308,6 @@ impl App {
             }
         }
     }
-
-
 }
 
 pub(crate) fn short_id(id: &str) -> &str {

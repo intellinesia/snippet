@@ -181,14 +181,37 @@ impl TaskState {
     pub fn apply(&mut self, patch: &StatePatch, author: &str, now: &str) -> Vec<String> {
         let mut changes = Vec::new();
         set_text(&mut self.brief, &patch.brief, "brief", &mut changes);
-        set_text(&mut self.current_step, &patch.current_step, "current step", &mut changes);
-        set_text(&mut self.audience, &patch.audience, "audience", &mut changes);
-        set_text(&mut self.definition_of_good, &patch.definition_of_good, "definition of good", &mut changes);
-        if let Some(items) = patch.deliverables.as_ref().filter(|d| **d != self.deliverables) {
+        set_text(
+            &mut self.current_step,
+            &patch.current_step,
+            "current step",
+            &mut changes,
+        );
+        set_text(
+            &mut self.audience,
+            &patch.audience,
+            "audience",
+            &mut changes,
+        );
+        set_text(
+            &mut self.definition_of_good,
+            &patch.definition_of_good,
+            "definition of good",
+            &mut changes,
+        );
+        if let Some(items) = patch
+            .deliverables
+            .as_ref()
+            .filter(|d| **d != self.deliverables)
+        {
             self.deliverables = items.clone();
             changes.push(format!("deliverables are now: {}", items.join("; ")));
         }
-        if let Some(items) = patch.open_questions.as_ref().filter(|q| **q != self.open_questions) {
+        if let Some(items) = patch
+            .open_questions
+            .as_ref()
+            .filter(|q| **q != self.open_questions)
+        {
             self.open_questions = items.clone();
             changes.push(if items.is_empty() {
                 "open questions: none left".to_string()
@@ -196,11 +219,20 @@ impl TaskState {
                 format!("open questions are now: {}", items.join("; "))
             });
         }
-        for text in patch.add_decisions.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        for text in patch
+            .add_decisions
+            .iter()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+        {
             if self.decisions.iter().any(|d| d.text == text) {
                 continue;
             }
-            self.decisions.push(Decision { author: author.to_string(), at: now.to_string(), text: text.to_string() });
+            self.decisions.push(Decision {
+                author: author.to_string(),
+                at: now.to_string(),
+                text: text.to_string(),
+            });
             changes.push(format!("decision by {author}: {text}"));
         }
         let added: Vec<String> = patch
@@ -215,7 +247,11 @@ impl TaskState {
                     self.changed_files.push(file.clone());
                 }
             }
-            changes.push(format!("changed files +{}: {}", added.len(), added.join(", ")));
+            changes.push(format!(
+                "changed files +{}: {}",
+                added.len(),
+                added.join(", ")
+            ));
         }
         if let Some(mode) = patch.verify_mode.filter(|m| Some(*m) != self.verify_mode) {
             self.verify_mode = Some(mode);
@@ -260,7 +296,12 @@ impl TaskState {
                 out.push_str(&format!("  (+{skip} earlier)\n"));
             }
             for d in self.decisions.iter().skip(skip) {
-                out.push_str(&format!("  - {} ({}): {}\n", d.author, d.at.get(..10).unwrap_or(&d.at), clip(&d.text, 240)));
+                out.push_str(&format!(
+                    "  - {} ({}): {}\n",
+                    d.author,
+                    d.at.get(..10).unwrap_or(&d.at),
+                    clip(&d.text, 240)
+                ));
             }
         }
         if !self.open_questions.is_empty() {
@@ -276,17 +317,33 @@ impl TaskState {
             line("verification waived", &self.waiver, &mut out);
         }
         if !self.review_findings.is_empty() {
-            out.push_str(&format!("review findings to fix (round {}):\n", self.review_rounds));
+            out.push_str(&format!(
+                "review findings to fix (round {}):\n",
+                self.review_rounds
+            ));
             for f in &self.review_findings {
                 out.push_str(&format!("  - {}\n", clip(f, 400)));
             }
         }
         line("current step", &self.current_step, &mut out);
         if !self.changed_files.is_empty() {
-            let shown: Vec<&str> = self.changed_files.iter().take(files).map(String::as_str).collect();
+            let shown: Vec<&str> = self
+                .changed_files
+                .iter()
+                .take(files)
+                .map(String::as_str)
+                .collect();
             let more = self.changed_files.len().saturating_sub(files);
-            let tail = if more > 0 { format!(" (+{more} more)") } else { String::new() };
-            line(&format!("changed files ({})", self.changed_files.len()), &format!("{}{tail}", shown.join(", ")), &mut out);
+            let tail = if more > 0 {
+                format!(" (+{more} more)")
+            } else {
+                String::new()
+            };
+            line(
+                &format!("changed files ({})", self.changed_files.len()),
+                &format!("{}{tail}", shown.join(", ")),
+                &mut out,
+            );
         }
         out.push_str("[/task_ledger]");
         out
@@ -304,7 +361,10 @@ fn decode(row: (String, i64, String, String)) -> Result<TaskState, rusqlite::Err
     Ok(state)
 }
 
-fn read_state(conn: &rusqlite::Connection, task_id: &str) -> Result<Option<TaskState>, rusqlite::Error> {
+fn read_state(
+    conn: &rusqlite::Connection,
+    task_id: &str,
+) -> Result<Option<TaskState>, rusqlite::Error> {
     conn.query_row(
         "SELECT task_id, version, state_json, updated_at FROM task_state WHERE task_id = ?1",
         params![task_id],
@@ -337,7 +397,11 @@ impl Store {
                 return Ok(Some(state));
             }
             let task = conn
-                .query_row(&format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1"), params![task_id], task_from_row)
+                .query_row(
+                    &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1"),
+                    params![task_id],
+                    task_from_row,
+                )
                 .optional()?;
             let Some(task) = task else { return Ok(None) };
             let state = TaskState::seeded(&task);
@@ -360,10 +424,12 @@ impl Store {
         now: &str,
         f: impl FnOnce(&mut TaskState),
     ) -> Result<TaskState, StoreError> {
-        self.task_state(task_id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        self.task_state(task_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
-            let mut state = read_state(&tx, task_id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let mut state =
+                read_state(&tx, task_id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
             f(&mut state);
             state.updated_at = now.to_string();
             write_state(&tx, &state)?;
@@ -383,10 +449,12 @@ impl Store {
         author: &str,
         now: &str,
     ) -> Result<(TaskState, Vec<String>), StoreError> {
-        self.task_state(task_id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        self.task_state(task_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         let outcome = self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
-            let mut state = read_state(&tx, task_id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let mut state =
+                read_state(&tx, task_id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
             if let Some(expected) = expected_version.filter(|v| *v != state.version) {
                 return Ok(Err((expected, state.version)));
             }
@@ -399,7 +467,11 @@ impl Store {
             tx.commit()?;
             Ok(Ok((state, changes)))
         })?;
-        outcome.map_err(|(expected, actual)| StoreError::StaleTaskState { task_id: task_id.to_string(), expected, actual })
+        outcome.map_err(|(expected, actual)| StoreError::StaleTaskState {
+            task_id: task_id.to_string(),
+            expected,
+            actual,
+        })
     }
 }
 
@@ -410,7 +482,14 @@ mod tests {
 
     fn store_with_task() -> (Store, Task) {
         let db = Store::open_in_memory().unwrap();
-        let task = Task::filed_by_human("t1".into(), "Title".into(), "Make the thing".into(), "s1".into(), 0, "2026-01-01T00:00:00Z".into());
+        let task = Task::filed_by_human(
+            "t1".into(),
+            "Title".into(),
+            "Make the thing".into(),
+            "s1".into(),
+            0,
+            "2026-01-01T00:00:00Z".into(),
+        );
         db.create_task(&task).unwrap();
         (db, task)
     }
@@ -431,16 +510,32 @@ mod tests {
     fn a_patch_bumps_the_version_and_reports_only_what_changed() {
         let (db, _) = store_with_task();
         let (state, changes) = db
-            .patch_task_state("t1", &patch(serde_json::json!({
-                "add_decisions": ["use sqlite"],
-                "current_step": "writing tests",
-            })), Some(1), "mission-control", "2026-01-02T00:00:00Z")
+            .patch_task_state(
+                "t1",
+                &patch(serde_json::json!({
+                    "add_decisions": ["use sqlite"],
+                    "current_step": "writing tests",
+                })),
+                Some(1),
+                "mission-control",
+                "2026-01-02T00:00:00Z",
+            )
             .unwrap();
         assert_eq!(state.version, 2);
         assert_eq!(changes.len(), 2);
-        assert!(changes.iter().any(|c| c.contains("decision by mission-control: use sqlite")));
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.contains("decision by mission-control: use sqlite"))
+        );
         let (again, none) = db
-            .patch_task_state("t1", &patch(serde_json::json!({"current_step": "writing tests"})), Some(2), "w", "2026-01-03T00:00:00Z")
+            .patch_task_state(
+                "t1",
+                &patch(serde_json::json!({"current_step": "writing tests"})),
+                Some(2),
+                "w",
+                "2026-01-03T00:00:00Z",
+            )
             .unwrap();
         assert!(none.is_empty());
         assert_eq!(again.version, 2);
@@ -449,11 +544,34 @@ mod tests {
     #[test]
     fn a_stale_version_is_refused_and_changes_nothing() {
         let (db, _) = store_with_task();
-        db.patch_task_state("t1", &patch(serde_json::json!({"audience": "ops"})), Some(1), "a", "2026-01-02T00:00:00Z").unwrap();
+        db.patch_task_state(
+            "t1",
+            &patch(serde_json::json!({"audience": "ops"})),
+            Some(1),
+            "a",
+            "2026-01-02T00:00:00Z",
+        )
+        .unwrap();
         let err = db
-            .patch_task_state("t1", &patch(serde_json::json!({"audience": "devs"})), Some(1), "b", "2026-01-03T00:00:00Z")
+            .patch_task_state(
+                "t1",
+                &patch(serde_json::json!({"audience": "devs"})),
+                Some(1),
+                "b",
+                "2026-01-03T00:00:00Z",
+            )
             .unwrap_err();
-        assert!(matches!(err, StoreError::StaleTaskState { expected: 1, actual: 2, .. }), "{err}");
+        assert!(
+            matches!(
+                err,
+                StoreError::StaleTaskState {
+                    expected: 1,
+                    actual: 2,
+                    ..
+                }
+            ),
+            "{err}"
+        );
         assert_eq!(db.task_state("t1").unwrap().unwrap().audience, "ops");
     }
 
@@ -461,12 +579,19 @@ mod tests {
     fn changed_files_append_without_duplicates_and_render_in_the_ledger() {
         let (db, _) = store_with_task();
         let p = patch(serde_json::json!({"add_changed_files": ["src/a.rs", "src/b.rs"]}));
-        db.patch_task_state("t1", &p, None, "daemon", "2026-01-02T00:00:00Z").unwrap();
-        let (state, changes) = db.patch_task_state("t1", &p, None, "daemon", "2026-01-03T00:00:00Z").unwrap();
+        db.patch_task_state("t1", &p, None, "daemon", "2026-01-02T00:00:00Z")
+            .unwrap();
+        let (state, changes) = db
+            .patch_task_state("t1", &p, None, "daemon", "2026-01-03T00:00:00Z")
+            .unwrap();
         assert!(changes.is_empty());
         assert_eq!(state.changed_files, ["src/a.rs", "src/b.rs"]);
         let text = state.render(false);
-        assert!(text.contains("changed files (2): src/a.rs, src/b.rs") && text.starts_with("[task_ledger v2]"), "{text}");
+        assert!(
+            text.contains("changed files (2): src/a.rs, src/b.rs")
+                && text.starts_with("[task_ledger v2]"),
+            "{text}"
+        );
     }
 
     #[test]

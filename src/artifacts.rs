@@ -63,13 +63,22 @@ const BUNDLE_TOTAL_MAX: u64 = 200 * 1024 * 1024;
 /// from the artifact server. Returns (relative path, absolute path) pairs for
 /// files that exist and the reasons the rest can't be bundled.
 fn page_dependencies(page: &Path) -> (Vec<(String, PathBuf)>, Vec<String>) {
-    let ext = page.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    let ext = page
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
     if !matches!(ext.as_deref(), Some("html" | "htm" | "svg")) {
         return (Vec::new(), Vec::new());
     }
-    let Ok(text) = fs::read_to_string(page) else { return (Vec::new(), Vec::new()) };
-    let Some(folder) = page.parent() else { return (Vec::new(), Vec::new()) };
-    let attr = regex::Regex::new(r#"(?i)\b(?:src|href|poster|data|xlink:href)\s*=\s*["']([^"']+)["']"#).unwrap();
+    let Ok(text) = fs::read_to_string(page) else {
+        return (Vec::new(), Vec::new());
+    };
+    let Some(folder) = page.parent() else {
+        return (Vec::new(), Vec::new());
+    };
+    let attr =
+        regex::Regex::new(r#"(?i)\b(?:src|href|poster|data|xlink:href)\s*=\s*["']([^"']+)["']"#)
+            .unwrap();
     let css = regex::Regex::new(r#"(?i)url\(\s*["']?([^"')]+)["']?\s*\)"#).unwrap();
     let srcset = regex::Regex::new(r#"(?i)\bsrcset\s*=\s*["']([^"']+)["']"#).unwrap();
     let mut refs: Vec<String> = Vec::new();
@@ -91,9 +100,18 @@ fn page_dependencies(page: &Path) -> (Vec<(String, PathBuf)>, Vec<String>) {
             || raw.starts_with('#')
             || raw.starts_with("//")
             || raw.contains("${")
-            || ["http:", "https:", "data:", "blob:", "mailto:", "tel:", "javascript:", "about:"]
-                .iter()
-                .any(|p| lower.starts_with(p))
+            || [
+                "http:",
+                "https:",
+                "data:",
+                "blob:",
+                "mailto:",
+                "tel:",
+                "javascript:",
+                "about:",
+            ]
+            .iter()
+            .any(|p| lower.starts_with(p))
         {
             continue;
         }
@@ -103,14 +121,18 @@ fn page_dependencies(page: &Path) -> (Vec<(String, PathBuf)>, Vec<String>) {
             continue;
         }
         if lower.starts_with("file:") || path.starts_with('/') {
-            let note = format!("{raw}: an absolute path can't load from the artifact; reference it relative to the page");
+            let note = format!(
+                "{raw}: an absolute path can't load from the artifact; reference it relative to the page"
+            );
             if !broken.contains(&note) {
                 broken.push(note);
             }
             continue;
         }
         if path.split('/').any(|seg| seg == "..") {
-            let note = format!("{raw}: outside the page's folder; move it beside the page or present the folder");
+            let note = format!(
+                "{raw}: outside the page's folder; move it beside the page or present the folder"
+            );
             if !broken.contains(&note) {
                 broken.push(note);
             }
@@ -147,7 +169,8 @@ fn safe_component(s: &str) -> bool {
     !s.is_empty()
         && s != "."
         && s != ".."
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~'))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~'))
 }
 
 pub fn version_dir(session_dir: &str, id: &str, n: u32) -> Option<PathBuf> {
@@ -185,7 +208,9 @@ pub fn markdown_link(session: &str, title: &str, id: &str, version: u32) -> Stri
 }
 
 pub fn get(session: &str, id: &str) -> Option<Artifact> {
-    safe_component(id).then(|| load(&session_dir(session).join(id))).flatten()
+    safe_component(id)
+        .then(|| load(&session_dir(session).join(id)))
+        .flatten()
 }
 
 pub fn delete_session(session: &str) {
@@ -205,12 +230,20 @@ fn slug(text: &str) -> String {
         }
     }
     let out = out.trim_matches('-').to_string();
-    if out.is_empty() { "artifact".to_string() } else { out }
+    if out.is_empty() {
+        "artifact".to_string()
+    } else {
+        out
+    }
 }
 
 pub fn kind_of(path: &Path) -> &'static str {
     if path.is_dir() {
-        return if path.join("index.html").is_file() { "html" } else { "collection" };
+        return if path.join("index.html").is_file() {
+            "html"
+        } else {
+            "collection"
+        };
     }
     let ext = path
         .extension()
@@ -224,6 +257,7 @@ pub fn kind_of(path: &Path) -> &'static str {
         "png" | "jpg" | "jpeg" | "gif" | "webp" => "image",
         "csv" | "tsv" => "csv",
         "pdf" => "pdf",
+        "wav" | "mp3" | "ogg" => "audio",
         "json" | "yaml" | "yml" | "toml" | "rs" | "dart" | "py" | "js" | "ts" | "tsx" | "go"
         | "sh" | "sql" | "txt" | "diff" | "patch" => "code",
         _ => "file",
@@ -243,11 +277,18 @@ fn hash_path(path: &Path) -> Result<String, String> {
     } else {
         hasher.update(fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?);
     }
-    Ok(hasher.finalize().iter().take(12).map(|b| format!("{b:02x}")).collect())
+    Ok(hasher
+        .finalize()
+        .iter()
+        .take(12)
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 fn collect(base: &Path, dir: &Path, out: &mut Vec<String>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
@@ -296,7 +337,10 @@ pub fn present(
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("artifact");
-            let title = title.map(str::trim).filter(|t| !t.is_empty()).unwrap_or(stem);
+            let title = title
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .unwrap_or(stem);
             let mut id = slug(title);
             let mut n = 2;
             while base.join(&id).exists() {
@@ -318,7 +362,11 @@ pub fn present(
     if caption.is_some() {
         artifact.caption = caption;
     }
-    let (deps, mut broken) = if source.is_dir() { (Vec::new(), Vec::new()) } else { page_dependencies(source) };
+    let (deps, mut broken) = if source.is_dir() {
+        (Vec::new(), Vec::new())
+    } else {
+        page_dependencies(source)
+    };
     let hash = {
         let base_hash = hash_path(source)?;
         if deps.is_empty() {
@@ -337,12 +385,23 @@ pub fn present(
                     }
                 }
             }
-            hasher.finalize().iter().take(12).map(|b| format!("{b:02x}")).collect()
+            hasher
+                .finalize()
+                .iter()
+                .take(12)
+                .map(|b| format!("{b:02x}"))
+                .collect()
         }
     };
     if let Some(last) = artifact.latest().filter(|v| v.hash == hash) {
         let version = last.n;
-        return Ok(Presented { artifact, version, unchanged: true, bundled: Vec::new(), broken });
+        return Ok(Presented {
+            artifact,
+            version,
+            unchanged: true,
+            bundled: Vec::new(),
+            broken,
+        });
     }
     let mut bundled = Vec::new();
     let n = artifact.latest().map(|v| v.n + 1).unwrap_or(1);
@@ -351,8 +410,11 @@ pub fn present(
     let entry = if source.is_dir() {
         copy_into(source, &dest)?;
         if !dest.join("index.html").is_file() {
-            fs::write(dest.join("index.html"), collection_index(&artifact.title, &dest))
-                .map_err(|e| format!("write index: {e}"))?;
+            fs::write(
+                dest.join("index.html"),
+                collection_index(&artifact.title, &dest),
+            )
+            .map_err(|e| format!("write index: {e}"))?;
         }
         "index.html".to_string()
     } else {
@@ -367,7 +429,10 @@ pub fn present(
         for (rel, abs) in &deps {
             let len = fs::metadata(abs).map(|m| m.len()).unwrap_or(0);
             if len > BUNDLE_FILE_MAX || total + len > BUNDLE_TOTAL_MAX {
-                broken.push(format!("{rel}: too large to bundle ({} MB); link it from the web or make it smaller", len / (1024 * 1024)));
+                broken.push(format!(
+                    "{rel}: too large to bundle ({} MB); link it from the web or make it smaller",
+                    len / (1024 * 1024)
+                ));
                 continue;
             }
             let target = dest.join(rel);
@@ -397,7 +462,13 @@ pub fn present(
         let _ = fs::remove_dir_all(dir.join(format!("v{}", old.n)));
     }
     save(&dir, &artifact)?;
-    Ok(Presented { artifact, version: n, unchanged: false, bundled, broken })
+    Ok(Presented {
+        artifact,
+        version: n,
+        unchanged: false,
+        bundled,
+        broken,
+    })
 }
 
 fn escape(s: &str) -> String {
@@ -416,12 +487,21 @@ fn collection_index(title: &str, dir: &Path) -> String {
     for rel in &files {
         let href = rel
             .split('/')
-            .map(|p| p.replace('%', "%25").replace(' ', "%20").replace('#', "%23").replace('?', "%3F"))
+            .map(|p| {
+                p.replace('%', "%25")
+                    .replace(' ', "%20")
+                    .replace('#', "%23")
+                    .replace('?', "%3F")
+            })
             .collect::<Vec<_>>()
             .join("/");
         let name = escape(rel);
         let image = matches!(
-            Path::new(rel).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
+            Path::new(rel)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
             Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg")
         );
         if image {
@@ -467,24 +547,41 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
 }
 
 fn signature(secret: &str, scope: &str, exp: i64) -> String {
-    hmac_sha256(secret.as_bytes(), format!("artifact:{scope}:{exp}").as_bytes())
-        .iter()
-        .take(16)
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    hmac_sha256(
+        secret.as_bytes(),
+        format!("artifact:{scope}:{exp}").as_bytes(),
+    )
+    .iter()
+    .take(16)
+    .map(|b| format!("{b:02x}"))
+    .collect()
 }
 
 /// A link to one version's entry, valid for `ttl_secs`: `/a/<exp>/<sig>/<session dir>/<id>/v<n>/<entry>`.
-pub fn signed_path(secret: &str, session: &str, id: &str, version: &Version, ttl_secs: i64) -> String {
+pub fn signed_path(
+    secret: &str,
+    session: &str,
+    id: &str,
+    version: &Version,
+    ttl_secs: i64,
+) -> String {
     let exp = chrono::Utc::now().timestamp() + ttl_secs;
     let scope = format!("{}/{id}/v{}", session_dir_name(session), version.n);
     let entry = version
         .entry
         .split('/')
-        .map(|p| p.replace('%', "%25").replace(' ', "%20").replace('#', "%23").replace('?', "%3F"))
+        .map(|p| {
+            p.replace('%', "%25")
+                .replace(' ', "%20")
+                .replace('#', "%23")
+                .replace('?', "%3F")
+        })
         .collect::<Vec<_>>()
         .join("/");
-    format!("/a/{exp}/{}/{scope}/{entry}", signature(secret, &scope, exp))
+    format!(
+        "/a/{exp}/{}/{scope}/{entry}",
+        signature(secret, &scope, exp)
+    )
 }
 
 /// Resolve a signed link's remainder (`<session dir>/<id>/v<n>/<file>`) to a
@@ -501,17 +598,32 @@ pub fn resolve_signed(secret: &str, exp: i64, sig: &str, rest: &str) -> Option<P
     let n: u32 = version.strip_prefix('v')?.parse().ok()?;
     let scope = format!("{session_dir}/{id}/v{n}");
     let expected = signature(secret, &scope, exp);
-    if expected.len() != sig.len() || expected.bytes().zip(sig.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) != 0 {
+    if expected.len() != sig.len()
+        || expected
+            .bytes()
+            .zip(sig.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            != 0
+    {
         return None;
     }
     let dir = version_dir(session_dir, id, n)?;
-    if file.split('/').any(|p| p.is_empty() || p == ".." || p == "." || p.starts_with('.')) {
+    if file
+        .split('/')
+        .any(|p| p.is_empty() || p == ".." || p == "." || p.starts_with('.'))
+    {
         return None;
     }
     let path = dir.join(file);
-    let path = if path.is_dir() { path.join("index.html") } else { path };
+    let path = if path.is_dir() {
+        path.join("index.html")
+    } else {
+        path
+    };
     let canonical = path.canonicalize().ok()?;
-    canonical.starts_with(dir.canonicalize().ok()?).then_some(canonical)
+    canonical
+        .starts_with(dir.canonicalize().ok()?)
+        .then_some(canonical)
 }
 
 pub fn content_type(path: &Path) -> &'static str {
@@ -538,6 +650,7 @@ pub fn content_type(path: &Path) -> &'static str {
         "webm" => "video/webm",
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
         "md" | "markdown" | "txt" | "csv" | "tsv" | "rs" | "py" | "ts" | "dart" | "go" | "sh"
         | "toml" | "yaml" | "yml" | "sql" | "diff" | "patch" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
@@ -560,32 +673,40 @@ pub fn zip_to_temp(name: &str, sources: &[PathBuf]) -> Result<PathBuf, String> {
     if let Ok(entries) = fs::read_dir(&dir) {
         let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
         for entry in entries.flatten() {
-            if entry.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < hour_ago) {
+            if entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t < hour_ago)
+            {
                 let _ = fs::remove_file(entry.path());
             }
         }
     }
     let stem = slug(name.trim_end_matches(".zip"));
-    let out = dir.join(format!("{stem}-{}.zip", chrono::Utc::now().timestamp_millis()));
+    let out = dir.join(format!(
+        "{stem}-{}.zip",
+        chrono::Utc::now().timestamp_millis()
+    ));
     let file = fs::File::create(&out).map_err(|e| format!("create zip: {e}"))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
     let mut used = std::collections::HashSet::new();
-    let mut add = |zip: &mut zip::ZipWriter<fs::File>, entry: String, path: &Path| -> Result<(), String> {
-        let mut entry = entry;
-        let mut n = 2;
-        while !used.insert(entry.clone()) {
-            entry = match entry.rsplit_once('.') {
-                Some((base, ext)) if !base.is_empty() => format!("{base}-{n}.{ext}"),
-                _ => format!("{entry}-{n}"),
-            };
-            n += 1;
-        }
-        zip.start_file(entry, options).map_err(|e| e.to_string())?;
-        zip.write_all(&fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?)
-            .map_err(|e| e.to_string())
-    };
+    let mut add =
+        |zip: &mut zip::ZipWriter<fs::File>, entry: String, path: &Path| -> Result<(), String> {
+            let mut entry = entry;
+            let mut n = 2;
+            while !used.insert(entry.clone()) {
+                entry = match entry.rsplit_once('.') {
+                    Some((base, ext)) if !base.is_empty() => format!("{base}-{n}.{ext}"),
+                    _ => format!("{entry}-{n}"),
+                };
+                n += 1;
+            }
+            zip.start_file(entry, options).map_err(|e| e.to_string())?;
+            zip.write_all(&fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?)
+                .map_err(|e| e.to_string())
+        };
     for source in sources {
         let base = source
             .file_name()

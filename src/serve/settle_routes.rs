@@ -41,8 +41,16 @@ async fn gather(d: &Shared, id: &str) -> Option<Gathered> {
     let state_path = state_path_for_id(&row.id)?;
     let state = read_session_meta(&state_path)?;
     use crate::harness::{GoalStatus, HarnessStatus};
-    let alive = d.sessions.lock().await.get(&row.id).is_some_and(|s| !s.join.is_finished());
-    let busy_status = matches!(state.status, HarnessStatus::Running | HarnessStatus::WaitingForInput);
+    let alive = d
+        .sessions
+        .lock()
+        .await
+        .get(&row.id)
+        .is_some_and(|s| !s.join.is_finished());
+    let busy_status = matches!(
+        state.status,
+        HarnessStatus::Running | HarnessStatus::WaitingForInput
+    );
     let open_task = store
         .tasks_worked_in(&row.id, None)
         .unwrap_or_default()
@@ -62,7 +70,10 @@ async fn gather(d: &Shared, id: &str) -> Option<Gathered> {
             .is_some_and(|g| matches!(g.status, GoalStatus::Active | GoalStatus::Paused)),
         has_open_task: open_task,
         has_lanes_or_watches: !state.watches.is_empty()
-            || state.lanes.iter().any(|l| l.status == crate::lanes::LaneStatus::Running),
+            || state
+                .lanes
+                .iter()
+                .any(|l| l.status == crate::lanes::LaneStatus::Running),
         has_queued_input: !state.queued_inputs.is_empty(),
         has_running_seat: {
             let mut running = false;
@@ -70,12 +81,32 @@ async fn gather(d: &Shared, id: &str) -> Option<Gathered> {
                 for m in members {
                     if let Some(ref child_id) = m.work_session_id {
                         if child_id != &row.id {
-                            let child_alive = d.sessions.lock().await.get(child_id).is_some_and(|s| !s.join.is_finished());
-                            let child_meta = state_path_for_id(child_id).and_then(|csp| read_session_meta(&csp));
+                            let child_alive = d
+                                .sessions
+                                .lock()
+                                .await
+                                .get(child_id)
+                                .is_some_and(|s| !s.join.is_finished());
+                            let child_meta =
+                                state_path_for_id(child_id).and_then(|csp| read_session_meta(&csp));
                             let child_row = store.get_session_row(child_id).ok().flatten();
-                            let child_running = (child_alive && child_meta.as_ref().is_some_and(|s| matches!(s.status, HarnessStatus::Running | HarnessStatus::WaitingForInput)))
-                                || child_meta.as_ref().is_some_and(|s| matches!(s.status, HarnessStatus::Running | HarnessStatus::WaitingForInput) || s.compacting || s.pending_question.is_some())
-                                || child_row.as_ref().is_some_and(|r| matches!(r.status.as_str(), "running" | "waiting_for_input"));
+                            let child_running = (child_alive
+                                && child_meta.as_ref().is_some_and(|s| {
+                                    matches!(
+                                        s.status,
+                                        HarnessStatus::Running | HarnessStatus::WaitingForInput
+                                    )
+                                }))
+                                || child_meta.as_ref().is_some_and(|s| {
+                                    matches!(
+                                        s.status,
+                                        HarnessStatus::Running | HarnessStatus::WaitingForInput
+                                    ) || s.compacting
+                                        || s.pending_question.is_some()
+                                })
+                                || child_row.as_ref().is_some_and(|r| {
+                                    matches!(r.status.as_str(), "running" | "waiting_for_input")
+                                });
                             if child_running {
                                 running = true;
                                 break;
@@ -87,7 +118,11 @@ async fn gather(d: &Shared, id: &str) -> Option<Gathered> {
             running
         },
     };
-    Some(Gathered { row, facts, state_path })
+    Some(Gathered {
+        row,
+        facts,
+        state_path,
+    })
 }
 
 fn session_json(id: &str) -> serde_json::Value {
@@ -147,7 +182,11 @@ async fn settle_locked(d: &Shared, g: Gathered) -> SettleOutcome {
     )
     .await;
     match reflected {
-        Err(_) => return SettleOutcome::Failed(format!("memory save timed out after {REFLECT_TIMEOUT_SECS}s")),
+        Err(_) => {
+            return SettleOutcome::Failed(format!(
+                "memory save timed out after {REFLECT_TIMEOUT_SECS}s"
+            ));
+        }
         Ok(Err(e)) => return SettleOutcome::Failed(format!("memory save failed: {e}")),
         Ok(Ok(_)) => {}
     }
@@ -156,7 +195,9 @@ async fn settle_locked(d: &Shared, g: Gathered) -> SettleOutcome {
         return SettleOutcome::Gone;
     };
     if fresh.row.last_active != last_active {
-        return SettleOutcome::Refused("not settled: it received a message while its memory was saved".into());
+        return SettleOutcome::Refused(
+            "not settled: it received a message while its memory was saved".into(),
+        );
     }
     if let Some(reason) = refusal(&fresh.facts) {
         return SettleOutcome::Refused(reason);
@@ -207,13 +248,17 @@ pub(crate) struct SettleReq {
 
 fn outcome_response(outcome: SettleOutcome) -> Response {
     match outcome {
-        SettleOutcome::Settled(s) => Json(serde_json::json!({"ok": true, "session": s})).into_response(),
+        SettleOutcome::Settled(s) => {
+            Json(serde_json::json!({"ok": true, "session": s})).into_response()
+        }
         SettleOutcome::Already(s) => {
             Json(serde_json::json!({"ok": true, "already": true, "session": s})).into_response()
         }
-        SettleOutcome::Refused(reason) => {
-            (StatusCode::CONFLICT, Json(serde_json::json!({"ok": false, "error": reason}))).into_response()
-        }
+        SettleOutcome::Refused(reason) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"ok": false, "error": reason})),
+        )
+            .into_response(),
         SettleOutcome::Failed(reason) => (
             StatusCode::BAD_GATEWAY,
             Json(serde_json::json!({"ok": false, "error": reason})),
@@ -224,17 +269,12 @@ fn outcome_response(outcome: SettleOutcome) -> Response {
 }
 
 // POST /session/settle {session}
-pub(crate) async fn settle_route(
-    State(d): State<Shared>,
-    Json(req): Json<SettleReq>,
-) -> Response {
+pub(crate) async fn settle_route(State(d): State<Shared>, Json(req): Json<SettleReq>) -> Response {
     outcome_response(settle_session(&d, &req.session).await)
 }
 
 // POST /session/unsettle {session}
-pub(crate) async fn unsettle_route(
-    Json(req): Json<SettleReq>,
-) -> Response {
+pub(crate) async fn unsettle_route(Json(req): Json<SettleReq>) -> Response {
     match unsettle_session(&req.session) {
         Some(s) => Json(serde_json::json!({"ok": true, "session": s})).into_response(),
         None => api_error(StatusCode::NOT_FOUND, "no such session"),
@@ -255,13 +295,34 @@ pub(crate) fn set_keep_awake(id: &str, on: bool) -> Option<serde_json::Value> {
 }
 
 // POST /session/keep_awake {session, on}
-pub(crate) async fn keep_awake_route(
-    Json(req): Json<KeepAwakeReq>,
-) -> Response {
+pub(crate) async fn keep_awake_route(Json(req): Json<KeepAwakeReq>) -> Response {
     match set_keep_awake(&req.session, req.on) {
         Some(s) => Json(serde_json::json!({"ok": true, "session": s})).into_response(),
         None => api_error(StatusCode::NOT_FOUND, "no such session"),
     }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ResumeModeReq {
+    session: String,
+    mode: String,
+}
+
+// POST /session/resume_mode {session, mode}
+pub(crate) async fn resume_mode_route(Json(req): Json<ResumeModeReq>) -> Response {
+    let Some(store) = crate::session::store_for_sessions() else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "no store");
+    };
+    let Some(row) = store.get_session_row(&req.session).ok().flatten() else {
+        return api_error(StatusCode::NOT_FOUND, "no such session");
+    };
+    if let Err(e) = store.set_session_resume_mode(&row.id, &req.mode) {
+        return match e {
+            crate::store::StoreError::InvalidInput(m) => api_error(StatusCode::BAD_REQUEST, m),
+            e => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        };
+    }
+    Json(serde_json::json!({"ok": true, "session": session_json(&row.id)})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -270,9 +331,7 @@ pub(crate) struct CacheQuery {
 }
 
 // GET /session/cache?id= — whether the next turn would re-read the history uncached.
-pub(crate) async fn cache_route(
-    Query(q): Query<CacheQuery>,
-) -> Response {
+pub(crate) async fn cache_route(Query(q): Query<CacheQuery>) -> Response {
     let Some(store) = crate::session::store_for_sessions() else {
         return api_error(StatusCode::SERVICE_UNAVAILABLE, "no store");
     };
@@ -282,12 +341,15 @@ pub(crate) async fn cache_route(
     let (touched, context) = store.cache_touch(&row.id).unwrap_or((None, None));
     let ttl = ttl_for(&profile_cache_ttls(), row.profile.as_deref());
     let idle = touched.map(|t| idle_secs(now(), t));
-    let cold = !crate::settle::never_cold(&row.id) && idle.is_some_and(|i| i >= ttl) && context.unwrap_or(0) > 0;
+    let cold = !crate::settle::never_cold(&row.id)
+        && idle.is_some_and(|i| i >= ttl)
+        && context.unwrap_or(0) > 0;
     Json(serde_json::json!({
         "cold": cold,
         "idle_secs": idle,
         "cache_ttl_secs": ttl,
         "resume_tokens": context,
+        "resume_mode": row.resume_mode,
     }))
     .into_response()
 }
@@ -309,7 +371,10 @@ pub(crate) async fn sweep_once(d: &Shared) -> (usize, usize) {
     let now = now();
     sweep_stuck_lanes(&store, now);
     let mut deleted = 0;
-    for id in expired_settled(&store, now).into_iter().take(MAX_DELETES_PER_TICK) {
+    for id in expired_settled(&store, now)
+        .into_iter()
+        .take(MAX_DELETES_PER_TICK)
+    {
         if purge_session(d, &id, true).await {
             deleted += 1;
         }
@@ -338,7 +403,11 @@ pub(crate) async fn sweep_once(d: &Shared) -> (usize, usize) {
             SettleOutcome::Settled(_) => spent += 1,
             SettleOutcome::Failed(e) => {
                 eprintln!("settle {}: {e}", s.id);
-                FAILED.lock().unwrap().get_or_insert_with(HashMap::new).insert(s.id.clone(), now);
+                FAILED
+                    .lock()
+                    .unwrap()
+                    .get_or_insert_with(HashMap::new)
+                    .insert(s.id.clone(), now);
                 spent += 1;
             }
             _ => {}

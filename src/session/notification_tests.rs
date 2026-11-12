@@ -8,14 +8,29 @@ fn durable_notification_journal_deduplicates_and_survives_reopen() {
     let first;
     {
         let store = crate::store::Store::open(&path).unwrap();
-        first = store.append_notification_event(json!({"kind":"task.message", "source_key":"source-1"}), 86400).unwrap();
-        let duplicate = store.append_notification_event(json!({"kind":"task.message", "source_key":"source-1"}), 86400).unwrap();
+        first = store
+            .append_notification_event(
+                json!({"kind":"task.message", "source_key":"source-1"}),
+                86400,
+            )
+            .unwrap();
+        let duplicate = store
+            .append_notification_event(
+                json!({"kind":"task.message", "source_key":"source-1"}),
+                86400,
+            )
+            .unwrap();
         assert_eq!(first, duplicate);
         assert!(uuid::Uuid::parse_str(first["notification_id"].as_str().unwrap()).is_ok());
     }
     let store = crate::store::Store::open(&path).unwrap();
-    assert_eq!(store.notification_events_since(0, 501).unwrap(), vec![first.clone()]);
-    let next = store.append_notification_event(json!({"kind":"done"}), 86400).unwrap();
+    assert_eq!(
+        store.notification_events_since(0, 501).unwrap(),
+        vec![first.clone()]
+    );
+    let next = store
+        .append_notification_event(json!({"kind":"done"}), 86400)
+        .unwrap();
     assert!(next["event_id"].as_u64() > first["event_id"].as_u64());
 }
 
@@ -25,7 +40,12 @@ fn notification_policy_pagination_expiry_and_legacy_filtering() {
     settings.notification_policy = "all_sessions".into();
     let future = chrono::Utc::now().timestamp() + 100;
     let row = |id, expiry| json!({"event_id":id,"notification_id":"uuid","expires_at":expiry,"destination":{"type":"session","id":"worker"}});
-    let rows = vec![json!({"event_id":1,"notify":true}), row(2, 0), row(3, future), row(4, future)];
+    let rows = vec![
+        json!({"event_id":1,"notify":true}),
+        row(2, 0),
+        row(3, future),
+        row(4, future),
+    ];
     let page = notification_page(rows.clone(), &settings, 0, 1);
     assert_eq!(page["next_cursor"], 3);
     assert_eq!(page["has_more"], true);
@@ -63,14 +83,26 @@ fn actionable_candidates_do_not_include_ui_only_events() {
     assert!(notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":"direct_message.sent","thread_id":"thread","payload":{"recipient":"human:local"}}})).is_none());
     let task = notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":"task.message","event_id":"source","correlation_id":"task","payload":{"body":"help"}}})).unwrap();
     assert_eq!(task["destination"]["type"], "task");
+    for event_type in ["direct_message.read", "direct_message.delivered"] {
+        assert!(
+            notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":event_type,"event_id":"e","thread_id":"t"}})).is_none(),
+            "{event_type} must not become a notification"
+        );
+    }
 }
 
 #[test]
 fn finished_notifications_skip_inbox_sessions_and_their_lanes() {
     for session in ["inbox-growth-advisor", "inbox-growth-advisor/lanes/lane-3"] {
         for kind in ["done", "idle"] {
-            assert!(notification_candidate(&json!({"kind": kind, "session": session})).is_none(), "{session} {kind}");
+            assert!(
+                notification_candidate(&json!({"kind": kind, "session": session})).is_none(),
+                "{session} {kind}"
+            );
         }
     }
-    assert!(notification_candidate(&json!({"kind": "idle", "session": "project-1/conversations/abc"})).is_some());
+    assert!(
+        notification_candidate(&json!({"kind": "idle", "session": "project-1/conversations/abc"}))
+            .is_some()
+    );
 }

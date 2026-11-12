@@ -427,9 +427,9 @@ it, say exactly what you need."
 fn goal_continue_directive(text: &str, dir: &str) -> String {
     format!(
         "[goal] Carry on with your goal: {text}\n\
-Your plan and notes are in {where}. Pick up the next unfinished step and do it, keeping the \
-plan current as you go; no recap needed unless something material changed. When it's fully \
-done, call `complete_goal`.",
+    Your plan and notes are in {where}. Pick up the next unfinished step and do it, keeping the \
+    plan current as you go; no recap needed unless something material changed. When it's fully \
+    done, call `complete_goal`.",
         where = goal_dir_phrase(dir)
     )
 }
@@ -437,9 +437,9 @@ done, call `complete_goal`.",
 fn goal_selfcheck_directive(text: &str, dir: &str, n: usize) -> String {
     format!(
         "[goal] Time for a check-in: you've taken {n} turns on this goal: {text}\n\
-Re-read your plan in {where} and be honest with yourself: is this making real progress, or \
-going in circles? If it's done, call `complete_goal`. If you're blocked on something only the \
-user can give, say exactly what. Otherwise adjust course if needed and carry on.",
+    Re-read your plan in {where} and be honest with yourself: is this making real progress, or \
+    going in circles? If it's done, call `complete_goal`. If you're blocked on something only the \
+    user can give, say exactly what. Otherwise adjust course if needed and carry on.",
         where = goal_dir_phrase(dir)
     )
 }
@@ -627,7 +627,10 @@ impl HarnessState {
         let event_index = cp.event_index.min(self.events.len());
         self.events.truncate(event_index);
         if cp.compactions == self.compactions {
-            let keep_system = usize::from(matches!(self.messages.first(), Some(HarnessMessage::System { .. })));
+            let keep_system = usize::from(matches!(
+                self.messages.first(),
+                Some(HarnessMessage::System { .. })
+            ));
             let message_index = cp.message_index.min(self.messages.len()).max(keep_system);
             self.messages.truncate(message_index);
         } else {
@@ -659,12 +662,10 @@ impl HarnessState {
     /// Return the original request for model-context features without making it
     /// part of the session metadata or public wire model.
     pub fn initial_request(&self) -> Option<&str> {
-        self.messages
-            .iter()
-            .find_map(|message| match message {
-                HarnessMessage::User { content } => Some(content.as_str()),
-                _ => None,
-            })
+        self.messages.iter().find_map(|message| match message {
+            HarnessMessage::User { content } => Some(content.as_str()),
+            _ => None,
+        })
     }
 }
 
@@ -678,12 +679,15 @@ fn normalize_state_title(state: &mut HarnessState) {
         && let Some(request) = state
             .initial_request()
             .filter(|text| !text.trim().is_empty())
-        {
-            let label: String = crate::session::request_label(request).chars().take(120).collect();
-            if !label.trim().is_empty() {
-                state.title = Some(label);
-            }
+    {
+        let label: String = crate::session::request_label(request)
+            .chars()
+            .take(120)
+            .collect();
+        if !label.trim().is_empty() {
+            state.title = Some(label);
         }
+    }
 }
 
 /// A working-tree snapshot the user can rewind to (a commit in the shadow repo).
@@ -922,8 +926,6 @@ pub struct CodingHarness {
     presence: std::sync::Mutex<presence::Presence>,
 }
 
-
-
 mod cli_agent;
 pub(crate) use cli_agent::{claude_binary, claude_supported_models};
 mod compactor;
@@ -943,10 +945,10 @@ pub mod state;
 mod step;
 mod transcript;
 
+pub use cli_agent::{CliAgentModel, claude_rate_limits, cli_agent_status, fork_cli_conversations};
 use guards::*;
 use live_context::*;
 use prompts::*;
-pub use cli_agent::{CliAgentModel, claude_rate_limits, cli_agent_status, fork_cli_conversations};
 pub use state::*;
 use transcript::*;
 
@@ -983,5 +985,7 @@ pub(crate) fn is_daemon_envelope(text: &str) -> bool {
     first.len() > 2
         && first.starts_with('[')
         && first.ends_with(']')
-        && first[1..first.len() - 1].chars().all(|c| c.is_ascii_lowercase() || c == '_')
+        && first[1..first.len() - 1]
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c == '_')
 }

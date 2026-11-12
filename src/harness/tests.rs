@@ -33,10 +33,7 @@ async fn tool_persistence_updates_store_without_activity_signal() {
     assert_eq!(row.updated_at, state.updated_at);
     assert_ne!(state.updated_at, before);
     assert_eq!(row.last_active, Some(123));
-    assert_eq!(
-        store.load_conversation_events(&id).unwrap(),
-        state.events
-    );
+    assert_eq!(store.load_conversation_events(&id).unwrap(), state.events);
     state.status = HarnessStatus::Completed;
     harness.persist_state(&mut state).await.unwrap();
     let mut kinds = Vec::new();
@@ -102,8 +99,14 @@ mod assistant_dedup_tests {
         assert!(json.get("human_waiting").is_none());
         let loaded: HarnessState = serde_json::from_value(json).unwrap();
         assert!(loaded.human_waiting.is_empty());
-        state.human_waiting.push(HumanWait { thread_id: "t".into(), since: "s".into(), steered: true, event_index: 0 });
-        let back: HarnessState = serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        state.human_waiting.push(HumanWait {
+            thread_id: "t".into(),
+            since: "s".into(),
+            steered: true,
+            event_index: 0,
+        });
+        let back: HarnessState =
+            serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
         assert_eq!(back.human_waiting, state.human_waiting);
     }
 
@@ -439,7 +442,9 @@ mod empty_reply_tests {
             "<ambient_turn mode=\"active\" ids=\"x\" parts=\"1\">Okay.</ambient_turn>",
         )];
         assert!(!empty_turn_needs_reply(&events, true));
-        let board = [input("[coordination_board_message]\nthread_id: task:1\nbody: claimed")];
+        let board = [input(
+            "[coordination_board_message]\nthread_id: task:1\nbody: claimed",
+        )];
         assert!(!empty_turn_needs_reply(&board, true));
         let steered = [HarnessEvent::Steer {
             text: steer_message("[mission_task_report]\ntask_id: 1"),
@@ -462,9 +467,18 @@ mod empty_reply_tests {
         let typed = [input("what changed?")];
         assert!(empty_turn_needs_reply(&typed, false));
         assert!(empty_turn_needs_reply(&typed, true));
-        let ambient_elsewhere = [input("<ambient_turn mode=\"active\">Okay.</ambient_turn>"), speak("success")];
+        let ambient_elsewhere = [
+            input("<ambient_turn mode=\"active\">Okay.</ambient_turn>"),
+            speak("success"),
+        ];
         assert!(empty_turn_needs_reply(&ambient_elsewhere, false));
-        let replied = [input("what changed?"), HarnessEvent::AssistantText { text: "Nothing.".into(), quiet: false }];
+        let replied = [
+            input("what changed?"),
+            HarnessEvent::AssistantText {
+                text: "Nothing.".into(),
+                quiet: false,
+            },
+        ];
         assert!(!empty_turn_needs_reply(&replied, false));
     }
 }
@@ -477,21 +491,34 @@ mod desk_budget_tests {
         CodingHarness::new(
             HarnessConfig::default(),
             ToolRegistry::new(),
-            ToolContext::new(std::env::temp_dir()).expect("ctx").with_durable_session_id(session),
+            ToolContext::new(std::env::temp_dir())
+                .expect("ctx")
+                .with_durable_session_id(session),
         )
     }
 
     fn waiting_state(wait: bool) -> HarnessState {
         let mut state = HarnessState::blank("/tmp", None);
         if wait {
-            state.human_waiting.push(HumanWait { thread_id: "t".into(), since: "s".into(), steered: true, event_index: 0 });
+            state.human_waiting.push(HumanWait {
+                thread_id: "t".into(),
+                since: "s".into(),
+                steered: true,
+                event_index: 0,
+            });
         }
         state
     }
 
     fn calls(n: usize) -> Vec<GeneratedToolCall> {
         (0..n)
-            .map(|i| GeneratedToolCall { tool_name: "nope".into(), arguments: serde_json::json!({}), id: Some(format!("c{i}")), signature: None, origin_model: None })
+            .map(|i| GeneratedToolCall {
+                tool_name: "nope".into(),
+                arguments: serde_json::json!({}),
+                id: Some(format!("c{i}")),
+                signature: None,
+                origin_model: None,
+            })
             .collect()
     }
 
@@ -500,13 +527,30 @@ mod desk_budget_tests {
         let mut state = waiting_state(wait);
         let (result_tx, _result_rx) = mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
-        let mut lanes = LaneManager::new(None, std::env::temp_dir(), std::env::temp_dir(), result_tx, progress_tx, None);
+        let mut lanes = LaneManager::new(
+            None,
+            std::env::temp_dir(),
+            std::env::temp_dir(),
+            result_tx,
+            progress_tx,
+            None,
+        );
         let (watch_tx, _watch_rx) = mpsc::unbounded_channel();
         let mut watches = WatchManager::new(std::env::temp_dir(), watch_tx);
         let mut vars = LoopVars::default();
         let (_tx, mut rx) = mpsc::unbounded_channel();
         let _ = harness
-            .run_tool_calls(&mut state, &mut lanes, &mut watches, &mut vars, true, None, &mut rx, calls(n), &[])
+            .run_tool_calls(
+                &mut state,
+                &mut lanes,
+                &mut watches,
+                &mut vars,
+                true,
+                None,
+                &mut rx,
+                calls(n),
+                &[],
+            )
             .await;
         state
     }
@@ -536,7 +580,10 @@ mod desk_budget_tests {
     async fn non_inbox_and_not_waiting_are_untouched() {
         for (session, wait) in [("snippet-service-1", true), ("inbox-scout", false)] {
             let state = run(session, wait, 8).await;
-            assert!(results(&state).iter().all(|t| !t.contains("Desk budget")), "{session} {wait}");
+            assert!(
+                results(&state).iter().all(|t| !t.contains("Desk budget")),
+                "{session} {wait}"
+            );
         }
     }
 }
@@ -615,9 +662,10 @@ mod presence_event_tests {
             drop(tx);
         };
         let run = harness.run_interactive(&mut model, Some("list files".into()), rx, None, None);
-        let (ran, _) = tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(run, watch) })
-            .await
-            .expect("run finished");
+        let (ran, _) =
+            tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(run, watch) })
+                .await
+                .expect("run finished");
         ran.unwrap();
         assert_eq!(seen, ["thinking", "tool", "thinking", "typing", "idle"]);
     }
@@ -646,10 +694,7 @@ mod steer_and_interrupt_tests {
             _force_tool: bool,
             _sink: Option<StreamHandle>,
         ) -> Result<ModelOutput, ToolError> {
-            self.seen_messages
-                .lock()
-                .unwrap()
-                .push(messages.to_vec());
+            self.seen_messages.lock().unwrap().push(messages.to_vec());
             Ok(self
                 .outputs
                 .lock()

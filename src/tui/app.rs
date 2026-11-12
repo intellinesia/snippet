@@ -10,12 +10,12 @@ use crossterm::execute;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
-use crate::harness::{HarnessEvent, HarnessState, HarnessStatus, LoopInput};
 use super::keybindings::*;
 use super::render::*;
 use super::term_pane::*;
 use super::views::*;
 use super::*;
+use crate::harness::{HarnessEvent, HarnessState, HarnessStatus, LoopInput};
 
 pub(crate) struct PendingSidecarAttach {
     pub(crate) initial: Option<String>,
@@ -110,7 +110,11 @@ pub(crate) struct App {
     pub(crate) usage_range: usize,
     pub(crate) panels: super::panels::PanelState,
     pub(crate) origin_cache: std::cell::RefCell<
-        Option<(PathBuf, std::time::Instant, Option<crate::session::WorktreeOrigin>)>,
+        Option<(
+            PathBuf,
+            std::time::Instant,
+            Option<crate::session::WorktreeOrigin>,
+        )>,
     >,
     pub(crate) error: Option<String>,
     pub(crate) state: Option<HarnessState>,
@@ -225,7 +229,8 @@ pub(crate) struct App {
     pub(crate) chatgpt_device_begin_handle:
         Option<tokio::task::JoinHandle<Result<crate::chatgpt_auth::DeviceCodeInfo, String>>>,
     /// xAI (Grok/X subscription) device-code sign-in — same shape as ChatGPT's.
-    pub(crate) xai_login_handle: Option<tokio::task::JoinHandle<Result<crate::xai_auth::XaiTokens, String>>>,
+    pub(crate) xai_login_handle:
+        Option<tokio::task::JoinHandle<Result<crate::xai_auth::XaiTokens, String>>>,
     pub(crate) xai_device_code: Option<crate::xai_auth::DeviceCodeInfo>,
     pub(crate) xai_device_begin_handle:
         Option<tokio::task::JoinHandle<Result<crate::xai_auth::DeviceCodeInfo, String>>>,
@@ -273,7 +278,6 @@ pub(crate) struct App {
     /// transcript — used while discovering/starting the local serve daemon.
     pub(crate) connecting_phase: Option<String>,
 }
-
 
 impl App {
     pub(crate) fn new(options: TuiOptions) -> Self {
@@ -391,19 +395,33 @@ impl App {
         app.init_settings_form();
 
         if let Some(id) = app.options.resume.clone() {
-            let found = crate::session::list_device_sessions().into_iter().find(|s| {
-                s.id == id
-                    || s.id.rsplit('/').next().is_some_and(|tail| tail.trim_end_matches(".json") == id)
-            });
+            let found = crate::session::list_device_sessions()
+                .into_iter()
+                .find(|s| {
+                    s.id == id
+                        || s.id
+                            .rsplit('/')
+                            .next()
+                            .is_some_and(|tail| tail.trim_end_matches(".json") == id)
+                });
             match found {
                 Some(s) => {
                     if std::path::Path::new(&s.folder) != app.options.config.workspace {
-                        app.options.config = app.options.config.for_workspace(std::path::PathBuf::from(&s.folder));
+                        app.options.config = app
+                            .options
+                            .config
+                            .for_workspace(std::path::PathBuf::from(&s.folder));
                     }
-                    let name = if s.id == crate::session::session_id_for_state_path(&app.options.config.state_path) {
+                    let name = if s.id
+                        == crate::session::session_id_for_state_path(&app.options.config.state_path)
+                    {
                         "default".to_string()
                     } else {
-                        s.id.rsplit('/').next().unwrap_or(&s.id).trim_end_matches(".json").to_string()
+                        s.id.rsplit('/')
+                            .next()
+                            .unwrap_or(&s.id)
+                            .trim_end_matches(".json")
+                            .to_string()
                     };
                     app.switch_conversation_at(&name, crate::config::workspaces_root().join(&s.id));
                 }
@@ -639,7 +657,6 @@ impl App {
 
     // --- Prompt line editing. Cursor is a CHAR index into `self.input`. ---
 
-
     pub(crate) fn spawn_loop(&mut self, initial: Option<String>, resume: bool) {
         if self.agent_alive() {
             // Already attached / running — if we have an initial message, deliver it.
@@ -727,11 +744,12 @@ impl App {
             self.status_since = (!self.status.is_empty()).then(std::time::Instant::now);
         }
         if let Some(since) = self.status_since
-            && since.elapsed() > Duration::from_secs(4) {
-                self.status.clear();
-                self.status_shown.clear();
-                self.status_since = None;
-            }
+            && since.elapsed() > Duration::from_secs(4)
+        {
+            self.status.clear();
+            self.status_shown.clear();
+            self.status_since = None;
+        }
 
         // Refresh the account-wide ChatGPT usage a few times a second (tiny file,
         // signed-in users only) so the footer figure is global, not per-chat.
@@ -780,9 +798,10 @@ impl App {
                     // Seed a model only if none is chosen yet (e.g. a custom
                     // endpoint with no default); never override a real choice.
                     if self.form_model.trim().is_empty()
-                        && let Some(first) = models.first() {
-                            self.form_model = first.clone();
-                        }
+                        && let Some(first) = models.first()
+                    {
+                        self.form_model = first.clone();
+                    }
                     self.form_fetched_models = Some(models);
                     self.models_fetch_status = format!("Loaded {count} models from provider.");
                 }
@@ -1063,9 +1082,10 @@ impl App {
                     let sp = crate::config::workspaces_root().join(&session_id);
                     self.active_state_path = sp.clone();
                     if let Some(stem) = sp.file_stem().and_then(|s| s.to_str())
-                        && stem != "state" {
-                            self.active_conversation = stem.to_string();
-                        }
+                        && stem != "state"
+                    {
+                        self.active_conversation = stem.to_string();
+                    }
                 }
                 Err(error) => {
                     self.status = format!("sidecar open: {error}");
@@ -1122,7 +1142,6 @@ impl App {
     }
 }
 
-
 pub(crate) async fn run_app(
     terminal: &mut TuiTerminal,
     options: TuiOptions,
@@ -1165,9 +1184,10 @@ pub(crate) async fn run_app(
         tokio::spawn(async move {
             let client = reqwest::Client::new();
             if let Some(version) = crate::update::check_and_update(&client).await
-                && let Ok(mut guard) = slot.lock() {
-                    *guard = Some(version);
-                }
+                && let Ok(mut guard) = slot.lock()
+            {
+                *guard = Some(version);
+            }
         });
     }
 
@@ -1225,4 +1245,3 @@ pub(crate) async fn run_app(
         total_tokens: st.map(|s| s.total_tokens).unwrap_or(0),
     })
 }
-

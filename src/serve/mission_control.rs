@@ -3,41 +3,48 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::{Json, Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
-use axum::Router;
 use serde::Deserialize;
 
+use super::{Daemon, LoopInput, Shared, apply_profile, live_from_handle, record_dispatch_notice};
 use crate::config::workspaces_root;
-use crate::serve::task_summary;
-use crate::coordination::{
-    HandoffMode, NotificationMarker, Task, TaskResult, TaskStatus,
-};
+use crate::coordination::{HandoffMode, NotificationMarker, Task, TaskResult, TaskStatus};
 use crate::mission_control::{self, ManagedSession};
+use crate::serve::task_summary;
 use crate::session::{
-    read_session_profile, start_mission_control_session, start_session,
-    write_session_sidecar, SessionRole, SessionSidecar,
-};
-use super::{
-    apply_profile, live_from_handle, record_dispatch_notice, Daemon,
-    LoopInput, Shared,
+    SessionRole, SessionSidecar, read_session_profile, start_mission_control_session,
+    start_session, write_session_sidecar,
 };
 
 pub fn router() -> Router<Shared> {
     Router::new()
         .route("/agents/build", post(build_agent_from_prompt))
         .route("/mission-control/overview", get(overview))
-        .route("/mission-control/settings", get(settings).put(update_settings))
-        .route("/mission-control/autonomy", get(autonomy).post(update_autonomy))
+        .route(
+            "/mission-control/settings",
+            get(settings).put(update_settings),
+        )
+        .route(
+            "/mission-control/autonomy",
+            get(autonomy).post(update_autonomy),
+        )
         .route("/mission-control/open", post(open))
         .route("/mission-control/tasks", get(tasks).post(create_task))
         .route("/mission-control/tasks/{id}", get(task).put(update_task))
         .route("/mission-control/tasks/{id}/archive", post(archive_task))
-        .route("/mission-control/sessions", get(sessions).post(create_session))
+        .route(
+            "/mission-control/sessions",
+            get(sessions).post(create_session),
+        )
         .route("/mission-control/sessions/{id}", put(update_session))
-        .route("/mission-control/sessions/{id}/archive", post(archive_session))
+        .route(
+            "/mission-control/sessions/{id}/archive",
+            post(archive_session),
+        )
 }
 
 #[derive(Deserialize)]
@@ -77,7 +84,11 @@ pub fn validated_owned_paths(
     let mut out = Vec::new();
     for raw in raw_paths {
         let path = PathBuf::from(raw);
-        let path = if path.is_relative() { root.join(path) } else { path };
+        let path = if path.is_relative() {
+            root.join(path)
+        } else {
+            path
+        };
         let mut prefix = path.clone();
         let mut suffix = Vec::new();
         let resolved = loop {
@@ -196,10 +207,20 @@ async fn build_agent_from_prompt(
 ) -> Response {
     let prompt = req.prompt.trim();
     if prompt.len() < 12 {
-        return api_error(StatusCode::BAD_REQUEST, "prompt must describe the desired agent");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "prompt must describe the desired agent",
+        );
     }
-    if !d.store.has_conversation(mission_control::SESSION_ID).unwrap_or(false) {
-        return api_error(StatusCode::CONFLICT, "open Mission Control before building an agent");
+    if !d
+        .store
+        .has_conversation(mission_control::SESSION_ID)
+        .unwrap_or(false)
+    {
+        return api_error(
+            StatusCode::CONFLICT,
+            "open Mission Control before building an agent",
+        );
     }
     let session_id = crate::mission_control::SESSION_ID;
     let task_id = uuid::Uuid::new_v4().to_string();
@@ -209,7 +230,11 @@ async fn build_agent_from_prompt(
         .as_deref()
         .map(str::trim)
         .filter(|n| !n.is_empty())
-        .map(|n| format!("\n\nThe user chose the nickname \"{n}\": pass it as `nickname` to register_agent."))
+        .map(|n| {
+            format!(
+                "\n\nThe user chose the nickname \"{n}\": pass it as `nickname` to register_agent."
+            )
+        })
         .unwrap_or_default();
     let description = format!(
         "Build a specialized agent from this user brief:\n\n{prompt}{nickname_note}\n\nResearch the domain first (web_search / web_read when available): the domain's standards, the checks an expert runs, common failure modes. Choose a short kebab-case id and a display name, then write the identity: who the agent is, its mandate, how it works step by step, what it checks, and how it reports. Create the agent with register_agent, then report this task with report_mission_task: the agent id, a two-line identity summary, and the sources you used."
@@ -295,10 +320,7 @@ async fn overview(State(d): State<Shared>) -> Response {
     .into_response()
 }
 
-async fn tasks(
-    State(d): State<Shared>,
-    Query(q): Query<MissionListQuery>,
-) -> Response {
+async fn tasks(State(d): State<Shared>, Query(q): Query<MissionListQuery>) -> Response {
     let summary = q.view.as_deref() == Some("summary");
     match d.store.list_tasks(None, None) {
         Ok(tasks) => Json(
@@ -319,10 +341,7 @@ async fn tasks(
     }
 }
 
-async fn task(
-    State(d): State<Shared>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
+async fn task(State(d): State<Shared>, AxumPath(id): AxumPath<String>) -> Response {
     match d.store.get_task(&id) {
         Ok(Some(task)) => Json(mission_task_view(&d.store, &task)).into_response(),
         Ok(None) => api_error(StatusCode::NOT_FOUND, "no such task"),
@@ -399,12 +418,19 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
     // Mission Control's own work (building an agent) runs in its home; it is
     // not a managed session, and listing it as one would show it to the human.
     let (session_id, workspace) = if mission_control::is_session_id(&task.session_id) {
-        if !d.store.has_conversation(mission_control::SESSION_ID).unwrap_or(false) {
+        if !d
+            .store
+            .has_conversation(mission_control::SESSION_ID)
+            .unwrap_or(false)
+        {
             let error = "Mission Control has not been opened yet".to_string();
             release_failed_claim(d, &task, &error)?;
             return Err(error);
         }
-        (mission_control::SESSION_ID.to_string(), mission_control::workspace_path())
+        (
+            mission_control::SESSION_ID.to_string(),
+            mission_control::workspace_path(),
+        )
     } else {
         let managed = match mission_control::get_session(root, &task.session_id) {
             Ok(managed) => managed,
@@ -462,7 +488,11 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
     let owned_line = if task.owned_paths.is_empty() {
         String::new()
     } else {
-        let paths: Vec<String> = task.owned_paths.iter().map(|p| p.display().to_string()).collect();
+        let paths: Vec<String> = task
+            .owned_paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
         format!("owned_paths: [{}]\n", paths.join(", "))
     };
 
@@ -495,10 +525,17 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
     let inputs_line = if inputs.is_empty() {
         String::new()
     } else {
-        format!("inputs (tasks this one waited on, with their reports):\n{}\n", inputs.join("\n"))
+        format!(
+            "inputs (tasks this one waited on, with their reports):\n{}\n",
+            inputs.join("\n")
+        )
     };
     let identity = super::coordination::identity_overlay(d, active_worker, &session_id);
-    let scope = if handoff.is_empty() { task.description.as_str() } else { handoff };
+    let scope = if handoff.is_empty() {
+        task.description.as_str()
+    } else {
+        handoff
+    };
     let ledger = crate::task_state_tools::dispatch_ledger(&d.store, &task, &workspace, scope, &now);
     let text = format!(
         "{identity}[mission_control_task]\ntask_id: {}\ntitle: {}\nrequested_by: {} {}\n{}active_agent: {}\n{plan_line}{roster_line}{owned_line}workspace: {}\n{revision_line}{inputs_line}scope:\n{}\n{ledger}\n\nThis is yours now: deliver it end to end, verified, in this session. If the scope looks wrong, unclear or there's a better way, say so to Mission Control (send_agent_message to mission-control) before you build. When something long-running is in flight, put a monitor watch on it rather than ending the task. When it's done, blocked or failed, report with report_mission_task (task_id {}): what was done, files changed, how it was verified, anything left open.\n[/mission_control_task]",
@@ -525,14 +562,16 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
     };
     let keep = d.config.lock().map(|c| c.keep_task_profile).unwrap_or(true);
     if let Some(profile) = task_profile.as_deref().filter(|_| keep)
-        && let Some(sp) = crate::session::state_path_for_id(&session_id) {
-            crate::session::write_session_profile(&sp, profile);
-        }
+        && let Some(sp) = crate::session::state_path_for_id(&session_id)
+    {
+        crate::session::write_session_profile(&sp, profile);
+    }
     if let Some(profile) = switch_to
-        && let Err(error) = d.run_session_on_profile(&session_id, profile, keep).await {
-            release_failed_claim(d, &task, &error)?;
-            return Err(error);
-        }
+        && let Err(error) = d.run_session_on_profile(&session_id, profile, keep).await
+    {
+        release_failed_claim(d, &task, &error)?;
+        return Err(error);
+    }
     d.deliver(&session_id, LoopInput::UserMessage(text)).await;
     record_dispatch_notice(d, &task).await;
     let task = d
@@ -543,12 +582,26 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
 }
 
 pub(super) fn input_line(blocker: &Task) -> String {
-    let summary = blocker.result.as_ref().map(|r| r.summary.trim().to_string()).unwrap_or_default();
-    let summary = if summary.is_empty() { "no report".to_string() } else { summary };
+    let summary = blocker
+        .result
+        .as_ref()
+        .map(|r| r.summary.trim().to_string())
+        .unwrap_or_default();
+    let summary = if summary.is_empty() {
+        "no report".to_string()
+    } else {
+        summary
+    };
     if blocker.status == TaskStatus::Cancelled {
-        return format!("- {} ({}): blocker {} cancelled, so its output is not available: {summary}", blocker.title, blocker.id, blocker.id);
+        return format!(
+            "- {} ({}): blocker {} cancelled, so its output is not available: {summary}",
+            blocker.title, blocker.id, blocker.id
+        );
     }
-    format!("- {} ({}, {}): {summary}", blocker.title, blocker.id, blocker.status)
+    format!(
+        "- {} ({}, {}): {summary}",
+        blocker.title, blocker.id, blocker.status
+    )
 }
 
 /// If other in-progress tasks own any of this task's paths, leave it queued
@@ -562,10 +615,18 @@ fn wait_for_path_owners(
     now: &str,
     claimed: bool,
 ) -> Result<Option<Task>, String> {
-    let Some(task) = d.store.get_task(task_id).map_err(|error| error.to_string())? else {
+    let Some(task) = d
+        .store
+        .get_task(task_id)
+        .map_err(|error| error.to_string())?
+    else {
         return Err(format!("unknown task {task_id}"));
     };
-    let expected = if claimed { TaskStatus::InProgress } else { TaskStatus::Todo };
+    let expected = if claimed {
+        TaskStatus::InProgress
+    } else {
+        TaskStatus::Todo
+    };
     if task.status != expected {
         return Ok(None);
     }
@@ -601,13 +662,20 @@ fn wait_for_path_owners(
 /// A task starts only once its agent has claimed it. Until then the agent is on
 /// the roster as `offered` and its inbox gets the offer, once.
 fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, String> {
-    let Some(task) = d.store.get_task(task_id).map_err(|error| error.to_string())? else {
+    let Some(task) = d
+        .store
+        .get_task(task_id)
+        .map_err(|error| error.to_string())?
+    else {
         return Err(format!("unknown task {task_id}"));
     };
     if task.status != TaskStatus::Todo || mission_control::is_session_id(&task.session_id) {
         return Ok(None);
     }
-    let roster = d.store.list_task_agents(task_id).map_err(|error| error.to_string())?;
+    let roster = d
+        .store
+        .list_task_agents(task_id)
+        .map_err(|error| error.to_string())?;
     let current: Vec<_> = roster.iter().filter(|m| m.removed_at.is_none()).collect();
     if current.iter().any(|m| m.status == "active") {
         return Ok(None);
@@ -660,7 +728,11 @@ fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, Str
             .filter(|n| n.target == marker && n.kind == "offer_resent")
             .count();
         if resent >= OFFER_RESENDS {
-            if task.notifications.iter().any(|n| n.kind == "offer_unclaimed") {
+            if task
+                .notifications
+                .iter()
+                .any(|n| n.kind == "offer_unclaimed")
+            {
                 return Ok(Some(task));
             }
             let note = format!(
@@ -685,15 +757,20 @@ fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, Str
         return d
             .store
             .update_task_in(task_id, now, |t| {
-                if let Some(m) = t.notifications.iter_mut().find(|n| n.target == marker && n.kind == "offered") {
+                if let Some(m) = t
+                    .notifications
+                    .iter_mut()
+                    .find(|n| n.target == marker && n.kind == "offered")
+                {
                     m.message = now.to_string();
                 }
-                t.notifications.push(crate::coordination::NotificationMarker {
-                    target: marker.clone(),
-                    kind: "offer_resent".into(),
-                    message: now.to_string(),
-                    delivered: true,
-                });
+                t.notifications
+                    .push(crate::coordination::NotificationMarker {
+                        target: marker.clone(),
+                        kind: "offer_resent".into(),
+                        message: now.to_string(),
+                        delivered: true,
+                    });
             })
             .map(Some)
             .map_err(|error| error.to_string());
@@ -709,12 +786,13 @@ fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, Str
         .map_err(|error| error.to_string())?;
     d.store
         .update_task_in(task_id, now, |t| {
-            t.notifications.push(crate::coordination::NotificationMarker {
-                target: marker.clone(),
-                kind: "offered".into(),
-                message: now.to_string(),
-                delivered: true,
-            })
+            t.notifications
+                .push(crate::coordination::NotificationMarker {
+                    target: marker.clone(),
+                    kind: "offered".into(),
+                    message: now.to_string(),
+                    delivered: true,
+                })
         })
         .map(Some)
         .map_err(|error| error.to_string())
@@ -724,7 +802,10 @@ const OFFER_RESEND_SECS: i64 = 600;
 const OFFER_RESENDS: usize = 2;
 
 fn secs_between(from: &str, to: &str) -> i64 {
-    match (chrono::DateTime::parse_from_rfc3339(from), chrono::DateTime::parse_from_rfc3339(to)) {
+    match (
+        chrono::DateTime::parse_from_rfc3339(from),
+        chrono::DateTime::parse_from_rfc3339(to),
+    ) {
         (Ok(a), Ok(b)) => (b - a).num_seconds(),
         _ => 0,
     }
@@ -734,7 +815,11 @@ fn inbox_busy(agent: &str) -> bool {
     crate::session::state_path_for_id(&crate::session::inbox_session_id(agent))
         .and_then(|path| crate::session::read_session_meta(&path))
         .is_some_and(|state| {
-            matches!(state.status, crate::harness::HarnessStatus::Running | crate::harness::HarnessStatus::WaitingForInput)
+            matches!(
+                state.status,
+                crate::harness::HarnessStatus::Running
+                    | crate::harness::HarnessStatus::WaitingForInput
+            )
         })
 }
 
@@ -755,7 +840,11 @@ fn task_offer_body(task: &Task) -> String {
     let owned = if task.owned_paths.is_empty() {
         "none".to_string()
     } else {
-        task.owned_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+        task.owned_paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     format!(
         "[task_offer]\ntask_id: {}\ntitle: {}\ntarget_session: {}\nhandoff: {:?}\nowned_paths: {owned}\nbriefing:\n{}\n[/task_offer]\nOffer only: review, then claim with claim_and_dispatch_task, ask Mission Control if unclear, or decline with a reason.",
@@ -768,21 +857,31 @@ fn task_offer_body(task: &Task) -> String {
 }
 
 fn wait_for_worker(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, String> {
-    let roster = d.store.list_task_agents(task_id).map_err(|error| error.to_string())?;
+    let roster = d
+        .store
+        .list_task_agents(task_id)
+        .map_err(|error| error.to_string())?;
     let Some(worker) = roster
         .iter()
         .find(|m| m.status == "active" && m.removed_at.is_none())
     else {
         return Ok(None);
     };
-    if d.store.agent_takes_work(&worker.agent_id).map_err(|error| error.to_string())? {
+    if d.store
+        .agent_takes_work(&worker.agent_id)
+        .map_err(|error| error.to_string())?
+    {
         return Ok(None);
     }
     let reason = format!(
         "agent {} is not taking work; activate it or move the lease",
         worker.agent_id
     );
-    let Some(task) = d.store.get_task(task_id).map_err(|error| error.to_string())? else {
+    let Some(task) = d
+        .store
+        .get_task(task_id)
+        .map_err(|error| error.to_string())?
+    else {
         return Err(format!("unknown task {task_id}"));
     };
     if task.status != TaskStatus::Todo {
@@ -798,7 +897,11 @@ fn wait_for_worker(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>,
 }
 
 async fn wait_for_idle_switch(d: &Daemon, task_id: &str) -> Result<Option<Task>, String> {
-    let Some(task) = d.store.get_task(task_id).map_err(|error| error.to_string())? else {
+    let Some(task) = d
+        .store
+        .get_task(task_id)
+        .map_err(|error| error.to_string())?
+    else {
         return Ok(None);
     };
     let Some(profile) = d.task_profile(&task) else {
@@ -818,7 +921,11 @@ async fn wait_for_idle_switch(d: &Daemon, task_id: &str) -> Result<Option<Task>,
     let busy = crate::session::state_path_for_id(&task.session_id)
         .and_then(|path| crate::session::read_session_meta(&path))
         .is_some_and(|state| {
-            matches!(state.status, crate::harness::HarnessStatus::Running | crate::harness::HarnessStatus::WaitingForInput)
+            matches!(
+                state.status,
+                crate::harness::HarnessStatus::Running
+                    | crate::harness::HarnessStatus::WaitingForInput
+            )
         });
     Ok(busy.then_some(task))
 }
@@ -846,10 +953,7 @@ fn release_failed_claim(d: &Daemon, task: &Task, error: &str) -> Result<(), Stri
         .map_err(|error| error.to_string())
 }
 
-async fn create_task(
-    State(d): State<Shared>,
-    Json(req): Json<MissionTaskReq>,
-) -> Response {
+async fn create_task(State(d): State<Shared>, Json(req): Json<MissionTaskReq>) -> Response {
     if req.title.trim().is_empty() || req.session_id.trim().is_empty() {
         return mission_error("title and session_id are required".to_string());
     }
@@ -894,7 +998,10 @@ async fn create_task(
         // A failed first attempt is already counted and re-queued; the loop
         // retries it like any other, up to the failure ceiling.
         if let Err(error) = dispatch_mission_task(&d, &task.id).await {
-            eprintln!("[mission-control] first dispatch of {} failed: {error}", task.id);
+            eprintln!(
+                "[mission-control] first dispatch of {} failed: {error}",
+                task.id
+            );
         }
         match d.store.get_task(&task.id) {
             Ok(Some(task)) => task,
@@ -936,7 +1043,12 @@ async fn update_task(
             },
         )
     };
-    let status = match req.status.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let status = match req
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(raw) => match super::coordination::parse_task_status(raw) {
             Ok(status) => Some(status),
             Err(error) => return mission_error(error),
@@ -977,7 +1089,10 @@ async fn update_task(
     let updated = match (updated, status) {
         (Ok(_), Some(status)) => {
             let note = format!("Marked {status} by Mission Control.");
-            match d.store.move_task(&id, status, &note, &chrono::Utc::now().to_rfc3339()) {
+            match d
+                .store
+                .move_task(&id, status, &note, &chrono::Utc::now().to_rfc3339())
+            {
                 Ok(task) => Ok(task),
                 Err(error) => return super::coordination::store_error(error),
             }
@@ -994,10 +1109,7 @@ async fn update_task(
     }
 }
 
-async fn archive_task(
-    State(d): State<Shared>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
+async fn archive_task(State(d): State<Shared>, AxumPath(id): AxumPath<String>) -> Response {
     match d.store.complete_task(
         &id,
         TaskStatus::Cancelled,
@@ -1012,10 +1124,7 @@ async fn archive_task(
     }
 }
 
-async fn sessions(
-    State(d): State<Shared>,
-    Query(q): Query<MissionListQuery>,
-) -> Response {
+async fn sessions(State(d): State<Shared>, Query(q): Query<MissionListQuery>) -> Response {
     let root = &d.mission_control_root;
     let tasks = d.store.list_tasks(None, None).unwrap_or_default();
     match mission_control::list_sessions(root, false) {
@@ -1044,10 +1153,7 @@ async fn sessions(
     }
 }
 
-async fn create_session(
-    State(d): State<Shared>,
-    Json(req): Json<MissionSessionReq>,
-) -> Response {
+async fn create_session(State(d): State<Shared>, Json(req): Json<MissionSessionReq>) -> Response {
     let folder = PathBuf::from(&req.folder);
     if !folder.is_dir() {
         return mission_error("folder is not a directory".to_string());
@@ -1127,10 +1233,7 @@ async fn update_session(
     }
 }
 
-async fn archive_session(
-    State(d): State<Shared>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
+async fn archive_session(State(d): State<Shared>, AxumPath(id): AxumPath<String>) -> Response {
     match mission_control::archive_session(&d.mission_control_root, &id) {
         Ok(session) => Json(mission_session_view(&session, 0)).into_response(),
         Err(error) => mission_error(error),
@@ -1143,10 +1246,7 @@ struct MissionOpenReq {
     profile: Option<String>,
 }
 
-async fn open(
-    State(d): State<Shared>,
-    Json(req): Json<MissionOpenReq>,
-) -> Response {
+async fn open(State(d): State<Shared>, Json(req): Json<MissionOpenReq>) -> Response {
     match open_mission_control(&d, req.profile).await {
         Ok((id, home)) => Json(serde_json::json!({ "id": id, "folder": home })).into_response(),
         Err(error) => mission_error(error),
@@ -1157,7 +1257,10 @@ pub(super) const WORKFLOW_PLAN: &str = "Workflow W7 · first plan: the worker ha
 
 pub(super) const WORKFLOW_REPORT: &str = "Workflow W3 · task report: check its Scope, Done and How against the task's scope (spot-check only if thin), then judge it as the user will: is it actually good, would the person it's for care, does it keep their standing rules? Covers the scope but weak → update_mission_task revise with the bar you want, before they see it. Done and good → tell the user unless you already have, with your view, and set the goal's next step; short of the scope → update_mission_task revise; in_review or review_escalated → submit_review is yours; stalled → inspect_session, then answer, retry or cancel; blocked → unblock it; failed → retry once or re-route. Then stop.";
 
-pub(super) async fn open_mission_control(d: &Shared, requested_profile: Option<String>) -> Result<(String, std::path::PathBuf), String> {
+pub(super) async fn open_mission_control(
+    d: &Shared,
+    requested_profile: Option<String>,
+) -> Result<(String, std::path::PathBuf), String> {
     let home = mission_control::ensure_home()?;
     let state_path = mission_control::session_state_path();
     let id = mission_control::SESSION_ID.to_string();
@@ -1190,12 +1293,11 @@ pub(super) async fn open_mission_control(d: &Shared, requested_profile: Option<S
             Some(crate::speech::mission_control_stream()),
         );
         sessions.insert(id.clone(), live_from_handle(handle, profile));
-        if !resume
-            && let Some(live) = sessions.get(&id) {
-                let _ = live
-                    .input_tx
-                    .send(LoopInput::SetTitle("Mission Control".into()));
-            }
+        if !resume && let Some(live) = sessions.get(&id) {
+            let _ = live
+                .input_tx
+                .send(LoopInput::SetTitle("Mission Control".into()));
+        }
     }
     drop(sessions);
     if let Err(error) = mission_control::set_mission_control_session(&d.mission_control_root, &id) {
@@ -1282,10 +1384,16 @@ pub async fn dispatch_loop(daemon: Shared) {
             }
         }
         super::review::drive_reviews(&daemon).await;
-        super::stall::sweep(&daemon.store, chrono::Utc::now(), super::stall::probe_session);
+        super::stall::sweep(
+            &daemon.store,
+            chrono::Utc::now(),
+            super::stall::probe_session,
+        );
         wake_for_stalled_goals(&daemon).await;
         for (session, notice) in super::stall::owed_sweep(&daemon.store, chrono::Utc::now()) {
-            daemon.deliver(&session, crate::harness::LoopInput::UserMessage(notice)).await;
+            daemon
+                .deliver(&session, crate::harness::LoopInput::UserMessage(notice))
+                .await;
         }
         deliver_mission_control_reports(&daemon).await;
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1295,7 +1403,13 @@ pub async fn dispatch_loop(daemon: Shared) {
 async fn wake_for_stalled_goals(daemon: &Shared) {
     let state = crate::mission_autonomy::load();
     let quiet = crate::mission_autonomy::in_quiet_hours(&state.settings);
-    let Some(text) = super::stall::goal_stall_wake(&daemon.store, chrono::Utc::now(), quiet || !state.settings.on) else { return };
+    let Some(text) = super::stall::goal_stall_wake(
+        &daemon.store,
+        chrono::Utc::now(),
+        quiet || !state.settings.on,
+    ) else {
+        return;
+    };
     if super::autonomy::mission_control_busy() {
         return;
     }
@@ -1355,7 +1469,16 @@ fn report_text(task: &Task, marker: &crate::coordination::NotificationMarker) ->
 
 /// Outcomes that must not wait behind a question to the user.
 fn is_outcome_report(kind: &str) -> bool {
-    matches!(kind, "done" | "failed" | "stalled" | "blocked" | "review_escalated" | "member_stopped" | "room_limit")
+    matches!(
+        kind,
+        "done"
+            | "failed"
+            | "stalled"
+            | "blocked"
+            | "review_escalated"
+            | "member_stopped"
+            | "room_limit"
+    )
 }
 
 async fn deliver_mission_control_reports(daemon: &Daemon) {
@@ -1387,7 +1510,11 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
                 .update_task_in(&task.id, &chrono::Utc::now().to_rfc3339(), |t| {
                     // Matched by content, not position: the list can change
                     // between this read and the write.
-                    if let Some(n) = t.notifications.iter_mut().find(|n| !n.delivered && **n == *marker) {
+                    if let Some(n) = t
+                        .notifications
+                        .iter_mut()
+                        .find(|n| !n.delivered && **n == *marker)
+                    {
                         n.delivered = true;
                     }
                 });
@@ -1398,13 +1525,17 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
             "[report_digest]\nOutcomes that arrived while you waited on the user; handle them after their answer.\n[/report_digest]\n{}",
             digest.join("\n")
         );
-        let item = crate::harness::QueuedInput { id: uuid::Uuid::new_v4().to_string(), text };
-        daemon.deliver(mission_control::SESSION_ID, LoopInput::Queue(item)).await;
+        let item = crate::harness::QueuedInput {
+            id: uuid::Uuid::new_v4().to_string(),
+            text,
+        };
+        daemon
+            .deliver(mission_control::SESSION_ID, LoopInput::Queue(item))
+            .await;
     }
-    if delivered_any
-        && let Ok(tasks) = daemon.store.list_tasks(None, None) {
-            super::autonomy::mark_board_seen(&tasks);
-        }
+    if delivered_any && let Ok(tasks) = daemon.store.list_tasks(None, None) {
+        super::autonomy::mark_board_seen(&tasks);
+    }
 }
 
 fn tracing_log_dispatch_failure(task_id: &str, error: &str) {
@@ -1452,7 +1583,10 @@ async fn autonomy() -> Response {
 async fn update_autonomy(Json(req): Json<AutonomyReq>) -> Response {
     for clock in [&req.quiet_start, &req.quiet_end].into_iter().flatten() {
         if !clock.is_empty() && !crate::mission_autonomy::valid_clock(clock) {
-            return api_error(StatusCode::BAD_REQUEST, format!("quiet hours must be HH:MM, got `{clock}`"));
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                format!("quiet hours must be HH:MM, got `{clock}`"),
+            );
         }
     }
     let result = crate::mission_autonomy::update(|state| {
@@ -1464,7 +1598,8 @@ async fn update_autonomy(Json(req): Json<AutonomyReq>) -> Response {
             state.settings.on = on;
         }
         if let Some(minutes) = req.round_minutes {
-            state.settings.round_minutes = minutes.clamp(crate::mission_autonomy::MIN_ROUND_MINUTES, 24 * 60);
+            state.settings.round_minutes =
+                minutes.clamp(crate::mission_autonomy::MIN_ROUND_MINUTES, 24 * 60);
         }
         if let Some(start) = req.quiet_start {
             state.settings.quiet_start = Some(start).filter(|s| !s.is_empty());
@@ -1491,10 +1626,7 @@ async fn settings(State(d): State<Shared>) -> Response {
     Json(mission_control::load_settings(&d.mission_control_root)).into_response()
 }
 
-async fn update_settings(
-    State(d): State<Shared>,
-    Json(req): Json<MissionSettingsReq>,
-) -> Response {
+async fn update_settings(State(d): State<Shared>, Json(req): Json<MissionSettingsReq>) -> Response {
     match mission_control::set_notification_policy(
         &d.mission_control_root,
         &req.notification_policy,

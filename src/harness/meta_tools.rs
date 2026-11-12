@@ -51,7 +51,10 @@ impl CodingHarness {
             }
             "update_plan" => match parse_plan(arguments) {
                 Ok(steps) => {
-                    let done = steps.iter().filter(|s| s.status == PlanStatus::Done).count();
+                    let done = steps
+                        .iter()
+                        .filter(|s| s.status == PlanStatus::Done)
+                        .count();
                     let total = steps.len();
                     let explanation = arguments
                         .get("explanation")
@@ -61,7 +64,9 @@ impl CodingHarness {
                         .map(str::to_string);
                     state.plan = steps.clone();
                     self.mirror_plan_to_task(&steps);
-                    state.events.push(HarnessEvent::PlanUpdated { steps, explanation });
+                    state
+                        .events
+                        .push(HarnessEvent::PlanUpdated { steps, explanation });
                     (
                         json!({"schema_version": 1, "status": "success", "data": {"done": done, "total": total}}),
                         MetaControl::Continue,
@@ -181,7 +186,10 @@ impl CodingHarness {
                                 MetaControl::Continue,
                             )
                         }
-                        Err(error) => (tool_error(format!("present_file: {error}")), MetaControl::Continue),
+                        Err(error) => (
+                            tool_error(format!("present_file: {error}")),
+                            MetaControl::Continue,
+                        ),
                     };
                 }
                 let turn_start = state
@@ -190,7 +198,9 @@ impl CodingHarness {
                     .rposition(|e| matches!(e, HarnessEvent::UserInput { .. }))
                     .unwrap_or(0);
                 let turn = &state.events[turn_start..];
-                if turn.iter().any(|e| matches!(e, HarnessEvent::FilePresented { path, .. } if *path == shown)) {
+                if turn.iter().any(
+                    |e| matches!(e, HarnessEvent::FilePresented { path, .. } if *path == shown),
+                ) {
                     return (
                         json!({"schema_version": 1, "status": "success", "data": {
                             "presented": shown,
@@ -209,7 +219,9 @@ impl CodingHarness {
                     caption,
                 });
                 let note = if shared >= 10 {
-                    format!("shown to the user; that's {shared} files this turn. For a batch, write them into one folder and present the folder: it becomes one collection with a download-all")
+                    format!(
+                        "shown to the user; that's {shared} files this turn. For a batch, write them into one folder and present the folder: it becomes one collection with a download-all"
+                    )
                 } else {
                     "shown to the user as a file they can open or download; continue your turn as usual".to_string()
                 };
@@ -287,7 +299,11 @@ impl CodingHarness {
                     // Follow-up to an existing lane: resume it with the new brief,
                     // context intact.
                     if let Some(lane_id) = brief.lane_id.as_deref() {
-                        if lanes.records().iter().any(|r| r.id == lane_id && r.status == LaneStatus::Running) {
+                        if lanes
+                            .records()
+                            .iter()
+                            .any(|r| r.id == lane_id && r.status == LaneStatus::Running)
+                        {
                             return match lanes.message(lane_id, &brief.description) {
                                 Ok(title) => (
                                     json!({
@@ -305,7 +321,11 @@ impl CodingHarness {
                                 Err(error) => (tool_error(error), MetaControl::Continue),
                             };
                         }
-                        return match lanes.follow_up(lane_id, &brief.description, brief.profile.clone()) {
+                        return match lanes.follow_up(
+                            lane_id,
+                            &brief.description,
+                            brief.profile.clone(),
+                        ) {
                             Ok(title) => {
                                 state.events.push(HarnessEvent::LaneSpawned {
                                     id: lane_id.to_string(),
@@ -500,9 +520,12 @@ impl CodingHarness {
             // User-facing: meta tools (note/ask_user/delegate); no terminate tool —
             // a plain reply ends the turn. `complete_goal` is added only while a goal runs.
             definitions.extend(
-                meta::conversation_meta_definitions_for(goal_active, self.config.allow_lane_control)
-                    .into_iter()
-                    .filter(|d| !self.config.hidden_meta.contains(&d.name.as_str())),
+                meta::conversation_meta_definitions_for(
+                    goal_active,
+                    self.config.allow_lane_control,
+                )
+                .into_iter()
+                .filter(|d| !self.config.hidden_meta.contains(&d.name.as_str())),
             );
         } else {
             // Headless (lanes / one-shot run): an explicit terminate_loop carries a
@@ -518,10 +541,20 @@ impl CodingHarness {
         if self.context.lane_origin().is_some() {
             return;
         }
-        let Some(session) = self.context.durable_session_id() else { return };
-        let Some((task_id, _)) = crate::coordination_tools::session_task(&self.context, session) else { return };
-        let path = self.context.store_path().unwrap_or_else(crate::store::default_db_path);
-        let Ok(store) = crate::store::Store::open_cached(path) else { return };
+        let Some(session) = self.context.durable_session_id() else {
+            return;
+        };
+        let Some((task_id, _)) = crate::coordination_tools::session_task(&self.context, session)
+        else {
+            return;
+        };
+        let path = self
+            .context
+            .store_path()
+            .unwrap_or_else(crate::store::default_db_path);
+        let Ok(store) = crate::store::Store::open_cached(path) else {
+            return;
+        };
         let work: Vec<crate::coordination::WorkStep> = steps
             .iter()
             .map(|s| crate::coordination::WorkStep {
@@ -551,7 +584,12 @@ pub(super) fn parse_plan(arguments: &Value) -> Result<Vec<PlanStep>, String> {
     if steps.iter().any(|s| s.step.trim().is_empty()) {
         return Err("every plan step needs text.".to_string());
     }
-    if steps.iter().filter(|s| s.status == PlanStatus::InProgress).count() > 1 {
+    if steps
+        .iter()
+        .filter(|s| s.status == PlanStatus::InProgress)
+        .count()
+        > 1
+    {
         return Err("mark at most one step `in_progress`.".to_string());
     }
     Ok(steps

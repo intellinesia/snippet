@@ -95,14 +95,15 @@ impl VoiceprintAccumulator {
         for i in 0..FRAME_SAMPLES {
             let pe = x[i] - 0.97 * prev;
             prev = x[i];
-            let hamming = 0.54 - 0.46 * (2.0 * std::f32::consts::PI * i as f32 / (FRAME_SAMPLES - 1) as f32).cos();
+            let hamming = 0.54
+                - 0.46 * (2.0 * std::f32::consts::PI * i as f32 / (FRAME_SAMPLES - 1) as f32).cos();
             w[i] = pe * hamming;
         }
 
         // 2. 16 Mel-spaced resonator bands (130 Hz .. 3800 Hz) via Goertzel
         const FREQS: [f32; NUM_BANDS] = [
-            135.0, 200.0, 275.0, 360.0, 460.0, 575.0, 710.0, 865.0,
-            1045.0, 1255.0, 1500.0, 1785.0, 2120.0, 2510.0, 2965.0, 3500.0,
+            135.0, 200.0, 275.0, 360.0, 460.0, 575.0, 710.0, 865.0, 1045.0, 1255.0, 1500.0, 1785.0,
+            2120.0, 2510.0, 2965.0, 3500.0,
         ];
         let mut log_band = [0.0f64; NUM_BANDS];
         let mut weighted_freq = 0.0f64;
@@ -221,14 +222,20 @@ impl VoiceprintAccumulator {
 
     /// Computes how likely the accumulated voice belongs to the enrolled user (`0.00..=1.00`).
     pub fn score(&self, samples: &[VoiceprintSample]) -> Option<f64> {
-        if samples.is_empty() { return None; }
+        if samples.is_empty() {
+            return None;
+        }
         let live = self.finish_vector()?;
         score_vector(&live, samples)
     }
 }
 
 fn normalize(v: &mut [f32]) {
-    let norm = v.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+    let norm = v
+        .iter()
+        .map(|x| (*x as f64) * (*x as f64))
+        .sum::<f64>()
+        .sqrt();
     if norm > 1e-8 {
         for x in v.iter_mut() {
             *x = (*x as f64 / norm) as f32;
@@ -272,13 +279,18 @@ pub fn extract_from_pcm_or_wav(bytes: &[u8]) -> Result<Vec<f32>, String> {
     let mut acc = VoiceprintAccumulator::default();
     acc.feed_pcm(&pcm);
     acc.finish_vector().ok_or_else(|| {
-        "Not enough clear speech detected — speak naturally for 2–3 seconds and try again".to_string()
+        "Not enough clear speech detected — speak naturally for 2–3 seconds and try again"
+            .to_string()
     })
 }
 
 /// 16 kHz mono s16le PCM from a RIFF WAV (any rate, first channel) or raw PCM bytes.
 pub fn pcm_from_audio(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    if bytes.len() > 44 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" { extract_wav_s16le_16k(bytes) } else { Ok(bytes.to_vec()) }
+    if bytes.len() > 44 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        extract_wav_s16le_16k(bytes)
+    } else {
+        Ok(bytes.to_vec())
+    }
 }
 
 pub fn wav(pcm: &[u8]) -> Vec<u8> {
@@ -308,12 +320,15 @@ fn extract_wav_s16le_16k(wav: &[u8]) -> Result<Vec<u8>, String> {
 
     while pos + 8 <= wav.len() {
         let id = &wav[pos..pos + 4];
-        let size = u32::from_le_bytes([wav[pos + 4], wav[pos + 5], wav[pos + 6], wav[pos + 7]]) as usize;
+        let size =
+            u32::from_le_bytes([wav[pos + 4], wav[pos + 5], wav[pos + 6], wav[pos + 7]]) as usize;
         pos += 8;
         let end = (pos + size).min(wav.len());
         if id == b"fmt " && end - pos >= 16 {
             channels = u16::from_le_bytes([wav[pos + 2], wav[pos + 3]]).max(1);
-            sample_rate = u32::from_le_bytes([wav[pos + 4], wav[pos + 5], wav[pos + 6], wav[pos + 7]]).max(8000);
+            sample_rate =
+                u32::from_le_bytes([wav[pos + 4], wav[pos + 5], wav[pos + 6], wav[pos + 7]])
+                    .max(8000);
             bits_per_sample = u16::from_le_bytes([wav[pos + 14], wav[pos + 15]]);
         } else if id == b"data" {
             data_slice = Some(&wav[pos..end]);

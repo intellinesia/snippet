@@ -176,8 +176,15 @@ mod tests {
     #[test]
     fn the_accent_is_a_distinct_readable_hue() {
         let t = theme();
-        assert!(saturation(t.accent) > 0.3, "the accent must read as a colour");
-        for (surface, name) in [(Color::Rgb(0x10, 0x10, 0x12), "bg"), (t.surface1, "surface1"), (t.surface2, "surface2")] {
+        assert!(
+            saturation(t.accent) > 0.3,
+            "the accent must read as a colour"
+        );
+        for (surface, name) in [
+            (Color::Rgb(0x10, 0x10, 0x12), "bg"),
+            (t.surface1, "surface1"),
+            (t.surface2, "surface2"),
+        ] {
             let c = contrast(t.accent, surface);
             assert!(c >= 4.5, "accent on {name} = {c:.2}");
             let c = contrast(t.faint, surface);

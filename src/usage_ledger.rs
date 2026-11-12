@@ -178,23 +178,20 @@ impl Store {
                  GROUP BY provider, model
                  ORDER BY SUM(total_tokens) DESC",
             )?;
-            let rows = stmt.query_map(
-                params![bucket_floor(since)],
-                |row| {
-                    Ok(UsageTotals {
-                        provider: row.get(0)?,
-                        model: row.get(1)?,
-                        calls: row.get::<_, i64>(2)? as u64,
-                        prompt_tokens: row.get::<_, i64>(3)? as u64,
-                        completion_tokens: row.get::<_, i64>(4)? as u64,
-                        cache_read_tokens: row.get::<_, i64>(5)? as u64,
-                        cache_creation_tokens: row.get::<_, i64>(6)? as u64,
-                        total_tokens: row.get::<_, i64>(7)? as u64,
-                        first_at: row.get(8)?,
-                        last_at: row.get(9)?,
-                    })
-                },
-            )?;
+            let rows = stmt.query_map(params![bucket_floor(since)], |row| {
+                Ok(UsageTotals {
+                    provider: row.get(0)?,
+                    model: row.get(1)?,
+                    calls: row.get::<_, i64>(2)? as u64,
+                    prompt_tokens: row.get::<_, i64>(3)? as u64,
+                    completion_tokens: row.get::<_, i64>(4)? as u64,
+                    cache_read_tokens: row.get::<_, i64>(5)? as u64,
+                    cache_creation_tokens: row.get::<_, i64>(6)? as u64,
+                    total_tokens: row.get::<_, i64>(7)? as u64,
+                    first_at: row.get(8)?,
+                    last_at: row.get(9)?,
+                })
+            })?;
             rows.collect()
         })
     }
@@ -209,10 +206,9 @@ impl Store {
                  WHERE bucket >= ?1
                  GROUP BY provider",
             )?;
-            let rows = stmt.query_map(
-                params![bucket_floor(since)],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)),
-            )?;
+            let rows = stmt.query_map(params![bucket_floor(since)], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })?;
             rows.collect()
         })
     }
@@ -221,7 +217,11 @@ impl Store {
 impl Store {
     /// When the session last made a model call for a real turn (not keep-warm).
     /// Tokens not served from cache, across these sessions since a unix time.
-    pub fn fresh_tokens_for_sessions(&self, sessions: &[String], since: i64) -> Result<u64, StoreError> {
+    pub fn fresh_tokens_for_sessions(
+        &self,
+        sessions: &[String],
+        since: i64,
+    ) -> Result<u64, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT COALESCE(SUM(MAX(total_tokens - cache_read_tokens, 0)), 0) FROM usage_ledger WHERE session_id = ?1 AND at >= ?2",
@@ -307,7 +307,13 @@ pub fn record(session_id: &str, provider: &str, model: &str, usage: &TokenUsage)
     record_for(session_id, provider, model, usage, PURPOSE_TURN);
 }
 
-pub fn record_for(session_id: &str, provider: &str, model: &str, usage: &TokenUsage, purpose: &str) {
+pub fn record_for(
+    session_id: &str,
+    provider: &str,
+    model: &str,
+    usage: &TokenUsage,
+    purpose: &str,
+) {
     if usage.prompt_tokens == 0 && usage.completion_tokens == 0 && usage.total_tokens == 0 {
         return;
     }
@@ -390,9 +396,9 @@ impl AgentModel for MeteredModel {
     }
 
     fn keep_warm_support(&self) -> Result<(), String> {
-        self.inner
-            .keep_warm_support()
-            .map_err(|inner| crate::keep_warm::reason_for(&self.provider).map_or(inner, str::to_string))
+        self.inner.keep_warm_support().map_err(|inner| {
+            crate::keep_warm::reason_for(&self.provider).map_or(inner, str::to_string)
+        })
     }
 
     async fn keep_warm(
@@ -401,7 +407,13 @@ impl AgentModel for MeteredModel {
         tools: &[NativeToolDefinition],
     ) -> Result<TokenUsage, ToolError> {
         let usage = self.inner.keep_warm(messages, tools).await?;
-        record_for(&self.session_id, &self.provider, &self.model, &usage, PURPOSE_KEEP_WARM);
+        record_for(
+            &self.session_id,
+            &self.provider,
+            &self.model,
+            &usage,
+            PURPOSE_KEEP_WARM,
+        );
         Ok(usage)
     }
 }
@@ -411,23 +423,38 @@ mod tests {
     use super::*;
 
     fn usage(read: u64) -> TokenUsage {
-        TokenUsage { prompt_tokens: 50_000, completion_tokens: 1, cache_read_tokens: read, ..TokenUsage::default() }
+        TokenUsage {
+            prompt_tokens: 50_000,
+            completion_tokens: 1,
+            cache_read_tokens: read,
+            ..TokenUsage::default()
+        }
     }
 
     #[test]
     fn keep_warm_calls_are_tagged_apart_from_turns() {
         let store = Store::open_in_memory().unwrap();
-        store.record_usage("inbox-researcher", "anthropic", "sonnet", &usage(0)).unwrap();
+        store
+            .record_usage("inbox-researcher", "anthropic", "sonnet", &usage(0))
+            .unwrap();
         let turn_at = store.last_turn_at("inbox-researcher").unwrap().unwrap();
         store
-            .record_usage_for("inbox-researcher", "anthropic", "sonnet", &usage(49_000), PURPOSE_KEEP_WARM)
+            .record_usage_for(
+                "inbox-researcher",
+                "anthropic",
+                "sonnet",
+                &usage(49_000),
+                PURPOSE_KEEP_WARM,
+            )
             .unwrap();
-        assert_eq!(store.last_turn_at("inbox-researcher").unwrap(), Some(turn_at));
+        assert_eq!(
+            store.last_turn_at("inbox-researcher").unwrap(),
+            Some(turn_at)
+        );
         assert_eq!(store.last_turn_at("other").unwrap(), None);
         let spend = store.keep_warm_totals(0).unwrap();
         assert_eq!(spend.len(), 1);
         assert_eq!(spend[0]["calls"], 1);
         assert_eq!(spend[0]["cache_read_tokens"], 49_000);
     }
-
 }

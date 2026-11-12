@@ -9,7 +9,11 @@ static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
 
 pub fn deepgram_host() -> String {
     let h = HOST.lock().unwrap();
-    if h.is_empty() { "api.deepgram.com".to_string() } else { h.clone() }
+    if h.is_empty() {
+        "api.deepgram.com".to_string()
+    } else {
+        h.clone()
+    }
 }
 
 pub fn apply_config(c: &crate::config::SnippetConfig) {

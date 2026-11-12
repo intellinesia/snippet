@@ -97,7 +97,6 @@ pub(crate) fn render_connecting(frame: &mut ratatui::Frame<'_>, area: Rect, app:
     );
 }
 
-
 pub(crate) fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     let area = frame.area();
 
@@ -149,7 +148,9 @@ pub(crate) fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     }
     let area = Rect {
         x: centre.x + u16::from(sidebar_area.is_some()),
-        width: centre.width.saturating_sub(u16::from(sidebar_area.is_some()) + u16::from(pane_area.is_some())),
+        width: centre
+            .width
+            .saturating_sub(u16::from(sidebar_area.is_some()) + u16::from(pane_area.is_some())),
         ..centre
     };
 
@@ -164,16 +165,16 @@ pub(crate) fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),                    // Header
-            Constraint::Length(1),                    // gap under header
-            Constraint::Min(10),                      // Content
-            Constraint::Length(sugg_h),               // Suggestions
+            Constraint::Length(1),                                // Header
+            Constraint::Length(1),                                // gap under header
+            Constraint::Min(10),                                  // Content
+            Constraint::Length(sugg_h),                           // Suggestions
             Constraint::Length(question_height(app, area.width)), // Question
-            Constraint::Length(approval_h),           // Approval prompt (above input)
-            Constraint::Length(1),                    // gap above input
-            Constraint::Length(input_h),              // Input (grows with wrapped lines)
-            Constraint::Length(1),                    // Status message
-            Constraint::Length(1),                    // Footer (metadata + usage)
+            Constraint::Length(approval_h),                       // Approval prompt (above input)
+            Constraint::Length(1),                                // gap above input
+            Constraint::Length(input_h), // Input (grows with wrapped lines)
+            Constraint::Length(1),       // Status message
+            Constraint::Length(1),       // Footer (metadata + usage)
         ])
         .split(area);
 
@@ -212,7 +213,6 @@ pub(crate) fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     render_status(frame, footer_area, app);
     render_palette(frame, frame.area(), app);
 }
-
 
 pub(crate) fn get_suggestions(app: &App) -> Vec<(String, String)> {
     if !app.input.starts_with('/') {
@@ -346,7 +346,6 @@ pub(crate) fn render_suggestions(frame: &mut ratatui::Frame<'_>, area: Rect, app
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-
 pub(crate) fn render_status_message(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let line = if let Some(ref err) = app.error {
         Line::from(vec![
@@ -361,7 +360,6 @@ pub(crate) fn render_status_message(frame: &mut ratatui::Frame<'_>, area: Rect, 
     };
     frame.render_widget(Paragraph::new(line), area);
 }
-
 
 pub(crate) fn ansi_color(idx: u8) -> Color {
     match idx {
@@ -384,7 +382,6 @@ pub(crate) fn ansi_color(idx: u8) -> Color {
         n => Color::Indexed(n),
     }
 }
-
 
 pub(crate) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let has_events = app
@@ -423,20 +420,21 @@ pub(crate) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
 
     // Compact lane indicator in the header bar.
     if let Some(state) = &app.state
-        && !state.lanes.is_empty() {
-            let running = state
-                .lanes
-                .iter()
-                .filter(|l| l.status == LaneStatus::Running)
-                .count();
-            let total = state.lanes.len();
-            let label = if running > 0 {
-                format!("{running} of {total} delegated running   ")
-            } else {
-                format!("{total} delegated   ")
-            };
-            right.insert(0, Span::styled(label, Style::default().fg(faint())));
-        }
+        && !state.lanes.is_empty()
+    {
+        let running = state
+            .lanes
+            .iter()
+            .filter(|l| l.status == LaneStatus::Running)
+            .count();
+        let total = state.lanes.len();
+        let label = if running > 0 {
+            format!("{running} of {total} delegated running   ")
+        } else {
+            format!("{total} delegated   ")
+        };
+        right.insert(0, Span::styled(label, Style::default().fg(faint())));
+    }
 
     let update = app.update_notice.lock().ok().and_then(|g| g.clone());
     if let Some(v) = update {
@@ -459,7 +457,6 @@ pub(crate) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
         cols[1],
     );
 }
-
 
 pub(crate) fn render_history(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     // A small breathing gutter from the terminal edge (the transcript carries its
@@ -523,7 +520,6 @@ pub(crate) fn attachment_line(app: &App) -> Option<Line<'static>> {
         Span::styled("  ·  ⌫ removes", Style::default().fg(faint())),
     ]))
 }
-
 
 pub(crate) fn render_input(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     use ratatui::widgets::{Block, Borders};
@@ -671,7 +667,11 @@ pub(crate) fn input_height(app: &App, width: u16) -> u16 {
 /// Wrap `input` into display rows at `width` columns, honoring explicit `\n` as
 /// hard breaks and soft-wrapping longer lines by character count. Returns the
 /// rows plus the cursor's (row, col) so the caller can draw a block cursor.
-pub(crate) fn layout_input(input: &str, cursor: usize, width: usize) -> (Vec<String>, (usize, usize)) {
+pub(crate) fn layout_input(
+    input: &str,
+    cursor: usize,
+    width: usize,
+) -> (Vec<String>, (usize, usize)) {
     let width = width.max(1);
     let chars: Vec<char> = input.chars().collect();
     let mut rows: Vec<String> = Vec::new();
@@ -733,7 +733,10 @@ pub(crate) fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
     };
 
     let mut left: Vec<Span<'static>> = vec![
-        Span::styled(model.to_string(), Style::default().fg(soft()).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            model.to_string(),
+            Style::default().fg(soft()).add_modifier(Modifier::BOLD),
+        ),
         Span::styled("  ·  ", faint_style),
         Span::styled(folder_name.to_string(), Style::default().fg(muted())),
     ];
@@ -748,7 +751,10 @@ pub(crate) fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
 
     let mut right: Vec<Span<'static>> = Vec::new();
     if app.is_compacting() {
-        right.push(Span::styled("compacting context", Style::default().fg(accent())));
+        right.push(Span::styled(
+            "compacting context",
+            Style::default().fg(accent()),
+        ));
     } else {
         let pct = st
             .filter(|s| s.context_window > 0 && s.last_prompt_tokens > 0)
@@ -768,15 +774,24 @@ pub(crate) fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
         let filled = (pct * 8 + 50) / 100;
         right.push(Span::styled("context ", faint_style));
         right.push(Span::styled("━".repeat(filled), Style::default().fg(color)));
-        right.push(Span::styled("━".repeat(8 - filled), Style::default().fg(border2())));
-        right.push(Span::styled(format!(" {pct}%"), Style::default().fg(muted())));
+        right.push(Span::styled(
+            "━".repeat(8 - filled),
+            Style::default().fg(border2()),
+        ));
+        right.push(Span::styled(
+            format!(" {pct}%"),
+            Style::default().fg(muted()),
+        ));
     }
 
     let right_line = Line::from(right);
     let right_w = right_line.width() as u16;
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(10), Constraint::Length(right_w.saturating_add(1))])
+        .constraints([
+            Constraint::Min(10),
+            Constraint::Length(right_w.saturating_add(1)),
+        ])
         .split(area);
     frame.render_widget(Paragraph::new(Line::from(left)), cols[0]);
     frame.render_widget(
@@ -813,4 +828,3 @@ pub(crate) fn home_path(path: &std::path::Path) -> String {
     }
     text
 }
-

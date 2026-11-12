@@ -20,34 +20,34 @@ use crate::config::SnippetConfig;
 use crate::harness::{HarnessEvent, HarnessStatus, PlanStatus};
 use crate::lanes::LaneStatus;
 
+mod markdown;
 pub mod mascot;
+mod theme;
 pub mod tool_render;
 pub mod transcript;
-mod markdown;
-mod theme;
 
 mod app;
-mod commands;
-mod input;
-mod keybindings;
-mod render;
-mod settings;
 mod boards;
 mod cards;
 mod chrome;
+mod commands;
+mod input;
+mod keybindings;
 mod panels;
+mod render;
+mod settings;
 mod shell;
 mod term_pane;
-mod views;
 #[cfg(test)]
 mod tests;
+mod views;
 
 pub(crate) use app::*;
+use cards::*;
 pub(crate) use render::*;
+pub(crate) use shell::*;
 pub(crate) use term_pane::*;
 pub(crate) use views::*;
-pub(crate) use shell::*;
-use cards::*;
 
 use markdown::*;
 use theme::*;
@@ -99,8 +99,6 @@ const ALL_COMMANDS: &[(&str, &str)] = &[
     ),
 ];
 
-
-
 #[derive(Debug, Clone)]
 pub struct TuiOptions {
     pub config_path: PathBuf,
@@ -108,7 +106,6 @@ pub struct TuiOptions {
     /// A conversation id to resume on launch (from `--resume`).
     pub resume: Option<String>,
 }
-
 
 /// What to print after the TUI closes: how to get back in, and token usage.
 pub(crate) struct ExitInfo {
@@ -119,7 +116,6 @@ pub(crate) struct ExitInfo {
     pub(crate) cache_read_tokens: u64,
     pub(crate) total_tokens: u64,
 }
-
 
 pub async fn run_tui(options: TuiOptions) -> Result<(), Box<dyn std::error::Error>> {
     let default_hook = std::panic::take_hook();
@@ -206,7 +202,6 @@ pub(crate) fn shorten(desc: String) -> String {
 
 pub(crate) type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
-
 pub(crate) fn setup_terminal() -> Result<TuiTerminal, Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -232,7 +227,9 @@ pub(crate) fn setup_terminal() -> Result<TuiTerminal, Box<dyn std::error::Error>
     Ok(Terminal::new(backend)?)
 }
 
-pub(crate) fn restore_terminal(terminal: &mut TuiTerminal) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn restore_terminal(
+    terminal: &mut TuiTerminal,
+) -> Result<(), Box<dyn std::error::Error>> {
     disable_raw_mode()?;
     if matches!(supports_keyboard_enhancement(), Ok(true)) {
         let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
@@ -246,4 +243,3 @@ pub(crate) fn restore_terminal(terminal: &mut TuiTerminal) -> Result<(), Box<dyn
     terminal.show_cursor()?;
     Ok(())
 }
-

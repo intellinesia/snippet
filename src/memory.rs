@@ -22,15 +22,15 @@ use std::sync::Mutex;
 
 pub const ENTRY_FILE: &str = "MEMORY.md";
 const INDEX_HEADING: &str = "## Index";
-const ENTRY_PROMPT_CHARS: usize = 4_000;
+pub const ENTRY_PROMPT_CHARS: usize = 4_000;
 const ARCHIVE_DIR: &str = "session-memory-archive";
-const MAX_ENTRY_CHARS: usize = 400;
+pub const MAX_ENTRY_CHARS: usize = 400;
 const IGNORED: &[&str] = &[".lock", ".tmp-*", ".snippet/"];
 pub const CONSOLIDATE_PREFIX: &str = "Consolidate:";
 
 static GIT_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeKind {
     Global,
@@ -54,10 +54,18 @@ impl ScopeKind {
 
     fn purpose(self) -> &'static str {
         match self {
-            Self::Global => "the user: preferences, standing directives and facts that hold in every project",
-            Self::Project => "this repository: where things live, how to build, test and deploy, conventions and decisions; shared by every worktree and session of the repo",
-            Self::Agent => "your own expertise as this agent: techniques, checks and lessons that carry across every job you take",
-            Self::Session => "this conversation: decisions made, constraints, and the state of the work, so it survives compaction and restarts",
+            Self::Global => {
+                "the user: preferences, standing directives and facts that hold in every project"
+            }
+            Self::Project => {
+                "this repository: where things live, how to build, test and deploy, conventions and decisions; shared by every worktree and session of the repo"
+            }
+            Self::Agent => {
+                "your own expertise as this agent: techniques, checks and lessons that carry across every job you take"
+            }
+            Self::Session => {
+                "this conversation: decisions made, constraints, and the state of the work, so it survives compaction and restarts"
+            }
             Self::Task => "this task: the decisions made on it, readable by everyone working on it",
         }
     }
@@ -101,7 +109,11 @@ impl MemoryRepo {
     }
 
     fn project_dir(dir: &str, root: PathBuf) -> Self {
-        let label = dir.rsplit_once('-').map(|(name, _)| name).unwrap_or(dir).to_string();
+        let label = dir
+            .rsplit_once('-')
+            .map(|(name, _)| name)
+            .unwrap_or(dir)
+            .to_string();
         Self {
             kind: ScopeKind::Project,
             key: format!("project:{dir}"),
@@ -118,9 +130,11 @@ impl MemoryRepo {
             kind: ScopeKind::Agent,
             key: format!("agent:{agent_id}"),
             label: agent_id.to_string(),
-            root: crate::coordination::agents_root(&crate::config::snippet_home().join("mission-control"))
-                .join(agent_id)
-                .join("memory"),
+            root: crate::coordination::agents_root(
+                &crate::config::snippet_home().join("mission-control"),
+            )
+            .join(agent_id)
+            .join("memory"),
         })
     }
 
@@ -143,7 +157,9 @@ impl MemoryRepo {
             kind: ScopeKind::Task,
             key: format!("task:{task_id}"),
             label: task_id.to_string(),
-            root: crate::config::snippet_home().join("task-memory").join(task_id),
+            root: crate::config::snippet_home()
+                .join("task-memory")
+                .join(task_id),
         })
     }
 
@@ -153,7 +169,10 @@ impl MemoryRepo {
         match kind {
             "global" if rest.is_empty() => Some(Self::global()),
             "project" if safe_component(rest) => {
-                let root = crate::config::snippet_home().join("projects").join(rest).join("memory");
+                let root = crate::config::snippet_home()
+                    .join("projects")
+                    .join(rest)
+                    .join("memory");
                 Some(Self::project_dir(rest, root))
             }
             "agent" => Self::agent(rest),
@@ -174,14 +193,19 @@ impl MemoryRepo {
         for entry in read_dirs(&home.join("projects")) {
             let root = entry.join("memory");
             if root.is_dir() {
-                let dir = entry.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let dir = entry
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 out.push(Self::project_dir(&dir, root));
             }
         }
         let agents = crate::coordination::agents_root(&home.join("mission-control"));
         for entry in read_dirs(&agents) {
             if entry.join("memory").is_dir()
-                && let Some(repo) = entry.file_name().and_then(|n| Self::agent(&n.to_string_lossy()))
+                && let Some(repo) = entry
+                    .file_name()
+                    .and_then(|n| Self::agent(&n.to_string_lossy()))
             {
                 out.push(repo);
             }
@@ -209,15 +233,20 @@ impl MemoryRepo {
                     let _ = fs::create_dir_all(parent);
                 }
                 let _ = fs::remove_dir_all(&self.root);
-                fs::rename(&archived, &self.root).map_err(|e| format!("restore {}: {e}", archived.display()))?;
+                fs::rename(&archived, &self.root)
+                    .map_err(|e| format!("restore {}: {e}", archived.display()))?;
             }
         }
         if self.exists() {
             return self.ignore_scratch();
         }
-        fs::create_dir_all(&self.root).map_err(|e| format!("create {}: {e}", self.root.display()))?;
+        fs::create_dir_all(&self.root)
+            .map_err(|e| format!("create {}: {e}", self.root.display()))?;
         if !self.root.join(ENTRY_FILE).is_file() {
-            write_atomic(&self.root.join(ENTRY_FILE), &format!("# {}\n\n{INDEX_HEADING}\n", self.title()))?;
+            write_atomic(
+                &self.root.join(ENTRY_FILE),
+                &format!("# {}\n\n{INDEX_HEADING}\n", self.title()),
+            )?;
         }
         self.ignore_scratch()?;
         if !self.root.join(".git").exists() {
@@ -326,7 +355,9 @@ impl MemoryRepo {
     fn resolve(&self, rel: &str) -> Result<PathBuf, String> {
         let rel = rel.trim().trim_start_matches('/');
         if rel.is_empty()
-            || rel.split('/').any(|p| p.is_empty() || p == "." || p == ".." || p == ".git")
+            || rel
+                .split('/')
+                .any(|p| p.is_empty() || p == "." || p == ".." || p == ".git")
         {
             return Err(format!("invalid memory path: {rel}"));
         }
@@ -335,15 +366,23 @@ impl MemoryRepo {
 
     /// Unix time of the last consolidation commit, if any.
     pub fn last_consolidated(&self) -> Option<i64> {
-        self.git(&["log", "-1", "--format=%ct", "--grep", &format!("^{CONSOLIDATE_PREFIX}")])
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
+        self.git(&[
+            "log",
+            "-1",
+            "--format=%ct",
+            "--grep",
+            &format!("^{CONSOLIDATE_PREFIX}"),
+        ])
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
     }
 
     /// Commits since the last consolidation that were not consolidations themselves, and the
     /// time of the newest.
     pub fn activity_since_consolidation(&self) -> (usize, Option<i64>) {
-        let since = self.last_consolidated().map(|t| format!("--since=@{}", t + 1));
+        let since = self
+            .last_consolidated()
+            .map(|t| format!("--since=@{}", t + 1));
         let mut args = vec!["log", "--format=%ct%x1f%s"];
         if let Some(since) = since.as_deref() {
             args.push(since);
@@ -353,7 +392,10 @@ impl MemoryRepo {
         let mut newest = None;
         for line in log.lines() {
             let (time, subject) = line.split_once('\x1f').unwrap_or((line, ""));
-            if subject.starts_with(CONSOLIDATE_PREFIX) || subject == "Create memory repo" || subject == "Remove expired entries" {
+            if subject.starts_with(CONSOLIDATE_PREFIX)
+                || subject == "Create memory repo"
+                || subject == "Remove expired entries"
+            {
                 continue;
             }
             count += 1;
@@ -399,7 +441,12 @@ impl MemoryRepo {
         self.rewrite_line(&file, matching, None)
     }
 
-    fn rewrite_line(&self, file: &str, matching: &str, with: Option<&str>) -> Result<String, String> {
+    fn rewrite_line(
+        &self,
+        file: &str,
+        matching: &str,
+        with: Option<&str>,
+    ) -> Result<String, String> {
         let matching = matching.trim();
         if matching.len() < 8 {
             return Err("match text is too short to identify one entry".to_string());
@@ -445,7 +492,10 @@ impl MemoryRepo {
             .collect::<Vec<_>>()
             .join("\n");
         let mut linked = Vec::new();
-        for file in files.iter().filter(|f| f.ends_with(".md") && f.as_str() != ENTRY_FILE) {
+        for file in files
+            .iter()
+            .filter(|f| f.ends_with(".md") && f.as_str() != ENTRY_FILE)
+        {
             if !text.contains(&format!("[[{}]]", file.trim_end_matches(".md"))) {
                 self.link_from_index(file)?;
                 linked.push(file.clone());
@@ -463,7 +513,8 @@ impl MemoryRepo {
     /// (YYYY-MM-DD). Returns the removed lines; the caller commits.
     pub fn prune_expired(&self, today: &str) -> Result<Vec<String>, String> {
         static EXPIRES: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"\[[^\]]*\bexpires:\s*(\d{4}-\d{2}-\d{2})[^\]]*\]\s*$").expect("valid regex")
+            regex::Regex::new(r"\[[^\]]*\bexpires:\s*(\d{4}-\d{2}-\d{2})[^\]]*\]\s*$")
+                .expect("valid regex")
         });
         let mut removed = Vec::new();
         for file in self.files().into_iter().filter(|f| f.ends_with(".md")) {
@@ -496,7 +547,11 @@ impl MemoryRepo {
     }
 
     fn archive_path(&self) -> PathBuf {
-        let name = self.root.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+        let name = self
+            .root
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_default();
         crate::config::snippet_home().join(ARCHIVE_DIR).join(name)
     }
 
@@ -517,14 +572,19 @@ impl MemoryRepo {
 
     /// Unix time of the newest commit.
     pub fn last_commit_at(&self) -> Option<i64> {
-        self.git(&["log", "-1", "--format=%ct"]).ok().and_then(|s| s.trim().parse().ok())
+        self.git(&["log", "-1", "--format=%ct"])
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
     }
 
     fn link_from_index(&self, file: &str) -> Result<(), String> {
         let title = self
             .read_file(file)
             .ok()
-            .and_then(|t| t.lines().find_map(|l| l.strip_prefix("# ").map(|s| s.trim().to_string())))
+            .and_then(|t| {
+                t.lines()
+                    .find_map(|l| l.strip_prefix("# ").map(|s| s.trim().to_string()))
+            })
             .filter(|t| !t.is_empty());
         let link = format!("[[{}]]", file.trim_end_matches(".md"));
         let path = self.root.join(ENTRY_FILE);
@@ -591,11 +651,21 @@ fn project_memory_dir(workspace: &Path) -> PathBuf {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let digest = Sha256::digest(project.to_string_lossy().as_bytes());
     let id: String = digest.iter().take(5).map(|b| format!("{b:02x}")).collect();
-    let name = if name.is_empty() { "project".to_string() } else { name };
+    let name = if name.is_empty() {
+        "project".to_string()
+    } else {
+        name
+    };
     crate::config::snippet_home()
         .join("projects")
         .join(format!("{name}-{id}"))
@@ -603,7 +673,9 @@ fn project_memory_dir(workspace: &Path) -> PathBuf {
 }
 
 pub(crate) fn repository_root(workspace: &Path) -> PathBuf {
-    let workspace = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
+    let workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
     let common = Command::new("git")
         .arg("-C")
         .arg(&workspace)
@@ -654,12 +726,18 @@ fn safe_component(s: &str) -> bool {
     !s.is_empty()
         && s != "."
         && s != ".."
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 fn read_dirs(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = fs::read_dir(dir)
-        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+        })
         .unwrap_or_default();
     out.sort();
     out
@@ -685,16 +763,31 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
 
 pub(crate) fn topic_file(file: &str) -> Result<String, String> {
     let file = file.trim().trim_start_matches('/');
-    let file = if file.is_empty() { ENTRY_FILE.to_string() } else { file.to_string() };
-    let file = if file.ends_with(".md") { file } else { format!("{file}.md") };
-    if file.split('/').any(|p| p.is_empty() || p == "." || p == ".." || p.starts_with('.')) {
+    let file = if file.is_empty() {
+        ENTRY_FILE.to_string()
+    } else {
+        file.to_string()
+    };
+    let file = if file.ends_with(".md") {
+        file
+    } else {
+        format!("{file}.md")
+    };
+    if file
+        .split('/')
+        .any(|p| p.is_empty() || p == "." || p == ".." || p.starts_with('.'))
+    {
         return Err(format!("invalid memory file: {file}"));
     }
     Ok(file)
 }
 
 fn heading_for(file: &str) -> String {
-    let stem = file.trim_end_matches(".md").rsplit('/').next().unwrap_or(file);
+    let stem = file
+        .trim_end_matches(".md")
+        .rsplit('/')
+        .next()
+        .unwrap_or(file);
     let words = stem.replace(['-', '_'], " ");
     let mut chars = words.chars();
     match chars.next() {
@@ -712,7 +805,9 @@ fn normalize_entry(entry: &str) -> Result<String, String> {
         return Err("an entry is one line".to_string());
     }
     if text.chars().count() > MAX_ENTRY_CHARS {
-        return Err(format!("entry is longer than {MAX_ENTRY_CHARS} characters; move detail to a topic file"));
+        return Err(format!(
+            "entry is longer than {MAX_ENTRY_CHARS} characters; move detail to a topic file"
+        ));
     }
     Ok(format!("- {text}"))
 }
@@ -741,7 +836,9 @@ fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
     }
     let tmp = path.with_file_name(format!(
         ".tmp-{}",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("memory")
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("memory")
     ));
     fs::write(&tmp, content).map_err(|e| e.to_string())?;
     fs::rename(&tmp, path).map_err(|e| e.to_string())
@@ -754,8 +851,14 @@ mod task_scope_tests {
     #[test]
     fn a_task_scope_has_a_key_and_is_never_listed_among_the_persons_scopes() {
         let repo = MemoryRepo::task("abc-123").unwrap();
-        assert_eq!((repo.kind, repo.key.as_str()), (ScopeKind::Task, "task:abc-123"));
-        assert_eq!(MemoryRepo::from_key("task:abc-123").unwrap().root, repo.root);
+        assert_eq!(
+            (repo.kind, repo.key.as_str()),
+            (ScopeKind::Task, "task:abc-123")
+        );
+        assert_eq!(
+            MemoryRepo::from_key("task:abc-123").unwrap().root,
+            repo.root
+        );
         assert!(MemoryRepo::task("../etc").is_none());
         assert!(MemoryRepo::all().iter().all(|r| r.kind != ScopeKind::Task));
         assert!(render_prompt(&[repo]).contains("### Task (abc-123) memory"));

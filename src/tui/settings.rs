@@ -1,4 +1,3 @@
-
 use super::app::*;
 
 /// Providers offered by the login form, in display order.
@@ -17,8 +16,6 @@ pub(crate) const LOGIN_PROVIDERS: &[&str] = &[
     "antigravity",
     "devin",
 ];
-
-
 
 /// Providers that talk to a user-supplied endpoint, so the login form shows the
 /// Base URL field (and can fetch models keyless).
@@ -116,7 +113,6 @@ pub(crate) fn login_model_rows(app: &App) -> Vec<String> {
     prefix
 }
 
-
 impl App {
     pub(crate) fn close_login(&mut self, restore: bool) {
         if restore {
@@ -137,11 +133,13 @@ impl App {
         // When closing login during an active session, the conversation is preserved.
     }
 
-
     /// Tab order of the login form fields (Base URL only for openai-compatible).
     pub(crate) fn login_focus_order(&self) -> Vec<SettingsField> {
         // Subscription providers sign in via OAuth — no API key / base URL fields.
-        if matches!(self.form_provider.as_str(), "chatgpt" | "xai" | "claude-code" | "antigravity" | "devin") {
+        if matches!(
+            self.form_provider.as_str(),
+            "chatgpt" | "xai" | "claude-code" | "antigravity" | "devin"
+        ) {
             let mut order = vec![SettingsField::Provider, SettingsField::Model];
             if self.reasoning_adjustable() {
                 order.push(SettingsField::Reasoning);
@@ -224,7 +222,10 @@ impl App {
             choices.push(Some("off"));
         }
         choices.extend(spec.options.iter().map(|o| Some(*o)));
-        let current = self.form_reasoning_effort.as_deref().map(str::to_ascii_lowercase);
+        let current = self
+            .form_reasoning_effort
+            .as_deref()
+            .map(str::to_ascii_lowercase);
         let idx = choices
             .iter()
             .position(|c| c.map(str::to_string) == current)
@@ -368,7 +369,10 @@ impl App {
             self.start_xai_login();
             return;
         }
-        if matches!(self.form_provider.as_str(), "claude-code" | "antigravity" | "devin") {
+        if matches!(
+            self.form_provider.as_str(),
+            "claude-code" | "antigravity" | "devin"
+        ) {
             self.form_api_key.clear();
             self.form_base_url.clear();
         } else if self.form_api_key.trim().is_empty() {
@@ -537,9 +541,10 @@ impl App {
                     let name = self.options.config.active_setup.clone();
                     if let Some(name) = name
                         && let Some(setups) = self.options.config.setups.as_mut()
-                            && let Some(cfg) = setups.get_mut(&name) {
-                                cfg.api_key.clear();
-                            }
+                        && let Some(cfg) = setups.get_mut(&name)
+                    {
+                        cfg.api_key.clear();
+                    }
                     let _ = self.save_config_file();
                 }
                 self.status = "Signed out of ChatGPT.".to_string();
@@ -577,12 +582,7 @@ impl App {
         self.form_model = self.options.config.model.model.clone();
         self.form_model_query = String::new();
         self.form_base_url = self.options.config.model.base_url.clone();
-        self.form_reasoning_effort = self
-            .options
-            .config
-            .model
-            .reasoning_effort
-            .clone();
+        self.form_reasoning_effort = self.options.config.model.reasoning_effort.clone();
         self.form_context_window = self.options.config.model.context_window.to_string();
         self.form_compact_at_pct = self.options.config.model.compact_at_pct.to_string();
         self.form_x_search = self.options.config.model.x_search;
@@ -701,8 +701,6 @@ impl App {
         // The previous provider's model list no longer applies.
         self.form_fetched_models = None;
     }
-
-
 }
 
 pub(crate) fn get_provider_models(provider: &str) -> &'static [&'static str] {
@@ -991,4 +989,3 @@ pub(crate) async fn fetch_models_from_provider(
         _ => Err(format!("Unsupported provider: {}", provider)),
     }
 }
-

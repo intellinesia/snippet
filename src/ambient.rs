@@ -33,7 +33,12 @@ pub fn room_busy_at(now: i64, last_others: i64, last_user_turn: i64, quiet_secs:
 /// People nearby were talking to each other recently and the user has not addressed the assistant since.
 pub fn room_busy() -> bool {
     let quiet = crate::ambient_tuning::current_for_lease().room_quiet_s;
-    room_busy_at(chrono::Utc::now().timestamp(), last_others(), LAST_USER_TURN.load(Ordering::Relaxed), quiet)
+    room_busy_at(
+        chrono::Utc::now().timestamp(),
+        last_others(),
+        LAST_USER_TURN.load(Ordering::Relaxed),
+        quiet,
+    )
 }
 
 /// Set while a call is pending or tracked: Snippet must not speak over it.
@@ -70,7 +75,9 @@ pub struct Expectation {
 
 impl Conversation {
     pub fn seconds_left(&self) -> u64 {
-        self.expires.saturating_duration_since(Instant::now()).as_secs()
+        self.expires
+            .saturating_duration_since(Instant::now())
+            .as_secs()
     }
 }
 
@@ -89,7 +96,11 @@ pub fn note_pinned(active: bool) {
 
 pub fn note_enabled(on: bool) {
     if ENABLED.swap(on, Ordering::Relaxed) != on {
-        emit_state(if on { "listening started" } else { "listening stopped" });
+        emit_state(if on {
+            "listening started"
+        } else {
+            "listening stopped"
+        });
     }
 }
 
@@ -169,17 +180,20 @@ pub fn hold_floor() {
     let mut floor = FLOOR.lock().unwrap();
     match floor.as_mut() {
         Some(f) if now.duration_since(f.last) < FLOOR_HOLD => f.last = now,
-        _ => *floor = Some(Floor { last: now, since: now }),
+        _ => {
+            *floor = Some(Floor {
+                last: now,
+                since: now,
+            })
+        }
     }
 }
 
 /// True while the user holds the floor: nothing the agent says should start now.
 pub fn floor_held() -> bool {
-    FLOOR
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|f| f.last.elapsed() < FLOOR_HOLD && f.last.duration_since(f.since) < FLOOR_MAX)
+    FLOOR.lock().unwrap().as_ref().is_some_and(|f| {
+        f.last.elapsed() < FLOOR_HOLD && f.last.duration_since(f.since) < FLOOR_MAX
+    })
 }
 
 pub fn pcm_rms(pcm: &[u8]) -> f64 {
@@ -187,12 +201,18 @@ pub fn pcm_rms(pcm: &[u8]) -> f64 {
     if n == 0 {
         return 0.0;
     }
-    let sum: f64 = pcm.chunks_exact(2).map(|b| f64::from(i16::from_le_bytes([b[0], b[1]])).powi(2)).sum();
+    let sum: f64 = pcm
+        .chunks_exact(2)
+        .map(|b| f64::from(i16::from_le_bytes([b[0], b[1]])).powi(2))
+        .sum();
     (sum / n as f64).sqrt()
 }
 
 fn still_talking() -> bool {
-    HEARD_AT.lock().unwrap().is_some_and(|t| t.elapsed() < STILL_TALKING)
+    HEARD_AT
+        .lock()
+        .unwrap()
+        .is_some_and(|t| t.elapsed() < STILL_TALKING)
 }
 
 #[derive(Debug, PartialEq)]
@@ -220,7 +240,10 @@ impl Default for WaitSlot {
 
 impl WaitSlot {
     pub const fn new() -> Self {
-        Self { inner: Mutex::new(None), next: AtomicU64::new(0) }
+        Self {
+            inner: Mutex::new(None),
+            next: AtomicU64::new(0),
+        }
     }
 
     pub fn begin(&self) -> Waiter<'_> {
@@ -266,7 +289,12 @@ pub struct Waiter<'a> {
 }
 
 impl Waiter<'_> {
-    pub async fn wait(mut self, max: Duration, cap: Duration, still_talking: impl Fn() -> bool) -> WaitOutcome {
+    pub async fn wait(
+        mut self,
+        max: Duration,
+        cap: Duration,
+        still_talking: impl Fn() -> bool,
+    ) -> WaitOutcome {
         let start = tokio::time::Instant::now();
         let cap_at = start + cap.max(max);
         let mut deadline = start + max;
@@ -376,7 +404,12 @@ pub fn state_name() -> &'static str {
 pub fn sub_state() -> &'static str {
     if crate::speech::pending() {
         "speaking"
-    } else if CONVERSATION.lock().unwrap().as_ref().is_some_and(|c| c.hold_until.is_some_and(|h| h > Instant::now())) {
+    } else if CONVERSATION
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|c| c.hold_until.is_some_and(|h| h > Instant::now()))
+    {
         "thinking"
     } else {
         "listening"
@@ -417,27 +450,40 @@ pub fn emit_state(reason: &str) {
         *last = mode.to_string();
         changed
     };
-    if changed && !reason.starts_with("mission_control:")
-        && let Some(hook) = MODE_HOOK.get() {
-            hook(mode, reason);
-        }
+    if changed
+        && !reason.starts_with("mission_control:")
+        && let Some(hook) = MODE_HOOK.get()
+    {
+        hook(mode, reason);
+    }
 }
 
 pub fn effective_mode_name(pinned_active: bool) -> &'static str {
-    if pinned_active || conversation().is_some() { "active" } else { "passive" }
+    if pinned_active || conversation().is_some() {
+        "active"
+    } else {
+        "passive"
+    }
 }
 
 pub fn lease_holder() -> Option<(String, String)> {
     let mut lease = LEASE.lock().unwrap();
-    if lease.as_ref().is_some_and(|(_, _, at)| at.elapsed() > LEASE_TTL) {
+    if lease
+        .as_ref()
+        .is_some_and(|(_, _, at)| at.elapsed() > LEASE_TTL)
+    {
         *lease = None;
     }
-    lease.as_ref().map(|(device, label, _)| (device.clone(), label.clone()))
+    lease
+        .as_ref()
+        .map(|(device, label, _)| (device.clone(), label.clone()))
 }
 
 pub fn lease_touch(device: &str, label: Option<&str>, claim: bool) -> bool {
     let mut lease = LEASE.lock().unwrap();
-    let live = lease.as_ref().is_some_and(|(_, _, at)| at.elapsed() <= LEASE_TTL);
+    let live = lease
+        .as_ref()
+        .is_some_and(|(_, _, at)| at.elapsed() <= LEASE_TTL);
     let other = live && lease.as_ref().is_some_and(|(held, _, _)| held != device);
     if other && !claim {
         return false;
@@ -478,7 +524,11 @@ pub fn lease_clear() {
 pub fn conversation() -> Option<Conversation> {
     let mut conversation = CONVERSATION.lock().unwrap();
     let now = Instant::now();
-    if conversation.as_ref().is_some_and(|c| c.expires <= now && c.hold_until.is_none_or(|h| h <= now)) && !is_working(now) {
+    if conversation
+        .as_ref()
+        .is_some_and(|c| c.expires <= now && c.hold_until.is_none_or(|h| h <= now))
+        && !is_working(now)
+    {
         *conversation = None;
         drop(conversation);
         cancel_wait("conversation ended");
@@ -492,7 +542,9 @@ pub fn conversation() -> Option<Conversation> {
 pub fn open_conversation(by: &str, ttl_secs: u32) -> Conversation {
     let ttl = Duration::from_secs(u64::from(ttl_secs));
     let mut conversation = CONVERSATION.lock().unwrap();
-    let live = conversation.as_ref().is_some_and(|c| c.expires > Instant::now() || c.hold_until.is_some_and(|h| h > Instant::now()));
+    let live = conversation.as_ref().is_some_and(|c| {
+        c.expires > Instant::now() || c.hold_until.is_some_and(|h| h > Instant::now())
+    });
     if !live {
         *conversation = Some(Conversation {
             id: format!("c{}", chrono::Utc::now().timestamp_millis()),
@@ -521,7 +573,9 @@ pub fn end_conversation() {
 }
 
 pub fn mark(id: &str, stage: &str) {
-    static T: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> = std::sync::OnceLock::new();
+    static T: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    > = std::sync::OnceLock::new();
     let mut map = T.get_or_init(Default::default).lock().unwrap();
     let now = std::time::Instant::now();
     if stage == "end" {
@@ -533,7 +587,10 @@ pub fn mark(id: &str, stage: &str) {
     if stage == "deliver" {
         *last().lock().unwrap() = id.to_string();
     }
-    let ms = map.get(id).map(|t| now.duration_since(*t).as_millis()).unwrap_or(0);
+    let ms = map
+        .get(id)
+        .map(|t| now.duration_since(*t).as_millis())
+        .unwrap_or(0);
     eprintln!("[ambient-t] {} {stage} +{ms}ms", &id[..id.len().min(8)]);
     drop(map);
     if let Ok(store) = store() {
@@ -547,16 +604,27 @@ use rusqlite::OptionalExtension;
 
 fn write_stage(c: &rusqlite::Connection, id: &str, stage: &str, ms: u128) -> rusqlite::Result<()> {
     let old: Option<String> = c
-        .query_row("SELECT stages FROM ambient_events WHERE id = ?1", [id], |r| r.get(0))
+        .query_row(
+            "SELECT stages FROM ambient_events WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
         .optional()?
         .flatten();
-    let mut entries: Vec<String> = old.unwrap_or_default().split_whitespace().map(str::to_string).collect();
+    let mut entries: Vec<String> = old
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
     entries.push(format!("{stage}+{ms}ms"));
     if entries.len() > STAGES_KEPT {
         entries.drain(..entries.len() - STAGES_KEPT);
     }
     let joined = format!("{} ", entries.join(" "));
-    c.execute("UPDATE ambient_events SET stage = ?2, stages = ?3 WHERE id = ?1", rusqlite::params![id, stage, joined])?;
+    c.execute(
+        "UPDATE ambient_events SET stage = ?2, stages = ?3 WHERE id = ?1",
+        rusqlite::params![id, stage, joined],
+    )?;
     Ok(())
 }
 
@@ -567,7 +635,10 @@ pub fn record_outcome(ids: &[String], outcome: &str) {
     if let Ok(store) = store() {
         let _ = store.with_connection(|c| {
             for id in ids {
-                c.execute("UPDATE ambient_events SET outcome = ?2 WHERE id = ?1", rusqlite::params![id, outcome])?;
+                c.execute(
+                    "UPDATE ambient_events SET outcome = ?2 WHERE id = ?1",
+                    rusqlite::params![id, outcome],
+                )?;
             }
             Ok(())
         });
@@ -590,11 +661,22 @@ pub(crate) fn store() -> Result<Store, String> {
     Store::open_cached(crate::store::default_db_path()).map_err(|e| e.to_string())
 }
 
-pub fn record_turn(conversation_id: &str, role: &str, text: &str, device: &str) -> Result<i64, String> {
+pub fn record_turn(
+    conversation_id: &str,
+    role: &str,
+    text: &str,
+    device: &str,
+) -> Result<i64, String> {
     record_turn_status(conversation_id, role, text, device, "played")
 }
 
-pub fn record_turn_status(conversation_id: &str, role: &str, text: &str, device: &str, status: &str) -> Result<i64, String> {
+pub fn record_turn_status(
+    conversation_id: &str,
+    role: &str,
+    text: &str,
+    device: &str,
+    status: &str,
+) -> Result<i64, String> {
     store()?
         .with_connection(|c| {
             c.execute(
@@ -623,7 +705,12 @@ pub fn prompt_line() -> String {
         return String::new();
     };
     let expecting = expectation()
-        .map(|e| format!(" You told the voice classifier to expect: {} about {}.", e.kind, e.about))
+        .map(|e| {
+            format!(
+                " You told the voice classifier to expect: {} about {}.",
+                e.kind, e.about
+            )
+        })
         .unwrap_or_default();
     match conversation() {
         Some(_) => format!(
@@ -660,7 +747,10 @@ How to sound: like a person on a call, not an assistant. Contractions, plain wor
 
 pub fn search(query: &str, limit: usize, include_hidden: bool) -> Result<Vec<Value>, String> {
     let limit = limit.clamp(1, 50) as i64;
-    let words: Vec<String> = query.split_whitespace().map(|w| w.replace('"', "")).collect();
+    let words: Vec<String> = query
+        .split_whitespace()
+        .map(|w| w.replace('"', ""))
+        .collect();
     store()?
         .with_connection(|c| {
             let map = |r: &rusqlite::Row| {
@@ -734,7 +824,9 @@ pub async fn set_mode(mode: &str, reason: &str) -> Result<Value, String> {
         }
         "passive" => {
             let path = crate::config::default_config_path();
-            let mut config = crate::config::SnippetConfig::load(&path).await.map_err(|e| e.to_string())?;
+            let mut config = crate::config::SnippetConfig::load(&path)
+                .await
+                .map_err(|e| e.to_string())?;
             let was_pinned = config.ambient.mode == "active";
             if was_pinned {
                 config.ambient.mode = "passive".into();
@@ -759,7 +851,10 @@ mod room_tests {
         assert!(!room_busy_at(1000, 0, 0, 120));
         assert!(room_busy_at(1000, 950, 0, 120));
         assert!(room_busy_at(1000, 950, 900, 120));
-        assert!(!room_busy_at(1000, 950, 960, 120), "a direct address clears it");
+        assert!(
+            !room_busy_at(1000, 950, 960, 120),
+            "a direct address clears it"
+        );
         assert!(room_busy_at(1069, 950, 0, 120));
         assert!(!room_busy_at(1070, 950, 0, 120), "expires after 120 s");
     }
@@ -767,7 +862,7 @@ mod room_tests {
 
 #[cfg(test)]
 mod wait_tests {
-    use super::{floor_held, hold_floor, pcm_rms, WaitOutcome, WaitSlot, FLOOR_RMS};
+    use super::{FLOOR_RMS, WaitOutcome, WaitSlot, floor_held, hold_floor, pcm_rms};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -781,7 +876,10 @@ mod wait_tests {
         assert_eq!(out, WaitOutcome::TimedOut);
         assert!(started.elapsed() < MS(400));
         assert!(!slot.pending());
-        assert!(!slot.offer("late"), "a turn after the timeout goes the normal way");
+        assert!(
+            !slot.offer("late"),
+            "a turn after the timeout goes the normal way"
+        );
     }
 
     #[tokio::test]
@@ -795,7 +893,12 @@ mod wait_tests {
         });
         let out = waiter.wait(MS(3000), MS(4000), || false).await;
         assert!(offer.await.unwrap());
-        assert_eq!(out, WaitOutcome::Speech("<ambient_turn mode=\"active\">and also the logs</ambient_turn>".into()));
+        assert_eq!(
+            out,
+            WaitOutcome::Speech(
+                "<ambient_turn mode=\"active\">and also the logs</ambient_turn>".into()
+            )
+        );
         assert!(started.elapsed() < MS(1000));
         assert!(!slot.pending());
     }
@@ -804,7 +907,10 @@ mod wait_tests {
     async fn extends_while_still_talking_but_never_past_the_cap() {
         let slot = WaitSlot::new();
         let started = std::time::Instant::now();
-        assert_eq!(slot.begin().wait(MS(50), MS(300), || true).await, WaitOutcome::TimedOut);
+        assert_eq!(
+            slot.begin().wait(MS(50), MS(300), || true).await,
+            WaitOutcome::TimedOut
+        );
         let took = started.elapsed();
         assert!(took >= MS(300) && took < MS(700), "{took:?}");
     }
@@ -812,7 +918,9 @@ mod wait_tests {
     #[test]
     fn mic_level_and_the_floor_lock() {
         let quiet: Vec<u8> = (0..160).flat_map(|_| 120i16.to_le_bytes()).collect();
-        let loud: Vec<u8> = (0..160).flat_map(|i| (if i % 2 == 0 { 5000i16 } else { -5000i16 }).to_le_bytes()).collect();
+        let loud: Vec<u8> = (0..160)
+            .flat_map(|i| (if i % 2 == 0 { 5000i16 } else { -5000i16 }).to_le_bytes())
+            .collect();
         assert!(pcm_rms(&quiet) < FLOOR_RMS);
         assert!(pcm_rms(&loud) >= FLOOR_RMS);
         assert_eq!(pcm_rms(&[]), 0.0);
@@ -826,7 +934,10 @@ mod wait_tests {
         let waiter = slot.begin();
         slot.cancel("conversation ended");
         assert!(!slot.pending());
-        assert_eq!(waiter.wait(MS(2000), MS(4000), || false).await, WaitOutcome::Cancelled("conversation ended"));
+        assert_eq!(
+            waiter.wait(MS(2000), MS(4000), || false).await,
+            WaitOutcome::Cancelled("conversation ended")
+        );
         assert!(!slot.offer("next"), "nothing holds the slot after a cancel");
 
         let calls = AtomicUsize::new(0);
@@ -835,14 +946,23 @@ mod wait_tests {
             false
         });
         assert!(slot.pending());
-        assert!(tokio::time::timeout(MS(30), fut).await.is_err(), "an interrupted tool call drops the future");
+        assert!(
+            tokio::time::timeout(MS(30), fut).await.is_err(),
+            "an interrupted tool call drops the future"
+        );
         assert!(!slot.pending(), "dropping the waiter frees the slot");
         assert!(!slot.offer("next"));
 
         let first = slot.begin();
         let second = slot.begin();
-        assert_eq!(first.wait(MS(2000), MS(4000), || false).await, WaitOutcome::Cancelled("a newer wait started"));
-        assert!(slot.pending(), "the older waiter's drop must not free the newer one");
+        assert_eq!(
+            first.wait(MS(2000), MS(4000), || false).await,
+            WaitOutcome::Cancelled("a newer wait started")
+        );
+        assert!(
+            slot.pending(),
+            "the older waiter's drop must not free the newer one"
+        );
         drop(second);
         assert!(!slot.pending());
     }
@@ -860,8 +980,13 @@ mod stage_tests {
         for i in 0..30 {
             write_stage(&c, "e1", &format!("s{i}"), i).unwrap();
         }
-        let (stage, stages): (String, String) =
-            c.query_row("SELECT stage, stages FROM ambient_events WHERE id = 'e1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let (stage, stages): (String, String) = c
+            .query_row(
+                "SELECT stage, stages FROM ambient_events WHERE id = 'e1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(stage, "s29");
         assert_eq!(stages.split_whitespace().count(), STAGES_KEPT);
         assert!(stages.starts_with("s6+6ms ") && stages.ends_with("s29+29ms "));
@@ -874,13 +999,17 @@ mod stage_tests {
         let store = crate::store::Store::open("/tmp/ambient-replay.db").unwrap();
         let cols: Vec<String> = store
             .with_connection(|c| {
-                c.prepare("PRAGMA table_info(ambient_events)")?.query_map([], |r| r.get::<_, String>(1))?.collect()
+                c.prepare("PRAGMA table_info(ambient_events)")?
+                    .query_map([], |r| r.get::<_, String>(1))?
+                    .collect()
             })
             .unwrap();
         println!("ambient_events columns: {cols:?}");
         for want in ["stage", "stages", "outcome"] {
             assert!(cols.iter().any(|c| c == want), "missing {want}");
         }
-        store.with_connection(|c| write_stage(c, "no-such-event", "flush", 1)).unwrap();
+        store
+            .with_connection(|c| write_stage(c, "no-such-event", "flush", 1))
+            .unwrap();
     }
 }

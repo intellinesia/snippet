@@ -114,8 +114,13 @@ impl AgentModel for AnthropicModel {
                         ..Default::default()
                     });
                 }
-                AnthropicResponseContent::Thinking { thinking, signature } => {
-                    thinking_blocks.push(json!({"type": "thinking", "thinking": thinking, "signature": signature}));
+                AnthropicResponseContent::Thinking {
+                    thinking,
+                    signature,
+                } => {
+                    thinking_blocks.push(
+                        json!({"type": "thinking", "thinking": thinking, "signature": signature}),
+                    );
                 }
                 AnthropicResponseContent::RedactedThinking { data } => {
                     thinking_blocks.push(json!({"type": "redacted_thinking", "data": data}));
@@ -191,7 +196,9 @@ impl AnthropicModel {
         } else {
             anthropic_thinking_budget(self.config.reasoning_effort.as_deref())
         };
-        let replay = thinking_budget.is_some().then_some(self.config.model.as_str());
+        let replay = thinking_budget
+            .is_some()
+            .then_some(self.config.model.as_str());
         let (system_prompt, mut anthropic_messages) = prepare_messages(messages, replay);
         let system = system_prompt.map(|prompt| {
             vec![AnthropicSystemContent {
@@ -211,9 +218,10 @@ impl AnthropicModel {
             speak.eager_input_streaming = Some(true);
         }
         if self.config.cache_prompt
-            && let Some(last_tool) = anthropic_tools.last_mut() {
-                last_tool.cache_control = Some(self.cache_mark());
-            }
+            && let Some(last_tool) = anthropic_tools.last_mut()
+        {
+            last_tool.cache_control = Some(self.cache_mark());
+        }
 
         if self.config.cache_prompt {
             // Stamp the breakpoint on the last DURABLE content block, not the
@@ -247,9 +255,10 @@ impl AnthropicModel {
             if !placed {
                 let m = anthropic_messages.len();
                 if m >= 2
-                    && let Some(block) = anthropic_messages[m - 2].content.last_mut() {
-                        placed = stamp(block);
-                    }
+                    && let Some(block) = anthropic_messages[m - 2].content.last_mut()
+                {
+                    placed = stamp(block);
+                }
             }
             if !placed {
                 // Single-message requests (summarizer / reflection workers): the
@@ -505,18 +514,35 @@ async fn parse_anthropic_sse(
                 let block = event.get("content_block");
                 match block.and_then(|b| b.get("type")).and_then(Value::as_str) {
                     Some("thinking") => {
-                        thinking.insert(index, json!({"type": "thinking", "thinking": "", "signature": ""}));
+                        thinking.insert(
+                            index,
+                            json!({"type": "thinking", "thinking": "", "signature": ""}),
+                        );
                     }
                     Some("redacted_thinking") => {
-                        let data = block.and_then(|b| b.get("data")).cloned().unwrap_or(json!(""));
+                        let data = block
+                            .and_then(|b| b.get("data"))
+                            .cloned()
+                            .unwrap_or(json!(""));
                         thinking.insert(index, json!({"type": "redacted_thinking", "data": data}));
                     }
                     _ => {}
                 }
                 if block.and_then(|b| b.get("type")).and_then(Value::as_str) == Some("tool_use") {
-                    let call_id = block.and_then(|b| b.get("id")).and_then(Value::as_str).unwrap_or(index.to_string().as_str()).to_string();
-                    let name = block.and_then(|b| b.get("name")).and_then(Value::as_str).unwrap_or("").to_string();
-                    StreamBuffer::tool_event(sink, crate::llm::ToolArgEvent::Start { call_id, name });
+                    let call_id = block
+                        .and_then(|b| b.get("id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(index.to_string().as_str())
+                        .to_string();
+                    let name = block
+                        .and_then(|b| b.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    StreamBuffer::tool_event(
+                        sink,
+                        crate::llm::ToolArgEvent::Start { call_id, name },
+                    );
                     tools.insert(
                         index,
                         PendingTool {
@@ -538,7 +564,11 @@ async fn parse_anthropic_sse(
             Some("content_block_stop") => {
                 let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
                 if let Some(tool) = tools.get(&index) {
-                    let call_id = if tool.id.is_empty() { index.to_string() } else { tool.id.clone() };
+                    let call_id = if tool.id.is_empty() {
+                        index.to_string()
+                    } else {
+                        tool.id.clone()
+                    };
                     StreamBuffer::tool_event(sink, crate::llm::ToolArgEvent::End { call_id });
                 }
             }
@@ -562,24 +592,44 @@ async fn parse_anthropic_sse(
                             .and_then(Value::as_str)
                         {
                             StreamBuffer::append_thinking(sink, chunk);
-                            if let Some(text) = thinking.get_mut(&index).and_then(|b| b.get_mut("thinking")) {
+                            if let Some(text) =
+                                thinking.get_mut(&index).and_then(|b| b.get_mut("thinking"))
+                            {
                                 *text = json!(format!("{}{chunk}", text.as_str().unwrap_or("")));
                             }
                         }
                     }
                     Some("input_json_delta") => {
-                        if let Some(chunk) = delta.and_then(|d| d.get("partial_json")).and_then(Value::as_str)
-                            && let Some(tool) = tools.get_mut(&index) {
-                                tool.partial.push_str(chunk);
-                                StreamBuffer::tool_event(sink, crate::llm::ToolArgEvent::Delta { call_id: if tool.id.is_empty() { index.to_string() } else { tool.id.clone() }, chunk: chunk.to_string() });
-                            }
+                        if let Some(chunk) = delta
+                            .and_then(|d| d.get("partial_json"))
+                            .and_then(Value::as_str)
+                            && let Some(tool) = tools.get_mut(&index)
+                        {
+                            tool.partial.push_str(chunk);
+                            StreamBuffer::tool_event(
+                                sink,
+                                crate::llm::ToolArgEvent::Delta {
+                                    call_id: if tool.id.is_empty() {
+                                        index.to_string()
+                                    } else {
+                                        tool.id.clone()
+                                    },
+                                    chunk: chunk.to_string(),
+                                },
+                            );
+                        }
                     }
                     Some("signature_delta") => {
                         if let (Some(block), Some(sig)) = (
                             thinking.get_mut(&index),
-                            delta.and_then(|d| d.get("signature")).and_then(Value::as_str),
+                            delta
+                                .and_then(|d| d.get("signature"))
+                                .and_then(Value::as_str),
                         ) {
-                            block["signature"] = json!(format!("{}{sig}", block["signature"].as_str().unwrap_or("")));
+                            block["signature"] = json!(format!(
+                                "{}{sig}",
+                                block["signature"].as_str().unwrap_or("")
+                            ));
                         }
                     }
                     _ => {}
@@ -770,11 +820,17 @@ fn attach_thinking(calls: &mut [GeneratedToolCall], blocks: Vec<Value>, model: &
 }
 
 fn replayed_thinking(calls: &[crate::llm::ToolCallRecord], model: &str) -> Vec<AnthropicContent> {
-    let Some(first) = calls.first() else { return Vec::new() };
+    let Some(first) = calls.first() else {
+        return Vec::new();
+    };
     if first.origin_model.as_deref() != Some(model) {
         return Vec::new();
     }
-    let Some(raw) = first.signature.as_deref().and_then(|s| s.strip_prefix(THINKING_PREFIX)) else {
+    let Some(raw) = first
+        .signature
+        .as_deref()
+        .and_then(|s| s.strip_prefix(THINKING_PREFIX))
+    else {
         return Vec::new();
     };
     serde_json::from_str::<Vec<Value>>(raw)
@@ -782,11 +838,23 @@ fn replayed_thinking(calls: &[crate::llm::ToolCallRecord], model: &str) -> Vec<A
         .into_iter()
         .filter_map(|block| match block.get("type").and_then(Value::as_str) {
             Some("thinking") => Some(AnthropicContent::Thinking {
-                thinking: block.get("thinking").and_then(Value::as_str).unwrap_or("").to_string(),
-                signature: block.get("signature").and_then(Value::as_str).unwrap_or("").to_string(),
+                thinking: block
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                signature: block
+                    .get("signature")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
             }),
             Some("redacted_thinking") => Some(AnthropicContent::RedactedThinking {
-                data: block.get("data").and_then(Value::as_str).unwrap_or("").to_string(),
+                data: block
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
             }),
             _ => None,
         })
@@ -932,7 +1000,11 @@ fn prepare_messages(
                 system_prompt = Some(content.clone());
             }
             HarnessMessage::System { content } => {
-                push_block(&mut prepared, "user", text_block(crate::llm::system_reminder(content)));
+                push_block(
+                    &mut prepared,
+                    "user",
+                    text_block(crate::llm::system_reminder(content)),
+                );
             }
             HarnessMessage::User { content } => {
                 push_block(&mut prepared, "user", text_block(content.clone()));
@@ -973,8 +1045,7 @@ fn prepare_messages(
                 // Pull any inlined image out so it becomes a real image block, not
                 // a giant base64 string in the text.
                 let (cleaned, image) = crate::llm::split_inlined_image(content);
-                let body =
-                    crate::llm::render_tool_result(&cleaned);
+                let body = crate::llm::render_tool_result(&cleaned);
                 let content_value = match image {
                     Some((mime, base64)) => json!([
                         {"type": "text", "text": body},
@@ -1016,10 +1087,11 @@ fn text_block(text: String) -> AnthropicContent {
 /// user turn.
 fn push_block(prepared: &mut Vec<AnthropicMessage>, role: &str, block: AnthropicContent) {
     if let Some(last) = prepared.last_mut()
-        && last.role == role {
-            last.content.push(block);
-            return;
-        }
+        && last.role == role
+    {
+        last.content.push(block);
+        return;
+    }
     prepared.push(AnthropicMessage {
         role: role.to_string(),
         content: vec![block],
@@ -1048,9 +1120,16 @@ mod keep_warm_tests {
 
     fn history() -> Vec<HarnessMessage> {
         vec![
-            HarnessMessage::System { content: "You are a researcher.".into() },
-            HarnessMessage::User { content: "Summarise the thread.".into() },
-            HarnessMessage::Assistant { content: "Done: three points.".into(), tool_calls: vec![] },
+            HarnessMessage::System {
+                content: "You are a researcher.".into(),
+            },
+            HarnessMessage::User {
+                content: "Summarise the thread.".into(),
+            },
+            HarnessMessage::Assistant {
+                content: "Done: three points.".into(),
+                tool_calls: vec![],
+            },
         ]
     }
 
@@ -1066,24 +1145,39 @@ mod keep_warm_tests {
     fn keep_warm_reuses_the_turn_prefix_with_the_smallest_reply() {
         let m = model(true, None);
         assert!(m.keep_warm_support().is_ok());
-        let turn = serde_json::to_value(m.build_anthropic_request(&history(), &tools(), false, false)).unwrap();
+        let turn =
+            serde_json::to_value(m.build_anthropic_request(&history(), &tools(), false, false))
+                .unwrap();
         let warm = serde_json::to_value(m.keep_warm_request(&history(), &tools())).unwrap();
         assert_eq!(warm["system"], turn["system"]);
         assert_eq!(warm["tools"], turn["tools"]);
-        assert_eq!(warm["system"][0]["cache_control"], json!({"type": "ephemeral", "ttl": "1h"}));
+        assert_eq!(
+            warm["system"][0]["cache_control"],
+            json!({"type": "ephemeral", "ttl": "1h"})
+        );
         assert_eq!(warm["max_tokens"], 1);
         let messages = warm["messages"].as_array().unwrap();
         let ping = messages.last().unwrap();
-        assert!(ping["content"][0]["text"].as_str().unwrap().contains("keep-warm"));
+        assert!(
+            ping["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("keep-warm")
+        );
         assert!(ping["content"][0].get("cache_control").is_none());
         let before = &messages[messages.len() - 2];
-        assert_eq!(before["content"].as_array().unwrap().last().unwrap()["cache_control"]["ttl"], "1h");
+        assert_eq!(
+            before["content"].as_array().unwrap().last().unwrap()["cache_control"]["ttl"],
+            "1h"
+        );
     }
 
     #[test]
     fn keep_warm_keeps_thinking_so_the_message_cache_survives() {
         let m = model(true, Some("low"));
-        let turn = serde_json::to_value(m.build_anthropic_request(&history(), &tools(), false, false)).unwrap();
+        let turn =
+            serde_json::to_value(m.build_anthropic_request(&history(), &tools(), false, false))
+                .unwrap();
         let warm = serde_json::to_value(m.keep_warm_request(&history(), &tools())).unwrap();
         assert_eq!(warm["thinking"], turn["thinking"]);
         assert_eq!(warm["max_tokens"], 2049);
@@ -1091,11 +1185,25 @@ mod keep_warm_tests {
 
     #[test]
     fn five_minute_and_uncached_profiles_are_not_warmed() {
-        assert!(model(false, None).keep_warm_support().unwrap_err().contains("5 minutes"));
+        assert!(
+            model(false, None)
+                .keep_warm_support()
+                .unwrap_err()
+                .contains("5 minutes")
+        );
         let mut m = model(true, None);
         m.config.cache_prompt = false;
         assert!(m.keep_warm_support().is_err());
-        let plain = serde_json::to_value(model(false, None).build_anthropic_request(&history(), &tools(), false, false)).unwrap();
-        assert_eq!(plain["system"][0]["cache_control"], json!({"type": "ephemeral"}));
+        let plain = serde_json::to_value(model(false, None).build_anthropic_request(
+            &history(),
+            &tools(),
+            false,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(
+            plain["system"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
     }
 }

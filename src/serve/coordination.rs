@@ -1,13 +1,13 @@
 use super::api_error;
+use axum::Router;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use axum::Router;
 use serde::Deserialize;
 
-use crate::coordination::{Task, TaskFilter, TaskLink, TaskLinkKind, TaskStatus};
 use crate::coordination::types::CoordinationEvent;
+use crate::coordination::{Task, TaskFilter, TaskLink, TaskLinkKind, TaskStatus};
 use crate::mission_control;
 use crate::serve::task_summary;
 
@@ -23,8 +23,12 @@ const ROOM_WAKE_MAX_AGE_SECS: i64 = 30 * 60;
 
 /// Persist a room wake and nudge the loop. The row, not the nudge, is the wake.
 pub fn queue_coordination_wake(store: &crate::store::Store, event: CoordinationEvent) {
-    if let Err(error) = store.queue_room_wake(&event.event_id, &event.thread_id, &event.created_at) {
-        eprintln!("[coordination] room wake not queued for {}: {error}", event.event_id);
+    if let Err(error) = store.queue_room_wake(&event.event_id, &event.thread_id, &event.created_at)
+    {
+        eprintln!(
+            "[coordination] room wake not queued for {}: {error}",
+            event.event_id
+        );
     }
     ROOM_WAKE_NUDGE.notify_one();
 }
@@ -32,7 +36,11 @@ pub fn queue_coordination_wake(store: &crate::store::Store, event: CoordinationE
 pub async fn coordination_wake_loop(d: Shared) {
     loop {
         drain_room_wakes(&d).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ROOM_WAKE_NUDGE.notified()).await;
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            ROOM_WAKE_NUDGE.notified(),
+        )
+        .await;
     }
 }
 
@@ -46,34 +54,74 @@ async fn drain_room_wakes(d: &Shared) {
         }
     };
     for event in pending {
-        let stale = chrono::DateTime::parse_from_rfc3339(&event.created_at)
-            .is_ok_and(|t| (now - t.with_timezone(&chrono::Utc)).num_seconds() > ROOM_WAKE_MAX_AGE_SECS);
+        let stale = chrono::DateTime::parse_from_rfc3339(&event.created_at).is_ok_and(|t| {
+            (now - t.with_timezone(&chrono::Utc)).num_seconds() > ROOM_WAKE_MAX_AGE_SECS
+        });
         if !stale {
             wake_coordination_thread_participants(d, &event).await;
         }
-        let _ = d.store.mark_direct_delivered(
-            &event.event_id,
-            "room",
-            &event.thread_id,
-            &chrono::Utc::now().to_rfc3339(),
-        );
+        if d.store
+            .mark_direct_delivered(
+                &event.event_id,
+                "room",
+                &event.thread_id,
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .is_ok()
+        {
+            crate::session::emit_device_event(serde_json::json!({
+                "kind": "coordination_event",
+                "event": {
+                    "event_type": "direct_message.delivered",
+                    "event_id": event.event_id,
+                    "thread_id": event.thread_id,
+                },
+            }));
+        }
     }
 }
 
 pub fn router() -> Router<Shared> {
     Router::new()
         .route("/coordination/tasks", get(list_tasks).post(create_task))
-        .route("/coordination/tasks/{task_id}", get(get_task).patch(update_task))
-        .route("/coordination/tasks/{task_id}/status", post(set_task_status))
-        .route("/coordination/tasks/{task_id}/links", get(task_links).post(link_tasks))
-        .route("/coordination/tasks/{task_id}/links/{other_id}", delete(unlink_tasks))
+        .route(
+            "/coordination/tasks/{task_id}",
+            get(get_task).patch(update_task),
+        )
+        .route(
+            "/coordination/tasks/{task_id}/status",
+            post(set_task_status),
+        )
+        .route(
+            "/coordination/tasks/{task_id}/links",
+            get(task_links).post(link_tasks),
+        )
+        .route(
+            "/coordination/tasks/{task_id}/links/{other_id}",
+            delete(unlink_tasks),
+        )
         .route("/coordination/tasks/{task_id}/turns", get(task_turns))
         .route("/coordination/tasks/{task_id}/log", get(task_log))
-        .route("/coordination/tasks/{task_id}/agents", get(task_agents).post(add_task_agent))
-        .route("/coordination/tasks/{task_id}/agents/{agent_id}", delete(remove_task_agent))
-        .route("/coordination/tasks/{task_id}/agents/{agent_id}/lease", post(transfer_task_lease))
-        .route("/coordination/threads/{thread_id}/events", get(thread_events))
-        .route("/coordination/threads/{thread_id}/messages", post(post_message))
+        .route(
+            "/coordination/tasks/{task_id}/agents",
+            get(task_agents).post(add_task_agent),
+        )
+        .route(
+            "/coordination/tasks/{task_id}/agents/{agent_id}",
+            delete(remove_task_agent),
+        )
+        .route(
+            "/coordination/tasks/{task_id}/agents/{agent_id}/lease",
+            post(transfer_task_lease),
+        )
+        .route(
+            "/coordination/threads/{thread_id}/events",
+            get(thread_events),
+        )
+        .route(
+            "/coordination/threads/{thread_id}/messages",
+            post(post_message),
+        )
 }
 
 #[derive(Deserialize)]
@@ -185,15 +233,19 @@ pub struct CoordinationMessageReq {
     pub to: Vec<String>,
 }
 
-async fn list_tasks(
-    State(d): State<Shared>,
-    Query(q): Query<CoordinationTasksQuery>,
-) -> Response {
-    let after = match (q.after_priority, q.after_created.as_deref(), q.after_id.as_deref()) {
+async fn list_tasks(State(d): State<Shared>, Query(q): Query<CoordinationTasksQuery>) -> Response {
+    let after = match (
+        q.after_priority,
+        q.after_created.as_deref(),
+        q.after_id.as_deref(),
+    ) {
         (Some(priority), Some(created), Some(id)) => Some((priority, created, id)),
         (None, None, None) => None,
         _ => {
-            return api_error(StatusCode::BAD_REQUEST, "after_priority, after_created and after_id must be provided together");
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "after_priority, after_created and after_id must be provided together",
+            );
         }
     };
     let status = match q.status.as_deref().filter(|s| !s.trim().is_empty()) {
@@ -222,27 +274,42 @@ async fn list_tasks(
                 .collect::<Vec<_>>(),
         )
         .into_response(),
-        Ok(tasks) => Json(tasks.iter().map(|task| task_with_sub_status(&d.store, task)).collect::<Vec<_>>()).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("list tasks: {error}")),
+        Ok(tasks) => Json(
+            tasks
+                .iter()
+                .map(|task| task_with_sub_status(&d.store, task))
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("list tasks: {error}"),
+        ),
     }
 }
 
-async fn create_task(
-    State(d): State<Shared>,
-    Json(req): Json<CoordinationTaskReq>,
-) -> Response {
+async fn create_task(State(d): State<Shared>, Json(req): Json<CoordinationTaskReq>) -> Response {
     let title = req.title.trim();
     if title.is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "title is required");
     }
     if crate::session::is_inbox_session_id(req.session_id.trim()) {
-        return api_error(StatusCode::BAD_REQUEST, "session_id names an agent's inbox; route to a work session instead");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "session_id names an agent's inbox; route to a work session instead",
+        );
     }
     let Some(target_path) = crate::session::state_path_for_id(req.session_id.trim()) else {
-        return api_error(StatusCode::BAD_REQUEST, "session_id must name a real session");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "session_id must name a real session",
+        );
     };
     let Some(state) = crate::session::read_session_meta(&target_path) else {
-        return api_error(StatusCode::BAD_REQUEST, "session_id must name a real session");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "session_id must name a real session",
+        );
     };
     let session_id = crate::session::session_id_for_state_path(&target_path);
     if mission_control::get_session(&d.mission_control_root, &session_id).is_err()
@@ -251,9 +318,13 @@ async fn create_task(
             &session_id,
             state.title.as_deref().unwrap_or("Managed session"),
             std::path::Path::new(&state.workspace),
-        ) {
-            return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("register managed session: {error}"));
-        }
+        )
+    {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("register managed session: {error}"),
+        );
+    }
     let now = chrono::Utc::now().to_rfc3339();
     let id = req
         .id
@@ -273,7 +344,10 @@ async fn create_task(
     }
     match d.store.create_task(&task) {
         Ok(()) => (StatusCode::CREATED, Json(task)).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("create task: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("create task: {error}"),
+        ),
     }
 }
 
@@ -281,23 +355,24 @@ async fn create_task(
 /// `waiting_on`, `current_step`). Additive, so older clients ignore them.
 pub(super) fn task_with_sub_status(store: &crate::store::Store, task: &Task) -> serde_json::Value {
     let mut value = serde_json::to_value(task).unwrap_or_default();
-    if let (Some(map), Ok(serde_json::Value::Object(extra))) =
-        (value.as_object_mut(), serde_json::to_value(store.board_sub_status(task)))
-    {
+    if let (Some(map), Ok(serde_json::Value::Object(extra))) = (
+        value.as_object_mut(),
+        serde_json::to_value(store.board_sub_status(task)),
+    ) {
         map.extend(extra);
         map.extend(crate::task_state_tools::api_fields(store, task));
     }
     value
 }
 
-async fn get_task(
-    State(d): State<Shared>,
-    Path(task_id): Path<String>,
-) -> Response {
+async fn get_task(State(d): State<Shared>, Path(task_id): Path<String>) -> Response {
     match d.store.get_task(&task_id) {
         Ok(Some(task)) => Json(task_with_sub_status(&d.store, &task)).into_response(),
         Ok(None) => api_error(StatusCode::NOT_FOUND, "no such task"),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("get task: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("get task: {error}"),
+        ),
     }
 }
 
@@ -307,16 +382,26 @@ async fn update_task(
     Json(req): Json<CoordinationTaskPatch>,
 ) -> Response {
     let now = chrono::Utc::now().to_rfc3339();
-    let title = req.title.as_deref().map(str::trim).filter(|v| !v.is_empty());
+    let title = req
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
     let description = req.description.as_deref().map(str::trim);
     let plan = req.plan.as_deref().map(str::trim);
-    match d.store.update_task_full(&task_id, title, description, plan, req.priority, &now) {
+    match d
+        .store
+        .update_task_full(&task_id, title, description, plan, req.priority, &now)
+    {
         Ok(true) => match d.store.get_task(&task_id) {
             Ok(Some(task)) => Json(task).into_response(),
             _ => api_error(StatusCode::INTERNAL_SERVER_ERROR, "task vanished"),
         },
         Ok(false) => api_error(StatusCode::NOT_FOUND, "no such task"),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("update task: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("update task: {error}"),
+        ),
     }
 }
 
@@ -354,16 +439,16 @@ pub(super) fn store_error(error: crate::store::StoreError) -> Response {
     (code, error.to_string()).into_response()
 }
 
-async fn task_links(
-    State(d): State<Shared>,
-    Path(task_id): Path<String>,
-) -> Response {
+async fn task_links(State(d): State<Shared>, Path(task_id): Path<String>) -> Response {
     match d.store.task_links(&task_id) {
         Ok(links) => {
             let blockers = d.store.blockers_of(&task_id).unwrap_or_default();
             Json(serde_json::json!({ "links": links, "blocked_by": blockers })).into_response()
         }
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task links: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task links: {error}"),
+        ),
     }
 }
 
@@ -383,7 +468,10 @@ async fn link_tasks(
         "blocks" => TaskLinkKind::Blocks,
         "relates_to" => TaskLinkKind::RelatesTo,
         other => {
-            return api_error(StatusCode::BAD_REQUEST, format!("unknown link kind: {other}"));
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                format!("unknown link kind: {other}"),
+            );
         }
     };
     let now = chrono::Utc::now().to_rfc3339();
@@ -413,7 +501,10 @@ async fn unlink_tasks(
                 Ok(true) => removed = true,
                 Ok(false) => {}
                 Err(error) => {
-                    return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("unlink tasks: {error}"));
+                    return api_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("unlink tasks: {error}"),
+                    );
                 }
             }
         }
@@ -425,23 +516,23 @@ async fn unlink_tasks(
     }
 }
 
-async fn task_agents(
-    State(d): State<Shared>,
-    Path(task_id): Path<String>,
-) -> Response {
+async fn task_agents(State(d): State<Shared>, Path(task_id): Path<String>) -> Response {
     match d.store.list_task_agents(&task_id) {
         Ok(agents) => Json(agents).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task agents: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task agents: {error}"),
+        ),
     }
 }
 
-async fn task_turns(
-    State(d): State<Shared>,
-    Path(task_id): Path<String>,
-) -> Response {
+async fn task_turns(State(d): State<Shared>, Path(task_id): Path<String>) -> Response {
     match d.store.list_turns(&task_id) {
         Ok(turns) => Json(turns).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task turns: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task turns: {error}"),
+        ),
     }
 }
 
@@ -458,9 +549,15 @@ async fn task_log(
     Query(q): Query<TaskLogQuery>,
     Path(task_id): Path<String>,
 ) -> Response {
-    match d.store.task_log(&task_id, q.before, q.limit.unwrap_or(50).clamp(1, 200)) {
+    match d
+        .store
+        .task_log(&task_id, q.before, q.limit.unwrap_or(50).clamp(1, 200))
+    {
         Ok(rows) => Json(rows).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task log: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task log: {error}"),
+        ),
     }
 }
 
@@ -484,7 +581,10 @@ async fn add_task_agent(
         &now,
     ) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("add task agent: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("add task agent: {error}"),
+        ),
     }
 }
 
@@ -492,10 +592,16 @@ async fn remove_task_agent(
     State(d): State<Shared>,
     Path((task_id, agent_id)): Path<(String, String)>,
 ) -> Response {
-    match d.store.remove_task_agent(&task_id, &agent_id, &chrono::Utc::now().to_rfc3339()) {
+    match d
+        .store
+        .remove_task_agent(&task_id, &agent_id, &chrono::Utc::now().to_rfc3339())
+    {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => api_error(StatusCode::NOT_FOUND, "agent is not on this task"),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("remove task agent: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("remove task agent: {error}"),
+        ),
     }
 }
 
@@ -510,7 +616,8 @@ async fn transfer_task_lease(
     }
     let now = chrono::Utc::now().to_rfc3339();
     let live_task = d.store.get_task(&task_id).ok().flatten().filter(|task| {
-        task.status == TaskStatus::InProgress && crate::members::task_workspace(&d.store, task).is_some()
+        task.status == TaskStatus::InProgress
+            && crate::members::task_workspace(&d.store, task).is_some()
     });
     let mut body = format!("Session lease transferred from {agent_id} to {to_agent}");
     let moved = match &live_task {
@@ -570,7 +677,10 @@ async fn transfer_task_lease(
             }
             StatusCode::NO_CONTENT.into_response()
         }
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("transfer task lease: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("transfer task lease: {error}"),
+        ),
     }
 }
 
@@ -579,9 +689,15 @@ async fn thread_events(
     Query(q): Query<CoordinationEventsQuery>,
     Path(thread_id): Path<String>,
 ) -> Response {
-    match d.store.events_for_thread(&thread_id, q.after_sequence, q.limit.clamp(1, 500)) {
+    match d
+        .store
+        .events_for_thread(&thread_id, q.after_sequence, q.limit.clamp(1, 500))
+    {
         Ok(events) => Json(events).into_response(),
-        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("thread events: {error}")),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("thread events: {error}"),
+        ),
     }
 }
 
@@ -599,21 +715,37 @@ pub(super) async fn post_message(
         "body": body,
         "thread_id": thread_id,
     });
-    let to: Vec<&str> = req.to.iter().map(|a| a.trim()).filter(|a| !a.is_empty()).collect();
+    let to: Vec<&str> = req
+        .to
+        .iter()
+        .map(|a| a.trim())
+        .filter(|a| !a.is_empty())
+        .collect();
     if !to.is_empty() {
         let Ok(Some(task)) = d.store.get_task_by_thread(&thread_id) else {
-            return api_error(StatusCode::BAD_REQUEST, "only a task's room can address its members");
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "only a task's room can address its members",
+            );
         };
         let roster = d.store.list_task_agents(&task.id).unwrap_or_default();
         if let Some(stranger) = to.iter().find(|a| {
             **a != crate::mission_control::SESSION_ID
-                && !roster.iter().any(|m| m.agent_id == **a && m.removed_at.is_none())
+                && !roster
+                    .iter()
+                    .any(|m| m.agent_id == **a && m.removed_at.is_none())
         }) {
-            return api_error(StatusCode::BAD_REQUEST, format!("{stranger} isn't on this task"));
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                format!("{stranger} isn't on this task"),
+            );
         }
         if crate::members::task_workspace(&d.store, &task).is_some() {
             crate::members::seat_holder(&d.store, &task);
-            for agent in to.iter().filter(|a| **a != crate::mission_control::SESSION_ID) {
+            for agent in to
+                .iter()
+                .filter(|a| **a != crate::mission_control::SESSION_ID)
+            {
                 if let Err(error) = crate::members::seat(&d.store, &task, agent, &now) {
                     return api_error(StatusCode::CONFLICT, error);
                 }
@@ -650,7 +782,10 @@ pub(super) async fn post_message(
             queue_coordination_wake(&d.store, saved.clone());
             Json(saved).into_response()
         }
-        Err(error) => api_error(StatusCode::CONFLICT, format!("post coordination message: {error}")),
+        Err(error) => api_error(
+            StatusCode::CONFLICT,
+            format!("post coordination message: {error}"),
+        ),
     }
 }
 
@@ -659,10 +794,7 @@ fn one_line(text: &str) -> String {
 }
 
 #[cfg(test)]
-pub fn board_message_envelope(
-    event: &CoordinationEvent,
-    history: &[CoordinationEvent],
-) -> String {
+pub fn board_message_envelope(event: &CoordinationEvent, history: &[CoordinationEvent]) -> String {
     board_message_envelope_with_task(event, history, None, None)
 }
 
@@ -709,7 +841,9 @@ pub fn board_message_envelope_with_task(
             task_meta.push_str(&format!("task_plan:\n{}\n", t.plan.trim()));
         }
         // A ledger update's body already is the delta; the full ledger would bury it.
-        if let Some(ledger) = ledger.filter(|l| !l.is_empty() && event.event_type != "task.state_updated") {
+        if let Some(ledger) =
+            ledger.filter(|l| !l.is_empty() && event.event_type != "task.state_updated")
+        {
             task_meta.push_str(&format!("{ledger}\n"));
         }
     }
@@ -753,18 +887,36 @@ const ROOM_HOURS_BUDGET: i64 = 12;
 const ROOM_TOKEN_BUDGET: u64 = 5_000_000;
 
 /// Why a room of seated members should stop waking anyone, if it should.
-pub(super) fn room_over_budget(events: &[CoordinationEvent], now: chrono::DateTime<chrono::Utc>, tokens: u64) -> Option<String> {
+pub(super) fn room_over_budget(
+    events: &[CoordinationEvent],
+    now: chrono::DateTime<chrono::Utc>,
+    tokens: u64,
+) -> Option<String> {
     let mc = crate::mission_control::SESSION_ID;
     let start = events
         .iter()
-        .rposition(|e| e.actor_kind == "human" || (e.actor_id == mc && CHATTER_EVENTS.contains(&e.event_type.as_str())))
+        .rposition(|e| {
+            e.actor_kind == "human"
+                || (e.actor_id == mc && CHATTER_EVENTS.contains(&e.event_type.as_str()))
+        })
         .map_or(0, |at| at + 1);
     let run = &events[start..];
-    let turns = run.iter().filter(|e| e.event_type == "task.lease_transferred").count();
-    let last_pass = run.iter().rposition(|e| e.event_type == "task.lease_transferred").map_or(0, |at| at + 1);
-    let talk = run[last_pass..].iter().filter(|e| CHATTER_EVENTS.contains(&e.event_type.as_str())).count();
+    let turns = run
+        .iter()
+        .filter(|e| e.event_type == "task.lease_transferred")
+        .count();
+    let last_pass = run
+        .iter()
+        .rposition(|e| e.event_type == "task.lease_transferred")
+        .map_or(0, |at| at + 1);
+    let talk = run[last_pass..]
+        .iter()
+        .filter(|e| CHATTER_EVENTS.contains(&e.event_type.as_str()))
+        .count();
     if talk >= ROOM_TALK_BUDGET {
-        return Some(format!("{talk} messages since the turn last moved, so they may be going in circles"));
+        return Some(format!(
+            "{talk} messages since the turn last moved, so they may be going in circles"
+        ));
     }
     if turns >= ROOM_TURN_BUDGET {
         return Some(format!("the turn has passed {turns} times"));
@@ -784,7 +936,12 @@ const QUIET_EVENTS: &[&str] = &["task.agent_assigned", "task.dispatched"];
 
 /// Events Mission Control already receives as a task notification; waking it
 /// for the room post as well would deliver the same news twice.
-const NOTIFIED_EVENTS: &[&str] = &["task.reported", "task.message", "task.state_updated", "task.in_review"];
+const NOTIFIED_EVENTS: &[&str] = &[
+    "task.reported",
+    "task.message",
+    "task.state_updated",
+    "task.in_review",
+];
 
 /// One session a board event should wake. `inbox_agent` is set when the
 /// session is that agent's inbox, which may need creating first.
@@ -816,7 +973,9 @@ fn agent_chain_exhausted(
     }
     let human = human_at.and_then(|h| chrono::DateTime::parse_from_rfc3339(h).ok());
     let after_human = |e: &&CoordinationEvent| {
-        human.is_none_or(|h| chrono::DateTime::parse_from_rfc3339(&e.created_at).is_ok_and(|t| t > h))
+        human.is_none_or(|h| {
+            chrono::DateTime::parse_from_rfc3339(&e.created_at).is_ok_and(|t| t > h)
+        })
     };
     let tail: Vec<&CoordinationEvent> = history
         .iter()
@@ -850,14 +1009,21 @@ pub(super) fn wake_targets(
     human_at: Option<&str>,
 ) -> Vec<WakeTarget> {
     let mc = crate::mission_control::SESSION_ID;
-    let seats = roster.iter().any(|m| m.removed_at.is_none() && m.work_session_id.as_deref().is_some_and(|s| !s.is_empty()));
-    if QUIET_EVENTS.contains(&event.event_type.as_str()) || (!seats && agent_chain_exhausted(history, event, human_at)) {
+    let seats = roster.iter().any(|m| {
+        m.removed_at.is_none() && m.work_session_id.as_deref().is_some_and(|s| !s.is_empty())
+    });
+    if QUIET_EVENTS.contains(&event.event_type.as_str())
+        || (!seats && agent_chain_exhausted(history, event, human_at))
+    {
         return Vec::new();
     }
     let mut targets: Vec<WakeTarget> = Vec::new();
     if participants.is_empty() {
         if should_wake_mission_control(&event.actor_id) {
-            targets.push(WakeTarget { session: mc.to_string(), inbox_agent: None });
+            targets.push(WakeTarget {
+                session: mc.to_string(),
+                inbox_agent: None,
+            });
         }
         return targets;
     }
@@ -874,14 +1040,18 @@ pub(super) fn wake_targets(
         .flatten()
         .filter_map(|v| v.as_str())
         .collect();
-    let holder = live().find(|m| m.status == "active").map(|m| m.agent_id.as_str());
+    let holder = live()
+        .find(|m| m.status == "active")
+        .map(|m| m.agent_id.as_str());
     let chatter = CHATTER_EVENTS.contains(&event.event_type.as_str());
     let blocker = event.payload.get("kind").and_then(|v| v.as_str()) == Some("blocker");
     // An agent's desk posting about its own task must still reach its work session.
     let from_own_desk = event.payload.get("origin_session").and_then(|v| v.as_str())
         == Some(crate::session::inbox_session_id(&event.actor_id).as_str());
     for (actor_id, actor_kind) in participants {
-        if (*actor_id == event.actor_id && !from_own_desk) || lease_to.is_some_and(|to| to != actor_id) {
+        if (*actor_id == event.actor_id && !from_own_desk)
+            || lease_to.is_some_and(|to| to != actor_id)
+        {
             continue;
         }
         // Waking costs a model turn per member, so once a task has seats a post
@@ -901,7 +1071,10 @@ pub(super) fn wake_targets(
         }
         if actor_id == mc || actor_kind == "system" {
             if !NOTIFIED_EVENTS.contains(&event.event_type.as_str()) {
-                targets.push(WakeTarget { session: mc.to_string(), inbox_agent: None });
+                targets.push(WakeTarget {
+                    session: mc.to_string(),
+                    inbox_agent: None,
+                });
             }
             continue;
         }
@@ -917,11 +1090,18 @@ pub(super) fn wake_targets(
                 m.work_session_id
                     .clone()
                     .filter(|session| !session.is_empty())
-                    .or_else(|| (m.status == "active").then(|| task_session.map(str::to_string)).flatten())
+                    .or_else(|| {
+                        (m.status == "active")
+                            .then(|| task_session.map(str::to_string))
+                            .flatten()
+                    })
             })
             .filter(|session| !session.is_empty());
         targets.push(match working {
-            Some(session) => WakeTarget { session, inbox_agent: None },
+            Some(session) => WakeTarget {
+                session,
+                inbox_agent: None,
+            },
             None => WakeTarget {
                 session: crate::session::inbox_session_id(actor_id),
                 inbox_agent: Some(actor_id.clone()),
@@ -929,7 +1109,10 @@ pub(super) fn wake_targets(
         });
     }
     if seated && chatter && blocker && event.actor_id != mc {
-        targets.push(WakeTarget { session: mc.to_string(), inbox_agent: None });
+        targets.push(WakeTarget {
+            session: mc.to_string(),
+            inbox_agent: None,
+        });
     }
     let origin = event.payload.get("origin_session").and_then(|v| v.as_str());
     let from_session = (event.actor_kind == "session").then_some(event.actor_id.as_str());
@@ -976,10 +1159,7 @@ pub(super) fn identity_overlay(d: &super::Daemon, agent_id: &str, session_id: &s
     }
 }
 
-pub async fn wake_coordination_thread_participants(
-    d: &Shared,
-    saved: &CoordinationEvent,
-) {
+pub async fn wake_coordination_thread_participants(d: &Shared, saved: &CoordinationEvent) {
     let participants = d
         .store
         .list_thread_participants(&saved.thread_id)
@@ -999,14 +1179,34 @@ pub async fn wake_coordination_thread_participants(
         .as_ref()
         .and_then(|t| d.store.list_task_agents(&t.id).ok())
         .unwrap_or_default();
-    if let Some(task) = task.as_ref().filter(|_| roster.iter().any(|m| m.removed_at.is_none() && m.work_session_id.as_deref().is_some_and(|s| !s.is_empty()))) {
-        let events = d.store.events_for_thread(&saved.thread_id, 0, 2000).unwrap_or_default();
-        let sessions: Vec<String> = roster.iter().filter_map(|m| m.work_session_id.clone()).collect();
-        let since = chrono::DateTime::parse_from_rfc3339(&task.created_at).map_or(0, |at| at.timestamp());
-        let tokens = d.store.fresh_tokens_for_sessions(&sessions, since).unwrap_or(0);
+    if let Some(task) = task.as_ref().filter(|_| {
+        roster.iter().any(|m| {
+            m.removed_at.is_none() && m.work_session_id.as_deref().is_some_and(|s| !s.is_empty())
+        })
+    }) {
+        let events = d
+            .store
+            .events_for_thread(&saved.thread_id, 0, 2000)
+            .unwrap_or_default();
+        let sessions: Vec<String> = roster
+            .iter()
+            .filter_map(|m| m.work_session_id.clone())
+            .collect();
+        let since =
+            chrono::DateTime::parse_from_rfc3339(&task.created_at).map_or(0, |at| at.timestamp());
+        let tokens = d
+            .store
+            .fresh_tokens_for_sessions(&sessions, since)
+            .unwrap_or(0);
         if let Some(reason) = room_over_budget(&events, chrono::Utc::now(), tokens) {
-            let note = format!("The room stopped waking its members: {reason}. Check the room; a post from you lets them carry on, or take it to the user.");
-            let _ = d.store.update_task_in(&task.id, &chrono::Utc::now().to_rfc3339(), |t| t.notify_once("room_limit", &note));
+            let note = format!(
+                "The room stopped waking its members: {reason}. Check the room; a post from you lets them carry on, or take it to the user."
+            );
+            let _ = d
+                .store
+                .update_task_in(&task.id, &chrono::Utc::now().to_rfc3339(), |t| {
+                    t.notify_once("room_limit", &note)
+                });
             return;
         }
     }
@@ -1034,31 +1234,48 @@ pub async fn wake_coordination_thread_participants(
     let room = crate::members::room_line(&roster);
     let ledger = task.as_ref().map(|t| {
         let ledger = crate::task_state_tools::ledger_block(&d.store, t, false);
-        if room.is_empty() { ledger } else { format!("{room}\n{ledger}") }
+        if room.is_empty() {
+            ledger
+        } else {
+            format!("{room}\n{ledger}")
+        }
     });
-    let envelope = board_message_envelope_with_task(saved, &history, task.as_ref(), ledger.as_deref());
+    let envelope =
+        board_message_envelope_with_task(saved, &history, task.as_ref(), ledger.as_deref());
     let incoming = (saved.event_type == "task.lease_transferred")
         .then(|| saved.payload.get("to_agent_id").and_then(|v| v.as_str()))
         .flatten();
     for target in targets {
         let daemon = d.clone();
         let payload = saved.payload.clone();
-        let urgent = crate::coordination::typed::urgency_of(&payload) == crate::coordination::typed::Urgency::Urgent;
+        let urgent = crate::coordination::typed::urgency_of(&payload)
+            == crate::coordination::typed::Urgency::Urgent;
         let from_human = saved.actor_kind == "human";
         let envelope = match incoming {
             Some(agent_id) if target.inbox_agent.is_none() => {
-                format!("{}{envelope}", identity_overlay(d, agent_id, &target.session))
+                format!(
+                    "{}{envelope}",
+                    identity_overlay(d, agent_id, &target.session)
+                )
             }
             _ => envelope.clone(),
         };
         tokio::spawn(async move {
             if let Some(agent_id) = target.inbox_agent.as_deref()
-                && let Err(error) = direct::ensure_agent_inbox(&daemon, agent_id).await {
-                    eprintln!("[coordination] no inbox for `{agent_id}`: {error}");
-                    return;
-                }
+                && let Err(error) = direct::ensure_agent_inbox(&daemon, agent_id).await
+            {
+                eprintln!("[coordination] no inbox for `{agent_id}`: {error}");
+                return;
+            }
             if urgent {
-                direct::deliver_by_urgency(&daemon, &target.session, envelope, &payload, from_human).await;
+                direct::deliver_by_urgency(
+                    &daemon,
+                    &target.session,
+                    envelope,
+                    &payload,
+                    from_human,
+                )
+                .await;
             } else {
                 daemon
                     .deliver(&target.session, LoopInput::UserMessage(envelope))

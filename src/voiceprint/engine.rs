@@ -32,11 +32,15 @@ pub struct VoiceScore {
 
 impl VoiceScore {
     pub fn confident_other(&self) -> bool {
-        self.neural && self.voiced_secs >= STRONG_VOICED && self.similarity.is_some_and(|s| s < OTHER_SIM)
+        self.neural
+            && self.voiced_secs >= STRONG_VOICED
+            && self.similarity.is_some_and(|s| s < OTHER_SIM)
     }
 
     pub fn confident_user(&self) -> bool {
-        self.neural && self.voiced_secs >= STRONG_VOICED && self.similarity.is_some_and(|s| s >= USER_SIM)
+        self.neural
+            && self.voiced_secs >= STRONG_VOICED
+            && self.similarity.is_some_and(|s| s >= USER_SIM)
     }
 }
 
@@ -71,13 +75,26 @@ impl VoiceHandle {
     pub(crate) fn pending_for_test(timeout: Duration) -> Self {
         let (tx, rx) = watch::channel(None);
         std::mem::forget(tx);
-        Self { rx, deadline: Instant::now() + timeout }
+        Self {
+            rx,
+            deadline: Instant::now() + timeout,
+        }
     }
 }
 
 enum Job {
-    Score { id: String, pcm: Vec<f32>, refs: Vec<Arc<[f32]>>, legacy: Vec<VoiceprintSample>, tx: Slot, at: Instant },
-    Embed { pcm: Vec<f32>, reply: oneshot::Sender<Result<(Vec<f32>, f32), String>> },
+    Score {
+        id: String,
+        pcm: Vec<f32>,
+        refs: Vec<Arc<[f32]>>,
+        legacy: Vec<VoiceprintSample>,
+        tx: Slot,
+        at: Instant,
+    },
+    Embed {
+        pcm: Vec<f32>,
+        reply: oneshot::Sender<Result<(Vec<f32>, f32), String>>,
+    },
     Warm,
 }
 
@@ -105,7 +122,9 @@ fn submit(job: Job) {
         None => job,
     };
     let (tx, rx) = mpsc::channel();
-    let spawned = std::thread::Builder::new().name("voiceprint".into()).spawn(move || worker(rx));
+    let spawned = std::thread::Builder::new()
+        .name("voiceprint".into())
+        .spawn(move || worker(rx));
     if spawned.is_ok() {
         let _ = tx.send(job);
         *guard = Some(tx);
@@ -117,7 +136,12 @@ pub fn warm() {
 }
 
 /// Scores a finalised utterance in the background. Skips short clips (< 1.0s) before allocating.
-pub fn start(id: &str, device: &str, pcm: &[u8], manual: &[VoiceprintSample]) -> Option<VoiceHandle> {
+pub fn start(
+    id: &str,
+    device: &str,
+    pcm: &[u8],
+    manual: &[VoiceprintSample],
+) -> Option<VoiceHandle> {
     if (pcm.len() / 2) < (MIN_VOICED * 16_000.0) as usize {
         return None;
     }
@@ -127,20 +151,37 @@ pub fn start(id: &str, device: &str, pcm: &[u8], manual: &[VoiceprintSample]) ->
         .map(|s| Arc::from(s.vector.as_slice()))
         .collect();
     refs.extend(super::store::adaptive(device));
-    let legacy: Vec<VoiceprintSample> = manual.iter().filter(|s| s.model.is_empty() && s.vector.len() == super::DIM).cloned().collect();
+    let legacy: Vec<VoiceprintSample> = manual
+        .iter()
+        .filter(|s| s.model.is_empty() && s.vector.len() == super::DIM)
+        .cloned()
+        .collect();
     if refs.is_empty() && legacy.is_empty() && !neural_ready() {
         return None;
     }
     let (tx, rx) = watch::channel(None);
     let at = Instant::now();
-    submit(Job::Score { id: id.to_string(), pcm: neural::to_f32(pcm), refs, legacy, tx, at });
-    Some(VoiceHandle { rx, deadline: at + DEADLINE })
+    submit(Job::Score {
+        id: id.to_string(),
+        pcm: neural::to_f32(pcm),
+        refs,
+        legacy,
+        tx,
+        at,
+    });
+    Some(VoiceHandle {
+        rx,
+        deadline: at + DEADLINE,
+    })
 }
 
 /// Neural embedding of an enrolment clip; returns the vector and voiced seconds.
 pub async fn embed_enrolment(pcm: &[u8]) -> Result<(Vec<f32>, f32), String> {
     let (reply, rx) = oneshot::channel();
-    submit(Job::Embed { pcm: neural::to_f32(pcm), reply });
+    submit(Job::Embed {
+        pcm: neural::to_f32(pcm),
+        reply,
+    });
     match tokio::time::timeout(Duration::from_secs(120), rx).await {
         Ok(Ok(r)) => r,
         _ => Err("voiceprint model timed out".into()),
@@ -158,13 +199,20 @@ impl State {
             let t = Instant::now();
             match Embedder::load() {
                 Ok(m) => {
-                    eprintln!("[voiceprint] loaded {} in {}ms", neural::MODEL, t.elapsed().as_millis());
+                    eprintln!(
+                        "[voiceprint] loaded {} in {}ms",
+                        neural::MODEL,
+                        t.elapsed().as_millis()
+                    );
                     self.model = Some(m);
                     self.failed = None;
                     loaded().store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 Err(e) => {
-                    eprintln!("[ambient] voice recognition unavailable, using fallback scorer; retrying in {}s: {e}", RETRY.as_secs());
+                    eprintln!(
+                        "[ambient] voice recognition unavailable, using fallback scorer; retrying in {}s: {e}",
+                        RETRY.as_secs()
+                    );
                     self.failed = Some(Instant::now());
                 }
             }
@@ -181,7 +229,10 @@ impl State {
 }
 
 fn worker(rx: mpsc::Receiver<Job>) {
-    let mut st = State { model: None, failed: None };
+    let mut st = State {
+        model: None,
+        failed: None,
+    };
     loop {
         let job = if st.model.is_some() {
             match rx.recv_timeout(IDLE) {
@@ -214,7 +265,14 @@ fn worker(rx: mpsc::Receiver<Job>) {
                 };
                 let _ = reply.send(r);
             }
-            Job::Score { id, pcm, refs, legacy, tx, at } => {
+            Job::Score {
+                id,
+                pcm,
+                refs,
+                legacy,
+                tx,
+                at,
+            } => {
                 if tx.is_closed() {
                     continue;
                 }
@@ -238,9 +296,21 @@ fn worker(rx: mpsc::Receiver<Job>) {
     }
 }
 
-fn score(st: &mut State, pcm: &[f32], refs: &[Arc<[f32]>], legacy: &[VoiceprintSample]) -> VoiceScore {
+fn score(
+    st: &mut State,
+    pcm: &[f32],
+    refs: &[Arc<[f32]>],
+    legacy: &[VoiceprintSample],
+) -> VoiceScore {
     let (voiced, clip) = neural::voiced(pcm, MAX_SECS);
-    let none = VoiceScore { neural: false, similarity: None, likelihood: None, voiced_secs: voiced, embedding: None, ms: 0 };
+    let none = VoiceScore {
+        neural: false,
+        similarity: None,
+        likelihood: None,
+        voiced_secs: voiced,
+        embedding: None,
+        ms: 0,
+    };
     if voiced < MIN_VOICED {
         return none;
     }
@@ -255,7 +325,13 @@ fn score(st: &mut State, pcm: &[f32], refs: &[Arc<[f32]>], legacy: &[VoiceprintS
                     let s = similarity(&emb, refs);
                     (Some(s), Some(likelihood(s)))
                 };
-                VoiceScore { neural: true, similarity: sim, likelihood: lh, embedding: Some(emb.into()), ..none }
+                VoiceScore {
+                    neural: true,
+                    similarity: sim,
+                    likelihood: lh,
+                    embedding: Some(emb.into()),
+                    ..none
+                }
             }
             Err(e) => {
                 eprintln!("[voiceprint] embed failed: {e}");
@@ -267,9 +343,15 @@ fn score(st: &mut State, pcm: &[f32], refs: &[Arc<[f32]>], legacy: &[VoiceprintS
         return none;
     }
     let mut acc = VoiceprintAccumulator::default();
-    let bytes: Vec<u8> = clip.iter().flat_map(|s| (*s as i16).to_le_bytes()).collect();
+    let bytes: Vec<u8> = clip
+        .iter()
+        .flat_map(|s| (*s as i16).to_le_bytes())
+        .collect();
     acc.feed_pcm(&bytes);
-    VoiceScore { likelihood: acc.score(legacy), ..none }
+    VoiceScore {
+        likelihood: acc.score(legacy),
+        ..none
+    }
 }
 
 /// Best match across the reference centroid and the top-3 closest reference samples
@@ -300,25 +382,48 @@ mod tests {
     use super::*;
 
     fn sample(model: &str, dim: usize) -> VoiceprintSample {
-        VoiceprintSample { id: "x".into(), label: "x".into(), created_at: 0, model: model.into(), audio_path: None, vector: vec![0.1; dim] }
+        VoiceprintSample {
+            id: "x".into(),
+            label: "x".into(),
+            created_at: 0,
+            model: model.into(),
+            audio_path: None,
+            vector: vec![0.1; dim],
+        }
     }
 
     #[test]
     fn no_comparable_samples_means_no_job() {
-        assert!(start("t", "dev-none", &[0u8; 64000], &[sample("wespeaker-resnet34-lm-v0", 256)]).is_none());
+        assert!(
+            start(
+                "t",
+                "dev-none",
+                &[0u8; 64000],
+                &[sample("wespeaker-resnet34-lm-v0", 256)]
+            )
+            .is_none()
+        );
         assert!(start("t", "dev-none", &[0u8; 64000], &[sample(neural::MODEL, 24)]).is_none());
         assert!(start("t", "dev-none", &[0u8; 64000], &[]).is_none());
     }
 
     #[test]
     fn unavailable_model_falls_back_to_legacy_or_none() {
-        let pcm: Vec<f32> = (0..16000 * 3).map(|i| ((i as f32) * 0.07).sin() * 8000.0 * (1.0 + ((i as f32) * 0.0013).sin())).collect();
+        let pcm: Vec<f32> = (0..16000 * 3)
+            .map(|i| ((i as f32) * 0.07).sin() * 8000.0 * (1.0 + ((i as f32) * 0.0013).sin()))
+            .collect();
         let bytes: Vec<u8> = pcm.iter().flat_map(|s| (*s as i16).to_le_bytes()).collect();
         let mut acc = VoiceprintAccumulator::default();
         acc.feed_pcm(&bytes);
-        let legacy = VoiceprintSample { vector: acc.finish_vector().unwrap(), ..sample("", 0) };
+        let legacy = VoiceprintSample {
+            vector: acc.finish_vector().unwrap(),
+            ..sample("", 0)
+        };
         let refs: Vec<Arc<[f32]>> = vec![Arc::from(vec![0.0625f32; 256].as_slice())];
-        let mut st = State { model: None, failed: Some(Instant::now()) };
+        let mut st = State {
+            model: None,
+            failed: Some(Instant::now()),
+        };
         let s = score(&mut st, &pcm, &refs, &[legacy]);
         assert!(!s.neural && s.similarity.is_none() && s.likelihood.is_some());
         let s = score(&mut st, &pcm, &refs, &[]);
@@ -327,8 +432,19 @@ mod tests {
 
     #[test]
     fn short_clip_is_none() {
-        let mut st = State { model: None, failed: Some(Instant::now()) };
-        let pcm: Vec<f32> = (0..16000 * 3).map(|i| if i < 12000 { ((i as f32) * 0.07).sin() * 8000.0 } else { 0.0 }).collect();
+        let mut st = State {
+            model: None,
+            failed: Some(Instant::now()),
+        };
+        let pcm: Vec<f32> = (0..16000 * 3)
+            .map(|i| {
+                if i < 12000 {
+                    ((i as f32) * 0.07).sin() * 8000.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
         let refs: Vec<Arc<[f32]>> = vec![Arc::from(vec![0.0625f32; 256].as_slice())];
         let s = score(&mut st, &pcm, &refs, &[]);
         assert!(s.voiced_secs < MIN_VOICED);
@@ -344,9 +460,29 @@ mod tests {
 
     #[test]
     fn confidence_needs_enough_audio() {
-        let s = VoiceScore { neural: true, similarity: Some(0.0), likelihood: Some(0.0), voiced_secs: 1.5, embedding: None, ms: 0 };
+        let s = VoiceScore {
+            neural: true,
+            similarity: Some(0.0),
+            likelihood: Some(0.0),
+            voiced_secs: 1.5,
+            embedding: None,
+            ms: 0,
+        };
         assert!(!s.confident_other());
-        assert!(VoiceScore { voiced_secs: 2.5, ..s.clone() }.confident_other());
-        assert!(!VoiceScore { neural: false, voiced_secs: 2.5, ..s }.confident_other());
+        assert!(
+            VoiceScore {
+                voiced_secs: 2.5,
+                ..s.clone()
+            }
+            .confident_other()
+        );
+        assert!(
+            !VoiceScore {
+                neural: false,
+                voiced_secs: 2.5,
+                ..s
+            }
+            .confident_other()
+        );
     }
 }

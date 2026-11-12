@@ -25,7 +25,11 @@ impl Tool for ListProfiles {
         }
     }
 
-    async fn execute(&self, _ctx: &ToolContext, _arguments: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _arguments: Value,
+    ) -> Result<ToolResult, ToolError> {
         let config = crate::config::SnippetConfig::load(crate::config::default_config_path())
             .await
             .map_err(|e| ToolError::msg(format!("read config: {e}")))?;
@@ -38,7 +42,12 @@ impl Tool for ListProfiles {
                     .ok()
                     .and_then(|v| v.as_str().map(str::to_string))
                     .unwrap_or_default();
-                let mut line = profile_line(name, &provider, &cfg.model, crate::routing::limited_until(name));
+                let mut line = profile_line(
+                    name,
+                    &provider,
+                    &cfg.model,
+                    crate::routing::limited_until(name),
+                );
                 if config.active_setup.as_deref() == Some(name.as_str()) {
                     line.push_str(" | default");
                 }
@@ -55,6 +64,9 @@ mod tests {
 
     #[test]
     fn one_compact_line() {
-        assert_eq!(profile_line("fast", "anthropic", "haiku", None), "fast | anthropic | haiku");
+        assert_eq!(
+            profile_line("fast", "anthropic", "haiku", None),
+            "fast | anthropic | haiku"
+        );
     }
 }

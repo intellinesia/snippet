@@ -72,7 +72,11 @@ fn parse(v: &str) -> Option<((u64, u64, u64), bool, Vec<Ident>)> {
     let idents = pre
         .map(|p| {
             p.split('.')
-                .map(|s| s.parse().map(Ident::Num).unwrap_or_else(|_| Ident::Text(s.to_string())))
+                .map(|s| {
+                    s.parse()
+                        .map(Ident::Num)
+                        .unwrap_or_else(|_| Ident::Text(s.to_string()))
+                })
                 .collect()
         })
         .unwrap_or_default();

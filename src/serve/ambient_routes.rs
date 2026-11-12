@@ -1,7 +1,6 @@
 use super::api_error;
 use super::*;
 
-
 const MAX_TRANSCRIPTIONS: usize = 4;
 use crate::ambient::{lease_clear, lease_holder, lease_release, lease_touch};
 
@@ -16,16 +15,14 @@ pub(crate) struct LeaseReq {
     release: bool,
 }
 
-pub(crate) async fn lease(
-    State(d): State<Shared>,
-    Json(req): Json<LeaseReq>,
-) -> Response {
+pub(crate) async fn lease(State(d): State<Shared>, Json(req): Json<LeaseReq>) -> Response {
     if req.device.trim().is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "device is required");
     }
     if req.release {
         lease_release(&req.device);
-        return Json(serde_json::json!({"held": false, "holder": serde_json::Value::Null})).into_response();
+        return Json(serde_json::json!({"held": false, "holder": serde_json::Value::Null}))
+            .into_response();
     }
     let held = lease_touch(&req.device, Some(&req.label), req.claim);
     if held {
@@ -68,18 +65,42 @@ const DEEPGRAM_HOSTS: &[(&str, &str)] = &[
 ];
 
 const FLUX_VOICES: &[(&str, &str, &str)] = &[
-    ("hannah", "American", "Female"), ("kit", "British", "Male"), ("alexis", "American", "Female"),
-    ("cliff", "American", "Male"), ("sienna", "American", "Female"), ("cole", "American", "Male"),
-    ("brooke", "American", "Female"), ("colin", "British", "Male"), ("gemma", "British", "Female"),
-    ("haley", "American", "Female"), ("heather", "American", "Female"), ("miles", "American", "Male"),
-    ("sean", "British", "Male"), ("bree", "American", "Female"), ("brittany", "American", "Female"),
-    ("bruce", "American", "Male"), ("conor", "British", "Male"), ("donovan", "American", "Male"),
-    ("drew", "American", "Male"), ("elise", "American", "Female"), ("jack", "British", "Male"),
-    ("kai", "Singaporean", "Male"), ("kelsey", "American", "Female"), ("maeve", "Irish", "Female"),
-    ("marcelo", "Filipino", "Male"), ("marcus", "American", "Male"), ("meena", "Indian", "Female"),
-    ("meghan", "American", "Female"), ("naveen", "Indian", "Male"), ("paige", "American", "Female"),
-    ("priya", "Indian", "Female"), ("rufus", "British", "Male"), ("sharon", "Australian", "Female"),
-    ("tanner", "British", "Male"), ("wade", "American", "Male"), ("wes", "American", "Male"),
+    ("hannah", "American", "Female"),
+    ("kit", "British", "Male"),
+    ("alexis", "American", "Female"),
+    ("cliff", "American", "Male"),
+    ("sienna", "American", "Female"),
+    ("cole", "American", "Male"),
+    ("brooke", "American", "Female"),
+    ("colin", "British", "Male"),
+    ("gemma", "British", "Female"),
+    ("haley", "American", "Female"),
+    ("heather", "American", "Female"),
+    ("miles", "American", "Male"),
+    ("sean", "British", "Male"),
+    ("bree", "American", "Female"),
+    ("brittany", "American", "Female"),
+    ("bruce", "American", "Male"),
+    ("conor", "British", "Male"),
+    ("donovan", "American", "Male"),
+    ("drew", "American", "Male"),
+    ("elise", "American", "Female"),
+    ("jack", "British", "Male"),
+    ("kai", "Singaporean", "Male"),
+    ("kelsey", "American", "Female"),
+    ("maeve", "Irish", "Female"),
+    ("marcelo", "Filipino", "Male"),
+    ("marcus", "American", "Male"),
+    ("meena", "Indian", "Female"),
+    ("meghan", "American", "Female"),
+    ("naveen", "Indian", "Male"),
+    ("paige", "American", "Female"),
+    ("priya", "Indian", "Female"),
+    ("rufus", "British", "Male"),
+    ("sharon", "Australian", "Female"),
+    ("tanner", "British", "Male"),
+    ("wade", "American", "Male"),
+    ("wes", "American", "Male"),
 ];
 
 fn valid_voice(v: &str) -> bool {
@@ -93,7 +114,9 @@ fn settings_view(d: &Daemon) -> serde_json::Value {
         let c = d.config.lock().unwrap();
         (
             c.ambient.clone(),
-            c.typesafe_api_key.as_deref().is_some_and(|k| !k.trim().is_empty()),
+            c.typesafe_api_key
+                .as_deref()
+                .is_some_and(|k| !k.trim().is_empty()),
             has_key(&c.assemblyai_api_key),
             has_key(&c.deepgram_api_key),
             has_key(&c.rime_api_key),
@@ -173,7 +196,10 @@ pub(crate) async fn get_settings(State(d): State<Shared>) -> Response {
     Json(settings_view(&d)).into_response()
 }
 
-fn patched_ambient(mut ambient: crate::config::AmbientConfig, req: &SettingsReq) -> (crate::config::AmbientConfig, Option<String>) {
+fn patched_ambient(
+    mut ambient: crate::config::AmbientConfig,
+    req: &SettingsReq,
+) -> (crate::config::AmbientConfig, Option<String>) {
     if let Some(v) = req.enabled {
         ambient.enabled = v;
         if !v {
@@ -366,7 +392,11 @@ fn fetch(d: &Daemon, id: &str) -> Option<serde_json::Value> {
         .ok()
 }
 
-pub(super) async fn store_segment(d: &Shared, q: Segment, wav: &[u8]) -> Result<String, (u16, String)> {
+pub(super) async fn store_segment(
+    d: &Shared,
+    q: Segment,
+    wav: &[u8],
+) -> Result<String, (u16, String)> {
     d.reload_config().await;
     if !d.config.lock().unwrap().ambient.enabled {
         return Err((403, "ambient listening is turned off on the server".into()));
@@ -383,11 +413,16 @@ pub(super) async fn store_segment(d: &Shared, q: Segment, wav: &[u8]) -> Result<
     if wav.is_empty() {
         return Err((400, "empty audio".into()));
     }
-    let status_of = |e: Option<serde_json::Value>| e.and_then(|v| v["status"].as_str().map(str::to_string));
+    let status_of =
+        |e: Option<serde_json::Value>| e.and_then(|v| v["status"].as_str().map(str::to_string));
     if let Some(status) = status_of(fetch(d, &q.id)) {
         return Ok(status);
     }
-    let started = if q.started_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { q.started_at.clone() };
+    let started = if q.started_at.is_empty() {
+        chrono::Utc::now().to_rfc3339()
+    } else {
+        q.started_at.clone()
+    };
     let path = audio_path(&q.id);
     let stored = async {
         tokio::fs::create_dir_all(audio_dir()).await?;
@@ -401,7 +436,16 @@ pub(super) async fn store_segment(d: &Shared, q: Segment, wav: &[u8]) -> Result<
             "INSERT OR IGNORE INTO ambient_events
                  (id, device, started_at, duration_ms, status, created_at, seq, continued, routed)
              VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8)",
-            rusqlite::params![q.id, q.device, started, q.duration_ms, chrono::Utc::now().timestamp(), q.seq, q.continued as i64, !q.backlog as i64],
+            rusqlite::params![
+                q.id,
+                q.device,
+                started,
+                q.duration_ms,
+                chrono::Utc::now().timestamp(),
+                q.seq,
+                q.continued as i64,
+                !q.backlog as i64
+            ],
         )
     });
     match inserted {
@@ -420,7 +464,9 @@ pub(super) fn mark(id: &str, stage: &str) {
 }
 
 pub(super) async fn prune_audio(keep: usize) {
-    let Ok(mut dir) = tokio::fs::read_dir(audio_dir()).await else { return };
+    let Ok(mut dir) = tokio::fs::read_dir(audio_dir()).await else {
+        return;
+    };
     let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
     while let Ok(Some(entry)) = dir.next_entry().await {
         if let Ok(modified) = entry.metadata().await.and_then(|m| m.modified()) {
@@ -434,8 +480,10 @@ pub(super) async fn prune_audio(keep: usize) {
 }
 
 pub(super) fn gate() -> std::sync::Arc<tokio::sync::Semaphore> {
-    static GATE: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
-    GATE.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_TRANSCRIPTIONS))).clone()
+    static GATE: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::OnceLock::new();
+    GATE.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_TRANSCRIPTIONS)))
+        .clone()
 }
 
 fn spawn_transcription(d: Shared, id: String) {
@@ -472,7 +520,8 @@ fn spawn_transcription(d: Shared, id: String) {
                 )
             })
             .ok();
-        let Some((device, seq, started_at, duration_ms, continued, routed, during_playback)) = row else {
+        let Some((device, seq, started_at, duration_ms, continued, routed, during_playback)) = row
+        else {
             return;
         };
         let seq = seq.unwrap_or(-1);
@@ -480,9 +529,14 @@ fn spawn_transcription(d: Shared, id: String) {
             super::ambient_router::submit(&d, &device, super::ambient_router::Msg::Skip(seq));
             return;
         }
-        if assistant_was_speaking(&device, &started_at, duration_ms) && echo_of_reply(&text, &device, 0.8) {
+        if assistant_was_speaking(&device, &started_at, duration_ms)
+            && echo_of_reply(&text, &device, 0.8)
+        {
             d.store.write(|c| {
-                c.execute("UPDATE ambient_events SET status = 'echo', kept = 0 WHERE id = ?1", [&id])?;
+                c.execute(
+                    "UPDATE ambient_events SET status = 'echo', kept = 0 WHERE id = ?1",
+                    [&id],
+                )?;
                 Ok(())
             });
             super::ambient_router::submit(&d, &device, super::ambient_router::Msg::Skip(seq));
@@ -506,7 +560,11 @@ fn spawn_transcription(d: Shared, id: String) {
         let voice = if vps.is_empty() {
             None
         } else {
-            match tokio::fs::read(audio_path(&id)).await.ok().and_then(|b| crate::voiceprint::pcm_from_audio(&b).ok()) {
+            match tokio::fs::read(audio_path(&id))
+                .await
+                .ok()
+                .and_then(|b| crate::voiceprint::pcm_from_audio(&b).ok())
+            {
                 Some(pcm) => crate::voiceprint::start(&id, &device, &pcm, &vps),
                 None => None,
             }
@@ -532,10 +590,11 @@ fn spawn_transcription(d: Shared, id: String) {
 }
 
 const ECHO_STOP: &[&str] = &[
-    "a", "an", "the", "i", "you", "me", "my", "it", "is", "are", "was", "to", "of", "and", "or", "so", "in", "on", "that", "this",
-    "do", "did", "does", "be", "can", "just", "yes", "no", "ok", "okay", "right", "well", "uh", "um", "oh", "we", "he", "she",
-    "they", "what", "how", "if", "for", "with", "at", "as", "but", "not", "have", "has", "had", "will", "would", "could", "your",
-    "its", "there", "here", "now", "then",
+    "a", "an", "the", "i", "you", "me", "my", "it", "is", "are", "was", "to", "of", "and", "or",
+    "so", "in", "on", "that", "this", "do", "did", "does", "be", "can", "just", "yes", "no", "ok",
+    "okay", "right", "well", "uh", "um", "oh", "we", "he", "she", "they", "what", "how", "if",
+    "for", "with", "at", "as", "but", "not", "have", "has", "had", "will", "would", "could",
+    "your", "its", "there", "here", "now", "then",
 ];
 
 fn spoken_words(text: &str) -> Vec<String> {
@@ -546,7 +605,10 @@ fn spoken_words(text: &str) -> Vec<String> {
         .collect()
 }
 
-const ANSWER_LEAD: &[&str] = &["yeah", "yes", "yep", "yup", "no", "nope", "nah", "okay", "ok", "sure", "right", "exactly", "correct", "haan", "han"];
+const ANSWER_LEAD: &[&str] = &[
+    "yeah", "yes", "yep", "yup", "no", "nope", "nah", "okay", "ok", "sure", "right", "exactly",
+    "correct", "haan", "han",
+];
 
 fn longest_run(heard: &[String], said: &[String]) -> usize {
     let mut best = 0;
@@ -566,7 +628,10 @@ fn longest_run(heard: &[String], said: &[String]) -> usize {
 
 pub(super) fn echo_match(text: &str, replies: &[String], ratio: f64) -> bool {
     let heard = spoken_words(text);
-    let mut content: Vec<&String> = heard.iter().filter(|w| !ECHO_STOP.contains(&w.as_str())).collect();
+    let mut content: Vec<&String> = heard
+        .iter()
+        .filter(|w| !ECHO_STOP.contains(&w.as_str()))
+        .collect();
     content.sort();
     content.dedup();
     if content.len() < 2 {
@@ -574,9 +639,14 @@ pub(super) fn echo_match(text: &str, replies: &[String], ratio: f64) -> bool {
     }
     replies.iter().any(|reply| {
         let said = spoken_words(reply);
-        let answers = ANSWER_LEAD.contains(&heard[0].as_str()) && !said.windows(2).any(|w| w[0] == heard[0] && w[1] == heard[1]);
+        let answers = ANSWER_LEAD.contains(&heard[0].as_str())
+            && !said
+                .windows(2)
+                .any(|w| w[0] == heard[0] && w[1] == heard[1]);
         let shared = content.iter().filter(|w| said.contains(**w)).count();
-        !answers && shared as f64 / content.len() as f64 >= ratio && longest_run(&heard, &said) as f64 >= 0.6 * heard.len() as f64
+        !answers
+            && shared as f64 / content.len() as f64 >= ratio
+            && longest_run(&heard, &said) as f64 >= 0.6 * heard.len() as f64
     })
 }
 
@@ -601,7 +671,10 @@ pub(super) fn recent_replies(device: &str) -> Vec<String> {
                      ORDER BY id DESC LIMIT 10",
                 )?;
                 let rows = stmt
-                    .query_map(rusqlite::params![device, speaking_since, speaking_since, recent_since], |r| r.get::<_, String>(0))?
+                    .query_map(
+                        rusqlite::params![device, speaking_since, speaking_since, recent_since],
+                        |r| r.get::<_, String>(0),
+                    )?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
@@ -703,21 +776,33 @@ pub(crate) async fn enroll_voiceprint(
     d.reload_config().await;
     let audio_bytes = if req.from_recent {
         let Ok(mut dir) = tokio::fs::read_dir(audio_dir()).await else {
-            return api_error(StatusCode::BAD_REQUEST, "No recent ambient voice recordings found");
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "No recent ambient voice recordings found",
+            );
         };
         let mut latest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
         while let Ok(Some(entry)) = dir.next_entry().await {
             if let Ok(modified) = entry.metadata().await.and_then(|m| m.modified())
-                && latest.as_ref().is_none_or(|(t, _)| modified > *t) {
-                    latest = Some((modified, entry.path()));
-                }
+                && latest.as_ref().is_none_or(|(t, _)| modified > *t)
+            {
+                latest = Some((modified, entry.path()));
+            }
         }
         let Some((_, path)) = latest else {
-            return api_error(StatusCode::BAD_REQUEST, "No recent ambient voice recordings found");
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "No recent ambient voice recordings found",
+            );
         };
         match tokio::fs::read(&path).await {
             Ok(b) => b,
-            Err(e) => return api_error(StatusCode::BAD_REQUEST, format!("Failed to read recording: {e}")),
+            Err(e) => {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    format!("Failed to read recording: {e}"),
+                );
+            }
         }
     } else {
         use base64::Engine as _;
@@ -744,7 +829,10 @@ pub(crate) async fn enroll_voiceprint(
     };
     let audio_path = {
         let pcm = pcm.clone();
-        tokio::task::spawn_blocking(move || crate::voiceprint::store_enrolment_audio(&pcm).ok()).await.ok().flatten()
+        tokio::task::spawn_blocking(move || crate::voiceprint::store_enrolment_audio(&pcm).ok())
+            .await
+            .ok()
+            .flatten()
     };
 
     let save_res = {
@@ -755,14 +843,16 @@ pub(crate) async fn enroll_voiceprint(
         } else {
             req.label.trim().to_string()
         };
-        c.ambient.voiceprints.push(crate::voiceprint::VoiceprintSample {
-            id: uuid::Uuid::new_v4().to_string(),
-            label,
-            created_at: chrono::Utc::now().timestamp(),
-            model,
-            audio_path,
-            vector: vec,
-        });
+        c.ambient
+            .voiceprints
+            .push(crate::voiceprint::VoiceprintSample {
+                id: uuid::Uuid::new_v4().to_string(),
+                label,
+                created_at: chrono::Utc::now().timestamp(),
+                model,
+                audio_path,
+                vector: vec,
+            });
         while c.ambient.voiceprints.len() > 8 {
             let old = c.ambient.voiceprints.remove(0);
             crate::voiceprint::delete_audio(&old.audio_path);
@@ -807,12 +897,19 @@ pub(crate) fn resume(d: Shared) {
         .store
         .with_connection(|c| {
             let mut stmt = c.prepare("SELECT id FROM ambient_events WHERE status = 'pending'")?;
-            let ids = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+            let ids = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(ids)
         })
         .unwrap_or_default();
     let stale = chrono::Utc::now().timestamp() - 60;
-    d.store.write(|c| c.execute("UPDATE ambient_events SET routed = 0 WHERE status = 'pending' AND created_at < ?1", [stale]));
+    d.store.write(|c| {
+        c.execute(
+            "UPDATE ambient_events SET routed = 0 WHERE status = 'pending' AND created_at < ?1",
+            [stale],
+        )
+    });
     for id in pending {
         if audio_path(&id).exists() {
             spawn_transcription(d.clone(), id);
@@ -829,12 +926,16 @@ pub(crate) fn resume(d: Shared) {
 
 pub(crate) async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
     let limit = q.limit.unwrap_or(100).clamp(1, 500) as i64;
-    let search = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| {
-        s.split_whitespace()
-            .map(|w| format!("\"{}\"", w.replace('"', "")))
-            .collect::<Vec<_>>()
-            .join(" ")
-    });
+    let search =
+        q.q.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                s.split_whitespace()
+                    .map(|w| format!("\"{}\"", w.replace('"', "")))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            });
     let from = q.from.clone().unwrap_or_default();
     let to = q.to.clone().unwrap_or_default();
     let rows = d.store.with_connection(|c| {
@@ -875,7 +976,13 @@ pub(crate) async fn stats(State(d): State<Shared>) -> Response {
              WHERE created_at >= ?1 GROUP BY status",
         )?;
         let rows = stmt
-            .query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
+            .query_map([since], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     });
@@ -899,7 +1006,6 @@ pub(crate) async fn stats(State(d): State<Shared>) -> Response {
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")),
     }
 }
-
 
 fn has_key(k: &Option<String>) -> bool {
     k.as_deref().is_some_and(|k| !k.trim().is_empty())
@@ -935,4 +1041,65 @@ fn assistant_was_speaking(device: &str, started_at: &str, duration_ms: i64) -> b
             .ok()
         })
         .is_some_and(|rows| rows.iter().any(|(at, ms)| *at <= end && at + ms / 1000 + 4 >= start))
+}
+
+fn tuning_view(device: &str) -> serde_json::Value {
+    let tuning = crate::ambient_tuning::current(device);
+    let (set_by, reason) =
+        if tuning.profile == crate::ambient_tuning::Profile::Alone && tuning.expires_at.is_none() {
+            (None, None)
+        } else {
+            crate::ambient_tuning::origin(device)
+                .map(|(b, r)| (Some(b), Some(r)))
+                .unwrap_or((None, None))
+        };
+    serde_json::json!({ "tuning": tuning, "set_by": set_by, "reason": reason })
+}
+
+/// GET /ambient/tuning: the listening device's active attention profile.
+pub(crate) async fn get_tuning() -> Response {
+    Json(tuning_view(&crate::ambient_tuning::lease_device())).into_response()
+}
+
+#[derive(Deserialize)]
+pub(crate) struct TuningReq {
+    profile: String,
+    #[serde(default)]
+    minutes: Option<u64>,
+}
+
+/// POST /ambient/tuning: the user picks a profile, standing or for `minutes`.
+pub(crate) async fn set_tuning(Json(req): Json<TuningReq>) -> Response {
+    let Some(profile) = crate::ambient_tuning::Profile::parse(&req.profile) else {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            format!("unknown profile `{}`", req.profile),
+        );
+    };
+    let device = crate::ambient_tuning::lease_device();
+    if profile == crate::ambient_tuning::Profile::Alone && req.minutes.is_none() {
+        crate::ambient_tuning::clear(&device);
+    } else if let Err(e) = crate::ambient_tuning::set(
+        &device,
+        Some(profile),
+        serde_json::Value::Null,
+        req.minutes,
+        None,
+        "user",
+        "set in the app",
+    )
+    .await
+    {
+        return api_error(StatusCode::BAD_REQUEST, e);
+    }
+    crate::ambient::emit_state("tuning set");
+    Json(tuning_view(&device)).into_response()
+}
+
+/// DELETE /ambient/tuning: back to `alone`.
+pub(crate) async fn clear_tuning() -> Response {
+    let device = crate::ambient_tuning::lease_device();
+    crate::ambient_tuning::clear(&device);
+    crate::ambient::emit_state("tuning cleared");
+    Json(tuning_view(&device)).into_response()
 }

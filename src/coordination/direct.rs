@@ -9,6 +9,8 @@
 //! delivery row was never written (a crash between the event insert and the
 //! delivery insert) is still discovered and delivered once.
 
+use std::collections::HashMap;
+
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
@@ -110,16 +112,18 @@ fn parse_envelope(body: &str) -> (Option<String>, Option<String>, Option<String>
         return (None, None, None, body.to_string());
     };
     let name = first.strip_prefix('[').and_then(|f| f.strip_suffix(']'));
-    let Some(name) = name.filter(|n| {
-        !n.is_empty() && n.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
-    }) else {
+    let Some(name) =
+        name.filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+    else {
         return (None, None, None, body.to_string());
     };
     let (mut task_id, mut title) = (None, None);
     let mut lines = rest.lines().peekable();
     let mut text = String::new();
     while let Some(line) = lines.peek().copied() {
-        let Some((key, value)) = line.split_once(':') else { break };
+        let Some((key, value)) = line.split_once(':') else {
+            break;
+        };
         if key.is_empty() || !key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
             break;
         }
@@ -138,7 +142,12 @@ fn parse_envelope(body: &str) -> (Option<String>, Option<String>, Option<String>
     }
     text.push_str(&lines.collect::<Vec<_>>().join("\n"));
     let closing = format!("[/{name}]");
-    let text = text.split(closing.as_str()).next().unwrap_or_default().trim().to_string();
+    let text = text
+        .split(closing.as_str())
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     (Some(name.to_string()), task_id, title, text)
 }
 
@@ -174,11 +183,14 @@ const EVENT_COLUMNS: &str = "event_id, thread_id, partition_key, sequence, event
 ///
 /// The delivery query joins `message_deliveries`, which also has an `event_id`, so
 /// the shared unqualified list is ambiguous there.
-const EVENT_COLUMNS_QUALIFIED: &str = "e.event_id, e.thread_id, e.partition_key, e.sequence,
+pub(super) const EVENT_COLUMNS_QUALIFIED: &str =
+    "e.event_id, e.thread_id, e.partition_key, e.sequence,
      e.event_type, e.actor_kind, e.actor_id, e.payload_version, e.payload_json,
      e.causation_id, e.correlation_id, e.idempotency_key, e.created_at";
 
-fn event_from_row(row: &rusqlite::Row<'_>) -> Result<CoordinationEvent, rusqlite::Error> {
+pub(super) fn event_from_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<CoordinationEvent, rusqlite::Error> {
     let payload_json: String = row.get(8)?;
     let payload = serde_json::from_str(&payload_json).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(error))
@@ -199,6 +211,14 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> Result<CoordinationEvent, rusqlite
         created_at: row.get(12)?,
     })
 }
+
+/// `(delivered_at, read_at)` for one event.
+/// The app sends emoji and agents send names; either form of a yes settles a question.
+fn settles_question(reaction: &str) -> bool {
+    matches!(reaction, "check" | "thumbs_up" | "✅" | "✔️") || reaction.starts_with('👍')
+}
+
+pub type DeliveryMarks = (Option<String>, Option<String>);
 
 impl Store {
     /// Send one direct message, recording the conversation and the recipient's
@@ -235,7 +255,16 @@ impl Store {
         created_at: &str,
         origin_session: Option<&str>,
     ) -> Result<CoordinationEvent, StoreError> {
-        self.send_direct_message_with_origin(sender, recipient, body, idempotency_key, created_at, origin_session, None, None)
+        self.send_direct_message_with_origin(
+            sender,
+            recipient,
+            body,
+            idempotency_key,
+            created_at,
+            origin_session,
+            None,
+            None,
+        )
     }
 
     /// A durable notice to a session about a task (`notice` names its kind, e.g.
@@ -253,7 +282,17 @@ impl Store {
         extra.insert("notice".into(), serde_json::json!(notice));
         extra.insert("notice_task".into(), serde_json::json!(task_id));
         let key = format!("{notice}:{task_id}:{session_id}:{created_at}");
-        self.send_direct_with_payload(sender, ("session", session_id), body, &key, created_at, None, None, None, extra)
+        self.send_direct_with_payload(
+            sender,
+            ("session", session_id),
+            body,
+            &key,
+            created_at,
+            None,
+            None,
+            None,
+            extra,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -296,7 +335,15 @@ impl Store {
         extra: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CoordinationEvent, StoreError> {
         self.send_direct_with_payload(
-            sender, recipient, body, idempotency_key, created_at, origin_session, origin_lane, about_task, extra,
+            sender,
+            recipient,
+            body,
+            idempotency_key,
+            created_at,
+            origin_session,
+            origin_lane,
+            about_task,
+            extra,
         )
     }
 
@@ -314,11 +361,7 @@ impl Store {
         extra: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CoordinationEvent, StoreError> {
         let thread_id = direct_thread_id(sender, recipient);
-        let title = format!(
-            "{} ↔ {}",
-            recipient.1,
-            actor_ref(sender.0, sender.1)
-        );
+        let title = format!("{} ↔ {}", recipient.1, actor_ref(sender.0, sender.1));
         let sender_ref = actor_ref(sender.0, sender.1);
         let recipient_ref = actor_ref(recipient.0, recipient.1);
 
@@ -383,10 +426,13 @@ impl Store {
         }
 
         let reaction = saved.payload.get("reaction").and_then(|v| v.as_str());
-        let is_reaction =
-            reaction.is_some() || saved.payload.get("kind").and_then(|k| k.as_str()) == Some("reaction");
+        let is_reaction = reaction.is_some()
+            || saved.payload.get("kind").and_then(|k| k.as_str()) == Some("reaction");
         let owes_reply = (!is_reaction
-            && matches!(saved.payload.get("kind").and_then(|k| k.as_str()), Some("question" | "blocker")))
+            && matches!(
+                saved.payload.get("kind").and_then(|k| k.as_str()),
+                Some("question" | "blocker")
+            ))
         .then_some(created_at);
         let recipient_read_at = (recipient.0 == "human" && is_reaction).then_some(created_at);
         // The sender has by definition already seen this message; the recipient
@@ -408,7 +454,7 @@ impl Store {
             )?;
             if is_reaction {
                 if sender.0 == "human"
-                    && matches!(reaction, Some("check" | "thumbs_up"))
+                    && reaction.is_some_and(settles_question)
                     && let Some(target_id) = saved.payload.get("reply_to").and_then(|v| v.as_str())
                 {
                     conn.execute(
@@ -448,7 +494,11 @@ impl Store {
 
     /// Questions and blockers still unanswered past `cutoff` and eligible for a nag:
     /// (event_id, recipient agent, sender id, thread, queued_at). Marks nothing.
-    pub fn owed_replies(&self, cutoff: &str, renag_before: &str) -> Result<Vec<OwedReply>, StoreError> {
+    pub fn owed_replies(
+        &self,
+        cutoff: &str,
+        renag_before: &str,
+    ) -> Result<Vec<OwedReply>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT d.event_id, d.recipient_id, e.actor_id, e.thread_id, d.awaiting_reply
@@ -618,7 +668,12 @@ impl Store {
 
     /// Record that a room event owes its participants a wake. The row is the
     /// wake: it outlives a restart, and the room loop marks it delivered.
-    pub fn queue_room_wake(&self, event_id: &str, thread_id: &str, at: &str) -> Result<(), StoreError> {
+    pub fn queue_room_wake(
+        &self,
+        event_id: &str,
+        thread_id: &str,
+        at: &str,
+    ) -> Result<(), StoreError> {
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT OR IGNORE INTO message_deliveries
@@ -648,7 +703,8 @@ impl Store {
                  ORDER BY e.created_at, e.sequence
                  LIMIT ?1"
             ))?;
-            let rows = stmt.query_map(params![limit, MAX_DELIVERY_ATTEMPTS, now], event_from_row)?;
+            let rows =
+                stmt.query_map(params![limit, MAX_DELIVERY_ATTEMPTS, now], event_from_row)?;
             rows.collect()
         })
     }
@@ -759,6 +815,54 @@ impl Store {
         })
     }
 
+    /// Delivery state of the given events for their agent *recipient*, as
+    /// `(delivered_at, read_at)`. Events with no such `message_deliveries` row —
+    /// including the agent's own outgoing messages — are absent.
+    pub fn direct_deliveries(
+        &self,
+        event_ids: &[String],
+    ) -> Result<HashMap<String, DeliveryMarks>, StoreError> {
+        if event_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        self.with_connection(|conn| {
+            let marks = vec!["?"; event_ids.len()].join(",");
+            let mut stmt = conn.prepare(&format!(
+                "SELECT d.event_id, d.delivered_at, d.read_at
+                 FROM message_deliveries d
+                 JOIN board_events e ON e.event_id = d.event_id
+                 WHERE d.recipient_kind = 'agent'
+                   AND 'agent:' || d.recipient_id = json_extract(e.payload_json, '$.recipient')
+                   AND d.event_id IN ({marks})"
+            ))?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(event_ids.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?;
+            let mut found = HashMap::new();
+            for row in rows {
+                let (event_id, delivered_at, read_at) = row?;
+                found.insert(event_id, (delivered_at, read_at));
+            }
+            Ok(found)
+        })
+    }
+
+    /// Mark one event read for every agent recipient, the first time only.
+    pub fn mark_direct_read_event(&self, event_id: &str, at: &str) -> Result<(), StoreError> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE message_deliveries SET read_at = ?1
+                 WHERE event_id = ?2 AND recipient_kind = 'agent' AND read_at IS NULL",
+                params![at, event_id],
+            )?;
+            Ok(())
+        })
+    }
+
     /// One participant's direct conversations, most recent first.
     pub fn list_direct_threads(
         &self,
@@ -814,10 +918,7 @@ impl Store {
                  WHERE thread_id = ?1 AND sequence > ?2
                  ORDER BY sequence LIMIT ?3"
             ))?;
-            let rows = stmt.query_map(
-                params![thread_id, after_sequence, limit],
-                event_from_row,
-            )?;
+            let rows = stmt.query_map(params![thread_id, after_sequence, limit], event_from_row)?;
             rows.collect()
         })
     }
@@ -841,7 +942,8 @@ impl Store {
                    AND created_at < ?3
                  ORDER BY created_at DESC LIMIT 1"
             ))?;
-            let mut rows = stmt.query_map(params![session_id, recipient, before], event_from_row)?;
+            let mut rows =
+                stmt.query_map(params![session_id, recipient, before], event_from_row)?;
             rows.next().transpose()
         })
     }
@@ -888,7 +990,6 @@ impl Store {
             Ok(found.is_some())
         })
     }
-
 }
 
 /// The human participant of the local device.
@@ -957,7 +1058,15 @@ mod tests {
             Some("t1"),
         );
         db.send_direct_message_typed(
-            ("agent", "a"), ("agent", "b"), "stuck", "key-t", "2026-01-01T00:00:00Z", None, None, Some("t1"), extra,
+            ("agent", "a"),
+            ("agent", "b"),
+            "stuck",
+            "key-t",
+            "2026-01-01T00:00:00Z",
+            None,
+            None,
+            Some("t1"),
+            extra,
         )
         .unwrap();
         let pending = db.list_pending_direct_deliveries(50, "9999").unwrap();
@@ -978,7 +1087,13 @@ mod tests {
         db.create_agent(&worker("a")).unwrap();
         db.create_agent(&worker("b")).unwrap();
         let sent = db
-            .send_direct_message(("agent", "a"), ("agent", "b"), "hi", "k", "2026-01-01T00:00:00Z")
+            .send_direct_message(
+                ("agent", "a"),
+                ("agent", "b"),
+                "hi",
+                "k",
+                "2026-01-01T00:00:00Z",
+            )
             .unwrap();
         let t0 = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
             .unwrap()
@@ -986,23 +1101,50 @@ mod tests {
         db.record_direct_delivery_failure(&sent.event_id, "agent", "b", "no inbox", t0)
             .unwrap();
         assert!(
-            db.list_pending_direct_deliveries(50, "2026-01-01T00:00:01+00:00").unwrap().is_empty(),
+            db.list_pending_direct_deliveries(50, "2026-01-01T00:00:01+00:00")
+                .unwrap()
+                .is_empty(),
             "not retried before its backoff"
         );
-        assert_eq!(db.list_pending_direct_deliveries(50, "2026-01-01T00:00:03+00:00").unwrap().len(), 1);
+        assert_eq!(
+            db.list_pending_direct_deliveries(50, "2026-01-01T00:00:03+00:00")
+                .unwrap()
+                .len(),
+            1
+        );
 
         for _ in 1..MAX_DELIVERY_ATTEMPTS {
             db.record_direct_delivery_failure(&sent.event_id, "agent", "b", "no inbox", t0)
                 .unwrap();
         }
-        assert!(db.list_pending_direct_deliveries(50, "9999").unwrap().is_empty(), "given up");
+        assert!(
+            db.list_pending_direct_deliveries(50, "9999")
+                .unwrap()
+                .is_empty(),
+            "given up"
+        );
 
-        db.send_direct_message(("agent", "a"), ("agent", "b"), "later", "k2", "2026-01-01T00:00:00Z")
+        db.send_direct_message(
+            ("agent", "a"),
+            ("agent", "b"),
+            "later",
+            "k2",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        db.set_agent_status("b", &crate::coordination::types::AgentStatus::Paused)
             .unwrap();
-        db.set_agent_status("b", &crate::coordination::types::AgentStatus::Paused).unwrap();
-        assert!(db.list_pending_direct_deliveries(50, "9999").unwrap().is_empty());
-        db.set_agent_status("b", &crate::coordination::types::AgentStatus::Active).unwrap();
-        assert_eq!(db.list_pending_direct_deliveries(50, "9999").unwrap().len(), 1);
+        assert!(
+            db.list_pending_direct_deliveries(50, "9999")
+                .unwrap()
+                .is_empty()
+        );
+        db.set_agent_status("b", &crate::coordination::types::AgentStatus::Active)
+            .unwrap();
+        assert_eq!(
+            db.list_pending_direct_deliveries(50, "9999").unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -1040,7 +1182,11 @@ mod tests {
             .unwrap();
         db.mark_direct_delivered(&saved.event_id, "agent", "b", "2026-01-01T00:00:01Z")
             .unwrap();
-        assert!(db.list_pending_direct_deliveries(50, "9999").unwrap().is_empty());
+        assert!(
+            db.list_pending_direct_deliveries(50, "9999")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1179,18 +1325,32 @@ mod tests {
     fn a_room_wake_is_durable_until_delivered() {
         let db = Store::open_in_memory().unwrap();
         db.create_agent(&worker("a")).unwrap();
-        let human = db.append_event(&room_event(("human", "local"), "2026-01-01T00:00:00Z")).unwrap();
-        let post = db.append_event(&room_event(("agent", "a"), "2026-01-01T00:00:05Z")).unwrap();
-        db.queue_room_wake(&post.event_id, &post.thread_id, &post.created_at).unwrap();
-        db.queue_room_wake(&post.event_id, &post.thread_id, &post.created_at).unwrap();
+        let human = db
+            .append_event(&room_event(("human", "local"), "2026-01-01T00:00:00Z"))
+            .unwrap();
+        let post = db
+            .append_event(&room_event(("agent", "a"), "2026-01-01T00:00:05Z"))
+            .unwrap();
+        db.queue_room_wake(&post.event_id, &post.thread_id, &post.created_at)
+            .unwrap();
+        db.queue_room_wake(&post.event_id, &post.thread_id, &post.created_at)
+            .unwrap();
 
         let pending = db.list_pending_room_wakes(50, "9999").unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].event_id, post.event_id);
-        assert!(db.list_pending_direct_deliveries(50, "9999").unwrap().is_empty());
-        assert_eq!(db.last_human_event_at("task:t1").unwrap().as_deref(), Some(human.created_at.as_str()));
+        assert!(
+            db.list_pending_direct_deliveries(50, "9999")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            db.last_human_event_at("task:t1").unwrap().as_deref(),
+            Some(human.created_at.as_str())
+        );
 
-        db.mark_direct_delivered(&post.event_id, "room", "task:t1", "2026-01-01T00:00:06Z").unwrap();
+        db.mark_direct_delivered(&post.event_id, "room", "task:t1", "2026-01-01T00:00:06Z")
+            .unwrap();
         assert!(db.list_pending_room_wakes(50, "9999").unwrap().is_empty());
         assert_eq!(db.last_human_event_at("task:other").unwrap(), None);
     }
@@ -1218,7 +1378,11 @@ mod tests {
         };
         let react = |target: &str, name: &str, key: &str, at: &str| {
             let mut extra = serde_json::Map::new();
-            crate::coordination::typed::apply_reply_and_reaction(&mut extra, Some(target), Some(name));
+            crate::coordination::typed::apply_reply_and_reaction(
+                &mut extra,
+                Some(target),
+                Some(name),
+            );
             db.send_direct_message_typed(
                 ("human", LOCAL_HUMAN_ID),
                 ("agent", "a"),
@@ -1248,26 +1412,73 @@ mod tests {
         assert!(awaiting(&q1.event_id).is_some());
         assert!(awaiting(&q2.event_id).is_some());
 
-        react(&q1.event_id, "question", "r-question", "2026-01-01T00:00:02Z");
-        assert!(awaiting(&q1.event_id).is_some(), "question reaction must not settle");
+        react(
+            &q1.event_id,
+            "question",
+            "r-question",
+            "2026-01-01T00:00:02Z",
+        );
+        assert!(
+            awaiting(&q1.event_id).is_some(),
+            "question reaction must not settle"
+        );
 
         react(&q1.event_id, "eyes", "r-eyes", "2026-01-01T00:00:03Z");
-        assert!(awaiting(&q1.event_id).is_some(), "eyes reaction must not settle");
+        assert!(
+            awaiting(&q1.event_id).is_some(),
+            "eyes reaction must not settle"
+        );
 
         let check_ev = react(&q1.event_id, "check", "r-check", "2026-01-01T00:00:04Z");
         assert_eq!(check_ev.payload["reply_to"], q1.event_id);
         assert_eq!(check_ev.payload["reaction"], "check");
         assert_eq!(check_ev.payload["kind"], "reaction");
-        assert_eq!(awaiting(&q1.event_id), None, "check clears awaiting_reply for target");
-        assert!(awaiting(&q2.event_id).is_some(), "other questions stay unsettled");
+        assert_eq!(
+            awaiting(&q1.event_id),
+            None,
+            "check clears awaiting_reply for target"
+        );
+        assert!(
+            awaiting(&q2.event_id).is_some(),
+            "other questions stay unsettled"
+        );
 
         react(&q2.event_id, "thumbs_up", "r-up", "2026-01-01T00:00:05Z");
         assert_eq!(awaiting(&q2.event_id), None, "thumbs_up also clears target");
 
+        let q3 = ask("q3", "2026-01-01T00:00:05Z");
+        let q4 = ask("q4", "2026-01-01T00:00:05Z");
+        react(&q3.event_id, "👀", "r-eyes-emoji", "2026-01-01T00:00:05Z");
+        assert!(
+            awaiting(&q3.event_id).is_some(),
+            "an eyes emoji must not settle"
+        );
+        react(&q3.event_id, "✅", "r-check-emoji", "2026-01-01T00:00:05Z");
+        assert_eq!(
+            awaiting(&q3.event_id),
+            None,
+            "the check emoji settles like the name"
+        );
+        react(&q4.event_id, "👍🏽", "r-up-emoji", "2026-01-01T00:00:05Z");
+        assert_eq!(
+            awaiting(&q4.event_id),
+            None,
+            "a toned thumbs up settles too"
+        );
+
         let mut agent_react = serde_json::Map::new();
-        crate::coordination::typed::apply_reply_and_reaction(&mut agent_react, Some(&q1.event_id), Some("eyes"));
-        db.mark_direct_read("human", LOCAL_HUMAN_ID, &q1.thread_id, "2026-01-01T00:00:06Z")
-            .unwrap();
+        crate::coordination::typed::apply_reply_and_reaction(
+            &mut agent_react,
+            Some(&q1.event_id),
+            Some("eyes"),
+        );
+        db.mark_direct_read(
+            "human",
+            LOCAL_HUMAN_ID,
+            &q1.thread_id,
+            "2026-01-01T00:00:06Z",
+        )
+        .unwrap();
         db.send_direct_message_typed(
             ("agent", "a"),
             ("human", LOCAL_HUMAN_ID),
@@ -1281,6 +1492,94 @@ mod tests {
         )
         .unwrap();
         let human_threads = db.list_direct_threads("human", LOCAL_HUMAN_ID).unwrap();
-        assert_eq!(human_threads[0].unread, 0, "reactions do not count as unread for human");
+        assert_eq!(
+            human_threads[0].unread, 0,
+            "reactions do not count as unread for human"
+        );
+    }
+
+    #[test]
+    fn direct_deliveries_reports_agent_recipients_and_omits_the_rest() {
+        let db = Store::open_in_memory().unwrap();
+        db.create_agent(&worker("b")).unwrap();
+        let to_b = db
+            .send_direct_message_typed(
+                ("human", LOCAL_HUMAN_ID),
+                ("agent", "b"),
+                "hi",
+                "k-deliveries-1",
+                "2026-01-01T00:00:00Z",
+                None,
+                None,
+                None,
+                Default::default(),
+            )
+            .unwrap();
+        db.mark_direct_delivered(&to_b.event_id, "agent", "b", "2026-01-01T00:00:01Z")
+            .unwrap();
+        // The agent's own reply has an agent *sender* row but no agent
+        // recipient, so it must not show up as the human's outgoing message.
+        let from_b = db
+            .send_direct_message_typed(
+                ("agent", "b"),
+                ("human", LOCAL_HUMAN_ID),
+                "yo",
+                "k-deliveries-2",
+                "2026-01-01T00:00:02Z",
+                None,
+                None,
+                None,
+                Default::default(),
+            )
+            .unwrap();
+
+        let found = db
+            .direct_deliveries(&[
+                to_b.event_id.clone(),
+                from_b.event_id.clone(),
+                "no-such-event".to_string(),
+            ])
+            .unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "only the human's message has an agent recipient"
+        );
+        let (delivered, read) = &found[&to_b.event_id];
+        assert_eq!(delivered.as_deref(), Some("2026-01-01T00:00:01Z"));
+        assert_eq!(read.as_deref(), None);
+    }
+
+    #[test]
+    fn mark_direct_read_event_sets_read_at_once_and_keeps_delivered_at() {
+        let db = Store::open_in_memory().unwrap();
+        db.create_agent(&worker("b")).unwrap();
+        let sent = db
+            .send_direct_message_typed(
+                ("human", LOCAL_HUMAN_ID),
+                ("agent", "b"),
+                "hi",
+                "k-read-event",
+                "2026-01-01T00:00:00Z",
+                None,
+                None,
+                None,
+                Default::default(),
+            )
+            .unwrap();
+        db.mark_direct_delivered(&sent.event_id, "agent", "b", "2026-01-01T00:00:01Z")
+            .unwrap();
+        db.mark_direct_read_event(&sent.event_id, "2026-01-01T00:00:02Z")
+            .unwrap();
+        db.mark_direct_read_event(&sent.event_id, "2026-01-01T00:00:03Z")
+            .unwrap();
+        let found = db.direct_deliveries(&[sent.event_id.clone()]).unwrap();
+        let (delivered, read) = &found[&sent.event_id];
+        assert_eq!(delivered.as_deref(), Some("2026-01-01T00:00:01Z"));
+        assert_eq!(
+            read.as_deref(),
+            Some("2026-01-01T00:00:02Z"),
+            "first read wins"
+        );
     }
 }

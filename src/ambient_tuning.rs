@@ -113,13 +113,54 @@ fn derived(address: f64) -> f64 {
 
 impl Tuning {
     pub fn profile_defaults(profile: Profile) -> Self {
-        let (address, only_my_voice, chattiness, hold_ms, ttl, room_quiet_s, note_policy) = match profile {
-            Profile::Alone | Profile::Custom => (0.6, false, Chattiness::Normal, 1600, 0, 120, NotePolicy::Important),
-            Profile::WithPeople => (0.75, true, Chattiness::Quiet, 1600, 0, 240, NotePolicy::Important),
-            Profile::Meeting => (0.85, true, Chattiness::Quiet, 2000, 60, 600, NotePolicy::Everything),
-            Profile::Demo => (0.5, false, Chattiness::Forward, 1200, 0, 60, NotePolicy::Off),
-            Profile::Driving => (0.55, true, Chattiness::Normal, 1600, 180, 120, NotePolicy::Important),
-        };
+        let (address, only_my_voice, chattiness, hold_ms, ttl, room_quiet_s, note_policy) =
+            match profile {
+                Profile::Alone | Profile::Custom => (
+                    0.6,
+                    false,
+                    Chattiness::Normal,
+                    1600,
+                    0,
+                    120,
+                    NotePolicy::Important,
+                ),
+                Profile::WithPeople => (
+                    0.75,
+                    true,
+                    Chattiness::Quiet,
+                    1600,
+                    0,
+                    240,
+                    NotePolicy::Important,
+                ),
+                Profile::Meeting => (
+                    0.85,
+                    true,
+                    Chattiness::Quiet,
+                    2000,
+                    60,
+                    600,
+                    NotePolicy::Everything,
+                ),
+                Profile::Demo => (
+                    0.5,
+                    false,
+                    Chattiness::Forward,
+                    1200,
+                    0,
+                    60,
+                    NotePolicy::Off,
+                ),
+                Profile::Driving => (
+                    0.55,
+                    true,
+                    Chattiness::Normal,
+                    1600,
+                    180,
+                    120,
+                    NotePolicy::Important,
+                ),
+            };
         Tuning {
             profile,
             address_threshold: address,
@@ -153,7 +194,11 @@ impl Tuning {
         if let Some(b) = knobs.get("only_my_voice").and_then(Value::as_bool) {
             self.only_my_voice = b;
         }
-        if let Some(c) = knobs.get("chattiness").and_then(Value::as_str).and_then(Chattiness::parse) {
+        if let Some(c) = knobs
+            .get("chattiness")
+            .and_then(Value::as_str)
+            .and_then(Chattiness::parse)
+        {
             self.chattiness = c;
         }
         if let Some(h) = knobs.get("hold_ms").and_then(Value::as_u64) {
@@ -165,21 +210,39 @@ impl Tuning {
         if let Some(r) = knobs.get("room_quiet_s").and_then(Value::as_i64) {
             self.room_quiet_s = r.clamp(0, 3600);
         }
-        if let Some(n) = knobs.get("note_policy").and_then(Value::as_str).and_then(NotePolicy::parse) {
+        if let Some(n) = knobs
+            .get("note_policy")
+            .and_then(Value::as_str)
+            .and_then(NotePolicy::parse)
+        {
             self.note_policy = n;
         }
-        if knobs.get(NOTE_UNTIL_KEY).and_then(Value::as_i64).is_some_and(|t| t > now) {
+        if knobs
+            .get(NOTE_UNTIL_KEY)
+            .and_then(Value::as_i64)
+            .is_some_and(|t| t > now)
+        {
             self.note_policy = NotePolicy::Everything;
         }
         if let Some(w) = knobs.get("barge_words").and_then(Value::as_array) {
-            self.barge_words = w.iter().filter_map(Value::as_str).map(barge_key).filter(|k| !k.is_empty()).collect();
+            self.barge_words = w
+                .iter()
+                .filter_map(Value::as_str)
+                .map(barge_key)
+                .filter(|k| !k.is_empty())
+                .collect();
         }
     }
 }
 
 pub fn barge_key(s: &str) -> String {
     s.split_whitespace()
-        .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase())
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+                .to_lowercase()
+        })
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
@@ -206,12 +269,17 @@ fn read_row(device: &str) -> Option<Row> {
     let store = crate::ambient::store().ok()?;
     store
         .with_connection(|c| {
-            let mut stmt = c.prepare("SELECT profile, knobs_json, expires_at FROM ambient_tuning WHERE device = ?1")?;
+            let mut stmt = c.prepare(
+                "SELECT profile, knobs_json, expires_at FROM ambient_tuning WHERE device = ?1",
+            )?;
             let mut rows = stmt.query_map([device], |r| {
                 let knobs: String = r.get(1)?;
                 Ok(Row {
                     profile: r.get(0)?,
-                    knobs: serde_json::from_str::<Value>(&knobs).ok().and_then(|v| v.as_object().cloned()).unwrap_or_default(),
+                    knobs: serde_json::from_str::<Value>(&knobs)
+                        .ok()
+                        .and_then(|v| v.as_object().cloned())
+                        .unwrap_or_default(),
                     expires_at: r.get(2)?,
                 })
             })?;
@@ -231,7 +299,9 @@ fn build(row: &Row, now: i64) -> Tuning {
 
 fn lookup(device: &str) -> Tuning {
     let now = now_s();
-    let Some(row) = read_row(device) else { return Tuning::alone() };
+    let Some(row) = read_row(device) else {
+        return Tuning::alone();
+    };
     if row.expires_at.is_some_and(|e| e <= now) {
         delete_row(device);
         return Tuning::alone();
@@ -261,12 +331,37 @@ pub fn current(device: &str) -> Tuning {
         return t.clone();
     }
     let t = lookup(device);
-    cache().lock().unwrap().insert(device.to_string(), (t.clone(), Instant::now()));
+    cache()
+        .lock()
+        .unwrap()
+        .insert(device.to_string(), (t.clone(), Instant::now()));
     t
 }
 
+/// Who set the active tuning and why, for the settings screen.
+pub fn origin(device: &str) -> Option<(String, String)> {
+    let store = crate::ambient::store().ok()?;
+    store
+        .with_connection(|c| {
+            c.query_row(
+                "SELECT set_by, reason FROM ambient_tuning WHERE device = ?1",
+                [device],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })
+        })
+        .ok()
+        .flatten()
+}
+
 pub fn lease_device() -> String {
-    crate::ambient::lease_holder().map(|(d, _)| d).unwrap_or_default()
+    crate::ambient::lease_holder()
+        .map(|(d, _)| d)
+        .unwrap_or_default()
 }
 
 pub fn current_for_lease() -> Tuning {
@@ -278,7 +373,14 @@ pub fn clear(device: &str) {
     invalidate(device);
 }
 
-fn write_row(device: &str, profile: Profile, knobs: &Map<String, Value>, expires_at: Option<i64>, set_by: &str, reason: &str) -> Result<(), String> {
+fn write_row(
+    device: &str,
+    profile: Profile,
+    knobs: &Map<String, Value>,
+    expires_at: Option<i64>,
+    set_by: &str,
+    reason: &str,
+) -> Result<(), String> {
     let json = Value::Object(knobs.clone()).to_string();
     crate::ambient::store()?
         .with_connection(|c| {
@@ -298,7 +400,9 @@ fn write_row(device: &str, profile: Profile, knobs: &Map<String, Value>, expires
 
 fn clean_knobs(knobs: &Value) -> Result<Map<String, Value>, String> {
     let mut out = Map::new();
-    let Some(obj) = knobs.as_object() else { return Ok(out) };
+    let Some(obj) = knobs.as_object() else {
+        return Ok(out);
+    };
     for (k, v) in obj {
         if v.is_null() {
             continue;
@@ -336,9 +440,19 @@ pub async fn set(
         (None, Some(row)) => {
             let mut merged = row.knobs.clone();
             merged.extend(fresh);
-            (Profile::parse(&row.profile).unwrap_or(Profile::Alone), merged)
+            (
+                Profile::parse(&row.profile).unwrap_or(Profile::Alone),
+                merged,
+            )
         }
-        (None, None) => (if fresh.is_empty() { Profile::Alone } else { Profile::Custom }, fresh),
+        (None, None) => (
+            if fresh.is_empty() {
+                Profile::Alone
+            } else {
+                Profile::Custom
+            },
+            fresh,
+        ),
     };
     let expires_at = match (minutes, until) {
         (Some(m), _) => Some(now_s() + (m.min(60 * 24 * 30) as i64) * 60),
@@ -352,9 +466,16 @@ pub async fn set(
     Ok(current(device))
 }
 
-pub fn feedback(device: &str, event_ids: &[String], text: &str, was: &str) -> Result<Tuning, String> {
+pub fn feedback(
+    device: &str,
+    event_ids: &[String],
+    text: &str,
+    was: &str,
+) -> Result<Tuning, String> {
     if !matches!(was, "not_for_me" | "for_me" | "should_note") {
-        return Err(format!("was must be not_for_me, for_me or should_note, got `{was}`"));
+        return Err(format!(
+            "was must be not_for_me, for_me or should_note, got `{was}`"
+        ));
     }
     let now = now_s();
     crate::ambient::store()?
@@ -367,14 +488,26 @@ pub fn feedback(device: &str, event_ids: &[String], text: &str, was: &str) -> Re
         })
         .map_err(|e| e.to_string())?;
     let (profile, mut knobs, expires_at) = match read_row(device) {
-        Some(r) if r.expires_at.is_none_or(|e| e > now) => (Profile::parse(&r.profile).unwrap_or(Profile::Alone), r.knobs, r.expires_at),
+        Some(r) if r.expires_at.is_none_or(|e| e > now) => (
+            Profile::parse(&r.profile).unwrap_or(Profile::Alone),
+            r.knobs,
+            r.expires_at,
+        ),
         _ => (Profile::Alone, Map::new(), None),
     };
-    let now_t = build(&Row { profile: profile.as_str().into(), knobs: knobs.clone(), expires_at }, now);
+    let now_t = build(
+        &Row {
+            profile: profile.as_str().into(),
+            knobs: knobs.clone(),
+            expires_at,
+        },
+        now,
+    );
     match was {
         "not_for_me" | "for_me" => {
             let delta = if was == "not_for_me" { NUDGE } else { -NUDGE };
-            let next = round2((now_t.address_threshold + delta).clamp(THRESHOLD_MIN, THRESHOLD_MAX));
+            let next =
+                round2((now_t.address_threshold + delta).clamp(THRESHOLD_MIN, THRESHOLD_MAX));
             knobs.insert("address_threshold".into(), json!(next));
         }
         _ => {
@@ -383,12 +516,21 @@ pub fn feedback(device: &str, event_ids: &[String], text: &str, was: &str) -> Re
             }
         }
     }
-    write_row(device, profile, &knobs, expires_at, "feedback", &format!("feedback: {was}"))?;
+    write_row(
+        device,
+        profile,
+        &knobs,
+        expires_at,
+        "feedback",
+        &format!("feedback: {was}"),
+    )?;
     Ok(current(device))
 }
 
 pub fn recent_feedback(device: &str, limit: usize) -> Vec<Value> {
-    let Ok(store) = crate::ambient::store() else { return Vec::new() };
+    let Ok(store) = crate::ambient::store() else {
+        return Vec::new();
+    };
     store
         .with_connection(|c| {
             let mut stmt = c.prepare("SELECT text, was FROM ambient_feedback WHERE device = ?1 ORDER BY id DESC LIMIT ?2")?;
@@ -413,11 +555,17 @@ pub fn classifier_json(device: &str) -> Value {
 }
 
 pub fn lookup_event_text(ids: &[String]) -> String {
-    let Ok(store) = crate::ambient::store() else { return String::new() };
+    let Ok(store) = crate::ambient::store() else {
+        return String::new();
+    };
     let mut texts = Vec::new();
     for id in ids {
         let t = store
-            .with_connection(|c| c.query_row("SELECT text FROM ambient_events WHERE id = ?1", [id], |r| r.get::<_, String>(0)))
+            .with_connection(|c| {
+                c.query_row("SELECT text FROM ambient_events WHERE id = ?1", [id], |r| {
+                    r.get::<_, String>(0)
+                })
+            })
             .unwrap_or_default();
         if !t.trim().is_empty() {
             texts.push(t.trim().to_string());
@@ -437,10 +585,44 @@ mod tests {
     #[test]
     fn alone_matches_the_old_constants() {
         let t = Tuning::alone();
-        assert_eq!((t.address_threshold, t.pinned_threshold, t.live_reply_threshold), (0.6, 0.5, 0.5));
-        assert_eq!((t.hold_ms, t.room_quiet_s, t.conversation_ttl_s), (1600, 120, 0));
+        assert_eq!(
+            (
+                t.address_threshold,
+                t.pinned_threshold,
+                t.live_reply_threshold
+            ),
+            (0.6, 0.5, 0.5)
+        );
+        assert_eq!(
+            (t.hold_ms, t.room_quiet_s, t.conversation_ttl_s),
+            (1600, 120, 0)
+        );
         assert!(!t.only_my_voice);
         assert_eq!(current(&dev("none")), t);
+    }
+
+    #[test]
+    fn origin_reports_who_set_a_timed_profile() {
+        let d = dev("origin");
+        let t = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(set(
+                &d,
+                Some(Profile::Meeting),
+                Value::Null,
+                Some(30),
+                None,
+                "user",
+                "set in the app",
+            ))
+            .unwrap();
+        assert_eq!(t.profile, Profile::Meeting);
+        assert!(t.expires_at.is_some());
+        assert_eq!(origin(&d), Some(("user".into(), "set in the app".into())));
+        clear(&d);
+        assert_eq!(origin(&d), None);
+        assert_eq!(current(&d).profile, Profile::Alone);
     }
 
     #[test]
@@ -464,7 +646,19 @@ mod tests {
     #[test]
     fn should_note_lifts_off_policy_temporarily() {
         let d = dev("note");
-        let t = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(set(&d, Some(Profile::Demo), json!({}), None, None, "user", "demo")).unwrap();
+        let t = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(set(
+                &d,
+                Some(Profile::Demo),
+                json!({}),
+                None,
+                None,
+                "user",
+                "demo",
+            ))
+            .unwrap();
         assert_eq!(t.note_policy, NotePolicy::Off);
         let t = feedback(&d, &["e".into()], "x", "should_note").unwrap();
         assert_eq!(t.note_policy, NotePolicy::Everything);
@@ -492,14 +686,42 @@ mod tests {
     #[test]
     fn set_profile_then_knob_override() {
         let d = dev("set");
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let t = rt.block_on(set(&d, Some(Profile::Meeting), json!({"hold_ms": 900}), Some(30), None, "model", "meeting")).unwrap();
-        assert_eq!((t.profile, t.hold_ms, t.address_threshold), (Profile::Meeting, 900, 0.85));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let t = rt
+            .block_on(set(
+                &d,
+                Some(Profile::Meeting),
+                json!({"hold_ms": 900}),
+                Some(30),
+                None,
+                "model",
+                "meeting",
+            ))
+            .unwrap();
+        assert_eq!(
+            (t.profile, t.hold_ms, t.address_threshold),
+            (Profile::Meeting, 900, 0.85)
+        );
         assert!(t.expires_at.is_some());
-        let t = rt.block_on(set(&d, None, json!({"barge_words": ["Hush now"]}), None, None, "model", "x")).unwrap();
+        let t = rt
+            .block_on(set(
+                &d,
+                None,
+                json!({"barge_words": ["Hush now"]}),
+                None,
+                None,
+                "model",
+                "x",
+            ))
+            .unwrap();
         assert_eq!(t.hold_ms, 900);
         assert_eq!(t.barge_words, vec!["hush now".to_string()]);
-        assert!(rt.block_on(set(&d, None, json!({"nope": 1}), None, None, "model", "x")).is_err());
+        assert!(
+            rt.block_on(set(&d, None, json!({"nope": 1}), None, None, "model", "x"))
+                .is_err()
+        );
         clear(&d);
         assert_eq!(current(&d).profile, Profile::Alone);
     }

@@ -30,7 +30,11 @@ pub(crate) fn view(policy: &RecordingPolicy, now_ms: i64, dir: &std::path::Path)
     })
 }
 
-pub(crate) fn apply(policy: &mut RecordingPolicy, req: &RecordingReq, now_ms: i64) -> Result<(), String> {
+pub(crate) fn apply(
+    policy: &mut RecordingPolicy,
+    req: &RecordingReq,
+    now_ms: i64,
+) -> Result<(), String> {
     if let Some(days) = req.retention_days {
         policy.retention_days = clamp_retention(days);
     }
@@ -55,7 +59,12 @@ pub(crate) fn apply(policy: &mut RecordingPolicy, req: &RecordingReq, now_ms: i6
 pub(crate) async fn get(State(d): State<Shared>) -> Response {
     d.reload_config().await;
     let policy = d.config.lock().unwrap().recording.clone();
-    Json(view(&policy, crate::recording_policy::now_ms(), &crate::recordings::dir())).into_response()
+    Json(view(
+        &policy,
+        crate::recording_policy::now_ms(),
+        &crate::recordings::dir(),
+    ))
+    .into_response()
 }
 
 pub(crate) async fn set(State(d): State<Shared>, Json(req): Json<RecordingReq>) -> Response {
@@ -102,33 +111,103 @@ mod tests {
     #[test]
     fn view_has_the_documented_shape_and_hides_expired_things() {
         let tmp = tempfile::tempdir().unwrap();
-        crate::recordings::write(tmp.path(), "abcdef123456", "mac", NOW, NOW + 1000, 2, "[10:00:00] hi\n").unwrap();
+        crate::recordings::write(
+            tmp.path(),
+            "abcdef123456",
+            "mac",
+            NOW,
+            NOW + 1000,
+            2,
+            "[10:00:00] hi\n",
+        )
+        .unwrap();
         let mut p = RecordingPolicy::default();
         p.snooze_until_ms = Some(NOW - 1);
-        p.set_rule("standup", "auto", When { keywords: vec!["standup".into()], ..When::default() }, "user said so", NOW).unwrap();
-        p.windows.push(crate::recording_policy::Window { id: "old".into(), label: "gone".into(), from_ms: 0, to_ms: NOW - 1, mode: "auto".into(), basis: "b".into(), created_at: 0 });
+        p.set_rule(
+            "standup",
+            "auto",
+            When {
+                keywords: vec!["standup".into()],
+                ..When::default()
+            },
+            "user said so",
+            NOW,
+        )
+        .unwrap();
+        p.windows.push(crate::recording_policy::Window {
+            id: "old".into(),
+            label: "gone".into(),
+            from_ms: 0,
+            to_ms: NOW - 1,
+            mode: "auto".into(),
+            basis: "b".into(),
+            created_at: 0,
+        });
         let v = view(&p, NOW, tmp.path());
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["recordings", "retention_days", "rules", "snooze_until", "windows"]);
+        assert_eq!(
+            keys,
+            [
+                "recordings",
+                "retention_days",
+                "rules",
+                "snooze_until",
+                "windows"
+            ]
+        );
         assert_eq!(v["retention_days"], 60);
         assert!(v["snooze_until"].is_null() && v["windows"].as_array().unwrap().is_empty());
         assert_eq!(v["rules"][0]["when"]["keywords"][0], "standup");
         assert_eq!(v["rules"][0]["mode"], "auto");
         let rec = &v["recordings"][0];
-        assert_eq!((rec["id"].as_str(), rec["lines"].as_u64()), (Some("abcdef123456"), Some(2)));
-        assert!(rec["path"].as_str().unwrap().ends_with(".md") && rec["started"].is_string() && rec["ended"].is_string());
+        assert_eq!(
+            (rec["id"].as_str(), rec["lines"].as_u64()),
+            (Some("abcdef123456"), Some(2))
+        );
+        assert!(
+            rec["path"].as_str().unwrap().ends_with(".md")
+                && rec["started"].is_string()
+                && rec["ended"].is_string()
+        );
     }
 
     #[test]
     fn post_fields_apply_and_stay_bounded() {
         let mut p = RecordingPolicy::default();
         let id = p.set_rule("r", "ask", When::default(), "", NOW).unwrap();
-        let req = RecordingReq { retention_days: Some(99_999), snooze_minutes: Some(30), remove_rule: Some(id), remove_window: None };
+        let req = RecordingReq {
+            retention_days: Some(99_999),
+            snooze_minutes: Some(30),
+            remove_rule: Some(id),
+            remove_window: None,
+        };
         apply(&mut p, &req, NOW).unwrap();
-        assert_eq!((p.retention_days, p.snooze_until_ms, p.rules.len()), (3650, Some(NOW + 1_800_000), 0));
-        apply(&mut p, &RecordingReq { snooze_minutes: Some(0), retention_days: Some(0), ..Default::default() }, NOW).unwrap();
+        assert_eq!(
+            (p.retention_days, p.snooze_until_ms, p.rules.len()),
+            (3650, Some(NOW + 1_800_000), 0)
+        );
+        apply(
+            &mut p,
+            &RecordingReq {
+                snooze_minutes: Some(0),
+                retention_days: Some(0),
+                ..Default::default()
+            },
+            NOW,
+        )
+        .unwrap();
         assert_eq!((p.retention_days, p.snooze_until_ms), (0, None));
-        assert!(apply(&mut p, &RecordingReq { snooze_minutes: Some(721), ..Default::default() }, NOW).is_err());
+        assert!(
+            apply(
+                &mut p,
+                &RecordingReq {
+                    snooze_minutes: Some(721),
+                    ..Default::default()
+                },
+                NOW
+            )
+            .is_err()
+        );
     }
 }

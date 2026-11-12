@@ -47,11 +47,7 @@ impl PromptContext {
     /// Detect the capability/environment snapshot for `workspace`. Memory
     /// enablement is supplied by the caller (it owns that fact); skills and
     /// vault are probed here.
-    pub fn detect(
-        workspace: &std::path::Path,
-        memory: bool,
-        memory_writable: bool,
-    ) -> Self {
+    pub fn detect(workspace: &std::path::Path, memory: bool, memory_writable: bool) -> Self {
         Self {
             worktree: crate::session::workspace_is_worktree(workspace),
             memory,
@@ -75,7 +71,11 @@ impl PromptContext {
         if self.vault {
             layers.push(VAULT_LAYER.trim());
         }
-        layers.push(if self.images { VISION_LAYER.trim() } else { NO_VISION_LAYER.trim() });
+        layers.push(if self.images {
+            VISION_LAYER.trim()
+        } else {
+            NO_VISION_LAYER.trim()
+        });
         if self.memory {
             layers.push(MEMORY_GUIDANCE_LAYER.trim());
         }
@@ -122,7 +122,12 @@ pub fn coordination_prompt(_context: &PromptContext) -> String {
     // No vault layer: it is about commands this session has no
     // shell to run. COORDINATION_LAYER is last so its statements about what
     // this session can and cannot do are the final word.
-    [CONVERSATION_AGENT_LAYER.trim(), ECOSYSTEM_LAYER.trim(), COORDINATION_LAYER.trim()].join("\n\n")
+    [
+        CONVERSATION_AGENT_LAYER.trim(),
+        ECOSYSTEM_LAYER.trim(),
+        COORDINATION_LAYER.trim(),
+    ]
+    .join("\n\n")
 }
 
 pub fn mission_control_system_prompt() -> String {
@@ -133,7 +138,11 @@ pub fn mission_control_system_prompt() -> String {
     if brief.trim().is_empty() {
         MISSION_CONTROL_LAYER.to_string()
     } else {
-        format!("{}\n\n## Your brief (as of this session's start)\n\n{}", MISSION_CONTROL_LAYER.trim_end(), brief.trim())
+        format!(
+            "{}\n\n## Your brief (as of this session's start)\n\n{}",
+            MISSION_CONTROL_LAYER.trim_end(),
+            brief.trim()
+        )
     }
 }
 
@@ -152,7 +161,7 @@ pub struct SpecializedAgentPromptContext<'a> {
 /// cannot disagree about how the agent is introduced to itself.
 fn identity_overlay(agent_id: &str, identity: &str) -> String {
     format!(
-        "## Your identity: {agent_id}\n\nThe identity below sets your expertise, judgment and voice. Everything above still governs how you work, talk and finish.\n\n{identity}\n",
+        "## Your identity: {agent_id}\n\nThe identity below sets your expertise, judgment and voice. Everything above still governs how you work, talk and finish.\n\n{identity}\n\n## Improving yourself\n\nAfter a task, judge the run against your playbook for that kind of work and update the playbook in your agent memory with what held up or failed. When a lesson changes how your role should work, send Mission Control a proposed identity change rather than editing your identity alone. Call `harness_map` whenever you are unsure what you are made of or how you reach the user.\n",
         identity = identity.trim(),
     )
 }
@@ -189,4 +198,33 @@ pub fn specialized_coordination_prompt(context: SpecializedAgentPromptContext<'_
         base = coordination_prompt(context.context),
         overlay = identity_overlay(context.agent_id, context.identity),
     )
+}
+
+#[cfg(test)]
+mod self_improvement_tests {
+    use super::*;
+
+    #[test]
+    fn identity_overlay_includes_bounded_self_improvement_paragraph() {
+        let ctx = PromptContext::default();
+        let prompt = specialized_agent_system_prompt(SpecializedAgentPromptContext {
+            agent_id: "researcher",
+            identity: "# Researcher\n\nFinds primary sources.",
+            context: &ctx,
+        });
+        let section = prompt
+            .split("## Improving yourself\n\n")
+            .nth(1)
+            .expect("missing Improving yourself section")
+            .trim();
+        assert!(section.contains("playbook"));
+        assert!(section.contains("Mission Control"));
+        assert!(section.contains("harness_map"));
+        assert!(!section.contains("\n- ") && !section.contains("\n* "));
+        let sentences = section.split('.').filter(|s| !s.trim().is_empty()).count();
+        assert!(
+            sentences <= 4,
+            "expected at most 4 sentences, got {sentences}: {section}"
+        );
+    }
 }

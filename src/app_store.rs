@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 
 use crate::mission_control::{ControlSettings, ManagedSession, SessionStatus};
@@ -33,8 +33,7 @@ pub fn app_db_path(root: &Path) -> PathBuf {
 }
 
 fn encode<T: Serialize>(what: &str, value: &T) -> Result<String, StoreError> {
-    serde_json::to_string(value)
-        .map_err(|e| StoreError::AppDecode(format!("encode {what}: {e}")))
+    serde_json::to_string(value).map_err(|e| StoreError::AppDecode(format!("encode {what}: {e}")))
 }
 
 /// The persisted spelling of a session status.
@@ -180,7 +179,11 @@ impl Store {
 
     pub fn upsert_recurring_job(&self, job: &RecurringJob) -> Result<(), StoreError> {
         let schedule = encode("job schedule", &job.schedule)?;
-        let wake = job.wake.as_ref().map(|w| encode("wake policy", w)).transpose()?;
+        let wake = job
+            .wake
+            .as_ref()
+            .map(|w| encode("wake policy", w))
+            .transpose()?;
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT INTO recurring_jobs
@@ -255,7 +258,13 @@ impl Store {
         })
     }
 
-    pub fn insert_recurring_run(&self, job_id: &str, owner: Option<&str>, session_id: &str, fired_at: i64) -> Result<i64, StoreError> {
+    pub fn insert_recurring_run(
+        &self,
+        job_id: &str,
+        owner: Option<&str>,
+        session_id: &str,
+        fired_at: i64,
+    ) -> Result<i64, StoreError> {
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT INTO recurring_runs (job_id, owner, session_id, fired_at, status) VALUES (?1, ?2, ?3, ?4, 'running')",
@@ -265,7 +274,14 @@ impl Store {
         })
     }
 
-    pub fn finish_recurring_run(&self, run_id: i64, status: &str, summary: Option<&str>, reported_to: Option<&str>, finished_at: i64) -> Result<(), StoreError> {
+    pub fn finish_recurring_run(
+        &self,
+        run_id: i64,
+        status: &str,
+        summary: Option<&str>,
+        reported_to: Option<&str>,
+        finished_at: i64,
+    ) -> Result<(), StoreError> {
         self.with_connection(|conn| {
             conn.execute(
                 "UPDATE recurring_runs SET status = ?2, summary = ?3, reported_to = ?4, finished_at = ?5 WHERE id = ?1",
@@ -293,7 +309,12 @@ impl Store {
         })
     }
 
-    pub fn put_keep_warm(&self, owner: &str, entry_json: &str, updated_at: i64) -> Result<(), StoreError> {
+    pub fn put_keep_warm(
+        &self,
+        owner: &str,
+        entry_json: &str,
+        updated_at: i64,
+    ) -> Result<(), StoreError> {
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT INTO keep_warm (owner, entry_json, updated_at) VALUES (?1, ?2, ?3)
@@ -307,7 +328,8 @@ impl Store {
 
     pub fn delete_keep_warm(&self, owner: &str) -> Result<bool, StoreError> {
         self.with_connection(|conn| {
-            conn.execute("DELETE FROM keep_warm WHERE owner = ?1", params![owner]).map(|n| n > 0)
+            conn.execute("DELETE FROM keep_warm WHERE owner = ?1", params![owner])
+                .map(|n| n > 0)
         })
     }
 
@@ -321,7 +343,12 @@ impl Store {
         })
     }
 
-    pub fn list_recurring_runs(&self, job_id: Option<&str>, owner: Option<&str>, limit: u32) -> Result<Vec<RecurringRun>, StoreError> {
+    pub fn list_recurring_runs(
+        &self,
+        job_id: Option<&str>,
+        owner: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<RecurringRun>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, job_id, owner, session_id, fired_at, finished_at, status, summary, reported_to
@@ -447,7 +474,9 @@ impl Store {
                 let timestamp: i64 = row.get(1)?;
                 let raw: String = row.get(2)?;
                 let mut value = serde_json::from_str::<serde_json::Value>(&raw)
-                    .ok().filter(|v| v.is_object()).unwrap_or_else(|| serde_json::json!({}));
+                    .ok()
+                    .filter(|v| v.is_object())
+                    .unwrap_or_else(|| serde_json::json!({}));
                 value["event_id"] = serde_json::json!(id);
                 value["created_at"] = serde_json::json!(timestamp);
                 Ok(value)
@@ -466,13 +495,14 @@ impl Store {
                 "SELECT event_id, created_at, payload_json FROM notification_journal
                  WHERE event_id > ?1 ORDER BY event_id LIMIT ?2",
             )?;
-            let rows = stmt.query_map(params![since as i64, limit.clamp(1, 501) as i64], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?;
+            let rows =
+                stmt.query_map(params![since as i64, limit.clamp(1, 501) as i64], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?;
             let mut out = Vec::new();
             for row in rows {
                 let (id, created_at, raw) = row?;
@@ -493,7 +523,6 @@ impl Store {
             Ok(out)
         })
     }
-
 }
 
 const JOB_COLUMNS: &str = "id, title, session_id, prompt, plan_path, schedule_json, delivery, \
@@ -532,8 +561,8 @@ fn recurring_job_from_row(row: &rusqlite::Row<'_>) -> Result<RecurringJob, rusql
     let raw_schedule: String = row.get(5)?;
     // A schedule that cannot be decoded is a corrupt row; default to a daily
     // run rather than dropping the job, so the user still sees it exists.
-    let schedule: Schedule = serde_json::from_str(&raw_schedule)
-        .unwrap_or(Schedule::Daily { hour: 0, minute: 0 });
+    let schedule: Schedule =
+        serde_json::from_str(&raw_schedule).unwrap_or(Schedule::Daily { hour: 0, minute: 0 });
     Ok(RecurringJob {
         id: row.get(0)?,
         title: row.get(1)?,

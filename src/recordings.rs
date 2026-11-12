@@ -9,13 +9,29 @@ pub fn dir() -> PathBuf {
 }
 
 fn iso(ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms).map(|t| t.to_rfc3339()).unwrap_or_default()
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|t| t.to_rfc3339())
+        .unwrap_or_default()
 }
 
-pub fn write(dir: &Path, id: &str, device: &str, started_ms: i64, ended_ms: i64, lines: usize, transcript: &str) -> std::io::Result<PathBuf> {
+pub fn write(
+    dir: &Path,
+    id: &str,
+    device: &str,
+    started_ms: i64,
+    ended_ms: i64,
+    lines: usize,
+    transcript: &str,
+) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let day = chrono::DateTime::from_timestamp_millis(started_ms).map(|t| t.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "undated".into());
-    let short: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
+    let day = chrono::DateTime::from_timestamp_millis(started_ms)
+        .map(|t| t.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "undated".into());
+    let short: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
     let path = dir.join(format!("{day}-{short}.md"));
     let body = format!(
         "# Recorded conversation\n\n- id: {id}\n- device: {device}\n- started: {}\n- ended: {}\n- lines: {lines}\n\nSpeaker labels are best-effort voice matching; You is the user.\n\n## Transcript\n\n{transcript}",
@@ -34,7 +50,10 @@ pub fn list(dir: &Path, limit: usize) -> Vec<Value> {
 }
 
 pub fn find(dir: &Path, id: &str) -> Option<PathBuf> {
-    all(dir).into_iter().find(|r| r["id"] == id).and_then(|r| r["path"].as_str().map(PathBuf::from))
+    all(dir)
+        .into_iter()
+        .find(|r| r["id"] == id)
+        .and_then(|r| r["path"].as_str().map(PathBuf::from))
 }
 
 /// Files whose recording started before the cutoff.
@@ -42,7 +61,10 @@ pub fn older_than(dir: &Path, cutoff_ms: i64) -> Vec<PathBuf> {
     all(dir)
         .into_iter()
         .filter(|r| {
-            r["started"].as_str().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).is_some_and(|t| t.timestamp_millis() < cutoff_ms)
+            r["started"]
+                .as_str()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .is_some_and(|t| t.timestamp_millis() < cutoff_ms)
         })
         .filter_map(|r| r["path"].as_str().map(PathBuf::from))
         .collect()
@@ -51,12 +73,19 @@ pub fn older_than(dir: &Path, cutoff_ms: i64) -> Vec<PathBuf> {
 /// Blanks the transcript but keeps the header.
 pub fn redact(path: &Path) -> std::io::Result<()> {
     let text = std::fs::read_to_string(path)?;
-    let Some(at) = text.find("## Transcript") else { return Ok(()) };
-    std::fs::write(path, format!("{}## Transcript\n\n[redacted]\n", &text[..at]))
+    let Some(at) = text.find("## Transcript") else {
+        return Ok(());
+    };
+    std::fs::write(
+        path,
+        format!("{}## Transcript\n\n[redacted]\n", &text[..at]),
+    )
 }
 
 fn all(dir: &Path) -> Vec<Value> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut rows: Vec<Value> = entries
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
@@ -64,7 +93,10 @@ fn all(dir: &Path) -> Vec<Value> {
             let text = std::fs::read_to_string(e.path()).ok()?;
             let field = |key: &str| {
                 let prefix = format!("- {key}: ");
-                text.lines().take(10).find_map(|l| l.strip_prefix(prefix.as_str())).map(str::to_string)
+                text.lines()
+                    .take(10)
+                    .find_map(|l| l.strip_prefix(prefix.as_str()))
+                    .map(str::to_string)
             };
             Some(json!({
                 "id": field("id")?,
@@ -90,16 +122,34 @@ mod tests {
         let t0 = 1_800_000_000_000;
         let long = "[10:00:00] word\n".repeat(10_000);
         let a = write(&dir, "aaaaaaaa-1111", "mac", t0, t0 + 60_000, 10_000, &long).unwrap();
-        let b = write(&dir, "bbbbbbbb-2222", "phone", t0 + 86_400_000, t0 + 86_460_000, 3, "[10:00:00] hi\n").unwrap();
+        let b = write(
+            &dir,
+            "bbbbbbbb-2222",
+            "phone",
+            t0 + 86_400_000,
+            t0 + 86_460_000,
+            3,
+            "[10:00:00] hi\n",
+        )
+        .unwrap();
         assert!(std::fs::read_to_string(&a).unwrap().ends_with(&long));
-        assert!(a.is_absolute() && a.file_name().unwrap().to_string_lossy().ends_with("-aaaaaaaa.md"));
+        assert!(
+            a.is_absolute()
+                && a.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with("-aaaaaaaa.md")
+        );
         let rows = list(&dir, 10);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["id"], "bbbbbbbb-2222");
         assert_eq!(rows[0]["lines"], 3);
         assert_eq!(rows[0]["path"], b.to_string_lossy().as_ref());
         assert!(rows[0]["started"].as_str().unwrap() > rows[1]["started"].as_str().unwrap());
-        assert_eq!(rows[1]["ended"].as_str().unwrap(), "2027-01-15T08:01:00+00:00");
+        assert_eq!(
+            rows[1]["ended"].as_str().unwrap(),
+            "2027-01-15T08:01:00+00:00"
+        );
         assert_eq!(list(&dir, 1).len(), 1);
         assert!(list(&tmp.path().join("none"), 5).is_empty());
     }

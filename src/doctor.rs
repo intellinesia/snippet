@@ -27,19 +27,25 @@ pub struct Item {
     pub detail: String,
 }
 
-const CLOUDFLARED_URL: &str = "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/";
+const CLOUDFLARED_URL: &str =
+    "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/";
 
 pub fn purpose(id: &str, cmd: Option<&str>) -> String {
     match id {
         "git" => "version control for sessions, worktrees and checkpoints".into(),
-        "cloudflared" if cmd.is_none() => format!("phone access outside the LAN, see {CLOUDFLARED_URL}"),
+        "cloudflared" if cmd.is_none() => {
+            format!("phone access outside the LAN, see {CLOUDFLARED_URL}")
+        }
         "cloudflared" => "phone access outside the LAN".into(),
         "gh" => "GitHub pull requests".into(),
         "ffprobe" => "audio file transcription (ffmpeg)".into(),
         "rg" => "fast code search for agents (falls back to grep)".into(),
         "claude" => "Claude Code provider".into(),
         "devin" => "Devin CLI provider".into(),
-        "libstdcxx" => format!("voice recognition runtime (libstdc++ with {})", voice_glibcxx()),
+        "libstdcxx" => format!(
+            "voice recognition runtime (libstdc++ with {})",
+            voice_glibcxx()
+        ),
         "voice-assets" => "voice recognition runtime and model (about 35 MB download)".into(),
         _ => String::new(),
     }
@@ -67,8 +73,22 @@ fn pkg(pm: Pm, name: &str) -> Option<String> {
 pub fn install_command(id: &str, pm: Pm, host: &Host) -> Option<String> {
     match id {
         "git" => pkg(pm, "git"),
-        "gh" => pkg(pm, if matches!(pm, Pm::Pacman | Pm::Apk) { "github-cli" } else { "gh" }),
-        "ffprobe" => pkg(pm, if pm == Pm::Dnf { "ffmpeg-free" } else { "ffmpeg" }),
+        "gh" => pkg(
+            pm,
+            if matches!(pm, Pm::Pacman | Pm::Apk) {
+                "github-cli"
+            } else {
+                "gh"
+            },
+        ),
+        "ffprobe" => pkg(
+            pm,
+            if pm == Pm::Dnf {
+                "ffmpeg-free"
+            } else {
+                "ffmpeg"
+            },
+        ),
         "rg" => pkg(pm, "ripgrep"),
         "cloudflared" => match pm {
             Pm::Brew | Pm::Pacman => pkg(pm, "cloudflared"),
@@ -78,7 +98,9 @@ pub fn install_command(id: &str, pm: Pm, host: &Host) -> Option<String> {
             )),
             _ => None,
         },
-        "claude" => host.npm.then(|| "npm i -g @anthropic-ai/claude-code".to_string()),
+        "claude" => host
+            .npm
+            .then(|| "npm i -g @anthropic-ai/claude-code".to_string()),
         "devin" => Some(match pm {
             Pm::Brew => "brew install --cask devin-cli".to_string(),
             _ => "curl -fsSL https://cli.devin.ai/install.sh | bash".to_string(),
@@ -100,14 +122,20 @@ pub fn tsv_line(item: &Item, pm: Pm, host: &Host) -> String {
     format!(
         "{}\t{}\t{}\t{}",
         item.id,
-        if item.required { "required" } else { "optional" },
+        if item.required {
+            "required"
+        } else {
+            "optional"
+        },
         clean(&purpose(item.id, cmd.as_deref())),
         cmd.map_or("-".into(), |c| clean(&c))
     )
 }
 
 fn on_path(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(name)).find(|p| is_exec(p))
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|d| d.join(name))
+        .find(|p| is_exec(p))
 }
 
 fn is_exec(p: &Path) -> bool {
@@ -116,27 +144,57 @@ fn is_exec(p: &Path) -> bool {
 }
 
 fn found(id: &'static str, required: bool, path: Option<PathBuf>) -> Item {
-    Item { id, required, ok: path.is_some(), detail: path.map_or("not found".into(), |p| p.display().to_string()) }
+    Item {
+        id,
+        required,
+        ok: path.is_some(),
+        detail: path.map_or("not found".into(), |p| p.display().to_string()),
+    }
 }
 
 pub fn host() -> Host {
-    Host { linux: cfg!(target_os = "linux"), arm64: cfg!(target_arch = "aarch64"), npm: on_path("npm").is_some() }
+    Host {
+        linux: cfg!(target_os = "linux"),
+        arm64: cfg!(target_arch = "aarch64"),
+        npm: on_path("npm").is_some(),
+    }
 }
 
 pub fn detect_pm() -> Pm {
     if cfg!(target_os = "macos") {
-        return if on_path("brew").is_some() || Path::new("/opt/homebrew/bin/brew").exists() { Pm::Brew } else { Pm::NoPm };
+        return if on_path("brew").is_some() || Path::new("/opt/homebrew/bin/brew").exists() {
+            Pm::Brew
+        } else {
+            Pm::NoPm
+        };
     }
-    [("apt-get", Pm::Apt), ("dnf", Pm::Dnf), ("pacman", Pm::Pacman), ("zypper", Pm::Zypper), ("apk", Pm::Apk), ("brew", Pm::Brew)]
-        .into_iter()
-        .find(|(bin, _)| on_path(bin).is_some())
-        .map_or(Pm::NoPm, |(_, pm)| pm)
+    [
+        ("apt-get", Pm::Apt),
+        ("dnf", Pm::Dnf),
+        ("pacman", Pm::Pacman),
+        ("zypper", Pm::Zypper),
+        ("apk", Pm::Apk),
+        ("brew", Pm::Brew),
+    ]
+    .into_iter()
+    .find(|(bin, _)| on_path(bin).is_some())
+    .map_or(Pm::NoPm, |(_, pm)| pm)
 }
 
 pub fn check() -> Vec<Item> {
     let mut items = vec![
         found("git", true, on_path("git")),
-        found("cloudflared", false, crate::serve::find_cloudflared().map(|p| if p.is_absolute() { p } else { on_path("cloudflared").unwrap_or(p) })),
+        found(
+            "cloudflared",
+            false,
+            crate::serve::find_cloudflared().map(|p| {
+                if p.is_absolute() {
+                    p
+                } else {
+                    on_path("cloudflared").unwrap_or(p)
+                }
+            }),
+        ),
         found("gh", false, on_path("gh")),
         found("ffprobe", false, on_path("ffprobe")),
         found("rg", false, on_path("rg")),
@@ -156,18 +214,35 @@ fn voice_assets() -> Item {
     #[cfg(not(target_os = "linux"))]
     let runtime = true;
     let detail = match (runtime, model) {
-        (true, true) => format!("{} and model in ~/.snippet", if cfg!(target_os = "linux") { "runtime" } else { "built-in runtime" }),
+        (true, true) => format!(
+            "{} and model in ~/.snippet",
+            if cfg!(target_os = "linux") {
+                "runtime"
+            } else {
+                "built-in runtime"
+            }
+        ),
         (false, true) => "runtime not downloaded yet".into(),
         (true, false) => "model not downloaded yet".into(),
         (false, false) => "runtime and model not downloaded yet".into(),
     };
-    Item { id: "voice-assets", required: false, ok: runtime && model, detail }
+    Item {
+        id: "voice-assets",
+        required: false,
+        ok: runtime && model,
+        detail,
+    }
 }
 
 #[cfg(target_os = "linux")]
 fn libstdcxx() -> Item {
     use crate::voiceprint::runtime;
-    let item = |ok, detail| Item { id: "libstdcxx", required: false, ok, detail };
+    let item = |ok, detail| Item {
+        id: "libstdcxx",
+        required: false,
+        ok,
+        detail,
+    };
     if let Some(lib) = runtime::installed() {
         match runtime::probe(&lib) {
             Ok(v) => return item(true, format!("onnxruntime {v} loads")),
@@ -184,7 +259,10 @@ fn libstdcxx() -> Item {
         }
     }
     match libs.first() {
-        Some(lib) => item(false, format!("{} lacks {}", lib.display(), runtime::GLIBCXX)),
+        Some(lib) => item(
+            false,
+            format!("{} lacks {}", lib.display(), runtime::GLIBCXX),
+        ),
         None => item(false, "libstdc++.so.6 not found".into()),
     }
 }
@@ -195,15 +273,22 @@ fn libstdcxx_paths() -> Vec<PathBuf> {
     for bin in ["ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"] {
         if let Ok(o) = std::process::Command::new(bin).arg("-p").output() {
             for line in String::from_utf8_lossy(&o.stdout).lines() {
-                if line.trim_start().starts_with("libstdc++.so.6 ") && (line.contains("x86-64") || line.contains("AArch64"))
-                    && let Some((_, p)) = line.rsplit_once("=> ") {
-                        out.push(PathBuf::from(p.trim()));
-                    }
+                if line.trim_start().starts_with("libstdc++.so.6 ")
+                    && (line.contains("x86-64") || line.contains("AArch64"))
+                    && let Some((_, p)) = line.rsplit_once("=> ")
+                {
+                    out.push(PathBuf::from(p.trim()));
+                }
             }
             break;
         }
     }
-    for p in ["/usr/lib/x86_64-linux-gnu/libstdc++.so.6", "/usr/lib64/libstdc++.so.6", "/usr/lib/libstdc++.so.6", "/lib/x86_64-linux-gnu/libstdc++.so.6"] {
+    for p in [
+        "/usr/lib/x86_64-linux-gnu/libstdc++.so.6",
+        "/usr/lib64/libstdc++.so.6",
+        "/usr/lib/libstdc++.so.6",
+        "/lib/x86_64-linux-gnu/libstdc++.so.6",
+    ] {
         let p = PathBuf::from(p);
         if p.exists() && !out.contains(&p) {
             out.push(p);
@@ -213,19 +298,42 @@ fn libstdcxx_paths() -> Vec<PathBuf> {
 }
 
 pub fn report(items: &[Item], pm: Pm, host: &Host) -> String {
-    let mut out = format!("Snippet doctor ({} {})\n\n", std::env::consts::OS, std::env::consts::ARCH);
+    let mut out = format!(
+        "Snippet doctor ({} {})\n\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     for it in items {
         let cmd = install_command(it.id, pm, host);
-        let status = if it.ok { "ok" } else if it.required { "MISSING" } else { "optional" };
+        let status = if it.ok {
+            "ok"
+        } else if it.required {
+            "MISSING"
+        } else {
+            "optional"
+        };
         let kind = if it.required { "required" } else { "optional" };
-        out.push_str(&format!("  {status:<9} {:<13} {} ({kind})\n", it.id, purpose(it.id, cmd.as_deref())));
+        out.push_str(&format!(
+            "  {status:<9} {:<13} {} ({kind})\n",
+            it.id,
+            purpose(it.id, cmd.as_deref())
+        ));
         out.push_str(&format!("  {:<9} {:<13} {}\n", "", "", it.detail));
         if !it.ok {
-            out.push_str(&format!("  {:<9} {:<13} install: {}\n", "", "", cmd.as_deref().unwrap_or("no package for this system")));
+            out.push_str(&format!(
+                "  {:<9} {:<13} install: {}\n",
+                "",
+                "",
+                cmd.as_deref().unwrap_or("no package for this system")
+            ));
         }
     }
     let missing = |req: bool| items.iter().filter(|i| !i.ok && i.required == req).count();
-    out.push_str(&format!("\n{} required missing, {} optional missing\n", missing(true), missing(false)));
+    out.push_str(&format!(
+        "\n{} required missing, {} optional missing\n",
+        missing(true),
+        missing(false)
+    ));
     out
 }
 
@@ -235,7 +343,10 @@ pub fn prefetch() {
         use crate::voiceprint::runtime;
         let fresh = runtime::installed().is_none();
         if fresh {
-            println!("voice runtime: downloading onnxruntime {}...", runtime::VERSION);
+            println!(
+                "voice runtime: downloading onnxruntime {}...",
+                runtime::VERSION
+            );
         }
         match runtime::install_checked() {
             Ok((p, v)) => println!("voice runtime: ok, onnxruntime {v} at {}", p.display()),
@@ -243,7 +354,10 @@ pub fn prefetch() {
         }
     }
     if !crate::voiceprint::neural::model_ok() {
-        println!("voice model: downloading {}...", crate::voiceprint::NEURAL_MODEL);
+        println!(
+            "voice model: downloading {}...",
+            crate::voiceprint::NEURAL_MODEL
+        );
     }
     match crate::voiceprint::neural::fetch_model() {
         Ok(p) => println!("voice model: ok, {}", p.display()),
@@ -272,25 +386,61 @@ pub fn run(tsv: bool, pm: Option<Pm>, prefetch_assets: bool) {
 mod tests {
     use super::*;
 
-    const LINUX: Host = Host { linux: true, arm64: false, npm: true };
-    const MAC_NO_NPM: Host = Host { linux: false, arm64: true, npm: false };
+    const LINUX: Host = Host {
+        linux: true,
+        arm64: false,
+        npm: true,
+    };
+    const MAC_NO_NPM: Host = Host {
+        linux: false,
+        arm64: true,
+        npm: false,
+    };
 
     fn item(id: &'static str, required: bool) -> Item {
-        Item { id, required, ok: false, detail: String::new() }
+        Item {
+            id,
+            required,
+            ok: false,
+            detail: String::new(),
+        }
     }
 
     #[test]
     fn tsv_has_four_tab_separated_fields() {
         let line = tsv_line(&item("git", true), Pm::Apt, &LINUX);
-        assert_eq!(line, "git\trequired\tversion control for sessions, worktrees and checkpoints\tsudo apt-get install -y git");
+        assert_eq!(
+            line,
+            "git\trequired\tversion control for sessions, worktrees and checkpoints\tsudo apt-get install -y git"
+        );
         let line = tsv_line(&item("claude", false), Pm::Brew, &MAC_NO_NPM);
         assert_eq!(line, "claude\toptional\tClaude Code provider\t-");
-        for id in ["git", "cloudflared", "gh", "ffprobe", "rg", "claude", "libstdcxx", "voice-assets"] {
-            for pm in [Pm::Apt, Pm::Dnf, Pm::Pacman, Pm::Zypper, Pm::Apk, Pm::Brew, Pm::NoPm] {
+        for id in [
+            "git",
+            "cloudflared",
+            "gh",
+            "ffprobe",
+            "rg",
+            "claude",
+            "libstdcxx",
+            "voice-assets",
+        ] {
+            for pm in [
+                Pm::Apt,
+                Pm::Dnf,
+                Pm::Pacman,
+                Pm::Zypper,
+                Pm::Apk,
+                Pm::Brew,
+                Pm::NoPm,
+            ] {
                 let line = tsv_line(&item(id, false), pm, &LINUX);
                 let fields: Vec<_> = line.split('\t').collect();
                 assert_eq!(fields.len(), 4, "{line}");
-                assert!(fields.iter().all(|f| !f.is_empty() && !f.contains('\n')), "{line}");
+                assert!(
+                    fields.iter().all(|f| !f.is_empty() && !f.contains('\n')),
+                    "{line}"
+                );
             }
         }
     }
@@ -298,20 +448,51 @@ mod tests {
     #[test]
     fn package_names_per_manager() {
         let cmd = |id, pm| install_command(id, pm, &LINUX);
-        assert_eq!(cmd("gh", Pm::Pacman).unwrap(), "sudo pacman -S --noconfirm github-cli");
+        assert_eq!(
+            cmd("gh", Pm::Pacman).unwrap(),
+            "sudo pacman -S --noconfirm github-cli"
+        );
         assert_eq!(cmd("gh", Pm::Dnf).unwrap(), "sudo dnf install -y gh");
-        assert_eq!(cmd("ffprobe", Pm::Apt).unwrap(), "sudo apt-get install -y ffmpeg");
-        assert_eq!(cmd("ffprobe", Pm::Dnf).unwrap(), "sudo dnf install -y ffmpeg-free");
-        assert_eq!(cmd("rg", Pm::Zypper).unwrap(), "sudo zypper --non-interactive install ripgrep");
-        assert_eq!(cmd("libstdcxx", Pm::Apt).unwrap(), "sudo apt-get install -y libstdc++6");
-        assert_eq!(cmd("libstdcxx", Pm::Dnf).unwrap(), "sudo dnf install -y libstdc++");
+        assert_eq!(
+            cmd("ffprobe", Pm::Apt).unwrap(),
+            "sudo apt-get install -y ffmpeg"
+        );
+        assert_eq!(
+            cmd("ffprobe", Pm::Dnf).unwrap(),
+            "sudo dnf install -y ffmpeg-free"
+        );
+        assert_eq!(
+            cmd("rg", Pm::Zypper).unwrap(),
+            "sudo zypper --non-interactive install ripgrep"
+        );
+        assert_eq!(
+            cmd("libstdcxx", Pm::Apt).unwrap(),
+            "sudo apt-get install -y libstdc++6"
+        );
+        assert_eq!(
+            cmd("libstdcxx", Pm::Dnf).unwrap(),
+            "sudo dnf install -y libstdc++"
+        );
         assert_eq!(cmd("libstdcxx", Pm::Brew), None);
-        assert_eq!(cmd("voice-assets", Pm::NoPm).unwrap(), "snippet doctor --prefetch");
+        assert_eq!(
+            cmd("voice-assets", Pm::NoPm).unwrap(),
+            "snippet doctor --prefetch"
+        );
         assert_eq!(cmd("git", Pm::NoPm), None);
-        assert_eq!(install_command("cloudflared", Pm::Brew, &MAC_NO_NPM).unwrap(), "brew install cloudflared");
-        assert!(cmd("cloudflared", Pm::Apt).unwrap().contains("cloudflared-linux-amd64"));
+        assert_eq!(
+            install_command("cloudflared", Pm::Brew, &MAC_NO_NPM).unwrap(),
+            "brew install cloudflared"
+        );
+        assert!(
+            cmd("cloudflared", Pm::Apt)
+                .unwrap()
+                .contains("cloudflared-linux-amd64")
+        );
         assert_eq!(install_command("cloudflared", Pm::NoPm, &MAC_NO_NPM), None);
         assert!(purpose("cloudflared", None).contains("https://"));
-        assert_eq!(cmd("claude", Pm::Apt).unwrap(), "npm i -g @anthropic-ai/claude-code");
+        assert_eq!(
+            cmd("claude", Pm::Apt).unwrap(),
+            "npm i -g @anthropic-ai/claude-code"
+        );
     }
 }

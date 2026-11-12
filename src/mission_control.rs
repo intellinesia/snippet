@@ -91,7 +91,8 @@ pub fn workspace_path() -> PathBuf {
 /// under a project `conversations/` directory.
 pub fn awaiting_user() -> bool {
     crate::session::read_session_meta(&session_state_path()).is_some_and(|state| {
-        state.status == crate::harness::HarnessStatus::WaitingForInput && state.pending_question.is_some()
+        state.status == crate::harness::HarnessStatus::WaitingForInput
+            && state.pending_question.is_some()
     })
 }
 
@@ -279,10 +280,20 @@ mod tests {
     fn list_sessions_hides_agent_inboxes() {
         let root = tmp();
         create_session(root.path(), "s1", "Real work", Path::new("/w")).unwrap();
-        create_session(root.path(), "inbox-snippet", "Snippet inbox", Path::new("/a")).unwrap();
+        create_session(
+            root.path(),
+            "inbox-snippet",
+            "Snippet inbox",
+            Path::new("/a"),
+        )
+        .unwrap();
 
         let listed = list_sessions(root.path(), false).unwrap();
-        assert_eq!(listed.len(), 1, "an inbox is private mail, not a managed session");
+        assert_eq!(
+            listed.len(),
+            1,
+            "an inbox is private mail, not a managed session"
+        );
         assert_eq!(listed[0].id, "s1");
 
         // Still addressable by id — filtering the list must not orphan it.
@@ -355,7 +366,6 @@ mod tests {
         let s = get_session(root.path(), "s1").unwrap();
         assert_eq!(s.tags["key"], "value");
     }
-
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

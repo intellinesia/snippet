@@ -353,9 +353,10 @@ impl CodingHarness {
                 && let Some(last_user) = state.messages.iter().rev().find_map(|m| match m {
                     HarnessMessage::User { content } => Some(content.clone()),
                     _ => None,
-                }) {
-                    next.push(HarnessMessage::User { content: last_user });
-                }
+                })
+            {
+                next.push(HarnessMessage::User { content: last_user });
+            }
 
             if next.len() >= working.len() {
                 break;

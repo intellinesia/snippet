@@ -183,14 +183,24 @@ pub fn parse_credential_token(raw: &str) -> Option<String> {
     }
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
         for key in ["token", "windsurf_api_key", "api_key"] {
-            if let Some(tok) = value.get(key).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()) {
+            if let Some(tok) = value
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+            {
                 return Some(tok.to_string());
             }
         }
     }
     if let Ok(table) = trimmed.parse::<toml::Table>() {
         for key in ["windsurf_api_key", "token", "api_key"] {
-            if let Some(tok) = table.get(key).and_then(toml::Value::as_str).map(str::trim).filter(|t| !t.is_empty()) {
+            if let Some(tok) = table
+                .get(key)
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+            {
                 return Some(tok.to_string());
             }
         }
@@ -249,7 +259,14 @@ pub fn prepare_home(
     prompt: &str,
     account: Option<&str>,
 ) -> Result<PreparedEnv, String> {
-    prepare_home_in(&crate::config::snippet_home(), real_data_dir().as_deref(), key, mcp_url, prompt, account)
+    prepare_home_in(
+        &crate::config::snippet_home(),
+        real_data_dir().as_deref(),
+        key,
+        mcp_url,
+        prompt,
+        account,
+    )
 }
 
 fn prepare_home_in(
@@ -263,7 +280,13 @@ fn prepare_home_in(
     let slot: String = account
         .unwrap_or(crate::accounts::MAIN)
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let acct_root = snippet_home.join("devin/accounts").join(&slot);
     let home = acct_root.join("home");
@@ -277,11 +300,14 @@ fn prepare_home_in(
 
     std::fs::create_dir_all(&home).map_err(|e| format!("create {}: {e}", home.display()))?;
     std::fs::create_dir_all(&cfg_dir).map_err(|e| format!("create {}: {e}", cfg_dir.display()))?;
-    std::fs::create_dir_all(&data_dir).map_err(|e| format!("create {}: {e}", data_dir.display()))?;
-    std::fs::create_dir_all(&xdg_cache_home).map_err(|e| format!("create {}: {e}", xdg_cache_home.display()))?;
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|e| format!("create {}: {e}", data_dir.display()))?;
+    std::fs::create_dir_all(&xdg_cache_home)
+        .map_err(|e| format!("create {}: {e}", xdg_cache_home.display()))?;
 
     let shared_cli = snippet_home.join("devin/shared-cli");
-    std::fs::create_dir_all(&shared_cli).map_err(|e| format!("create {}: {e}", shared_cli.display()))?;
+    std::fs::create_dir_all(&shared_cli)
+        .map_err(|e| format!("create {}: {e}", shared_cli.display()))?;
     ensure_symlink(&shared_cli, &data_dir.join("cli"))?;
 
     let token = account.and_then(account_token);
@@ -289,7 +315,9 @@ fn prepare_home_in(
     if let Some(tok) = &token {
         write_credentials_file(&cred_target, tok)?;
     } else if (account.is_none() || account == Some(crate::accounts::MAIN))
-        && let Some(real_creds) = real_data.map(|d| d.join("credentials.toml")).filter(|p| p.is_file())
+        && let Some(real_creds) = real_data
+            .map(|d| d.join("credentials.toml"))
+            .filter(|p| p.is_file())
     {
         ensure_symlink(&real_creds, &cred_target)?;
     }
@@ -299,8 +327,15 @@ fn prepare_home_in(
         Some(path) => PathBuf::from(path),
         None => exe,
     };
-    let exe = if exe.parent().and_then(|p| p.file_name()).is_some_and(|n| n == "deps") {
-        let sibling = exe.parent().and_then(Path::parent).map(|p| p.join("snippet"));
+    let exe = if exe
+        .parent()
+        .and_then(|p| p.file_name())
+        .is_some_and(|n| n == "deps")
+    {
+        let sibling = exe
+            .parent()
+            .and_then(Path::parent)
+            .map(|p| p.join("snippet"));
         sibling.filter(|p| p.is_file()).unwrap_or(exe)
     } else {
         exe
@@ -344,7 +379,8 @@ fn write_credentials_file(path: &Path, token: &str) -> Result<(), String> {
 
 fn ensure_symlink(target: &Path, link: &Path) -> Result<(), String> {
     if let Ok(meta) = std::fs::symlink_metadata(link) {
-        if meta.file_type().is_symlink() && std::fs::read_link(link).ok().as_deref() == Some(target) {
+        if meta.file_type().is_symlink() && std::fs::read_link(link).ok().as_deref() == Some(target)
+        {
             return Ok(());
         }
         if meta.is_dir() && !meta.file_type().is_symlink() {
@@ -354,7 +390,8 @@ fn ensure_symlink(target: &Path, link: &Path) -> Result<(), String> {
         }
     }
     #[cfg(unix)]
-    std::os::unix::fs::symlink(target, link).map_err(|e| format!("link {}: {e}", link.display()))?;
+    std::os::unix::fs::symlink(target, link)
+        .map_err(|e| format!("link {}: {e}", link.display()))?;
     Ok(())
 }
 
@@ -399,7 +436,9 @@ pub async fn auth_status() -> (bool, Option<String>) {
 }
 
 pub fn parse_auth_status(text: &str) -> (bool, Option<String>) {
-    let logged_in = text.lines().any(|l| l.trim_start().starts_with("Logged in"));
+    let logged_in = text
+        .lines()
+        .any(|l| l.trim_start().starts_with("Logged in"));
     let failed = text.contains("Failed to fetch from server:");
     if !logged_in || failed {
         return (false, None);
@@ -450,8 +489,8 @@ pub async fn models_json() -> Result<(Option<String>, Value), String> {
             err
         });
     }
-    let parsed: Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| format!("parse devin models json: {e}"))?;
+    let parsed: Value =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("parse devin models json: {e}"))?;
     Ok((account, parsed))
 }
 
@@ -470,7 +509,11 @@ pub fn parse_model_ids(raw: &Value) -> Vec<String> {
         return ids;
     };
     for family in families {
-        let slug = family.get("slug").and_then(Value::as_str).unwrap_or("").trim();
+        let slug = family
+            .get("slug")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
         if slug == "fusion" {
             continue;
         }
@@ -479,7 +522,10 @@ pub fn parse_model_ids(raw: &Value) -> Vec<String> {
         }
         if let Some(variants) = family.get("variants").and_then(Value::as_array) {
             for variant in variants {
-                if let Some(uid) = variant.get("model_uid").and_then(Value::as_str).map(str::trim)
+                if let Some(uid) = variant
+                    .get("model_uid")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
                     && !uid.is_empty()
                     && !uid.starts_with("MODEL_")
                     && !ids.iter().any(|x| x == uid)
@@ -510,7 +556,10 @@ pub fn fork_conversation(source: &str) -> Result<String, String> {
 
 pub fn fork_conversation_in(db_path: &Path, source: &str) -> Result<String, String> {
     let conn = rusqlite::Connection::open(db_path).map_err(|e| e.to_string())?;
-    let copy = format!("snippet-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    let copy = format!(
+        "snippet-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    );
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let copied = tx
         .execute(
@@ -575,8 +624,10 @@ pub fn quota_exhausted_hint(event: &Value) -> Option<i64> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_ascii_lowercase();
-        if matches!(cause, "quota_exhausted" | "usage_limit_reached" | "resource_exhausted")
-            || msg.contains("quota exhausted")
+        if matches!(
+            cause,
+            "quota_exhausted" | "usage_limit_reached" | "resource_exhausted"
+        ) || msg.contains("quota exhausted")
             || msg.contains("usage limit reached")
             || msg.contains("subscription limit reached")
         {
@@ -675,7 +726,10 @@ fn strip_ansi_and_osc(input: &str) -> String {
 }
 
 fn valid_login_id(id: &str) -> bool {
-    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 pub async fn begin_login(id: &str, label: &str) -> Result<String, String> {
@@ -723,8 +777,14 @@ async fn begin_login_with(
         .spawn()
         .map_err(|e| format!("couldn't start devin auth login: {e}"))?;
     let stdin = child.stdin.take().ok_or("devin login stdin unavailable")?;
-    let stdout = child.stdout.take().ok_or("devin login stdout unavailable")?;
-    let stderr = child.stderr.take().ok_or("devin login stderr unavailable")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("devin login stdout unavailable")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("devin login stderr unavailable")?;
 
     let collected = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let stderr_lines = Arc::clone(&collected);
@@ -802,7 +862,9 @@ async fn begin_login_with(
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
         let mut guard = LOGINS.lock().await;
-        if guard.get(&reap_id).is_some_and(|entry| entry.dir == reap_dir)
+        if guard
+            .get(&reap_id)
+            .is_some_and(|entry| entry.dir == reap_dir)
             && let Some(mut stale) = guard.remove(&reap_id)
         {
             drop(guard);
@@ -846,24 +908,20 @@ async fn finish_login(login: &mut Login, code: &str) -> Result<(String, String),
     let _ = stdin.flush().await;
     drop(stdin);
 
-    let status = match tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        login.child.wait(),
-    )
-    .await
-    {
-        Ok(Ok(status)) => status,
-        Ok(Err(e)) => return Err(format!("Devin login failed: {e}")),
-        Err(_) => {
-            let _ = login.child.kill().await;
-            return Err("Devin login timed out waiting for verification".to_string());
-        }
-    };
+    let status =
+        match tokio::time::timeout(std::time::Duration::from_secs(60), login.child.wait()).await {
+            Ok(Ok(status)) => status,
+            Ok(Err(e)) => return Err(format!("Devin login failed: {e}")),
+            Err(_) => {
+                let _ = login.child.kill().await;
+                return Err("Devin login timed out waiting for verification".to_string());
+            }
+        };
 
     if !status.success() {
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        let msg = last_clean_line(&login.lines)
-            .unwrap_or_else(|| "Devin rejected the code".to_string());
+        let msg =
+            last_clean_line(&login.lines).unwrap_or_else(|| "Devin rejected the code".to_string());
         return Err(msg);
     }
 
@@ -881,7 +939,10 @@ mod tests {
 
     #[test]
     fn hook_allows_snippet_mcp_tools_and_blocks_builtins() {
-        let ok = decision(r#"{"tool_name":"mcp__snippet__bash","tool_input":{"command":"ls"}}"#, true);
+        let ok = decision(
+            r#"{"tool_name":"mcp__snippet__bash","tool_input":{"command":"ls"}}"#,
+            true,
+        );
         assert_eq!(ok["decision"], "approve");
         let proxy_ok = decision(
             r#"{"tool_name":"mcp_call_tool","tool_input":{"server_name":"snippet","tool_name":"bash","arguments":{"command":"ls"}}}"#,
@@ -893,15 +954,29 @@ mod tests {
             true,
         );
         assert_eq!(proxy_other["decision"], "block");
-        let list = decision(r#"{"tool_name":"mcp_list_tools","tool_input":{"server_name":"snippet"}}"#, true);
+        let list = decision(
+            r#"{"tool_name":"mcp_list_tools","tool_input":{"server_name":"snippet"}}"#,
+            true,
+        );
         assert_eq!(list["decision"], "approve");
-        let skill_block = decision(r#"{"tool_name":"skill","tool_input":{"skill":"devin-cli"}}"#, true);
+        let skill_block = decision(
+            r#"{"tool_name":"skill","tool_input":{"skill":"devin-cli"}}"#,
+            true,
+        );
         assert_eq!(skill_block["decision"], "block");
         let other_mcp = decision(r#"{"tool_name":"mcp__github__list_issues"}"#, true);
         assert_eq!(other_mcp["decision"], "block");
-        let builtin = decision(r#"{"tool_name":"exec","tool_input":{"command":"rm -rf /"}}"#, true);
+        let builtin = decision(
+            r#"{"tool_name":"exec","tool_input":{"command":"rm -rf /"}}"#,
+            true,
+        );
         assert_eq!(builtin["decision"], "block");
-        assert!(builtin["reason"].as_str().unwrap().contains("mcp__snippet__bash"));
+        assert!(
+            builtin["reason"]
+                .as_str()
+                .unwrap()
+                .contains("mcp__snippet__bash")
+        );
         let outside = decision(r#"{"tool_name":"exec"}"#, false);
         assert_eq!(outside["decision"], "approve");
 
@@ -923,14 +998,20 @@ mod tests {
             parse_credential_token("windsurf_api_key = \"devin-xyz\"\napi_server_url = \"https://server.codeium.com\"\n").as_deref(),
             Some("devin-xyz")
         );
-        assert_eq!(parse_credential_token("devin-raw-key").as_deref(), Some("devin-raw-key"));
+        assert_eq!(
+            parse_credential_token("devin-raw-key").as_deref(),
+            Some("devin-raw-key")
+        );
         assert_eq!(parse_credential_token("   "), None);
     }
 
     #[test]
     fn auth_status_parses_email_and_rejects_server_errors() {
         let good = "Logged in (via Devin).\n\nUser:\n  Email: dev@example.com\n";
-        assert_eq!(parse_auth_status(good), (true, Some("dev@example.com".into())));
+        assert_eq!(
+            parse_auth_status(good),
+            (true, Some("dev@example.com".into()))
+        );
         let bad = "Logged in (via Devin).\n\nUser / team info:\n  Failed to fetch from server: Authentication required: invalid api key\n";
         assert_eq!(parse_auth_status(bad), (false, None));
         assert_eq!(parse_auth_status("Not logged in."), (false, None));
@@ -1003,7 +1084,11 @@ mod tests {
         assert!(forked.starts_with("snippet-"));
         let conn = rusqlite::Connection::open(&db).unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM message_nodes WHERE session_id = ?1", [&forked], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM message_nodes WHERE session_id = ?1",
+                [&forked],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1);
     }
@@ -1016,10 +1101,22 @@ mod tests {
         std::fs::create_dir_all(&real_cli).unwrap();
         let real_db = real_cli.join("sessions.db");
         std::fs::write(&real_db, b"real-user-sessions").unwrap();
-        std::fs::write(real_devin.join("credentials.toml"), "windsurf_api_key = \"devin-main\"\n").unwrap();
+        std::fs::write(
+            real_devin.join("credentials.toml"),
+            "windsurf_api_key = \"devin-main\"\n",
+        )
+        .unwrap();
 
         let snippet_home = dir.path().join("snippet-home");
-        let env = prepare_home_in(&snippet_home, Some(&real_devin), "sess-1", "http://127.0.0.1:9999/mcp", "prompt", None).unwrap();
+        let env = prepare_home_in(
+            &snippet_home,
+            Some(&real_devin),
+            "sess-1",
+            "http://127.0.0.1:9999/mcp",
+            "prompt",
+            None,
+        )
+        .unwrap();
         let cli_link = env.xdg_data_home.join("devin/cli");
         assert_eq!(
             std::fs::read_link(&cli_link).unwrap(),
@@ -1034,7 +1131,10 @@ mod tests {
 
         let priv_db = snippet_home.join("devin/shared-cli/sessions.db");
         std::fs::write(&priv_db, b"snippet-private-sessions").unwrap();
-        assert_eq!(sessions_db_path_in(&snippet_home).as_deref(), Some(priv_db.as_path()));
+        assert_eq!(
+            sessions_db_path_in(&snippet_home).as_deref(),
+            Some(priv_db.as_path())
+        );
         assert_eq!(std::fs::read(&real_db).unwrap(), b"real-user-sessions");
     }
 
@@ -1043,7 +1143,9 @@ mod tests {
         let plain = "Visit https://app.devin.ai/auth/cli/continue?state=s1&code_challenge=c1&code_challenge_method=S256&cli_pkce_marker=1 to sign in, then copy the code and paste it below.";
         assert_eq!(
             extract_login_url(plain).as_deref(),
-            Some("https://app.devin.ai/auth/cli/continue?state=s1&code_challenge=c1&code_challenge_method=S256&cli_pkce_marker=1")
+            Some(
+                "https://app.devin.ai/auth/cli/continue?state=s1&code_challenge=c1&code_challenge_method=S256&cli_pkce_marker=1"
+            )
         );
 
         let osc8 = "\x1b[1mVisit \x1b]8;;https://app.devin.ai/auth/cli/continue?state=s2&cli_pkce_marker=1\x1b\\https://app.devin.ai/auth/cli/continue?state=s2&cli_pkce_marker=1\x1b]8;;\x1b\\\x1b[0m to sign in";
@@ -1057,7 +1159,10 @@ mod tests {
             Some("https://auth.windsurf.com/cli?state=s3")
         );
         assert_eq!(extract_login_url("No link on this line at all"), None);
-        assert_eq!(extract_login_url("Visit https://evil.example.com/app.devin.ai?state=bad"), None);
+        assert_eq!(
+            extract_login_url("Visit https://evil.example.com/app.devin.ai?state=bad"),
+            None
+        );
     }
 
     #[cfg(unix)]
@@ -1085,7 +1190,10 @@ exit 1
         let url = begin_login_with(&fake_bin, &snippet_home, "slotA1", "Work")
             .await
             .unwrap();
-        assert_eq!(url, "https://app.devin.ai/auth/cli/continue?state=teststate");
+        assert_eq!(
+            url,
+            "https://app.devin.ai/auth/cli/continue?state=teststate"
+        );
         assert!(snippet_home.join("devin/login/slotA1").is_dir());
 
         let (tok, label) = complete_login("slotA1", "  good-code  ").await.unwrap();
@@ -1094,7 +1202,10 @@ exit 1
         assert!(!snippet_home.join("devin/login/slotA1").exists());
 
         let missing = complete_login("slotA1", "good-code").await.unwrap_err();
-        assert_eq!(missing, "no sign-in in progress for this account; start again");
+        assert_eq!(
+            missing,
+            "no sign-in in progress for this account; start again"
+        );
 
         begin_login_with(&fake_bin, &snippet_home, "slotB2", "")
             .await

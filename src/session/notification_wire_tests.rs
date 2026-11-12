@@ -14,15 +14,26 @@ fn notification_frame_matches_durable_feed_and_preserves_ui_event() {
     emit_device_event_with_store(ui_event.clone(), Some(&store), &events);
 
     let frame = receiver.try_recv().unwrap();
-    let page = notification_page(store.notification_events_since(0, 501).unwrap(), &settings, 0, 100);
+    let page = notification_page(
+        store.notification_events_since(0, 501).unwrap(),
+        &settings,
+        0,
+        100,
+    );
     let saved = &page["events"][0];
     assert_eq!(frame, json!({"kind":"notification","notification":saved}));
     assert!(uuid::Uuid::parse_str(saved["notification_id"].as_str().unwrap()).is_ok());
     assert!(saved["event_id"].as_u64().unwrap() > 0);
-    assert_eq!(saved["destination"], json!({"type":"session","id":"worker"}));
+    assert_eq!(
+        saved["destination"],
+        json!({"type":"session","id":"worker"})
+    );
     assert_eq!(saved["payload"], ui_event["event"]["payload"]);
     assert_eq!(receiver.try_recv().unwrap(), ui_event);
-    assert!(matches!(receiver.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
     assert_ne!(frame["kind"], "notification_available");
     assert!(frame.get("cursor").is_none());
 }
@@ -45,12 +56,24 @@ fn call_events_reach_the_feed_whatever_the_policy() {
     let saved = &frame["notification"];
     assert_eq!(frame["kind"], "notification");
     assert_eq!(saved["kind"], "call_prompt");
-    assert_eq!(saved["destination"], json!({"type":"session","id":crate::mission_control::SESSION_ID}));
+    assert_eq!(
+        saved["destination"],
+        json!({"type":"session","id":crate::mission_control::SESSION_ID})
+    );
     assert_eq!(saved["payload"], prompt["payload"]);
     assert!(saved.get("ttl_secs").is_none());
     let lifetime = saved["expires_at"].as_i64().unwrap() - saved["created_at"].as_i64().unwrap();
     assert!((119..=121).contains(&lifetime), "{lifetime}");
-    let page = notification_page(store.notification_events_since(0, 501).unwrap(), &settings, 0, 100);
-    assert_eq!(page["events"].as_array().unwrap().len(), 1, "source_key dedupes a repeated prompt");
+    let page = notification_page(
+        store.notification_events_since(0, 501).unwrap(),
+        &settings,
+        0,
+        100,
+    );
+    assert_eq!(
+        page["events"].as_array().unwrap().len(),
+        1,
+        "source_key dedupes a repeated prompt"
+    );
     assert_eq!(&page["events"][0], saved);
 }

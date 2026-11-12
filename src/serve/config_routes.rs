@@ -26,24 +26,23 @@ pub(crate) struct ProfileReq {
     pub(crate) set_active: bool,
 }
 
-
 // PUT /config/profile — add/update an API-key provider profile; persists to disk.
 // An omitted/blank api_key keeps any existing key (so editing doesn't wipe it).
-pub(crate) async fn put_profile(
-    State(d): State<Shared>,
-    Json(req): Json<ProfileReq>,
-) -> Response {
+pub(crate) async fn put_profile(State(d): State<Shared>, Json(req): Json<ProfileReq>) -> Response {
     if req.provider.trim().is_empty() || req.model.trim().is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "provider and model are required");
     }
     // Reject providers `SnippetConfig::load` won't accept — persisting one works
     // in-memory but bricks the next daemon/TUI startup on the config re-parse.
     if !crate::config::provider_supported(&req.provider) {
-        return api_error(StatusCode::BAD_REQUEST, format!(
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            format!(
                 "unsupported provider `{}`; expected one of {}",
                 req.provider,
                 crate::config::SUPPORTED_PROVIDERS.join(", ")
-            ));
+            ),
+        );
     }
     d.reload_config().await; // modify the current on-disk config, not a stale copy
     let result = {
@@ -113,10 +112,7 @@ pub(crate) struct ActiveReq {
 }
 
 // POST /config/active — set the global active profile (default for new sessions).
-pub(crate) async fn set_active(
-    State(d): State<Shared>,
-    Json(req): Json<ActiveReq>,
-) -> Response {
+pub(crate) async fn set_active(State(d): State<Shared>, Json(req): Json<ActiveReq>) -> Response {
     d.reload_config().await; // don't clobber TUI-side profile edits
     let result = {
         let mut c = d.config.lock().unwrap();
@@ -242,9 +238,7 @@ pub(crate) async fn vault_list() -> Response {
 }
 
 // PUT /vault — store a secret (from the app's vault screen; TLS/tunnel carries it).
-pub(crate) async fn vault_set(
-    Json(req): Json<VaultSetReq>,
-) -> Response {
+pub(crate) async fn vault_set(Json(req): Json<VaultSetReq>) -> Response {
     let mut vault = crate::vault::Vault::load();
     match vault.set(&req.name, &req.value) {
         Ok(()) => Json(serde_json::json!({ "stored": req.name })).into_response(),
@@ -311,13 +305,15 @@ pub(crate) async fn provider_models(
         cfg.provider = p;
     }
     if let Some(b) = req.base_url
-        && !b.trim().is_empty() {
-            cfg.base_url = b;
-        }
+        && !b.trim().is_empty()
+    {
+        cfg.base_url = b;
+    }
     if let Some(k) = req.api_key
-        && !k.trim().is_empty() {
-            cfg.api_key = k;
-        }
+        && !k.trim().is_empty()
+    {
+        cfg.api_key = k;
+    }
     match crate::catalog::fetch_models(&cfg).await {
         Ok(models) => Json(serde_json::json!({ "models": models })).into_response(),
         Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
@@ -330,10 +326,7 @@ pub(crate) struct RoutingReq {
     profiles: Vec<String>,
 }
 
-pub(crate) async fn set_routing(
-    State(d): State<Shared>,
-    Json(req): Json<RoutingReq>,
-) -> Response {
+pub(crate) async fn set_routing(State(d): State<Shared>, Json(req): Json<RoutingReq>) -> Response {
     let Some(route) = crate::routing::Route::parse(&req.route) else {
         return api_error(StatusCode::BAD_REQUEST, "unknown route");
     };
@@ -341,7 +334,12 @@ pub(crate) async fn set_routing(
     let result = {
         let mut c = d.config.lock().unwrap();
         let mut profiles: Vec<String> = Vec::new();
-        for name in req.profiles.into_iter().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+        for name in req
+            .profiles
+            .into_iter()
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+        {
             if !c.setups.as_ref().is_some_and(|m| m.contains_key(&name)) {
                 return api_error(StatusCode::NOT_FOUND, format!("no such profile `{name}`"));
             }
@@ -419,7 +417,10 @@ pub(crate) struct DeleteProfileQuery {
 }
 
 // DELETE /config/profile?name= — remove a profile (active falls back to first left).
-pub(crate) async fn delete_profile(State(d): State<Shared>, Query(q): Query<DeleteProfileQuery>) -> Response {
+pub(crate) async fn delete_profile(
+    State(d): State<Shared>,
+    Query(q): Query<DeleteProfileQuery>,
+) -> Response {
     d.reload_config().await; // start from current disk state so we don't resurrect TUI-deleted profiles
     let result = {
         let mut c = d.config.lock().unwrap();
@@ -449,7 +450,10 @@ pub(crate) async fn set_session_model(
     Json(req): Json<SessionModelReq>,
 ) -> Response {
     if super::is_agent_desk(&req.session) {
-        return api_error(StatusCode::BAD_REQUEST, "A desk runs on its agent's profile; change the agent's profile instead.");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "A desk runs on its agent's profile; change the agent's profile instead.",
+        );
     }
     // One implementation, shared with dispatch: both need the same
     // resolve → abort → restart-on-new-model sequence, and a second copy would
@@ -467,8 +471,6 @@ pub(crate) async fn set_session_model(
         Err(error) => api_error(StatusCode::NOT_FOUND, error),
     }
 }
-
-
 
 pub(super) fn notify_models(session: Option<&str>) {
     crate::session::emit_device_event(match session {
@@ -502,16 +504,17 @@ pub(crate) struct VoiceReq {
     max_seconds: Option<u32>,
 }
 
-pub(crate) async fn set_voice(
-    State(d): State<Shared>,
-    Json(req): Json<VoiceReq>,
-) -> Response {
+pub(crate) async fn set_voice(State(d): State<Shared>, Json(req): Json<VoiceReq>) -> Response {
     d.reload_config().await;
     let result = {
         let mut c = d.config.lock().unwrap();
         let mut voice = c.voice.clone();
-        if let Some(v) = req.enabled { voice.enabled = v; }
-        if let Some(v) = req.max_seconds { voice.max_seconds = v; }
+        if let Some(v) = req.enabled {
+            voice.enabled = v;
+        }
+        if let Some(v) = req.max_seconds {
+            voice.max_seconds = v;
+        }
         match voice.normalized() {
             Err(e) => Err((StatusCode::BAD_REQUEST, e)),
             Ok(voice) => {
@@ -535,7 +538,12 @@ pub(crate) struct WebSearchView {
 
 impl WebSearchView {
     pub(crate) fn of(c: &crate::config::SnippetConfig) -> Self {
-        Self { key_set: c.exa_api_key.as_deref().is_some_and(|k| !k.trim().is_empty()) }
+        Self {
+            key_set: c
+                .exa_api_key
+                .as_deref()
+                .is_some_and(|k| !k.trim().is_empty()),
+        }
     }
 }
 

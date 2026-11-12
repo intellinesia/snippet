@@ -4,8 +4,8 @@
 use chrono::{DateTime, Utc};
 
 use crate::coordination::{
-    Goal, GoalStatus, Task,
-    TaskStatus, progress_stamp, stall_marker_for_current_spell, stalled_minutes,
+    Goal, GoalStatus, Task, TaskStatus, progress_stamp, stall_marker_for_current_spell,
+    stalled_minutes,
 };
 use crate::store::Store;
 
@@ -20,14 +20,24 @@ pub(super) fn probe_session(session_id: &str) -> Option<SessionProbe> {
     if session_id.trim().is_empty() {
         return None;
     }
-    let state = crate::session::state_path_for_id(session_id).and_then(|p| crate::session::read_session_meta(&p))?;
+    let state = crate::session::state_path_for_id(session_id)
+        .and_then(|p| crate::session::read_session_meta(&p))?;
     let question = (state.status == crate::harness::HarnessStatus::WaitingForInput)
-        .then(|| state.pending_question.as_ref().map(super::autonomy::question_text))
+        .then(|| {
+            state
+                .pending_question
+                .as_ref()
+                .map(super::autonomy::question_text)
+        })
         .flatten();
     let last_said = (state.status == crate::harness::HarnessStatus::Idle)
         .then(|| last_assistant_text(session_id))
         .flatten();
-    Some(SessionProbe { status: crate::session::status_str(state.status), question, last_said })
+    Some(SessionProbe {
+        status: crate::session::status_str(state.status),
+        question,
+        last_said,
+    })
 }
 
 fn last_assistant_text(session_id: &str) -> Option<String> {
@@ -47,9 +57,16 @@ fn last_assistant_text(session_id: &str) -> Option<String> {
 
 /// Raise one `stalled` notice per quiet spell for every in-progress task with no
 /// progress past its threshold. Returns the ids flagged.
-pub(super) fn sweep(store: &Store, now: DateTime<Utc>, probe: impl Fn(&str) -> Option<SessionProbe>) -> Vec<String> {
+pub(super) fn sweep(
+    store: &Store,
+    now: DateTime<Utc>,
+    probe: impl Fn(&str) -> Option<SessionProbe>,
+) -> Vec<String> {
     let mut flagged = Vec::new();
-    for task in store.list_tasks(None, Some(&TaskStatus::InProgress)).unwrap_or_default() {
+    for task in store
+        .list_tasks(None, Some(&TaskStatus::InProgress))
+        .unwrap_or_default()
+    {
         if task.last_progress_at.is_none() {
             let _ = store.touch_task_progress(&task.id, &task.updated_at);
             continue;
@@ -66,20 +83,37 @@ pub(super) fn sweep(store: &Store, now: DateTime<Utc>, probe: impl Fn(&str) -> O
         let session = probe(&watched);
         let question = session.as_ref().and_then(|s| s.question.clone());
         let idle = session.as_ref().is_some_and(|s| s.status == "idle");
-        let Some(age) = stalled_minutes(&task, now, question.is_some() || idle) else { continue };
+        let Some(age) = stalled_minutes(&task, now, question.is_some() || idle) else {
+            continue;
+        };
         if stall_marker_for_current_spell(&task).is_some() {
             continue;
         }
         let stamp = progress_stamp(&task).to_string();
         let last_said = session.as_ref().and_then(|s| s.last_said.clone());
-        let state = session.map(|s| s.status).unwrap_or_else(|| "missing".into());
+        let state = session
+            .map(|s| s.status)
+            .unwrap_or_else(|| "missing".into());
         let detail = match (question, last_said) {
-            (Some(q), _) => format!("the worker is waiting on an answer:\n{q}\nanswer_worker (session_id {}) if you can settle it, otherwise ask the user.", task.session_id),
-            (None, Some(said)) => format!("its session went idle without reporting; its last message was:\n{said}\nIf that asks for something, answer_worker (session_id {}) if you can settle it, otherwise ask the user; if it just stopped, retry_mission_task.", task.session_id),
-            (None, None) => format!("its session is {state}; check it with inspect_session, then retry_mission_task, answer it or cancel."),
+            (Some(q), _) => format!(
+                "the worker is waiting on an answer:\n{q}\nanswer_worker (session_id {}) if you can settle it, otherwise ask the user.",
+                task.session_id
+            ),
+            (None, Some(said)) => format!(
+                "its session went idle without reporting; its last message was:\n{said}\nIf that asks for something, answer_worker (session_id {}) if you can settle it, otherwise ask the user; if it just stopped, retry_mission_task.",
+                task.session_id
+            ),
+            (None, None) => format!(
+                "its session is {state}; check it with inspect_session, then retry_mission_task, answer it or cancel."
+            ),
         };
         let message = format!("stalled {age} min: no progress since {stamp}; {detail}");
-        if store.update_task_in(&task.id, &now.to_rfc3339(), |t| t.notify_once("stalled", &message)).is_ok() {
+        if store
+            .update_task_in(&task.id, &now.to_rfc3339(), |t| {
+                t.notify_once("stalled", &message)
+            })
+            .is_ok()
+        {
             flagged.push(task.id);
         }
     }
@@ -89,14 +123,22 @@ pub(super) fn sweep(store: &Store, now: DateTime<Utc>, probe: impl Fn(&str) -> O
 const GOAL_STALL_HOURS: i64 = 6;
 
 fn goal_moving(goal: &Goal, tasks: &[Task], now: DateTime<Utc>) -> bool {
-    if tasks.iter().any(|t| matches!(t.status, TaskStatus::Todo | TaskStatus::InProgress | TaskStatus::InReview)) {
+    if tasks.iter().any(|t| {
+        matches!(
+            t.status,
+            TaskStatus::Todo | TaskStatus::InProgress | TaskStatus::InReview
+        )
+    }) {
         return true;
     }
     let drive = goal.drive();
     if !drive.waiting_on.is_empty() && !drive.nudge_due(now.timestamp()) {
         return true;
     }
-    let hours = goal.plan["stall_hours"].as_f64().filter(|h| *h > 0.0).unwrap_or(GOAL_STALL_HOURS as f64);
+    let hours = goal.plan["stall_hours"]
+        .as_f64()
+        .filter(|h| *h > 0.0)
+        .unwrap_or(GOAL_STALL_HOURS as f64);
     let latest = tasks
         .iter()
         .map(|t| t.updated_at.as_str())
@@ -137,8 +179,13 @@ pub(super) fn goal_sweep(store: &Store, now: DateTime<Utc>) -> Vec<String> {
         let hours = quiet_hours_of(&goal, &tasks, now);
         let stamp = now.to_rfc3339();
         goal.plan["stall"] = serde_json::json!({ "stalled_at": stamp, "hours": hours });
-        let mut log = goal.plan["stall_log"].as_array().cloned().unwrap_or_default();
-        log.push(serde_json::json!(format!("{stamp} stalled: nothing moving for {hours} h")));
+        let mut log = goal.plan["stall_log"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        log.push(serde_json::json!(format!(
+            "{stamp} stalled: nothing moving for {hours} h"
+        )));
         let keep = log.len().saturating_sub(20);
         goal.plan["stall_log"] = serde_json::Value::Array(log.split_off(keep));
         if store.save_goal(&goal).is_ok() {
@@ -159,8 +206,15 @@ pub(super) fn stalled_goal_lines(store: &Store, now: DateTime<Utc>) -> Vec<Strin
         .map(|g| {
             let hours = g.plan["stall"]["hours"].as_i64().unwrap_or(0);
             let next = g.drive().next_step;
-            let next = if next.is_empty() { "none".to_string() } else { next };
-            format!("- {} · {} · nothing moving for {hours} h · last next_step: {next}", g.title, g.id)
+            let next = if next.is_empty() {
+                "none".to_string()
+            } else {
+                next
+            };
+            format!(
+                "- {} · {} · nothing moving for {hours} h · last next_step: {next}",
+                g.title, g.id
+            )
         })
         .collect()
 }
@@ -169,13 +223,20 @@ pub(super) fn stalled_goals_section(lines: &[String]) -> String {
     if lines.is_empty() {
         return String::new();
     }
-    format!("\n\n## Goals stalled\nNothing is moving these. Replan, file the next task, nudge the user or park them; the daemon has filed nothing.\n{}", lines.join("\n"))
+    format!(
+        "\n\n## Goals stalled\nNothing is moving these. Replan, file the next task, nudge the user or park them; the daemon has filed nothing.\n{}",
+        lines.join("\n")
+    )
 }
 
 /// Runs the goal sweep; returns a wake envelope when something was newly
 /// flagged and the wake is allowed. A suppressed wake keeps the marker, so the
 /// next scheduled wake lists the goal.
-pub(super) fn goal_stall_wake(store: &Store, now: DateTime<Utc>, suppressed: bool) -> Option<String> {
+pub(super) fn goal_stall_wake(
+    store: &Store,
+    now: DateTime<Utc>,
+    suppressed: bool,
+) -> Option<String> {
     let flagged = goal_sweep(store, now);
     if flagged.is_empty() || suppressed {
         return None;
@@ -194,11 +255,18 @@ const OWED_AFTER_MINUTES: i64 = 20;
 /// message is nagged at most twice, 20 minutes apart.
 pub(super) fn owed_sweep(store: &Store, now: DateTime<Utc>) -> Vec<(String, String)> {
     let window = chrono::Duration::minutes(OWED_AFTER_MINUTES);
-    let owed = store.owed_replies(&(now - window).to_rfc3339(), &(now - window).to_rfc3339()).unwrap_or_default();
+    let owed = store
+        .owed_replies(&(now - window).to_rfc3339(), &(now - window).to_rfc3339())
+        .unwrap_or_default();
     let mut notices = Vec::new();
     for row in owed {
-        let waiting = DateTime::parse_from_rfc3339(&row.since).map(|t| (now - t.with_timezone(&Utc)).num_minutes()).unwrap_or(OWED_AFTER_MINUTES);
-        if store.mark_nagged(&row.event_id, &row.recipient, &now.to_rfc3339()).is_err() {
+        let waiting = DateTime::parse_from_rfc3339(&row.since)
+            .map(|t| (now - t.with_timezone(&Utc)).num_minutes())
+            .unwrap_or(OWED_AFTER_MINUTES);
+        if store
+            .mark_nagged(&row.event_id, &row.recipient, &now.to_rfc3339())
+            .is_err()
+        {
             continue;
         }
         let notice = format!(
@@ -219,7 +287,17 @@ mod tests {
         let mut extra = serde_json::Map::new();
         extra.insert("kind".into(), kind.into());
         store
-            .send_direct_message_typed(("agent", from), ("agent", to), "b", key, at, None, None, None, extra)
+            .send_direct_message_typed(
+                ("agent", from),
+                ("agent", to),
+                "b",
+                key,
+                at,
+                None,
+                None,
+                None,
+                extra,
+            )
             .unwrap()
             .event_id
     }
@@ -247,8 +325,22 @@ mod tests {
     #[test]
     fn a_reply_on_the_thread_settles_what_is_owed() {
         let store = Store::open_in_memory().unwrap();
-        let q = ask(&store, "w", "mc", "question", "k1", "2026-01-01T00:00:00+00:00");
-        let _ = ask(&store, "mc", "w", "answer", "k2", "2026-01-01T00:01:00+00:00");
+        let q = ask(
+            &store,
+            "w",
+            "mc",
+            "question",
+            "k1",
+            "2026-01-01T00:00:00+00:00",
+        );
+        let _ = ask(
+            &store,
+            "mc",
+            "w",
+            "answer",
+            "k2",
+            "2026-01-01T00:01:00+00:00",
+        );
         assert_eq!(awaiting(&store, &q), None);
         assert!(owed_sweep(&store, Utc::now()).is_empty());
     }
@@ -257,21 +349,57 @@ mod tests {
     fn the_sweep_nags_once_per_spell_and_at_most_twice() {
         let store = Store::open_in_memory().unwrap();
         let t0 = Utc::now() - chrono::Duration::minutes(30);
-        ask(&store, "w", crate::mission_control::SESSION_ID, "question", "k1", &t0.to_rfc3339());
-        let fresh = ask(&store, "w", crate::mission_control::SESSION_ID, "blocker", "k2", &Utc::now().to_rfc3339());
+        ask(
+            &store,
+            "w",
+            crate::mission_control::SESSION_ID,
+            "question",
+            "k1",
+            &t0.to_rfc3339(),
+        );
+        let fresh = ask(
+            &store,
+            "w",
+            crate::mission_control::SESSION_ID,
+            "blocker",
+            "k2",
+            &Utc::now().to_rfc3339(),
+        );
         let first = owed_sweep(&store, Utc::now());
         assert_eq!(first.len(), 1, "only the stale one");
-        assert!(first[0].1.contains("[owed_reply]") && first[0].1.contains("from: w") && first[0].1.contains("waiting_minutes: 30"));
+        assert!(
+            first[0].1.contains("[owed_reply]")
+                && first[0].1.contains("from: w")
+                && first[0].1.contains("waiting_minutes: 30")
+        );
         assert_eq!(first[0].0, crate::mission_control::SESSION_ID);
-        assert!(owed_sweep(&store, Utc::now()).is_empty(), "not again within the spell");
-        assert_eq!(owed_sweep(&store, Utc::now() + chrono::Duration::minutes(25)).len(), 2, "second nag, plus the now-stale one");
-        assert_eq!(owed_sweep(&store, Utc::now() + chrono::Duration::minutes(50)).len(), 1, "the first is capped at two");
+        assert!(
+            owed_sweep(&store, Utc::now()).is_empty(),
+            "not again within the spell"
+        );
+        assert_eq!(
+            owed_sweep(&store, Utc::now() + chrono::Duration::minutes(25)).len(),
+            2,
+            "second nag, plus the now-stale one"
+        );
+        assert_eq!(
+            owed_sweep(&store, Utc::now() + chrono::Duration::minutes(50)).len(),
+            1,
+            "the first is capped at two"
+        );
         let _ = fresh;
     }
 
     fn running_task(store: &Store, id: &str, progress_minutes_ago: i64, expected: Option<u32>) {
         let t0 = (Utc::now() - chrono::Duration::hours(3)).to_rfc3339();
-        let mut task = Task::filed_by_human(id.into(), id.into(), "d".into(), format!("s-{id}"), 0, t0.clone());
+        let mut task = Task::filed_by_human(
+            id.into(),
+            id.into(),
+            "d".into(),
+            format!("s-{id}"),
+            0,
+            t0.clone(),
+        );
         task.expected_minutes = expected;
         store.create_task(&task).unwrap();
         store.claim_task_for_dispatch(id, &t0).unwrap();
@@ -280,11 +408,19 @@ mod tests {
     }
 
     fn idle(_: &str) -> Option<SessionProbe> {
-        Some(SessionProbe { status: "idle".into(), question: None, last_said: None })
+        Some(SessionProbe {
+            status: "idle".into(),
+            question: None,
+            last_said: None,
+        })
     }
 
     fn running(_: &str) -> Option<SessionProbe> {
-        Some(SessionProbe { status: "running".into(), question: None, last_said: None })
+        Some(SessionProbe {
+            status: "running".into(),
+            question: None,
+            last_said: None,
+        })
     }
 
     #[test]
@@ -292,10 +428,20 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         running_task(&store, "soon", 5, Some(90));
         running_task(&store, "parked", 12, Some(90));
-        let said = |_: &str| Some(SessionProbe { status: "idle".into(), question: None, last_said: Some("please log in".into()) });
+        let said = |_: &str| {
+            Some(SessionProbe {
+                status: "idle".into(),
+                question: None,
+                last_said: Some("please log in".into()),
+            })
+        };
         assert_eq!(sweep(&store, Utc::now(), said), vec!["parked".to_string()]);
         let task = store.get_task("parked").unwrap().unwrap();
-        assert!(task.notifications.iter().any(|n| n.kind == "stalled" && n.message.contains("please log in")));
+        assert!(
+            task.notifications
+                .iter()
+                .any(|n| n.kind == "stalled" && n.message.contains("please log in"))
+        );
     }
 
     #[test]
@@ -304,26 +450,60 @@ mod tests {
         running_task(&store, "fresh", 5, None);
         running_task(&store, "quiet", 25, None);
         running_task(&store, "long", 25, Some(30));
-        assert_eq!(sweep(&store, Utc::now(), running), vec!["quiet".to_string()]);
-        assert!(sweep(&store, Utc::now(), running).is_empty(), "once per spell");
+        assert_eq!(
+            sweep(&store, Utc::now(), running),
+            vec!["quiet".to_string()]
+        );
+        assert!(
+            sweep(&store, Utc::now(), running).is_empty(),
+            "once per spell"
+        );
         let task = store.get_task("quiet").unwrap().unwrap();
-        assert!(task.notifications.iter().any(|n| n.kind == "stalled" && n.message.contains("no progress since")));
-        assert_eq!(store.board_sub_status(&task).status_reason.as_deref(), Some("stalled"));
-        assert!(store.board_sub_status(&task).stalled_minutes.is_some_and(|m| m >= 25));
+        assert!(
+            task.notifications
+                .iter()
+                .any(|n| n.kind == "stalled" && n.message.contains("no progress since"))
+        );
+        assert_eq!(
+            store.board_sub_status(&task).status_reason.as_deref(),
+            Some("stalled")
+        );
+        assert!(
+            store
+                .board_sub_status(&task)
+                .stalled_minutes
+                .is_some_and(|m| m >= 25)
+        );
 
-        store.touch_task_progress("quiet", &Utc::now().to_rfc3339()).unwrap();
+        store
+            .touch_task_progress("quiet", &Utc::now().to_rfc3339())
+            .unwrap();
         let task = store.get_task("quiet").unwrap().unwrap();
-        assert_eq!(store.board_sub_status(&task).status_reason.as_deref(), Some("working"), "progress retires the notice");
+        assert_eq!(
+            store.board_sub_status(&task).status_reason.as_deref(),
+            Some("working"),
+            "progress retires the notice"
+        );
     }
 
     #[test]
     fn a_waiting_worker_escalates_early_with_its_question() {
         let store = Store::open_in_memory().unwrap();
         running_task(&store, "ask", 12, None);
-        let waiting = |_: &str| Some(SessionProbe { status: "waiting_for_input".into(), question: Some("- which db?".into()), last_said: None });
+        let waiting = |_: &str| {
+            Some(SessionProbe {
+                status: "waiting_for_input".into(),
+                question: Some("- which db?".into()),
+                last_said: None,
+            })
+        };
         assert_eq!(sweep(&store, Utc::now(), waiting), vec!["ask".to_string()]);
         let task = store.get_task("ask").unwrap().unwrap();
-        assert!(task.notifications.iter().any(|n| n.message.contains("which db?")));
+        assert!(
+            task.notifications
+                .iter()
+                .any(|n| n.message.contains("which db?"))
+        );
     }
 
     #[test]
@@ -331,9 +511,27 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         running_task(&store, "first", 1, None);
         running_task(&store, "second", 1, None);
-        store.complete_task("first", TaskStatus::Done, crate::coordination::TaskResult { summary: "ok".into(), ..Default::default() }, &Utc::now().to_rfc3339()).unwrap();
+        store
+            .complete_task(
+                "first",
+                TaskStatus::Done,
+                crate::coordination::TaskResult {
+                    summary: "ok".into(),
+                    ..Default::default()
+                },
+                &Utc::now().to_rfc3339(),
+            )
+            .unwrap();
         assert!(sweep(&store, Utc::now(), idle).is_empty());
-        assert!(store.get_task("second").unwrap().unwrap().notifications.iter().all(|n| n.kind != "stalled"));
+        assert!(
+            store
+                .get_task("second")
+                .unwrap()
+                .unwrap()
+                .notifications
+                .iter()
+                .all(|n| n.kind != "stalled")
+        );
     }
 
     #[test]
@@ -341,10 +539,22 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         running_task(&store, "old", 60, None);
         store
-            .with_connection(|c| Ok(c.execute("UPDATE tasks SET last_progress_at = NULL WHERE id = 'old'", [])?))
+            .with_connection(|c| {
+                Ok(c.execute(
+                    "UPDATE tasks SET last_progress_at = NULL WHERE id = 'old'",
+                    [],
+                )?)
+            })
             .unwrap();
         assert!(sweep(&store, Utc::now(), idle).is_empty());
-        assert!(store.get_task("old").unwrap().unwrap().last_progress_at.is_some());
+        assert!(
+            store
+                .get_task("old")
+                .unwrap()
+                .unwrap()
+                .last_progress_at
+                .is_some()
+        );
     }
 
     fn goal_at(store: &Store, id: &str, hours_ago: i64, stall_hours: Option<f64>) -> Goal {
@@ -362,7 +572,11 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         goal_at(&store, "g", 9, None);
         running_task(&store, "t", 1, None);
-        store.update_task_in("t", &Utc::now().to_rfc3339(), |x| x.goal_id = Some("g".into())).unwrap();
+        store
+            .update_task_in("t", &Utc::now().to_rfc3339(), |x| {
+                x.goal_id = Some("g".into())
+            })
+            .unwrap();
         assert!(goal_sweep(&store, Utc::now()).is_empty());
     }
 
@@ -383,8 +597,14 @@ mod tests {
         g.set_drive(&d);
         store.save_goal(&g).unwrap();
         assert!(goal_sweep(&store, Utc::now()).is_empty());
-        assert!(stalled_goal_lines(&store, Utc::now()).is_empty(), "marker cleared");
-        assert_eq!(goal_sweep(&store, Utc::now() + chrono::Duration::hours(7)), vec!["g".to_string()]);
+        assert!(
+            stalled_goal_lines(&store, Utc::now()).is_empty(),
+            "marker cleared"
+        );
+        assert_eq!(
+            goal_sweep(&store, Utc::now() + chrono::Duration::hours(7)),
+            vec!["g".to_string()]
+        );
     }
 
     #[test]
@@ -401,7 +621,10 @@ mod tests {
         goal_at(&store, "g", 8, None);
         assert!(goal_stall_wake(&store, Utc::now(), true).is_none());
         assert_eq!(stalled_goal_lines(&store, Utc::now()).len(), 1);
-        assert!(goal_stall_wake(&store, Utc::now(), false).is_none(), "already flagged");
+        assert!(
+            goal_stall_wake(&store, Utc::now(), false).is_none(),
+            "already flagged"
+        );
         let store = Store::open_in_memory().unwrap();
         goal_at(&store, "g", 8, None);
         let text = goal_stall_wake(&store, Utc::now(), false).unwrap();

@@ -27,7 +27,10 @@ fn cache() -> &'static Mutex<Option<Adaptive>> {
 fn with<R>(f: impl FnOnce(&mut Adaptive) -> R) -> R {
     let mut guard = cache().lock().unwrap();
     let map = guard.get_or_insert_with(|| {
-        std::fs::read(index()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        std::fs::read(index())
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
     });
     f(map)
 }
@@ -37,9 +40,10 @@ fn save(map: &Adaptive) {
     let _ = std::fs::create_dir_all(dir());
     let tmp = path.with_extension("json.tmp");
     if let Ok(bytes) = serde_json::to_vec(map)
-        && std::fs::write(&tmp, bytes).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
-        }
+        && std::fs::write(&tmp, bytes).is_ok()
+    {
+        let _ = std::fs::rename(&tmp, &path);
+    }
 }
 
 fn platform_prefix(device: &str) -> Option<&str> {
@@ -81,7 +85,11 @@ pub fn adapt(device: &str, score: &VoiceScore, audio: Option<&Path>) -> bool {
         return false;
     };
     let now = chrono::Utc::now().timestamp();
-    let recent = with(|m| m.get(device).and_then(|v| v.last()).is_some_and(|s| now - s.created_at < MIN_GAP_SECS));
+    let recent = with(|m| {
+        m.get(device)
+            .and_then(|v| v.last())
+            .is_some_and(|s| now - s.created_at < MIN_GAP_SECS)
+    });
     if recent {
         return false;
     }
@@ -92,7 +100,14 @@ pub fn adapt(device: &str, score: &VoiceScore, audio: Option<&Path>) -> bool {
         std::fs::copy(src, &dst).ok()?;
         Some(dst.to_string_lossy().into_owned())
     });
-    let sample = VoiceprintSample { id, label: "adaptive".into(), created_at: now, model: neural::MODEL.into(), audio_path, vector: emb.to_vec() };
+    let sample = VoiceprintSample {
+        id,
+        label: "adaptive".into(),
+        created_at: now,
+        model: neural::MODEL.into(),
+        audio_path,
+        vector: emb.to_vec(),
+    };
     with(|m| {
         let v = m.entry(device.to_string()).or_default();
         v.push(sample);

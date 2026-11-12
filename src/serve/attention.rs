@@ -3,10 +3,11 @@
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use super::autonomy::{
-    deliver_to_mission_control, interrupt_mission_control, mission_control_busy, mission_control_inputs,
-};
 use super::Shared;
+use super::autonomy::{
+    deliver_to_mission_control, interrupt_mission_control, mission_control_busy,
+    mission_control_inputs,
+};
 
 const RESUME_CAP: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(500);
@@ -56,7 +57,12 @@ struct Inner {
 
 impl Inner {
     fn new(now: Instant) -> Self {
-        Inner { interrupted_gen: None, resume_armed: None, classifying: 0, last_transition: now }
+        Inner {
+            interrupted_gen: None,
+            resume_armed: None,
+            classifying: 0,
+            last_transition: now,
+        }
     }
 
     fn already_interrupted(&self, generation: u64) -> bool {
@@ -91,7 +97,9 @@ impl Inner {
     }
 
     fn resume_ready(&self, generation: u64, now: Instant, quiet: bool) -> Ready {
-        let Some((armed, at)) = self.resume_armed else { return Ready::Abandon };
+        let Some((armed, at)) = self.resume_armed else {
+            return Ready::Abandon;
+        };
         if armed != generation || self.interrupted_gen != Some(generation) {
             return Ready::Abandon;
         }
@@ -105,7 +113,9 @@ impl Inner {
     }
 
     fn claim(&mut self, generation: u64, now: Instant) -> bool {
-        if self.resume_armed.is_some_and(|(g, _)| g == generation) && self.interrupted_gen == Some(generation) {
+        if self.resume_armed.is_some_and(|(g, _)| g == generation)
+            && self.interrupted_gen == Some(generation)
+        {
             self.resume_armed = None;
             self.last_transition = now;
             true
@@ -141,21 +151,39 @@ pub(super) async fn interrupt(d: &Shared, device: &str, trigger: Trigger) -> Int
 }
 
 /// `sent` is `mission_control_inputs()` from when the judged turn began, so a turn delivered meanwhile blocks the cut.
-pub(super) async fn interrupt_since(d: &Shared, device: &str, trigger: Trigger, sent: u64) -> Interrupted {
+pub(super) async fn interrupt_since(
+    d: &Shared,
+    device: &str,
+    trigger: Trigger,
+    sent: u64,
+) -> Interrupted {
     let generation = crate::ambient::run_generation();
     let delivery = trigger == Trigger::Delivery;
-    let mut out = Interrupted { generation, ..Interrupted::default() };
+    let mut out = Interrupted {
+        generation,
+        ..Interrupted::default()
+    };
     if !delivery && STATE.lock().unwrap().already_interrupted(generation) {
         out.already = true;
         return out;
     }
     // Delivery has already cut speech itself, and cuts a busy Mission Control without needing a conversation.
-    out.spoke = if delivery { false } else { crate::speech::interrupt(device) };
+    out.spoke = if delivery {
+        false
+    } else {
+        crate::speech::interrupt(device)
+    };
     let busy = mission_control_busy() && (delivery || crate::ambient::conversation().is_some());
-    if (out.spoke || busy) && (delivery || mission_control_inputs() == sent) && !crate::ambient::waiting_for_user() {
+    if (out.spoke || busy)
+        && (delivery || mission_control_inputs() == sent)
+        && !crate::ambient::waiting_for_user()
+    {
         out.mission_control = interrupt_mission_control(d).await;
         if !delivery {
-            STATE.lock().unwrap().mark_interrupted(generation, Instant::now());
+            STATE
+                .lock()
+                .unwrap()
+                .mark_interrupted(generation, Instant::now());
             arm_resume(d, generation, false);
         }
     }
@@ -180,14 +208,18 @@ pub(super) fn arm_resume(d: &Shared, generation: u64, needs_interruption: bool) 
                 return;
             }
             let quiet = super::autonomy::heard_quiet();
-            let ready = STATE.lock().unwrap().resume_ready(generation, Instant::now(), quiet);
+            let ready = STATE
+                .lock()
+                .unwrap()
+                .resume_ready(generation, Instant::now(), quiet);
             match ready {
                 Ready::Wait => {}
                 Ready::Abandon => return,
                 Ready::Fire => break,
             }
         }
-        if mission_control_busy() || (needs_interruption && !crate::speech::interruption_pending()) {
+        if mission_control_busy() || (needs_interruption && !crate::speech::interruption_pending())
+        {
             return;
         }
         if super::autonomy::last_resume_matches_inputs() {
@@ -237,7 +269,14 @@ pub(crate) fn state() -> &'static str {
     )
 }
 
-fn state_of(enabled: bool, quiet: bool, held: bool, speaking: bool, waiting: bool, engaged: bool) -> &'static str {
+fn state_of(
+    enabled: bool,
+    quiet: bool,
+    held: bool,
+    speaking: bool,
+    waiting: bool,
+    engaged: bool,
+) -> &'static str {
     if !enabled {
         "off"
     } else if quiet {
@@ -340,7 +379,11 @@ mod tests {
             },
             Case {
                 name: "(interrupt gen 1, classify_begin then drop, 3 s quiet) fires after guard drops",
-                steps: &[Step::Interrupt(1, 0), Step::ClassifyBegin, Step::ClassifyEnd],
+                steps: &[
+                    Step::Interrupt(1, 0),
+                    Step::ClassifyBegin,
+                    Step::ClassifyEnd,
+                ],
                 check_gen: 1,
                 check_ms: 3000,
                 quiet: true,
@@ -385,8 +428,18 @@ mod tests {
                 }
             }
             assert_eq!(second_already, case.want_second_already, "{}", case.name);
-            assert_eq!(inner.resume_armed.map(|(g, _)| g), case.want_armed, "{}", case.name);
-            assert_eq!(inner.resume_ready(case.check_gen, c.at(case.check_ms), case.quiet), case.want_ready, "{}", case.name);
+            assert_eq!(
+                inner.resume_armed.map(|(g, _)| g),
+                case.want_armed,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                inner.resume_ready(case.check_gen, c.at(case.check_ms), case.quiet),
+                case.want_ready,
+                "{}",
+                case.name
+            );
         }
     }
 
@@ -476,11 +529,10 @@ mod tests {
             state_path: PathBuf::new(),
             stream: None,
         };
-        daemon
-            .sessions
-            .lock()
-            .await
-            .insert(crate::mission_control::SESSION_ID.to_string(), super::super::live_from_handle(handle, None));
+        daemon.sessions.lock().await.insert(
+            crate::mission_control::SESSION_ID.to_string(),
+            super::super::live_from_handle(handle, None),
+        );
 
         // Barge in on the current generation and hold a ClassifyGuard across the 2.5 s quiet window.
         let gen0 = crate::ambient::run_generation();
@@ -490,7 +542,11 @@ mod tests {
         // Final verdict arrives at 3.5 s while the guard is still held.
         tokio::time::sleep(Duration::from_millis(3500)).await;
         crate::ambient::note_user_turn();
-        deliver_to_mission_control(&daemon, "<ambient_turn>what is on my calendar</ambient_turn>".into()).await;
+        deliver_to_mission_control(
+            &daemon,
+            "<ambient_turn>what is on my calendar</ambient_turn>".into(),
+        )
+        .await;
         drop(guard);
 
         // Give the background resume task more than one poll tick to observe the drop.
@@ -502,7 +558,11 @@ mod tests {
                 delivered.push(text);
             }
         }
-        assert_eq!(delivered.len(), 1, "expected only the user turn, got: {delivered:?}");
+        assert_eq!(
+            delivered.len(),
+            1,
+            "expected only the user turn, got: {delivered:?}"
+        );
         assert!(delivered[0].contains("<ambient_turn>"));
         assert!(!delivered[0].contains("<ambient_resume"));
 

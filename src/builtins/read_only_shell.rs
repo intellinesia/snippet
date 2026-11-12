@@ -3,26 +3,39 @@
 //! reader, and redirects other than to /dev/null are refused.
 
 use super::*;
-use async_trait::async_trait;
 use crate::llm::NativeToolDefinition;
 use crate::tools::{Tool, ToolContext, ToolResult};
+use async_trait::async_trait;
 
 pub struct ReadOnlyBashTool;
 
 const READERS: &[&str] = &[
     "ls", "cat", "head", "tail", "wc", "rg", "grep", "find", "tree", "stat", "file", "du", "df",
-    "pwd", "echo", "printf", "date", "whoami", "uname", "which", "jq", "sort", "uniq", "cut",
-    "tr", "sed", "basename", "dirname", "realpath", "readlink", "cd", "true", "column", "nl",
-    "diff", "git", "snippet",
+    "pwd", "echo", "printf", "date", "whoami", "uname", "which", "jq", "sort", "uniq", "cut", "tr",
+    "sed", "basename", "dirname", "realpath", "readlink", "cd", "true", "column", "nl", "diff",
+    "git", "snippet",
 ];
 
 const GIT_READS: &[&str] = &[
-    "log", "show", "diff", "status", "rev-parse", "ls-files", "blame", "grep", "describe", "shortlog",
+    "log",
+    "show",
+    "diff",
+    "status",
+    "rev-parse",
+    "ls-files",
+    "blame",
+    "grep",
+    "describe",
+    "shortlog",
 ];
 
 /// Why a command is refused, or `Ok` when it only reads.
 pub fn read_only_verdict(command: &str) -> Result<(), String> {
-    if command.contains('`') || command.contains("$(") || command.contains("<(") || command.contains(">(") {
+    if command.contains('`')
+        || command.contains("$(")
+        || command.contains("<(")
+        || command.contains(">(")
+    {
         return Err("command substitution isn't allowed in this read-only shell".into());
     }
     let stripped = command
@@ -31,7 +44,10 @@ pub fn read_only_verdict(command: &str) -> Result<(), String> {
         .replace("2>/dev/null", " ")
         .replace(">/dev/null", " ");
     if stripped.contains('>') {
-        return Err("redirecting output to a file isn't allowed here; this session doesn't change files".into());
+        return Err(
+            "redirecting output to a file isn't allowed here; this session doesn't change files"
+                .into(),
+        );
     }
     for segment in stripped.split(['|', ';', '&', '\n']) {
         let words: Vec<&str> = segment
@@ -48,18 +64,40 @@ pub fn read_only_verdict(command: &str) -> Result<(), String> {
             "git" => git_refused(args),
             "sed" => sed_refused(args),
             "sort" => args.iter().any(|a| {
-                a.starts_with("--output") || a.starts_with("--compress-program") || short_cluster(a, 'o')
+                a.starts_with("--output")
+                    || a.starts_with("--compress-program")
+                    || short_cluster(a, 'o')
             }),
-            "tree" => args.iter().any(|a| a.starts_with("--output") || short_cluster(a, 'o')),
-            "rg" => args.iter().any(|a| a.starts_with("--pre") || a.starts_with("--hostname-bin")),
+            "tree" => args
+                .iter()
+                .any(|a| a.starts_with("--output") || short_cluster(a, 'o')),
+            "rg" => args
+                .iter()
+                .any(|a| a.starts_with("--pre") || a.starts_with("--hostname-bin")),
             "file" => args.iter().any(|a| short_cluster(a, 'C')),
             "uniq" => args.iter().filter(|a| !a.starts_with('-')).count() > 1,
             "snippet" => args.first() != Some(&"history"),
-            "find" => args.iter().any(|a| matches!(*a, "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fprint" | "-fprint0" | "-fprintf" | "-fls")),
+            "find" => args.iter().any(|a| {
+                matches!(
+                    *a,
+                    "-delete"
+                        | "-exec"
+                        | "-execdir"
+                        | "-ok"
+                        | "-okdir"
+                        | "-fprint"
+                        | "-fprint0"
+                        | "-fprintf"
+                        | "-fls"
+                )
+            }),
             _ => false,
         };
         if refused {
-            return Err(format!("`{}` changes things; this shell only reads", words.join(" ")));
+            return Err(format!(
+                "`{}` changes things; this shell only reads",
+                words.join(" ")
+            ));
         }
     }
     Ok(())
@@ -208,9 +246,13 @@ fn sed_script_is_safe(script: &str) -> bool {
                     return false;
                 }
             }
-            'p' | 'P' | 'd' | 'D' | 'n' | 'N' | 'g' | 'G' | 'h' | 'H' | 'x' | 'l' | 'q' | 'Q' | '=' => i += 1,
+            'p' | 'P' | 'd' | 'D' | 'n' | 'N' | 'g' | 'G' | 'h' | 'H' | 'x' | 'l' | 'q' | 'Q'
+            | '=' => i += 1,
             'a' | 'i' | 'c' | '#' | 'b' | 't' | 'T' | ':' => {
-                while i < c.len() && c[i] != '\n' && !(matches!(c[i], ';' | '}') && !matches!(c[i - 1], '\\')) {
+                while i < c.len()
+                    && c[i] != '\n'
+                    && !(matches!(c[i], ';' | '}') && !matches!(c[i - 1], '\\'))
+                {
                     i += 1;
                 }
                 if i < c.len() && c[i] == '\n' {
@@ -241,7 +283,10 @@ impl Tool for ReadOnlyBashTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let command = arguments.get("command").and_then(Value::as_str).unwrap_or("");
+        let command = arguments
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         if let Err(why) = read_only_verdict(command) {
             return Ok(ToolResult::error(why));
         }

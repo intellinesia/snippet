@@ -119,7 +119,8 @@ pub fn digest_due(first_ms: Option<i64>, newest_ms: Option<i64>, now_ms: i64) ->
     let (Some(first), Some(newest)) = (first_ms, newest_ms) else {
         return false;
     };
-    now_ms.saturating_sub(first) >= DIGEST_SPAN_MS || now_ms.saturating_sub(newest) >= DIGEST_IDLE_MS
+    now_ms.saturating_sub(first) >= DIGEST_SPAN_MS
+        || now_ms.saturating_sub(newest) >= DIGEST_IDLE_MS
 }
 
 pub fn insert_line(c: &Connection, device: &str, line: &NewRoomLine) -> rusqlite::Result<i64> {
@@ -159,7 +160,10 @@ pub fn undigested_lines(c: &Connection, device: &str) -> rusqlite::Result<Vec<Ro
 
 pub fn mark_digested(c: &Connection, ids: &[i64]) -> rusqlite::Result<()> {
     for id in ids {
-        c.execute("UPDATE ambient_room_lines SET digested = 1 WHERE id = ?1", [id])?;
+        c.execute(
+            "UPDATE ambient_room_lines SET digested = 1 WHERE id = ?1",
+            [id],
+        )?;
     }
     Ok(())
 }
@@ -213,7 +217,10 @@ pub fn upsert_room(
 ) -> rusqlite::Result<()> {
     let existing = get_room(c, device)?;
     let delivered_at = existing.as_ref().map(|r| r.delivered_at).unwrap_or(0);
-    let topic_changed = existing.as_ref().map(|r| r.topic.as_str() != topic).unwrap_or(!topic.is_empty());
+    let topic_changed = existing
+        .as_ref()
+        .map(|r| r.topic.as_str() != topic)
+        .unwrap_or(!topic.is_empty());
     let topic_updated_at = if topic_changed {
         now_s
     } else {
@@ -242,7 +249,12 @@ pub struct NewRoomItem<'a> {
     pub source: &'a str,
 }
 
-pub fn insert_item(c: &Connection, device: &str, now_s: i64, item: &NewRoomItem<'_>) -> rusqlite::Result<i64> {
+pub fn insert_item(
+    c: &Connection,
+    device: &str,
+    now_s: i64,
+    item: &NewRoomItem<'_>,
+) -> rusqlite::Result<i64> {
     c.execute(
         "INSERT INTO ambient_room_items (device, created_at, kind, text, rank, remember, source, state, asked_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', 0)",
@@ -251,7 +263,12 @@ pub fn insert_item(c: &Connection, device: &str, now_s: i64, item: &NewRoomItem<
     Ok(c.last_insert_rowid())
 }
 
-pub fn set_item_state(c: &Connection, id: i64, state: &str, asked_at: Option<i64>) -> rusqlite::Result<usize> {
+pub fn set_item_state(
+    c: &Connection,
+    id: i64,
+    state: &str,
+    asked_at: Option<i64>,
+) -> rusqlite::Result<usize> {
     match asked_at {
         Some(at) => c.execute(
             "UPDATE ambient_room_items SET state = ?2, asked_at = ?3 WHERE id = ?1",
@@ -264,7 +281,12 @@ pub fn set_item_state(c: &Connection, id: i64, state: &str, asked_at: Option<i64
     }
 }
 
-pub fn items_for_device(c: &Connection, device: &str, kind: Option<&str>, state: Option<&str>) -> rusqlite::Result<Vec<RoomItem>> {
+pub fn items_for_device(
+    c: &Connection,
+    device: &str,
+    kind: Option<&str>,
+    state: Option<&str>,
+) -> rusqlite::Result<Vec<RoomItem>> {
     let mut stmt = c.prepare(
         "SELECT id, device, created_at, kind, text, rank, remember, source, state, asked_at
          FROM ambient_room_items
@@ -298,7 +320,8 @@ pub fn scrub_event_id(c: &Connection, event_id: &str) -> rusqlite::Result<usize>
         return Ok(0);
     }
     let pattern = format!("%{trimmed}%");
-    let mut stmt = c.prepare("SELECT id, event_ids FROM ambient_room_lines WHERE event_ids LIKE ?1")?;
+    let mut stmt =
+        c.prepare("SELECT id, event_ids FROM ambient_room_lines WHERE event_ids LIKE ?1")?;
     let candidates: Vec<(i64, String)> = stmt
         .query_map([pattern], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -328,7 +351,9 @@ pub fn known_devices(c: &Connection) -> rusqlite::Result<Vec<String>> {
          UNION SELECT device FROM ambient_room_items
          ORDER BY 1",
     )?;
-    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
 
@@ -348,7 +373,14 @@ impl Summariser for LiveSummariser<'_> {
             let mut routed: Vec<(String, crate::config::InferenceProfileConfig)> =
                 crate::routing::candidates(&config, Route::Memory)
                     .into_iter()
-                    .filter_map(|name| config.setups.as_ref()?.get(&name).cloned().map(|c| (name, c)))
+                    .filter_map(|name| {
+                        config
+                            .setups
+                            .as_ref()?
+                            .get(&name)
+                            .cloned()
+                            .map(|c| (name, c))
+                    })
                     .collect();
             if routed.is_empty() {
                 routed.push((String::new(), config.for_workspace(workspace).model));
@@ -453,7 +485,11 @@ pub fn parse_digest_json(raw: &str) -> Result<DigestReply, String> {
             Some(idx) => &rest[idx + 1..],
             None => rest,
         };
-        after_lang.trim_end().strip_suffix("```").unwrap_or(after_lang).trim()
+        after_lang
+            .trim_end()
+            .strip_suffix("```")
+            .unwrap_or(after_lang)
+            .trim()
     } else {
         trimmed
     };
@@ -463,7 +499,8 @@ pub fn parse_digest_json(raw: &str) -> Result<DigestReply, String> {
     if let (Some(start), Some(end)) = (stripped.find('{'), stripped.rfind('}'))
         && start < end
     {
-        return serde_json::from_str::<DigestReply>(&stripped[start..=end]).map_err(|e| e.to_string());
+        return serde_json::from_str::<DigestReply>(&stripped[start..=end])
+            .map_err(|e| e.to_string());
     }
     Err("invalid digest JSON".into())
 }
@@ -595,7 +632,11 @@ pub async fn digest_with(
                 if text.is_empty() {
                     continue;
                 }
-                let rank = if note.rank > 0 { note.rank } else { (idx + 1) as i64 };
+                let rank = if note.rank > 0 {
+                    note.rank
+                } else {
+                    (idx + 1) as i64
+                };
                 let source = map_line_ids_to_events(&note.lines, &lines);
                 insert_item(
                     c,
@@ -666,10 +707,7 @@ pub fn ensure_ticker(d: &Shared) {
 }
 
 pub async fn tick_all(d: &Shared) {
-    let devices = d
-        .store
-        .with_connection(known_devices)
-        .unwrap_or_default();
+    let devices = d.store.with_connection(known_devices).unwrap_or_default();
     let now_ms = chrono::Utc::now().timestamp_millis();
     for device in devices {
         let bounds: Option<(Option<i64>, Option<i64>, Option<i64>)> = d
@@ -715,7 +753,11 @@ pub fn on_conversation_ended() {
     });
 }
 
-pub fn prepare_delivery(c: &Connection, device: &str, now_s: i64) -> rusqlite::Result<Option<String>> {
+pub fn prepare_delivery(
+    c: &Connection,
+    device: &str,
+    now_s: i64,
+) -> rusqlite::Result<Option<String>> {
     let Some(room) = get_room(c, device)? else {
         return Ok(None);
     };
@@ -828,7 +870,8 @@ pub fn drop_expired_clarifies(c: &Connection, device: &str, now_s: i64) -> rusql
 }
 
 pub fn current_gate_input(store: &Store, device: &str, now_s: i64) -> GateInput {
-    let passive = crate::ambient::state_name() == "passive" && crate::ambient::conversation().is_none();
+    let passive =
+        crate::ambient::state_name() == "passive" && crate::ambient::conversation().is_none();
     let alone = crate::ambient_tuning::current(device).profile == Profile::Alone;
     let room_busy = crate::ambient::room_busy();
     let call_active = super::call_track::has_active_call();
@@ -837,7 +880,12 @@ pub fn current_gate_input(store: &Store, device: &str, now_s: i64) -> GateInput 
     let quiet_hours = crate::mission_autonomy::in_quiet_hours(&autonomy.settings);
     let user_on_call = crate::mission_autonomy::user_call().is_some();
     let (uv_recent, asked_rec) = store
-        .with_connection(|c| Ok((user_voice_recent(c, device, now_s)?, asked_recently(c, device, now_s)?)))
+        .with_connection(|c| {
+            Ok((
+                user_voice_recent(c, device, now_s)?,
+                asked_recently(c, device, now_s)?,
+            ))
+        })
         .unwrap_or((false, false));
     GateInput {
         passive,
@@ -854,7 +902,9 @@ pub fn current_gate_input(store: &Store, device: &str, now_s: i64) -> GateInput 
 
 pub async fn maybe_clarify(d: &Shared, device: &str) -> Result<bool, String> {
     let now_s = chrono::Utc::now().timestamp();
-    let _ = d.store.with_connection(|c| drop_expired_clarifies(c, device, now_s));
+    let _ = d
+        .store
+        .with_connection(|c| drop_expired_clarifies(c, device, now_s));
     let gate = current_gate_input(&d.store, device, now_s);
     if clarify_allowed(gate).is_err() {
         return Ok(false);
@@ -923,8 +973,11 @@ impl Tool for AmbientRoom {
                 "Mission Control tools are only available in the Mission Control session.",
             ));
         }
-        let args: AmbientRoomArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let path = ctx.store_path().unwrap_or_else(crate::store::default_db_path);
+        let args: AmbientRoomArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let path = ctx
+            .store_path()
+            .unwrap_or_else(crate::store::default_db_path);
         let store = Store::open(path).map_err(|e| ToolError::msg(e.to_string()))?;
         let now_s = chrono::Utc::now().timestamp();
 
@@ -932,7 +985,12 @@ impl Tool for AmbientRoom {
             "get" => {
                 let devices = store
                     .with_connection(|c| {
-                        if let Some(dev) = args.device.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                        if let Some(dev) = args
+                            .device
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
                             Ok(vec![dev.to_string()])
                         } else {
                             known_devices(c)
@@ -986,7 +1044,9 @@ impl Tool for AmbientRoom {
                 Ok(ToolResult::success(json!({ "devices": out_devices })))
             }
             "drop" => {
-                let id = args.id.ok_or_else(|| ToolError::msg("id is required for drop"))?;
+                let id = args
+                    .id
+                    .ok_or_else(|| ToolError::msg("id is required for drop"))?;
                 let changed = store
                     .with_connection(|c| set_item_state(c, id, "dropped", None))
                     .map_err(|e| ToolError::msg(e.to_string()))?;
@@ -995,7 +1055,12 @@ impl Tool for AmbientRoom {
             "clear" => {
                 let cleared = store
                     .with_connection(|c| {
-                        let targets = if let Some(dev) = args.device.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                        let targets = if let Some(dev) = args
+                            .device
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
                             vec![dev.to_string()]
                         } else {
                             known_devices(c)?
@@ -1006,7 +1071,9 @@ impl Tool for AmbientRoom {
                         Ok(targets)
                     })
                     .map_err(|e| ToolError::msg(e.to_string()))?;
-                Ok(ToolResult::success(json!({ "ok": true, "cleared_devices": cleared })))
+                Ok(ToolResult::success(
+                    json!({ "ok": true, "cleared_devices": cleared }),
+                ))
             }
             _ => Err(ToolError::msg("action must be get, drop or clear")),
         }
@@ -1064,7 +1131,11 @@ mod tests {
                         "desk",
                         &NewRoomLine {
                             at_ms: 1_000 + n * 5_000,
-                            speaker: if n % 2 == 0 { "You".into() } else { "Speaker 2".into() },
+                            speaker: if n % 2 == 0 {
+                                "You".into()
+                            } else {
+                                "Speaker 2".into()
+                            },
                             text: format!("overheard line {n}"),
                             score: 0.75,
                             event_ids: vec![format!("ev{n}")],
@@ -1153,12 +1224,18 @@ mod tests {
         let bad = StubSummariser::new(vec!["not json", "{bad", "still bad"]);
         assert!(digest_with(&store, "phone", &bad, 600).await.is_err());
         assert_eq!(
-            store.with_connection(|c| undigested_lines(c, "phone")).unwrap().len(),
+            store
+                .with_connection(|c| undigested_lines(c, "phone"))
+                .unwrap()
+                .len(),
             1
         );
         assert!(digest_with(&store, "phone", &bad, 610).await.is_err());
         assert_eq!(
-            store.with_connection(|c| undigested_lines(c, "phone")).unwrap().len(),
+            store
+                .with_connection(|c| undigested_lines(c, "phone"))
+                .unwrap()
+                .len(),
             1
         );
         assert!(digest_with(&store, "phone", &bad, 620).await.is_err());
@@ -1202,15 +1279,69 @@ mod tests {
         assert_eq!(clarify_allowed(ok.clone()), Ok(()));
 
         let cases: Vec<(&str, GateInput)> = vec![
-            ("mode active", GateInput { passive: false, ..ok.clone() }),
-            ("not alone", GateInput { alone: false, ..ok.clone() }),
-            ("room busy", GateInput { room_busy: true, ..ok.clone() }),
-            ("call held", GateInput { call_active: true, ..ok.clone() }),
-            ("mc busy", GateInput { mc_busy: true, ..ok.clone() }),
-            ("quiet hours", GateInput { quiet_hours: true, ..ok.clone() }),
-            ("user on call", GateInput { user_on_call: true, ..ok.clone() }),
-            ("no recent user voice", GateInput { user_voice_recent: false, ..ok.clone() }),
-            ("asked in last 30m", GateInput { asked_recently: true, ..ok.clone() }),
+            (
+                "mode active",
+                GateInput {
+                    passive: false,
+                    ..ok.clone()
+                },
+            ),
+            (
+                "not alone",
+                GateInput {
+                    alone: false,
+                    ..ok.clone()
+                },
+            ),
+            (
+                "room busy",
+                GateInput {
+                    room_busy: true,
+                    ..ok.clone()
+                },
+            ),
+            (
+                "call held",
+                GateInput {
+                    call_active: true,
+                    ..ok.clone()
+                },
+            ),
+            (
+                "mc busy",
+                GateInput {
+                    mc_busy: true,
+                    ..ok.clone()
+                },
+            ),
+            (
+                "quiet hours",
+                GateInput {
+                    quiet_hours: true,
+                    ..ok.clone()
+                },
+            ),
+            (
+                "user on call",
+                GateInput {
+                    user_on_call: true,
+                    ..ok.clone()
+                },
+            ),
+            (
+                "no recent user voice",
+                GateInput {
+                    user_voice_recent: false,
+                    ..ok.clone()
+                },
+            ),
+            (
+                "asked in last 30m",
+                GateInput {
+                    asked_recently: true,
+                    ..ok.clone()
+                },
+            ),
         ];
         for (name, input) in cases {
             assert!(clarify_allowed(input).is_err(), "gate should reject {name}");
@@ -1222,7 +1353,15 @@ mod tests {
         let (dir, store) = test_store();
         let item_id = store
             .with_connection(|c| {
-                upsert_room(c, "room-test-dev", 100, "You", "budget", "quiet", "Reviewing numbers.")?;
+                upsert_room(
+                    c,
+                    "room-test-dev",
+                    100,
+                    "You",
+                    "budget",
+                    "quiet",
+                    "Reviewing numbers.",
+                )?;
                 insert_item(
                     c,
                     "room-test-dev",
@@ -1245,16 +1384,24 @@ mod tests {
         let res = tool.execute(&ctx, json!({"action": "get"})).await.unwrap();
         assert_eq!(res.value["data"]["devices"][0]["device"], "room-test-dev");
 
-        tool.execute(&ctx, json!({"action": "drop", "id": item_id})).await.unwrap();
+        tool.execute(&ctx, json!({"action": "drop", "id": item_id}))
+            .await
+            .unwrap();
         let dropped = store
-            .with_connection(|c| items_for_device(c, "room-test-dev", Some("clarify"), Some("dropped")))
+            .with_connection(|c| {
+                items_for_device(c, "room-test-dev", Some("clarify"), Some("dropped"))
+            })
             .unwrap();
         assert_eq!(dropped.len(), 1);
 
-        tool.execute(&ctx, json!({"action": "clear", "device": "room-test-dev"})).await.unwrap();
-        assert!(store.with_connection(|c| get_room(c, "room-test-dev")).unwrap().is_none());
+        tool.execute(&ctx, json!({"action": "clear", "device": "room-test-dev"}))
+            .await
+            .unwrap();
+        assert!(
+            store
+                .with_connection(|c| get_room(c, "room-test-dev"))
+                .unwrap()
+                .is_none()
+        );
     }
 }
-
-
-

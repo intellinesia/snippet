@@ -25,7 +25,11 @@ fn verify(path: &std::path::Path) -> Result<(), String> {
     let mut hasher = Sha256::new();
     std::io::copy(&mut file, &mut hasher).map_err(|e| e.to_string())?;
     let got = format!("{:x}", hasher.finalize());
-    if got == SHA256 { Ok(()) } else { Err(format!("checksum mismatch for {}: {got}", path.display())) }
+    if got == SHA256 {
+        Ok(())
+    } else {
+        Err(format!("checksum mismatch for {}: {got}", path.display()))
+    }
 }
 
 fn download(path: &std::path::Path) -> Result<(), String> {
@@ -57,10 +61,11 @@ pub fn model_ok() -> bool {
 pub fn fetch_model() -> Result<PathBuf, String> {
     let path = model_path();
     if path.exists()
-        && let Err(e) = verify(&path) {
-            eprintln!("[voiceprint] {e}; re-downloading");
-            let _ = std::fs::remove_file(&path);
-        }
+        && let Err(e) = verify(&path)
+    {
+        eprintln!("[voiceprint] {e}; re-downloading");
+        let _ = std::fs::remove_file(&path);
+    }
     if !path.exists() {
         eprintln!("[voiceprint] downloading {MODEL}");
         download(&path)?;
@@ -84,7 +89,9 @@ fn open(path: &std::path::Path) -> Result<Session, String> {
 }
 
 pub fn to_f32(pcm: &[u8]) -> Vec<f32> {
-    pcm.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32).collect()
+    pcm.chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32)
+        .collect()
 }
 
 /// Energy VAD over 20 ms frames with an adaptive noise floor. Returns voiced seconds and keeps only voiced audio
@@ -108,7 +115,13 @@ pub fn voiced(samples: &[f32], max_secs: f32) -> (f32, Vec<f32>) {
     let gate = (floor * 3.0).max(peak * 0.1).max(150.0);
     let speech: Vec<bool> = rms.iter().map(|r| *r > gate).collect();
     let count = speech.iter().filter(|v| **v).count();
-    let keep: Vec<bool> = (0..frames).map(|i| speech[i.saturating_sub(HANG)..(i + HANG + 1).min(frames)].iter().any(|v| *v)).collect();
+    let keep: Vec<bool> = (0..frames)
+        .map(|i| {
+            speech[i.saturating_sub(HANG)..(i + HANG + 1).min(frames)]
+                .iter()
+                .any(|v| *v)
+        })
+        .collect();
     let cap = (max_secs * 16000.0) as usize / VAD_FRAME;
     let mut out = Vec::with_capacity(cap.min(frames) * VAD_FRAME);
     let mut picked: Vec<usize> = (0..frames).rev().filter(|i| keep[*i]).take(cap).collect();
@@ -127,7 +140,11 @@ pub struct Embedder {
 
 impl Embedder {
     pub fn new(session: Session) -> Self {
-        Self { session, fbank: Fbank::new(), feats: Vec::with_capacity(600 * BINS) }
+        Self {
+            session,
+            fbank: Fbank::new(),
+            feats: Vec::with_capacity(600 * BINS),
+        }
     }
 
     pub fn load() -> Result<Self, String> {
@@ -140,9 +157,15 @@ impl Embedder {
         if frames < 10 {
             return Err("clip too short".into());
         }
-        let input = TensorRef::from_array_view(([1usize, frames, BINS], self.feats.as_slice())).map_err(|e| e.to_string())?;
-        let outputs = self.session.run(ort::inputs!["feats" => input]).map_err(|e| e.to_string())?;
-        let (_, emb) = outputs["embs"].try_extract_tensor::<f32>().map_err(|e| e.to_string())?;
+        let input = TensorRef::from_array_view(([1usize, frames, BINS], self.feats.as_slice()))
+            .map_err(|e| e.to_string())?;
+        let outputs = self
+            .session
+            .run(ort::inputs!["feats" => input])
+            .map_err(|e| e.to_string())?;
+        let (_, emb) = outputs["embs"]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| e.to_string())?;
         if emb.len() != DIM {
             return Err(format!("unexpected embedding size {}", emb.len()));
         }
@@ -164,7 +187,8 @@ mod tests {
         std::fs::write(&path, b"not an onnx model").unwrap();
         assert!(super::verify(&path).is_err());
         #[cfg(target_os = "linux")]
-        if super::super::runtime::installed().is_none() || super::super::runtime::ensure().is_err() {
+        if super::super::runtime::installed().is_none() || super::super::runtime::ensure().is_err()
+        {
             return;
         }
         assert!(super::open(&path).is_err());

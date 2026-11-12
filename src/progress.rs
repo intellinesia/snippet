@@ -14,7 +14,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::coordination::{BoardEntry, BoardEntryKind, BoardQuery, NewBoardEntry, SNIPPET_AGENT_ID, TaskStatus};
+use crate::coordination::{
+    BoardEntry, BoardEntryKind, BoardQuery, NewBoardEntry, SNIPPET_AGENT_ID, TaskStatus,
+};
 use crate::llm::NativeToolDefinition;
 use crate::store::Store;
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
@@ -40,13 +42,20 @@ struct Clock {
 
 impl Clock {
     fn new(now: Instant) -> Self {
-        Self { since: now, tool_calls: 0, nudged_at: None, recent: VecDeque::new() }
+        Self {
+            since: now,
+            tool_calls: 0,
+            nudged_at: None,
+            recent: VecDeque::new(),
+        }
     }
 
     fn note_call(&mut self, now: Instant) -> bool {
         self.tool_calls += 1;
         let due = self.tool_calls >= MIN_TOOL_CALLS
-            && self.nudged_at.is_none_or(|at| now.duration_since(at) >= REPORT_INTERVAL);
+            && self
+                .nudged_at
+                .is_none_or(|at| now.duration_since(at) >= REPORT_INTERVAL);
         if due {
             self.nudged_at = Some(now);
         }
@@ -71,7 +80,8 @@ fn reporting_session(ctx: &ToolContext) -> Option<&str> {
     if ctx.lane_origin().is_some() || ctx.is_mission_control() {
         return None;
     }
-    ctx.durable_session_id().filter(|id| !crate::session::is_inbox_session_id(id))
+    ctx.durable_session_id()
+        .filter(|id| !crate::session::is_inbox_session_id(id))
 }
 
 /// Counts one finished tool call; returns the note to attach when a report is due.
@@ -83,11 +93,17 @@ pub fn note_tool_call(ctx: &ToolContext, tool: &str, label: String) -> Option<St
         clocks.insert(session.to_string(), Clock::new(now));
         return None;
     }
-    let clock = clocks.entry(session.to_string()).or_insert_with(|| Clock::new(now));
+    let clock = clocks
+        .entry(session.to_string())
+        .or_insert_with(|| Clock::new(now));
     if clock.recent.len() == RECENT_LABELS {
         clock.recent.pop_front();
     }
-    clock.recent.push_back(if label.is_empty() { tool.to_string() } else { label });
+    clock.recent.push_back(if label.is_empty() {
+        tool.to_string()
+    } else {
+        label
+    });
     let ignored = clock.nudged_at.is_some();
     if !clock.note_call(now) {
         return None;
@@ -115,13 +131,19 @@ pub fn note_tool_call(ctx: &ToolContext, tool: &str, label: String) -> Option<St
 }
 
 fn open_store(ctx: &ToolContext) -> Option<Store> {
-    Store::open_cached(ctx.store_path().unwrap_or_else(crate::store::default_db_path)).ok()
+    Store::open_cached(
+        ctx.store_path()
+            .unwrap_or_else(crate::store::default_db_path),
+    )
+    .ok()
 }
 
 /// The agent doing the work here and the task it counts towards. A plain
 /// conversation has no bound agent and runs as `snippet`.
 pub(crate) fn working_as(ctx: &ToolContext, session: &str) -> (String, Option<String>) {
-    if let Some(member) = open_store(ctx).and_then(|db| db.member_by_session(session).ok().flatten()) {
+    if let Some(member) =
+        open_store(ctx).and_then(|db| db.member_by_session(session).ok().flatten())
+    {
         return (member.agent_id, Some(member.task_id));
     }
     let task = open_store(ctx).and_then(|db| {
@@ -206,25 +228,35 @@ impl Tool for ReportProgress {
     }
 
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: ReportArgs = serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let args: ReportArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         if args.summary.trim().is_empty() {
             return Err(ToolError::msg("summary must not be empty"));
         }
         let summary = report_text(&args);
         let Some(session) = reporting_session(ctx) else {
-            return Err(ToolError::msg("only a working session reports progress; a lane reports to the session that started it"));
+            return Err(ToolError::msg(
+                "only a working session reports progress; a lane reports to the session that started it",
+            ));
         };
         let agent = record_progress(ctx, session, &summary).map_err(ToolError::msg)?;
-        Ok(ToolResult::success(json!({"recorded": true, "agent": agent})))
+        Ok(ToolResult::success(
+            json!({"recorded": true, "agent": agent}),
+        ))
     }
 }
 
 /// The written log lines a ledger reader gets, oldest first. Empty when none.
 pub fn ledger_log(db: &Store, task_id: &str) -> String {
-    let rows = db.task_log(task_id, None, LEDGER_LOG_ROWS).unwrap_or_default();
+    let rows = db
+        .task_log(task_id, None, LEDGER_LOG_ROWS)
+        .unwrap_or_default();
     let mut lines: Vec<String> = rows
         .iter()
-        .filter(|row| row.kind == BoardEntryKind::Progress.as_str() && !row.summary.starts_with(AUTOMATIC_PREFIX))
+        .filter(|row| {
+            row.kind == BoardEntryKind::Progress.as_str()
+                && !row.summary.starts_with(AUTOMATIC_PREFIX)
+        })
         .take(LEDGER_LOG_LINES)
         .map(|row| {
             format!(
@@ -239,7 +271,10 @@ pub fn ledger_log(db: &Store, task_id: &str) -> String {
         return String::new();
     }
     lines.reverse();
-    format!("\nprogress log so far (read_coordination_board with task_id for more):\n{}", lines.join("\n"))
+    format!(
+        "\nprogress log so far (read_coordination_board with task_id for more):\n{}",
+        lines.join("\n")
+    )
 }
 
 fn clip_summary(summary: &str) -> String {
@@ -252,10 +287,15 @@ fn clip_summary(summary: &str) -> String {
 
 /// What an inbox reads about its agent's sessions, in its own tail reminder.
 pub fn inbox_digest(db: &Store, agent: &str) -> String {
-    let rows = db.read_board(agent, &BoardQuery::default(), INBOX_DIGEST_SCAN).unwrap_or_default();
+    let rows = db
+        .read_board(agent, &BoardQuery::default(), INBOX_DIGEST_SCAN)
+        .unwrap_or_default();
     let lines: Vec<String> = rows
         .iter()
-        .filter(|row| row.kind == BoardEntryKind::Progress.as_str() || row.kind == BoardEntryKind::Reported.as_str())
+        .filter(|row| {
+            row.kind == BoardEntryKind::Progress.as_str()
+                || row.kind == BoardEntryKind::Reported.as_str()
+        })
         .take(INBOX_DIGEST_ROWS)
         .map(digest_line)
         .collect();

@@ -3,186 +3,180 @@ use std::path::PathBuf;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
+use super::app::*;
+use super::keybindings::handle_question_key;
+use super::render::*;
+use super::*;
 use crate::config::SnippetConfig;
 use crate::harness::{HarnessEvent, HarnessState};
-use super::app::*;
-use super::render::*;
-use super::keybindings::handle_question_key;
-use super::*;
 
+/// Build an `App` for rendering without a daemon.
+///
+/// `App::new` is pure construction — no file, network or process IO — so it
+/// is safe to call directly under `cargo test`. It does arm the connecting
+/// overlay unconditionally and pick a random uuid conversation, so both are
+/// normalised: the transcript is what a normal launch shows, and a fixed id
+/// keeps the snapshot stable across runs.
+fn tui_app() -> App {
+    let mut app = App::new(TuiOptions {
+        config_path: PathBuf::from("/nonexistent/config.toml"),
+        config: SnippetConfig::default(),
+        resume: None,
+    });
+    app.connecting_phase = None;
+    // The repo is a git checkout, so launch opens the new-session screen;
+    // these tests are about the main screen.
+    app.screen = Screen::Main;
+    app.active_conversation = "tui-snapshot".to_string();
+    app
+}
 
-    /// Build an `App` for rendering without a daemon.
-    ///
-    /// `App::new` is pure construction — no file, network or process IO — so it
-    /// is safe to call directly under `cargo test`. It does arm the connecting
-    /// overlay unconditionally and pick a random uuid conversation, so both are
-    /// normalised: the transcript is what a normal launch shows, and a fixed id
-    /// keeps the snapshot stable across runs.
-    fn tui_app() -> App {
-        let mut app = App::new(TuiOptions {
-            config_path: PathBuf::from("/nonexistent/config.toml"),
-            config: SnippetConfig::default(),
-            resume: None,
-        });
-        app.connecting_phase = None;
-        // The repo is a git checkout, so launch opens the new-session screen;
-        // these tests are about the main screen.
-        app.screen = Screen::Main;
-        app.active_conversation = "tui-snapshot".to_string();
-        app
+/// Render one frame and return it as rows of text.
+///
+/// This is the TUI's equivalent of the Flutter golden harness: `TestBackend`
+/// composites a real frame into a buffer, so the assertions below read what
+/// the terminal would actually show rather than what the code intends.
+fn snapshot(width: u16, height: u16) -> Vec<String> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    let mut app = tui_app();
+    terminal
+        .draw(|f| render(f, &mut app))
+        .expect("draw a frame");
+    let buf = terminal.backend().buffer();
+    (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                .collect::<String>()
+        })
+        .collect()
+}
+
+/// The whole frame as one string, for "does it contain X" assertions.
+fn frame_text(width: u16, height: u16) -> String {
+    snapshot(width, height).join("\n")
+}
+
+/// Print a frame so a human can read it: `cargo test -- --nocapture`.
+#[test]
+fn dump_frame_for_review() {
+    for row in snapshot(90, 24) {
+        println!("|{row}|");
     }
+}
 
-    /// Render one frame and return it as rows of text.
-    ///
-    /// This is the TUI's equivalent of the Flutter golden harness: `TestBackend`
-    /// composites a real frame into a buffer, so the assertions below read what
-    /// the terminal would actually show rather than what the code intends.
-    fn snapshot(width: u16, height: u16) -> Vec<String> {
-        let backend = TestBackend::new(width, height);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
-        let mut app = tui_app();
-        terminal
-            .draw(|f| render(f, &mut app))
-            .expect("draw a frame");
-        let buf = terminal.backend().buffer();
-        (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| {
-                        buf.cell((x, y))
-                            .map(|c| c.symbol())
-                            .unwrap_or(" ")
-                    })
-                    .collect::<String>()
-            })
-            .collect()
-    }
-
-    /// The whole frame as one string, for "does it contain X" assertions.
-    fn frame_text(width: u16, height: u16) -> String {
-        snapshot(width, height).join("\n")
-    }
-
-    /// Print a frame so a human can read it: `cargo test -- --nocapture`.
-    #[test]
-    fn dump_frame_for_review() {
-        for row in snapshot(90, 24) {
-            println!("|{row}|");
-        }
-    }
-
-    /// The empty state is the first thing anyone sees, and it is composed almost
-    /// entirely of one long literal in `transcript.rs` — so a mangled or dropped
-    /// block of art is invisible to every other kind of test.
-    #[test]
-    fn empty_state_renders_its_artwork_and_status() {
-        let rows = snapshot(90, 24);
-        let frame = rows.join("\n");
-        for expected in [
-            "████████████",       // Mochi's body
-            "███████",            // the block-letter title
-            "workspace",          // the footer names the working folder
-            "gpt-4o",             // ...and the model
-        ] {
-            assert!(frame.contains(expected), "empty state is missing {expected:?}");
-        }
-        for stray in [
-            "t                                          T",
-            "G",
-            "g                                          g",
-            "t",
-        ] {
-            assert!(
-                rows.iter().all(|row| row.trim() != stray),
-                "empty state contains an orphan artwork row {stray:?}"
-            );
-        }
-    }
-
-    /// A model that is not connected is the one case the footer must not stay
-    /// quiet about: without it the screen is a silent prompt.
-    #[test]
-    fn the_disconnected_hint_is_shown() {
-        let frame = frame_text(90, 24);
+/// The empty state is the first thing anyone sees, and it is composed almost
+/// entirely of one long literal in `transcript.rs` — so a mangled or dropped
+/// block of art is invisible to every other kind of test.
+#[test]
+fn empty_state_renders_its_artwork_and_status() {
+    let rows = snapshot(90, 24);
+    let frame = rows.join("\n");
+    for expected in [
+        "████████████", // Mochi's body
+        "███████",      // the block-letter title
+        "workspace",    // the footer names the working folder
+        "gpt-4o",       // ...and the model
+    ] {
         assert!(
-            frame.contains("No model connected yet"),
-            "a disconnected TUI must say so; frame was:\n{frame}"
+            frame.contains(expected),
+            "empty state is missing {expected:?}"
         );
     }
-
-    /// The header divider is what separates chrome from the transcript.
-    #[test]
-    fn the_header_divider_is_drawn() {
-        let rows = snapshot(90, 24);
+    for stray in [
+        "t                                          T",
+        "G",
+        "g                                          g",
+        "t",
+    ] {
         assert!(
-            rows[1].contains('─'),
-            "row 2 should be the header rule, got {:?}",
-            rows[1]
+            rows.iter().all(|row| row.trim() != stray),
+            "empty state contains an orphan artwork row {stray:?}"
         );
     }
+}
 
-    /// Layout maths is where a TUI panics, and it panics only at the sizes nobody
-    /// runs by hand. Every one of these must render without unwinding.
-    #[test]
-    fn renders_at_many_sizes_without_panicking() {
-        for (w, h) in [
-            (40u16, 12u16),
-            (50, 20),
-            (80, 24),
-            (90, 30),
-            (120, 40),
-            (200, 60),
-        ] {
-            let rows = snapshot(w, h);
-            assert_eq!(rows.len(), h as usize, "height mismatch at {w}x{h}");
-            for row in &rows {
-                assert_eq!(
-                    row.chars().count(),
-                    w as usize,
-                    "width mismatch at {w}x{h}"
-                );
-            }
+/// A model that is not connected is the one case the footer must not stay
+/// quiet about: without it the screen is a silent prompt.
+#[test]
+fn the_disconnected_hint_is_shown() {
+    let frame = frame_text(90, 24);
+    assert!(
+        frame.contains("No model connected yet"),
+        "a disconnected TUI must say so; frame was:\n{frame}"
+    );
+}
+
+/// The header divider is what separates chrome from the transcript.
+#[test]
+fn the_header_divider_is_drawn() {
+    let rows = snapshot(90, 24);
+    assert!(
+        rows[1].contains('─'),
+        "row 2 should be the header rule, got {:?}",
+        rows[1]
+    );
+}
+
+/// Layout maths is where a TUI panics, and it panics only at the sizes nobody
+/// runs by hand. Every one of these must render without unwinding.
+#[test]
+fn renders_at_many_sizes_without_panicking() {
+    for (w, h) in [
+        (40u16, 12u16),
+        (50, 20),
+        (80, 24),
+        (90, 30),
+        (120, 40),
+        (200, 60),
+    ] {
+        let rows = snapshot(w, h);
+        assert_eq!(rows.len(), h as usize, "height mismatch at {w}x{h}");
+        for row in &rows {
+            assert_eq!(row.chars().count(), w as usize, "width mismatch at {w}x{h}");
         }
     }
+}
 
-    /// A resumed conversation renders the transcript instead of the welcome art,
-    /// so the two states are distinguishable by content.
-    #[test]
-    fn a_non_empty_conversation_drops_the_welcome_art() {
-        let backend = TestBackend::new(90, 24);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
-        let mut app = App::new(TuiOptions {
-            config_path: PathBuf::from("/nonexistent/config.toml"),
-            config: SnippetConfig::default(),
-            resume: Some("existing".to_string()),
-        });
-        app.connecting_phase = None;
-        app.screen = Screen::Main;
-        // A real state with a message in it, so `empty` is false. Built by
-        // mutation, not struct-update syntax: `HarnessState` carries a private
-        // field, so `..Default::default()` is not allowed from out here.
-        let mut st = HarnessState::default();
-        st.events = vec![HarnessEvent::UserInput {
-            text: "hello from the snapshot test".to_string(),
-        }];
-        st.title = Some("Snapshot".to_string());
-        app.state = Some(st);
-        terminal.draw(|f| render(f, &mut app)).expect("draw");
+/// A resumed conversation renders the transcript instead of the welcome art,
+/// so the two states are distinguishable by content.
+#[test]
+fn a_non_empty_conversation_drops_the_welcome_art() {
+    let backend = TestBackend::new(90, 24);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    let mut app = App::new(TuiOptions {
+        config_path: PathBuf::from("/nonexistent/config.toml"),
+        config: SnippetConfig::default(),
+        resume: Some("existing".to_string()),
+    });
+    app.connecting_phase = None;
+    app.screen = Screen::Main;
+    // A real state with a message in it, so `empty` is false. Built by
+    // mutation, not struct-update syntax: `HarnessState` carries a private
+    // field, so `..Default::default()` is not allowed from out here.
+    let mut st = HarnessState::default();
+    st.events = vec![HarnessEvent::UserInput {
+        text: "hello from the snapshot test".to_string(),
+    }];
+    st.title = Some("Snapshot".to_string());
+    app.state = Some(st);
+    terminal.draw(|f| render(f, &mut app)).expect("draw");
 
-        let buf = terminal.backend().buffer();
-        let frame: String = (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            !frame.contains("MATRIX PET"),
-            "welcome art should not draw over a real conversation"
-        );
-    }
+    let buf = terminal.backend().buffer();
+    let frame: String = (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !frame.contains("MATRIX PET"),
+        "welcome art should not draw over a real conversation"
+    );
+}
 
 /// Render one frame of an already-prepared app, as text rows.
 fn snapshot_app(app: &mut App, width: u16, height: u16) -> Vec<String> {
@@ -191,7 +185,11 @@ fn snapshot_app(app: &mut App, width: u16, height: u16) -> Vec<String> {
     terminal.draw(|f| render(f, app)).expect("draw a frame");
     let buf = terminal.backend().buffer();
     (0..buf.area.height)
-        .map(|y| (0..buf.area.width).map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ")).collect())
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                .collect()
+        })
         .collect()
 }
 
@@ -223,13 +221,17 @@ fn agents_panel_lists_agents_and_opens_a_board() {
     let mut app = board_app();
     app.shell.tab = PaneTab::Agents;
     let list = snapshot_app(&mut app, 170, 30).join("\n");
-    for row in list.lines() { println!("|{row}|"); }
+    for row in list.lines() {
+        println!("|{row}|");
+    }
     assert!(list.contains("Snippet") && list.contains("Designer"));
     assert!(list.contains("active") && list.contains("paused"));
 
     app.shell.pane_detail = Some(0);
     let detail = snapshot_app(&mut app, 170, 30).join("\n");
-    for row in detail.lines() { println!("|{row}|"); }
+    for row in detail.lines() {
+        println!("|{row}|");
+    }
     assert!(detail.contains("Board"));
     assert!(detail.contains("Wire the traffic path panel"));
     assert!(detail.contains("reported"));
@@ -257,7 +259,9 @@ fn tasks_and_jobs_panels_render() {
     );
     app.shell.tab = PaneTab::Tasks;
     let tasks = snapshot_app(&mut app, 170, 30).join("\n");
-    for row in tasks.lines() { println!("|{row}|"); }
+    for row in tasks.lines() {
+        println!("|{row}|");
+    }
     assert!(tasks.contains("Check Secure Access extension") && tasks.contains("in progress"));
     assert!(tasks.contains("blocked") && tasks.contains("eaa98084"));
 
@@ -270,10 +274,15 @@ fn tasks_and_jobs_panels_render() {
     app.shell.tab = PaneTab::Jobs;
     app.board_confirm = Some(super::boards::Confirm {
         prompt: "Delete Nightly dependency audit? y to confirm".into(),
-        action: super::boards::ConfirmAction::DeleteJob("j1".into(), "Nightly dependency audit".into()),
+        action: super::boards::ConfirmAction::DeleteJob(
+            "j1".into(),
+            "Nightly dependency audit".into(),
+        ),
     });
     let jobs = snapshot_app(&mut app, 170, 30).join("\n");
-    for row in jobs.lines() { println!("|{row}|"); }
+    for row in jobs.lines() {
+        println!("|{row}|");
+    }
     assert!(jobs.contains("daily 02:30") && jobs.contains("every 1h"));
     assert!(jobs.contains("paused") && jobs.contains("session not found"));
     assert!(jobs.contains("Delete Nightly dependency audit?") && jobs.contains("y confirm"));
@@ -295,13 +304,18 @@ fn usage_and_vault_panels_render_without_exposing_secrets() {
     );
     app.shell.tab = PaneTab::Usage;
     let usage = snapshot_app(&mut app, 170, 30).join("\n");
-    for row in usage.lines() { println!("|{row}|"); }
+    for row in usage.lines() {
+        println!("|{row}|");
+    }
     assert!(usage.contains("All time") && usage.contains("chatgpt"));
     assert!(usage.contains("1.2M") && usage.contains("gpt-5-codex"));
     assert!(usage.contains("5-hour window") && usage.contains("70% left"));
     assert!(usage.contains("aren't exposed"));
 
-    app.boards.seed("vault", serde_json::json!({"names": ["GITHUB_TOKEN", "OPENAI_KEY"]}));
+    app.boards.seed(
+        "vault",
+        serde_json::json!({"names": ["GITHUB_TOKEN", "OPENAI_KEY"]}),
+    );
     app.shell.tab = PaneTab::Vault;
     app.vault_input = Some(super::boards::VaultInput {
         name: "NEW_SECRET".into(),
@@ -309,9 +323,14 @@ fn usage_and_vault_panels_render_without_exposing_secrets() {
         on_value: true,
     });
     let vault = snapshot_app(&mut app, 170, 30).join("\n");
-    for row in vault.lines() { println!("|{row}|"); }
+    for row in vault.lines() {
+        println!("|{row}|");
+    }
     assert!(vault.contains("GITHUB_TOKEN") && vault.contains("NEW_SECRET"));
-    assert!(!vault.contains("hunter2"), "a secret value must never render");
+    assert!(
+        !vault.contains("hunter2"),
+        "a secret value must never render"
+    );
 }
 
 #[test]
@@ -319,10 +338,16 @@ fn ctrl_f_opens_sessions_and_ctrl_g_still_steers() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let mut app = tui_app();
     app.shell.width = 170;
-    assert!(handle_shell_key(&mut app, KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL)));
+    assert!(handle_shell_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL)
+    ));
     assert_eq!(app.shell.focus, Focus::Sidebar);
     // Ctrl-G is steer-now; the shell must leave it to the global handler.
-    assert!(!handle_shell_key(&mut app, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)));
+    assert!(!handle_shell_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)
+    ));
 }
 
 fn question_app(pending: serde_json::Value) -> App {
@@ -330,7 +355,8 @@ fn question_app(pending: serde_json::Value) -> App {
     let mut st = HarnessState::default();
     st.status = crate::harness::HarnessStatus::WaitingForInput;
     st.pending_question = Some(pending.clone());
-    st.events.push(HarnessEvent::UserQuestion { questions: pending });
+    st.events
+        .push(HarnessEvent::UserQuestion { questions: pending });
     app.state = Some(st);
     app
 }
@@ -350,8 +376,13 @@ fn ask_user_picker_shows_recommended_multi_choice_tabs_and_review() {
     ensure_q_init(&mut app); // what tick() does when the question arrives
 
     let first = snapshot_app(&mut app, 100, 40).join("\n");
-    for row in first.lines() { println!("|{row}|"); }
-    assert!(first.contains("Targets") && first.contains("Ship"), "question tabs");
+    for row in first.lines() {
+        println!("|{row}|");
+    }
+    assert!(
+        first.contains("Targets") && first.contains("Ship"),
+        "question tabs"
+    );
     assert!(first.contains("recommended") && first.contains("ARM64 release APK"));
     // Recommended leads and is already ticked.
     let android = first.lines().position(|l| l.contains("Android")).unwrap();
@@ -375,7 +406,9 @@ fn ask_user_picker_shows_recommended_multi_choice_tabs_and_review() {
     // Every question answered: a review before anything is sent.
     assert!(app.q_review);
     let review = snapshot_app(&mut app, 100, 40).join("\n");
-    for row in review.lines() { println!("|{row}|"); }
+    for row in review.lines() {
+        println!("|{row}|");
+    }
     assert!(review.contains("Check your answers"));
     assert!(review.contains("Android, macOS"));
     assert!(review.contains("Publish (confirm)"));
@@ -391,151 +424,241 @@ fn ask_user_choice_question_takes_a_typed_answer() {
     ensure_q_init(&mut app);
     app.input = "release/1.2".into();
     // Typing isn't swallowed by the picker any more; Enter sends the typed text.
-    assert!(!handle_question_key(&mut app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)));
+    assert!(!handle_question_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)
+    ));
     app.answer_current_question();
-    assert!(app.q_answers.is_empty() && app.input.is_empty(), "sent and reset");
+    assert!(
+        app.q_answers.is_empty() && app.input.is_empty(),
+        "sent and reset"
+    );
 }
 
-    /// Render one frame of a given app.
-    fn snapshot_of(app: &mut App, width: u16, height: u16) -> Vec<String> {
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
-        terminal.draw(|f| render(f, app)).expect("draw a frame");
-        let buf = terminal.backend().buffer();
-        (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
-                    .collect::<String>()
-            })
-            .collect()
-    }
+/// Render one frame of a given app.
+fn snapshot_of(app: &mut App, width: u16, height: u16) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+    terminal.draw(|f| render(f, app)).expect("draw a frame");
+    let buf = terminal.backend().buffer();
+    (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                .collect::<String>()
+        })
+        .collect()
+}
 
-    fn row(id: &str, folder: &str, origin: Option<&str>, name: &str, title: &str, at: i64) -> crate::serve::sidecar::SessionRow {
-        crate::serve::sidecar::SessionRow {
-            id: id.into(),
-            folder: folder.into(),
-            origin_folder: origin.map(str::to_string),
-            branch: origin.map(|_| "snippet/ab12".to_string()),
-            conversation: name.into(),
-            title: title.into(),
-            status: "idle".into(),
-            last_active: at,
-            agent_id: None,
-            task_id: None,
-            parent_session_id: None,
-            members: None,
-        }
+fn row(
+    id: &str,
+    folder: &str,
+    origin: Option<&str>,
+    name: &str,
+    title: &str,
+    at: i64,
+) -> crate::serve::sidecar::SessionRow {
+    crate::serve::sidecar::SessionRow {
+        id: id.into(),
+        folder: folder.into(),
+        origin_folder: origin.map(str::to_string),
+        branch: origin.map(|_| "snippet/ab12".to_string()),
+        conversation: name.into(),
+        title: title.into(),
+        status: "idle".into(),
+        last_active: at,
+        agent_id: None,
+        task_id: None,
+        parent_session_id: None,
+        members: None,
     }
+}
 
-    /// A folder's picker holds its own sessions and those in worktrees made from
-    /// it, and opening a worktree session moves the TUI into that worktree.
-    /// Seated member conversations are nested under their parent session row.
-    #[test]
-    fn the_picker_lists_worktree_sessions_under_their_folder() {
-        let mut app = tui_app();
-        app.options.config = app.options.config.for_workspace(PathBuf::from("/code/repo"));
-        let mut member = row("a/conversations/m1", "/code/repo", None, "m1", "Task (agent-tui)", 15);
-        member.parent_session_id = Some("a".into());
-        member.agent_id = Some("agent-tui".into());
-        app.daemon_sessions = Some(vec![
-            row("a", "/code/repo", None, "c1", "Root work", 10),
-            member,
-            row("b", "/wt/repo/ab12", Some("/code/repo"), "default", "Isolated work", 20),
-            row("c", "/code/other", None, "c2", "Elsewhere", 30),
-        ]);
-        let list = app.list_conversations();
-        assert_eq!(
-            list.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(),
-            ["Isolated work", "Root work", "Task (agent-tui)"]
+/// A folder's picker holds its own sessions and those in worktrees made from
+/// it, and opening a worktree session moves the TUI into that worktree.
+/// Seated member conversations are nested under their parent session row.
+#[test]
+fn the_picker_lists_worktree_sessions_under_their_folder() {
+    let mut app = tui_app();
+    app.options.config = app
+        .options
+        .config
+        .for_workspace(PathBuf::from("/code/repo"));
+    let mut member = row(
+        "a/conversations/m1",
+        "/code/repo",
+        None,
+        "m1",
+        "Task (agent-tui)",
+        15,
+    );
+    member.parent_session_id = Some("a".into());
+    member.agent_id = Some("agent-tui".into());
+    app.daemon_sessions = Some(vec![
+        row("a", "/code/repo", None, "c1", "Root work", 10),
+        member,
+        row(
+            "b",
+            "/wt/repo/ab12",
+            Some("/code/repo"),
+            "default",
+            "Isolated work",
+            20,
+        ),
+        row("c", "/code/other", None, "c2", "Elsewhere", 30),
+    ]);
+    let list = app.list_conversations();
+    assert_eq!(
+        list.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(),
+        ["Isolated work", "Root work", "Task (agent-tui)"]
+    );
+    assert_eq!(list[0].branch.as_deref(), Some("snippet/ab12"));
+    assert_eq!(list[1].branch, None);
+    assert_eq!(list[2].parent_session_id.as_deref(), Some("a"));
+    assert_eq!(list[2].agent_id.as_deref(), Some("agent-tui"));
+
+    app.screen = Screen::ResumeSelection;
+    let picker_lines = snapshot_of(&mut app, 80, 24).join("\n");
+    assert!(
+        picker_lines.contains("repo · 2 sessions"),
+        "picker counts top-level sessions: {picker_lines}"
+    );
+    assert!(
+        picker_lines.contains("● agent-tui"),
+        "picker renders seated member: {picker_lines}"
+    );
+
+    app.screen = Screen::Main;
+    app.shell.sidebar = Some(true);
+    app.shell.focus = Focus::Sidebar;
+    let sidebar_lines = snapshot_of(&mut app, 80, 24).join("\n");
+    assert!(
+        sidebar_lines.contains("agent-tui"),
+        "sidebar renders seated member: {sidebar_lines}"
+    );
+
+    app.open_conversation(&list[0]);
+    assert_eq!(app.options.config.workspace, PathBuf::from("/wt/repo/ab12"));
+    assert_eq!(app.active_conversation, "default");
+}
+
+/// In a git repository a new session offers a new worktree, the folder, and the
+/// sessions that already exist there; picking one opens it, never a blank one.
+#[test]
+fn a_new_session_offers_existing_sessions_not_worktrees() {
+    use crate::tui::commands::NewChoice;
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
         );
-        assert_eq!(list[0].branch.as_deref(), Some("snippet/ab12"));
-        assert_eq!(list[1].branch, None);
-        assert_eq!(list[2].parent_session_id.as_deref(), Some("a"));
-        assert_eq!(list[2].agent_id.as_deref(), Some("agent-tui"));
+    };
+    git(&["init", "-q"]);
+    git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "init",
+    ]);
+    let side = dir.path().join("side");
+    git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "side",
+        side.to_str().unwrap(),
+    ]);
+    let repo = repo.canonicalize().unwrap();
+    let home = repo.display().to_string();
 
-        app.screen = Screen::ResumeSelection;
-        let picker_lines = snapshot_of(&mut app, 80, 24).join("\n");
-        assert!(picker_lines.contains("repo · 2 sessions"), "picker counts top-level sessions: {picker_lines}");
-        assert!(picker_lines.contains("● agent-tui"), "picker renders seated member: {picker_lines}");
+    let mut app = tui_app();
+    app.options.config = app.options.config.for_workspace(repo.clone());
+    app.daemon_sessions = Some(vec![
+        row("a", &home, None, "c1", "Root work", 10),
+        row(
+            "b",
+            "/wt/repo/ab12",
+            Some(&home),
+            "default",
+            "Isolated work",
+            20,
+        ),
+    ]);
+    app.begin_new_session("fresh".into());
+    assert!(app.screen == Screen::NewSession);
+    assert_eq!(app.new_choices[0], NewChoice::Worktree(repo.clone()));
+    assert_eq!(app.new_choices[1], NewChoice::Folder(repo.clone()));
+    assert!(matches!(&app.new_choices[2], NewChoice::Session(c) if c.title == "Isolated work"));
+    assert!(matches!(&app.new_choices[3], NewChoice::Session(c) if c.title == "Root work"));
+    assert_eq!(
+        app.new_choices.len(),
+        4,
+        "the empty worktree is not a choice"
+    );
 
-        app.screen = Screen::Main;
-        app.shell.sidebar = Some(true);
-        app.shell.focus = Focus::Sidebar;
-        let sidebar_lines = snapshot_of(&mut app, 80, 24).join("\n");
-        assert!(sidebar_lines.contains("agent-tui"), "sidebar renders seated member: {sidebar_lines}");
+    let text = snapshot_of(&mut app, 100, 24).join("\n");
+    assert!(
+        text.contains("New worktree") && text.contains("Existing sessions"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Isolated work") && !text.contains("Existing worktrees"),
+        "{text}"
+    );
 
-        app.open_conversation(&list[0]);
-        assert_eq!(app.options.config.workspace, PathBuf::from("/wt/repo/ab12"));
-        assert_eq!(app.active_conversation, "default");
-    }
+    app.start_new_session(app.new_choices[2].clone(), "ignored".into());
+    assert!(app.screen == Screen::Main);
+    assert_eq!(app.options.config.workspace, PathBuf::from("/wt/repo/ab12"));
+    assert_ne!(
+        app.new_workspace,
+        Some(crate::session::WorkspaceMode::Worktree)
+    );
 
-    /// In a git repository a new session offers a new worktree, the folder, and the
-    /// sessions that already exist there; picking one opens it, never a blank one.
-    #[test]
-    fn a_new_session_offers_existing_sessions_not_worktrees() {
-        use crate::tui::commands::NewChoice;
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| {
-            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
-        };
-        git(&["init", "-q"]);
-        git(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"]);
-        let side = dir.path().join("side");
-        git(&["worktree", "add", "-q", "-b", "side", side.to_str().unwrap()]);
-        let repo = repo.canonicalize().unwrap();
-        let home = repo.display().to_string();
+    app.options.config = app.options.config.for_workspace(repo.clone());
+    app.begin_new_session("fresh".into());
+    app.start_new_session(app.new_choices[0].clone(), "fresh".into());
+    assert!(app.screen == Screen::Main);
+    assert_eq!(
+        app.new_workspace,
+        Some(crate::session::WorkspaceMode::Worktree)
+    );
+    assert_eq!(app.active_conversation, "fresh");
+}
 
-        let mut app = tui_app();
-        app.options.config = app.options.config.for_workspace(repo.clone());
-        app.daemon_sessions = Some(vec![
-            row("a", &home, None, "c1", "Root work", 10),
-            row("b", "/wt/repo/ab12", Some(&home), "default", "Isolated work", 20),
-        ]);
-        app.begin_new_session("fresh".into());
-        assert!(app.screen == Screen::NewSession);
-        assert_eq!(app.new_choices[0], NewChoice::Worktree(repo.clone()));
-        assert_eq!(app.new_choices[1], NewChoice::Folder(repo.clone()));
-        assert!(matches!(&app.new_choices[2], NewChoice::Session(c) if c.title == "Isolated work"));
-        assert!(matches!(&app.new_choices[3], NewChoice::Session(c) if c.title == "Root work"));
-        assert_eq!(app.new_choices.len(), 4, "the empty worktree is not a choice");
+/// Outside a repository there is nothing to choose between unless the folder
+/// already has sessions, which are then offered beside "This folder".
+#[test]
+fn a_plain_folder_offers_its_sessions_and_skips_the_screen_when_it_has_none() {
+    use crate::tui::commands::NewChoice;
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().canonicalize().unwrap();
+    let mut app = tui_app();
+    app.options.config = app.options.config.for_workspace(plain.clone());
+    app.daemon_sessions = Some(Vec::new());
+    app.begin_new_session("fresh".into());
+    assert!(
+        app.screen == Screen::Main,
+        "no sessions: straight to a new one"
+    );
 
-        let text = snapshot_of(&mut app, 100, 24).join("\n");
-        assert!(text.contains("New worktree") && text.contains("Existing sessions"), "{text}");
-        assert!(text.contains("Isolated work") && !text.contains("Existing worktrees"), "{text}");
-
-        app.start_new_session(app.new_choices[2].clone(), "ignored".into());
-        assert!(app.screen == Screen::Main);
-        assert_eq!(app.options.config.workspace, PathBuf::from("/wt/repo/ab12"));
-        assert_ne!(app.new_workspace, Some(crate::session::WorkspaceMode::Worktree));
-
-        app.options.config = app.options.config.for_workspace(repo.clone());
-        app.begin_new_session("fresh".into());
-        app.start_new_session(app.new_choices[0].clone(), "fresh".into());
-        assert!(app.screen == Screen::Main);
-        assert_eq!(app.new_workspace, Some(crate::session::WorkspaceMode::Worktree));
-        assert_eq!(app.active_conversation, "fresh");
-    }
-
-    /// Outside a repository there is nothing to choose between unless the folder
-    /// already has sessions, which are then offered beside "This folder".
-    #[test]
-    fn a_plain_folder_offers_its_sessions_and_skips_the_screen_when_it_has_none() {
-        use crate::tui::commands::NewChoice;
-        let dir = tempfile::tempdir().unwrap();
-        let plain = dir.path().canonicalize().unwrap();
-        let mut app = tui_app();
-        app.options.config = app.options.config.for_workspace(plain.clone());
-        app.daemon_sessions = Some(Vec::new());
-        app.begin_new_session("fresh".into());
-        assert!(app.screen == Screen::Main, "no sessions: straight to a new one");
-
-        let home = plain.display().to_string();
-        app.daemon_sessions = Some(vec![row("a", &home, None, "c1", "Earlier work", 10)]);
-        app.begin_new_session("fresh2".into());
-        assert!(app.screen == Screen::NewSession);
-        assert_eq!(app.new_choices[0], NewChoice::Folder(plain));
-        assert!(matches!(&app.new_choices[1], NewChoice::Session(c) if c.title == "Earlier work"));
-        assert_eq!(app.new_choices.len(), 2);
-    }
+    let home = plain.display().to_string();
+    app.daemon_sessions = Some(vec![row("a", &home, None, "c1", "Earlier work", 10)]);
+    app.begin_new_session("fresh2".into());
+    assert!(app.screen == Screen::NewSession);
+    assert_eq!(app.new_choices[0], NewChoice::Folder(plain));
+    assert!(matches!(&app.new_choices[1], NewChoice::Session(c) if c.title == "Earlier work"));
+    assert_eq!(app.new_choices.len(), 2);
+}

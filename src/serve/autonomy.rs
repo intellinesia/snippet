@@ -7,8 +7,8 @@ use serde_json::Value;
 use super::Shared;
 use crate::coordination::TaskStatus;
 use crate::harness::{HarnessStatus, LoopInput};
-use crate::mission_control::SESSION_ID;
 use crate::mission_autonomy;
+use crate::mission_control::SESSION_ID;
 
 const TICK: Duration = Duration::from_secs(1);
 const ROUND_EVERY: Duration = Duration::from_secs(5);
@@ -18,7 +18,10 @@ fn spawn_quick_wake(daemon: Shared, w: crate::ambient::QuickWake) {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(w.seconds)).await;
         if w.unless_user_speaks && crate::ambient::run_generation() != w.generation {
-            eprintln!("[ambient] quick wake ({}s) cancelled: user spoke first", w.seconds);
+            eprintln!(
+                "[ambient] quick wake ({}s) cancelled: user spoke first",
+                w.seconds
+            );
             return;
         }
         if mission_control_busy() {
@@ -53,7 +56,10 @@ fn spawn_quick_wake(daemon: Shared, w: crate::ambient::QuickWake) {
         let mic = if recent.is_empty() {
             "No new speech was heard on the microphone during the wait.".to_string()
         } else {
-            format!("Recent microphone lines (including any filtered out by the classifier):\n{}", recent.join("\n"))
+            format!(
+                "Recent microphone lines (including any filtered out by the classifier):\n{}",
+                recent.join("\n")
+            )
         };
         let envelope = format!(
             "<ambient_check_in waited_secs=\"{}\" note=\"{}\">{mic}</ambient_check_in>",
@@ -72,7 +78,9 @@ pub async fn autonomy_loop(daemon: Shared) {
             spawn_quick_wake(daemon.clone(), w);
         }
         for queued in mission_autonomy::take_answers() {
-            daemon.deliver(&queued.session_id, LoopInput::Answer(queued.answer)).await;
+            daemon
+                .deliver(&queued.session_id, LoopInput::Answer(queued.answer))
+                .await;
         }
         if last_round.elapsed() < ROUND_EVERY {
             continue;
@@ -114,7 +122,16 @@ pub async fn autonomy_loop(daemon: Shared) {
         let waiting = waiting_on(&daemon, &tasks);
         let goal_lines = goal_attention_lines(&daemon.store);
         let stalled_goals = super::stall::stalled_goal_lines(&daemon.store, chrono::Utc::now());
-        let envelope = round_envelope(&tasks, &state, &due, &offers, &waiting, &goal_lines, &stalled_goals, now);
+        let envelope = round_envelope(
+            &tasks,
+            &state,
+            &due,
+            &offers,
+            &waiting,
+            &goal_lines,
+            &stalled_goals,
+            now,
+        );
         let summary = round_summary(&tasks, &state, &due);
         let _ = mission_autonomy::update(|s| {
             s.last_round_at = now;
@@ -122,7 +139,9 @@ pub async fn autonomy_loop(daemon: Shared) {
             s.last_round_summary = Some(summary);
             s.run_notes.clear();
             if !mission_autonomy::in_quiet_hours(&s.settings) {
-                s.day_opened = mission_autonomy::user_now(&s.settings).format("%Y-%m-%d").to_string();
+                s.day_opened = mission_autonomy::user_now(&s.settings)
+                    .format("%Y-%m-%d")
+                    .to_string();
             }
         });
         eprintln!("[autonomy] round fired");
@@ -182,7 +201,10 @@ pub(super) fn note_heard() {
 }
 
 pub(super) fn heard_quiet() -> bool {
-    HEARD_AT.lock().unwrap().is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(2500))
+    HEARD_AT
+        .lock()
+        .unwrap()
+        .is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(2500))
 }
 
 pub(super) fn last_resume_matches_inputs() -> bool {
@@ -190,7 +212,10 @@ pub(super) fn last_resume_matches_inputs() -> bool {
 }
 
 pub(super) fn mark_resume_delivered() {
-    LAST_RESUME.store(mission_control_inputs(), std::sync::atomic::Ordering::SeqCst);
+    LAST_RESUME.store(
+        mission_control_inputs(),
+        std::sync::atomic::Ordering::SeqCst,
+    );
 }
 
 #[allow(dead_code)]
@@ -210,7 +235,9 @@ pub(super) async fn deliver_to_mission_control(daemon: &Shared, text: String) {
         eprintln!("[autonomy] could not open Mission Control: {error}");
         return;
     }
-    daemon.deliver_wake(SESSION_ID, LoopInput::UserMessage(text)).await;
+    daemon
+        .deliver_wake(SESSION_ID, LoopInput::UserMessage(text))
+        .await;
 }
 
 pub(super) async fn interrupt_mission_control(daemon: &Shared) -> bool {
@@ -222,8 +249,14 @@ pub(super) async fn interrupt_mission_control(daemon: &Shared) -> bool {
 }
 
 pub(super) fn mission_control_busy() -> bool {
-    crate::session::read_session_meta(&crate::mission_control::session_state_path())
-        .is_some_and(|s| matches!(s.status, HarnessStatus::Running | HarnessStatus::WaitingForInput))
+    crate::session::read_session_meta(&crate::mission_control::session_state_path()).is_some_and(
+        |s| {
+            matches!(
+                s.status,
+                HarnessStatus::Running | HarnessStatus::WaitingForInput
+            )
+        },
+    )
 }
 
 fn board_digest(tasks: &[crate::coordination::Task]) -> String {
@@ -272,15 +305,28 @@ fn session_full_state(id: &str) -> Option<crate::harness::HarnessState> {
 
 pub(super) fn question_text(question: &Value) -> String {
     let mut lines = Vec::new();
-    if let Some(context) = question.get("context").and_then(Value::as_str).filter(|c| !c.trim().is_empty()) {
+    if let Some(context) = question
+        .get("context")
+        .and_then(Value::as_str)
+        .filter(|c| !c.trim().is_empty())
+    {
         lines.push(context.trim().to_string());
     }
-    for q in question.get("questions").and_then(Value::as_array).into_iter().flatten() {
+    for q in question
+        .get("questions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let text = q.get("text").and_then(Value::as_str).unwrap_or("").trim();
         let choices: Vec<&str> = q
             .pointer("/answer_kind/choices")
             .and_then(Value::as_array)
-            .map(|c| c.iter().filter_map(|c| c.get("label").and_then(Value::as_str)).collect())
+            .map(|c| {
+                c.iter()
+                    .filter_map(|c| c.get("label").and_then(Value::as_str))
+                    .collect()
+            })
             .unwrap_or_default();
         if choices.is_empty() {
             lines.push(format!("- {text}"));
@@ -292,13 +338,20 @@ pub(super) fn question_text(question: &Value) -> String {
 }
 
 async fn wake_for_worker_questions(daemon: &Shared) {
-    let tasks = daemon.store.list_tasks(None, Some(&TaskStatus::InProgress)).unwrap_or_default();
+    let tasks = daemon
+        .store
+        .list_tasks(None, Some(&TaskStatus::InProgress))
+        .unwrap_or_default();
     for task in tasks {
-        let Some(state) = session_status(&task.session_id) else { continue };
+        let Some(state) = session_status(&task.session_id) else {
+            continue;
+        };
         if state.status != HarnessStatus::WaitingForInput {
             continue;
         }
-        let Some(question) = state.pending_question.as_ref() else { continue };
+        let Some(question) = state.pending_question.as_ref() else {
+            continue;
+        };
         let mut hasher = DefaultHasher::new();
         question.to_string().hash(&mut hasher);
         let key = format!("{}:{:x}", task.session_id, hasher.finish());
@@ -317,7 +370,10 @@ async fn wake_for_worker_questions(daemon: &Shared) {
     }
 }
 
-fn pending_offers(daemon: &Shared, tasks: &[crate::coordination::Task]) -> std::collections::HashMap<String, String> {
+fn pending_offers(
+    daemon: &Shared,
+    tasks: &[crate::coordination::Task],
+) -> std::collections::HashMap<String, String> {
     tasks
         .iter()
         .filter(|t| t.status == TaskStatus::Todo)
@@ -327,7 +383,10 @@ fn pending_offers(daemon: &Shared, tasks: &[crate::coordination::Task]) -> std::
             if current.iter().any(|m| m.status == "active") {
                 return None;
             }
-            current.iter().find(|m| m.status == "offered").map(|m| (t.id.clone(), m.agent_id.clone()))
+            current
+                .iter()
+                .find(|m| m.status == "offered")
+                .map(|m| (t.id.clone(), m.agent_id.clone()))
         })
         .collect()
 }
@@ -337,12 +396,22 @@ const DORMANT_WINDOW_SECS: i64 = 7 * 86400;
 
 fn one_line(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() > max { format!("{}…", flat.chars().take(max).collect::<String>()) } else { flat }
+    if flat.chars().count() > max {
+        format!("{}…", flat.chars().take(max).collect::<String>())
+    } else {
+        flat
+    }
 }
 
-fn waiting_and_dormant(tasks: &[crate::coordination::Task], now: i64) -> (Vec<String>, Vec<String>) {
-    let busy: std::collections::HashSet<&str> =
-        tasks.iter().filter(|t| !t.status.is_terminal()).map(|t| t.session_id.as_str()).collect();
+fn waiting_and_dormant(
+    tasks: &[crate::coordination::Task],
+    now: i64,
+) -> (Vec<String>, Vec<String>) {
+    let busy: std::collections::HashSet<&str> = tasks
+        .iter()
+        .filter(|t| !t.status.is_terminal())
+        .map(|t| t.session_id.as_str())
+        .collect();
     let mut sessions = crate::session::list_routable_sessions();
     sessions.sort_by_key(|s| -s.last_active);
     let mut waiting = Vec::new();
@@ -352,22 +421,36 @@ fn waiting_and_dormant(tasks: &[crate::coordination::Task], now: i64) -> (Vec<St
         if idle > DORMANT_WINDOW_SECS {
             continue;
         }
-        let Some(state) = session_status(&session.id) else { continue };
+        let Some(state) = session_status(&session.id) else {
+            continue;
+        };
         if state.status == HarnessStatus::WaitingForInput {
-            let question = state.pending_question.as_ref().map(question_text).unwrap_or_default();
+            let question = state
+                .pending_question
+                .as_ref()
+                .map(question_text)
+                .unwrap_or_default();
             waiting.push(format!(
                 "- {} · {} · waiting {} · asked: {}",
-                session.title, session.id, ago(idle), one_line(&question, 220)
+                session.title,
+                session.id,
+                ago(idle),
+                one_line(&question, 220)
             ));
             continue;
         }
-        if busy.contains(session.id.as_str()) || idle < DORMANT_AFTER_SECS || state.status == HarnessStatus::Running {
+        if busy.contains(session.id.as_str())
+            || idle < DORMANT_AFTER_SECS
+            || state.status == HarnessStatus::Running
+        {
             continue;
         }
         if dormant.len() < 8 {
             let last_said = session_full_state(&session.id).and_then(|full| {
                 full.events.iter().rev().find_map(|event| match event {
-                    crate::harness::HarnessEvent::AssistantText { text, .. } => Some(one_line(text, 220)),
+                    crate::harness::HarnessEvent::AssistantText { text, .. } => {
+                        Some(one_line(text, 220))
+                    }
                     _ => None,
                 })
             });
@@ -385,7 +468,10 @@ fn waiting_and_dormant(tasks: &[crate::coordination::Task], now: i64) -> (Vec<St
 
 /// Blocked tasks that are only waiting on unfinished blockers, with the
 /// blockers' titles: planned work that starts by itself, not stuck work.
-fn waiting_on(daemon: &Shared, tasks: &[crate::coordination::Task]) -> std::collections::HashMap<String, Vec<String>> {
+fn waiting_on(
+    daemon: &Shared,
+    tasks: &[crate::coordination::Task],
+) -> std::collections::HashMap<String, Vec<String>> {
     tasks
         .iter()
         .filter(|t| t.status == TaskStatus::Blocked)
@@ -406,7 +492,9 @@ fn waiting_on(daemon: &Shared, tasks: &[crate::coordination::Task]) -> std::coll
 
 /// Open goals with nothing moving them, and goals whose checks all have evidence.
 fn goal_attention_lines(store: &crate::store::Store) -> Vec<String> {
-    let goals = store.list_goals(Some(crate::coordination::GoalStatus::Open)).unwrap_or_default();
+    let goals = store
+        .list_goals(Some(crate::coordination::GoalStatus::Open))
+        .unwrap_or_default();
     if goals.is_empty() {
         return vec!["- none recorded: every outcome the user is still pursuing belongs in create_goal, not as prose in your brief.".to_string()];
     }
@@ -416,19 +504,38 @@ fn goal_attention_lines(store: &crate::store::Store) -> Vec<String> {
         .collect()
 }
 
-fn goal_attention_line(goal: &crate::coordination::Goal, tasks: &[crate::coordination::Task]) -> Option<String> {
+fn goal_attention_line(
+    goal: &crate::coordination::Goal,
+    tasks: &[crate::coordination::Task],
+) -> Option<String> {
     use crate::coordination::goals::{Attention, attention, progress};
     let (done, total) = progress(tasks);
     let drive = goal.drive();
     let now = chrono::Utc::now().timestamp();
-    let next = if drive.next_step.is_empty() { String::new() } else { format!(" · next: {}", drive.next_step) };
-    let due = if drive.due.is_empty() { String::new() } else { format!(" · due {}", drive.due) };
+    let next = if drive.next_step.is_empty() {
+        String::new()
+    } else {
+        format!(" · next: {}", drive.next_step)
+    };
+    let due = if drive.due.is_empty() {
+        String::new()
+    } else {
+        format!(" · due {}", drive.due)
+    };
     let Some(need) = attention(goal, tasks) else {
-        return drive.due_soon(now).then(|| format!("- due soon · {} · {} · {done}/{total} slices done{next}{due}", goal.title, goal.id));
+        return drive.due_soon(now).then(|| {
+            format!(
+                "- due soon · {} · {} · {done}/{total} slices done{next}{due}",
+                goal.title, goal.id
+            )
+        });
     };
     Some(match need {
         Attention::Waiting => {
-            let waited = drive.waiting_days(now).map(|d| format!(" · waiting {d}d")).unwrap_or_default();
+            let waited = drive
+                .waiting_days(now)
+                .map(|d| format!(" · waiting {d}d"))
+                .unwrap_or_default();
             let nudged = match drive.days_since_nudge(now) {
                 Some(d) => format!(" · nudged {} times, last {d}d ago", drive.nudges),
                 None => " · not nudged yet".to_string(),
@@ -438,13 +545,32 @@ fn goal_attention_line(goal: &crate::coordination::Goal, tasks: &[crate::coordin
                 (true, false) => " · NUDGE DUE",
                 _ => "",
             };
-            format!("- waiting on the user · {} · {} · {}{waited}{nudged}{due}{call}", goal.title, goal.id, drive.waiting_on)
+            format!(
+                "- waiting on the user · {} · {} · {}{waited}{nudged}{due}{call}",
+                goal.title, goal.id, drive.waiting_on
+            )
         }
-        Attention::ReadyToClose => format!("- ready to close · {} · {} · every check has evidence, {done}/{total} slices done", goal.title, goal.id),
+        Attention::ReadyToClose => format!(
+            "- ready to close · {} · {} · every check has evidence, {done}/{total} slices done",
+            goal.title, goal.id
+        ),
         Attention::Stalled => {
-            let stuck: Vec<&str> = tasks.iter().filter(|t| matches!(t.status, TaskStatus::Failed | TaskStatus::Blocked)).map(|t| t.title.as_str()).collect();
-            let why = if tasks.is_empty() { "no tasks filed".to_string() } else if stuck.is_empty() { format!("{done}/{total} slices done, none running") } else { format!("{done}/{total} done, stuck: {}", stuck.join(", ")) };
-            format!("- stalled · {} · {} · {why}{next}{due}", goal.title, goal.id)
+            let stuck: Vec<&str> = tasks
+                .iter()
+                .filter(|t| matches!(t.status, TaskStatus::Failed | TaskStatus::Blocked))
+                .map(|t| t.title.as_str())
+                .collect();
+            let why = if tasks.is_empty() {
+                "no tasks filed".to_string()
+            } else if stuck.is_empty() {
+                format!("{done}/{total} slices done, none running")
+            } else {
+                format!("{done}/{total} done, stuck: {}", stuck.join(", "))
+            };
+            format!(
+                "- stalled · {} · {} · {why}{next}{due}",
+                goal.title, goal.id
+            )
         }
     })
 }
@@ -479,12 +605,21 @@ fn round_envelope(
     let mut out = String::from("[automated_wake]\n");
     out.push_str(&format!(
         "time: {}\nlast wake: {}\n",
-        mission_autonomy::user_now(&state.settings).format("%a %d %b %H:%M (UTC%:z, the user's time)"),
-        if since == 0 { "never (automated wakes were just switched on)".to_string() } else { ago(now - since) }
+        mission_autonomy::user_now(&state.settings)
+            .format("%a %d %b %H:%M (UTC%:z, the user's time)"),
+        if since == 0 {
+            "never (automated wakes were just switched on)".to_string()
+        } else {
+            ago(now - since)
+        }
     ));
     if mission_autonomy::in_quiet_hours(&state.settings) {
         out.push_str("quiet hours: yes — non-urgent pings are held until morning\n");
-    } else if state.day_opened != mission_autonomy::user_now(&state.settings).format("%Y-%m-%d").to_string() {
+    } else if state.day_opened
+        != mission_autonomy::user_now(&state.settings)
+            .format("%Y-%m-%d")
+            .to_string()
+    {
         out.push_str("\n## Start of the user's day\nYour first wake today. Open their day in a few lines, by speech or ping as well as here: what finished, what's stuck on them, what's out there worth their attention (deadlines, scout and recurring findings, an opening), and the two or three things you'd do today with your pick.\n");
     }
 
@@ -511,20 +646,33 @@ fn round_envelope(
             let session = session_status(&t.session_id);
             let note = match session.as_ref().map(|s| s.status) {
                 _ if waiting.contains_key(&t.id) => {
-                    format!("waiting on {} — starts by itself", waiting[&t.id].join(", "))
+                    format!(
+                        "waiting on {} — starts by itself",
+                        waiting[&t.id].join(", ")
+                    )
                 }
                 _ if offers.contains_key(&t.id) => {
-                    format!("offered to {}, not claimed yet ({})", offers[&t.id], ago(idle))
+                    format!(
+                        "offered to {}, not claimed yet ({})",
+                        offers[&t.id],
+                        ago(idle)
+                    )
                 }
                 Some(HarnessStatus::Running) => "worker running".to_string(),
                 Some(HarnessStatus::WaitingForInput) => "worker waiting for input".to_string(),
                 _ if t.status == TaskStatus::InProgress && idle > STALL_SECS => {
-                    format!("no worker activity, last update {} — may be stalled", ago(idle))
+                    format!(
+                        "no worker activity, last update {} — may be stalled",
+                        ago(idle)
+                    )
                 }
                 _ => format!("updated {}", ago(idle)),
             };
             let progress = plan_progress(t);
-            format!("- {} · {} · {} · {}{progress}", t.status, t.title, t.id, note)
+            format!(
+                "- {} · {} · {} · {}{progress}",
+                t.status, t.title, t.id, note
+            )
         })
         .collect();
     out.push_str("\n\n## Open work\n");
@@ -552,7 +700,11 @@ fn round_envelope(
     if !upcoming.is_empty() {
         out.push_str("\n\n## Wake-ups scheduled\n");
         for f in upcoming.into_iter().take(10) {
-            out.push_str(&format!("- in {} min: {}\n", ((f.due_at - now) / 60).max(0), f.note));
+            out.push_str(&format!(
+                "- in {} min: {}\n",
+                ((f.due_at - now) / 60).max(0),
+                f.note
+            ));
         }
     }
 
@@ -560,7 +712,14 @@ fn round_envelope(
         .iter()
         .filter(|t| t.status == TaskStatus::Done && secs_since(&t.updated_at, now) < 2 * 86400)
         .take(8)
-        .map(|t| format!("- {} · {} · finished {}", t.title, t.id, ago(secs_since(&t.updated_at, now))))
+        .map(|t| {
+            format!(
+                "- {} · {} · finished {}",
+                t.title,
+                t.id,
+                ago(secs_since(&t.updated_at, now))
+            )
+        })
         .collect();
     if !finished.is_empty() {
         out.push_str("\n\n## Finished in the last two days (any next step or follow-up due?)\n");
@@ -594,9 +753,16 @@ fn round_summary(
     due: &[mission_autonomy::Followup],
 ) -> String {
     let open = tasks.iter().filter(|t| !t.status.is_terminal()).count();
-    let mut parts = vec![format!("{open} open task{}", if open == 1 { "" } else { "s" })];
+    let mut parts = vec![format!(
+        "{open} open task{}",
+        if open == 1 { "" } else { "s" }
+    )];
     if !due.is_empty() {
-        parts.push(format!("{} wake-up{} due", due.len(), if due.len() == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{} wake-up{} due",
+            due.len(),
+            if due.len() == 1 { "" } else { "s" }
+        ));
     }
     if state.last_round_at == 0 {
         parts.insert(0, "automated wakes switched on".to_string());
@@ -609,7 +775,10 @@ mod tests {
     use super::*;
 
     fn due() -> RoundInputs {
-        RoundInputs { interval_due: true, ..RoundInputs::default() }
+        RoundInputs {
+            interval_due: true,
+            ..RoundInputs::default()
+        }
     }
 
     #[test]
@@ -619,34 +788,98 @@ mod tests {
 
     #[test]
     fn quiet_hours_need_a_change_or_completed_runs() {
-        let quiet = RoundInputs { quiet: true, ..due() };
-        assert_eq!(round_decision(quiet), Round::Skip("quiet hours and nothing changed"));
-        assert_eq!(round_decision(RoundInputs { board_changed: true, ..quiet }), Round::Fire);
-        assert_eq!(round_decision(RoundInputs { run_notes: true, ..quiet }), Round::Fire);
-        assert_eq!(round_decision(RoundInputs { first: true, ..quiet }), Round::Fire);
+        let quiet = RoundInputs {
+            quiet: true,
+            ..due()
+        };
+        assert_eq!(
+            round_decision(quiet),
+            Round::Skip("quiet hours and nothing changed")
+        );
+        assert_eq!(
+            round_decision(RoundInputs {
+                board_changed: true,
+                ..quiet
+            }),
+            Round::Fire
+        );
+        assert_eq!(
+            round_decision(RoundInputs {
+                run_notes: true,
+                ..quiet
+            }),
+            Round::Fire
+        );
+        assert_eq!(
+            round_decision(RoundInputs {
+                first: true,
+                ..quiet
+            }),
+            Round::Fire
+        );
     }
 
     #[test]
     fn followups_fire_any_time_and_nothing_fires_before_the_interval() {
-        let quiet_followup = RoundInputs { quiet: true, followups_due: true, ..RoundInputs::default() };
+        let quiet_followup = RoundInputs {
+            quiet: true,
+            followups_due: true,
+            ..RoundInputs::default()
+        };
         assert_eq!(round_decision(quiet_followup), Round::Fire);
-        assert_eq!(round_decision(RoundInputs { board_changed: true, ..RoundInputs::default() }), Round::NotDue);
+        assert_eq!(
+            round_decision(RoundInputs {
+                board_changed: true,
+                ..RoundInputs::default()
+            }),
+            Round::NotDue
+        );
     }
 
     #[test]
     fn goal_lines_name_stalled_and_ready_goals() {
         use crate::coordination::{Goal, GoalCriterion, Task, VerifyMethod};
-        let mut goal = Goal::new("g".into(), "Launch".into(), "Live".into(), vec![GoalCriterion { criterion: "ok".into(), method: VerifyMethod::Command, evidence: String::new(), dropped: String::new() }], "u".into(), "2026-01-01T00:00:00Z".into());
+        let mut goal = Goal::new(
+            "g".into(),
+            "Launch".into(),
+            "Live".into(),
+            vec![GoalCriterion {
+                criterion: "ok".into(),
+                method: VerifyMethod::Command,
+                evidence: String::new(),
+                dropped: String::new(),
+            }],
+            "u".into(),
+            "2026-01-01T00:00:00Z".into(),
+        );
         let task = |id: &str, status| {
-            let mut t = Task::filed_by_human(id.into(), format!("T{id}"), "d".into(), "s".into(), 0, "2026-01-01T00:00:00Z".into());
+            let mut t = Task::filed_by_human(
+                id.into(),
+                format!("T{id}"),
+                "d".into(),
+                "s".into(),
+                0,
+                "2026-01-01T00:00:00Z".into(),
+            );
             t.status = status;
             t
         };
-        assert_eq!(goal_attention_line(&goal, &[]).unwrap(), "- stalled · Launch · g · no tasks filed");
-        let line = goal_attention_line(&goal, &[task("a", TaskStatus::Done), task("b", TaskStatus::Failed)]).unwrap();
+        assert_eq!(
+            goal_attention_line(&goal, &[]).unwrap(),
+            "- stalled · Launch · g · no tasks filed"
+        );
+        let line = goal_attention_line(
+            &goal,
+            &[task("a", TaskStatus::Done), task("b", TaskStatus::Failed)],
+        )
+        .unwrap();
         assert!(line.contains("1/2 done, stuck: Tb"), "{line}");
         assert!(goal_attention_line(&goal, &[task("a", TaskStatus::InProgress)]).is_none());
         goal.attach_evidence(&[("1".into(), "ran".into())]);
-        assert!(goal_attention_line(&goal, &[task("a", TaskStatus::Done)]).unwrap().starts_with("- ready to close · Launch"));
+        assert!(
+            goal_attention_line(&goal, &[task("a", TaskStatus::Done)])
+                .unwrap()
+                .starts_with("- ready to close · Launch")
+        );
     }
 }

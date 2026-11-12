@@ -90,11 +90,23 @@ impl CodingHarness {
                 && let Some(call) = output.calls.iter().find(|c| c.tool_name == "read_memory")
             {
                 reads += 1;
-                let files = call.arguments.get("files").and_then(Value::as_array).cloned().unwrap_or_default();
-                self.memory_log(&format!("compaction memory opened: {}", opened_names(&files)));
+                let files = call
+                    .arguments
+                    .get("files")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                self.memory_log(&format!(
+                    "compaction memory opened: {}",
+                    opened_names(&files)
+                ));
                 seen.extend(files.iter().map(file_key));
                 opened.push_str(&read_topic_files(&repos, &files));
-                if !output.calls.iter().any(|c| c.tool_name == "update_memory" || c.tool_name == "write_table") {
+                if !output
+                    .calls
+                    .iter()
+                    .any(|c| c.tool_name == "update_memory" || c.tool_name == "write_table")
+                {
                     continue;
                 }
             }
@@ -106,7 +118,10 @@ impl CodingHarness {
                 let unseen = unseen_files(&repos, &call.arguments, &seen);
                 if !unseen.is_empty() {
                     held = true;
-                    self.memory_log(&format!("compaction memory held back, opened: {}", opened_names(&unseen)));
+                    self.memory_log(&format!(
+                        "compaction memory held back, opened: {}",
+                        opened_names(&unseen)
+                    ));
                     seen.extend(unseen.iter().map(file_key));
                     opened.push_str(&read_topic_files(&repos, &unseen));
                     feedback = "Your update_memory changed files whose entries you hadn't seen, so nothing was saved yet; they are under OPENED TOPIC FILES now. Call update_memory again with the full changes, replacing entries your new ones change or contradict, and write_table.".to_string();
@@ -153,17 +168,18 @@ impl CodingHarness {
                 .get("user_requests")
                 .map(|s| s.trim().is_empty())
                 .unwrap_or(true)
-                && let Some(pos) = window_text.find("CHRONOLOGICAL USER REQUESTS TO PRESERVE") {
-                    let rest = &window_text[pos..];
-                    if let Some(start) = rest.find('\n') {
-                        let candidate = &rest[start + 1..];
-                        let end = candidate.find("\n\n").unwrap_or(candidate.len());
-                        let req_text = candidate[..end].trim();
-                        if !req_text.is_empty() {
-                            sections.insert("user_requests", req_text.to_string());
-                        }
+                && let Some(pos) = window_text.find("CHRONOLOGICAL USER REQUESTS TO PRESERVE")
+            {
+                let rest = &window_text[pos..];
+                if let Some(start) = rest.find('\n') {
+                    let candidate = &rest[start + 1..];
+                    let end = candidate.find("\n\n").unwrap_or(candidate.len());
+                    let req_text = candidate[..end].trim();
+                    if !req_text.is_empty() {
+                        sections.insert("user_requests", req_text.to_string());
                     }
                 }
+            }
 
             let missing = required_missing(&sections);
             if !missing.is_empty() {
@@ -248,7 +264,10 @@ impl CodingHarness {
                 && let Some(files) = parse_reflection_read(&reply)
             {
                 reads += 1;
-                self.memory_log(&format!("memory reflection opened: {}", opened_names(&files)));
+                self.memory_log(&format!(
+                    "memory reflection opened: {}",
+                    opened_names(&files)
+                ));
                 seen.extend(files.iter().map(file_key));
                 messages.push(HarnessMessage::Assistant {
                     content: reply,
@@ -266,7 +285,10 @@ impl CodingHarness {
             let unseen = unseen_files(&repos, &changes, &seen);
             if !held && !unseen.is_empty() {
                 held = true;
-                self.memory_log(&format!("memory reflection held back, opened: {}", opened_names(&unseen)));
+                self.memory_log(&format!(
+                    "memory reflection held back, opened: {}",
+                    opened_names(&unseen)
+                ));
                 seen.extend(unseen.iter().map(file_key));
                 messages.push(HarnessMessage::Assistant {
                     content: reply,
@@ -308,8 +330,14 @@ impl CodingHarness {
 
     /// Curate memory for a stored session with no live loop (used before settling it).
     /// `Ok(false)` means there was nothing to reflect on or reflection is off.
-    pub async fn reflect_stored_session(&self, model: &mut dyn AgentModel) -> Result<bool, ToolError> {
-        if !self.config.memory_enabled || !self.config.memory_reflect || self.context.agent_id().is_some() {
+    pub async fn reflect_stored_session(
+        &self,
+        model: &mut dyn AgentModel,
+    ) -> Result<bool, ToolError> {
+        if !self.config.memory_enabled
+            || !self.config.memory_reflect
+            || self.context.agent_id().is_some()
+        {
             return Ok(false);
         }
         let Some(mut state) = self.load_from_store().await? else {
@@ -342,8 +370,14 @@ pub(super) fn reflection_scope(state: &HarnessState) -> Option<String> {
             .unwrap_or(0),
     };
     let events = &state.events[start..];
-    let tools = events.iter().filter(|e| matches!(e, HarnessEvent::ToolResult { .. })).count();
-    let asks = events.iter().filter(|e| matches!(e, HarnessEvent::UserInput { .. })).count();
+    let tools = events
+        .iter()
+        .filter(|e| matches!(e, HarnessEvent::ToolResult { .. }))
+        .count();
+    let asks = events
+        .iter()
+        .filter(|e| matches!(e, HarnessEvent::UserInput { .. }))
+        .count();
     if tools < 100 || asks < 4 {
         return None;
     }
@@ -364,9 +398,14 @@ pub(super) fn reflection_instruction(repos: &[crate::memory::MemoryRepo], since:
     let scope = if since.is_empty() {
         String::new()
     } else {
-        format!("\n\nCover everything since memory was last curated: from the user's message that begins \"{since}\" to now, including requests too small to have been reflected on.")
+        format!(
+            "\n\nCover everything since memory was last curated: from the user's message that begins \"{since}\" to now, including requests too small to have been reflected on."
+        )
     };
-    format!("{REFLECTION_INSTRUCTION}{scope}\n\nMemory now, by each repo's MEMORY.md and index:\n{}", render_indexes(repos))
+    format!(
+        "{REFLECTION_INSTRUCTION}{scope}\n\nMemory now, by each repo's MEMORY.md and index:\n{}",
+        render_indexes(repos)
+    )
 }
 
 pub(super) fn reflection_opened(repos: &[crate::memory::MemoryRepo], files: &[Value]) -> String {
@@ -380,7 +419,12 @@ pub(super) fn opened_names(files: &[Value]) -> String {
     files
         .iter()
         .map(|f| {
-            let text = |key: &str| f.get(key).and_then(Value::as_str).unwrap_or("?").to_string();
+            let text = |key: &str| {
+                f.get(key)
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .to_string()
+            };
             format!("{}:{}", text("scope"), text("file"))
         })
         .collect::<Vec<_>>()
@@ -388,21 +432,49 @@ pub(super) fn opened_names(files: &[Value]) -> String {
 }
 
 pub(super) fn file_key(item: &Value) -> String {
-    let text = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let text = |key: &str| {
+        item.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
     let file = text("file");
-    format!("{}:{}", text("scope"), crate::memory::topic_file(&file).unwrap_or(file))
+    format!(
+        "{}:{}",
+        text("scope"),
+        crate::memory::topic_file(&file).unwrap_or(file)
+    )
 }
 
 /// Existing topic files the changes write to whose entries the pass hasn't
 /// opened, as `{"scope", "file"}`. MEMORY.md is always in view, so it never
 /// counts.
-pub(super) fn unseen_files(repos: &[crate::memory::MemoryRepo], changes: &Value, seen: &HashSet<String>) -> Vec<Value> {
+pub(super) fn unseen_files(
+    repos: &[crate::memory::MemoryRepo],
+    changes: &Value,
+    seen: &HashSet<String>,
+) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     let mut keys: HashSet<String> = HashSet::new();
-    for change in changes.get("changes").and_then(Value::as_array).into_iter().flatten() {
-        let text = |key: &str| change.get(key).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    for change in changes
+        .get("changes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let text = |key: &str| {
+            change
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
         let (scope, file) = (text("scope"), text("file"));
-        let Ok(topic) = crate::memory::topic_file(&file) else { continue };
+        let Ok(topic) = crate::memory::topic_file(&file) else {
+            continue;
+        };
         if topic == crate::memory::ENTRY_FILE {
             continue;
         }
@@ -435,7 +507,11 @@ pub(super) fn parse_reflection_read(text: &str) -> Option<Vec<Value>> {
     if value.get("changes").is_some() {
         return None;
     }
-    value.get("read").and_then(Value::as_array).filter(|files| !files.is_empty()).cloned()
+    value
+        .get("read")
+        .and_then(Value::as_array)
+        .filter(|files| !files.is_empty())
+        .cloned()
 }
 
 pub(super) fn reflection_retry(applied: &[(String, String)], errors: &[String]) -> String {
@@ -444,7 +520,11 @@ pub(super) fn reflection_retry(applied: &[(String, String)], errors: &[String]) 
         if applied.is_empty() {
             "(nothing)".to_string()
         } else {
-            applied.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>().join("\n")
+            applied
+                .iter()
+                .map(|(_, l)| l.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
         },
         errors.join("\n")
     )
@@ -453,7 +533,10 @@ pub(super) fn reflection_retry(applied: &[(String, String)], errors: &[String]) 
 /// The `{"changes": [...]}` object in a reflection reply, fenced or bare.
 pub(super) fn parse_reflection(text: &str) -> Option<Value> {
     let value = json_object(text)?;
-    value.get("changes").is_some_and(Value::is_array).then_some(value)
+    value
+        .get("changes")
+        .is_some_and(Value::is_array)
+        .then_some(value)
 }
 
 fn json_object(text: &str) -> Option<Value> {
@@ -500,17 +583,28 @@ pub(super) fn read_topic_files(repos: &[crate::memory::MemoryRepo], files: &[Val
     const FILE_CHARS: usize = 6_000;
     let mut out = String::new();
     for item in files.iter().take(MAX_FILES) {
-        let text = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+        let text = |key: &str| {
+            item.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
         let (scope, file) = (text("scope"), text("file"));
         let body = crate::memory::ScopeKind::parse(&scope)
             .and_then(|kind| repos.iter().find(|r| r.kind == kind))
             .ok_or_else(|| format!("no {scope:?} scope in this session"))
             .and_then(|repo| repo.read_file(&crate::memory::topic_file(&file)?))
             .unwrap_or_else(|e| format!("({e})"));
-        out.push_str(&format!("--- {scope} {file} ---\n{}\n", clip(body.trim(), FILE_CHARS)));
+        out.push_str(&format!(
+            "--- {scope} {file} ---\n{}\n",
+            clip(body.trim(), FILE_CHARS)
+        ));
     }
     if files.len() > MAX_FILES {
-        out.push_str(&format!("({} more not opened; ask for at most {MAX_FILES})\n", files.len() - MAX_FILES));
+        out.push_str(&format!(
+            "({} more not opened; ask for at most {MAX_FILES})\n",
+            files.len() - MAX_FILES
+        ));
     }
     out
 }
@@ -531,7 +625,13 @@ pub(super) fn apply_changes(
         .cloned()
         .unwrap_or_default();
     for change in changes {
-        let text = |key: &str| change.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+        let text = |key: &str| {
+            change
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
         let scope = text("scope");
         let file = text("file");
         let Some(repo) = crate::memory::ScopeKind::parse(&scope)
@@ -546,7 +646,10 @@ pub(super) fn apply_changes(
             if entry.contains("[source:") {
                 entry
             } else if is_date(expires) {
-                format!("{} [source: {source}; added: {today}; expires: {expires}]", entry.trim())
+                format!(
+                    "{} [source: {source}; added: {today}; expires: {expires}]",
+                    entry.trim()
+                )
             } else {
                 format!("{} [source: {source}; added: {today}]", entry.trim())
             }
@@ -568,5 +671,3 @@ pub(super) fn apply_changes(
 fn is_date(text: &str) -> bool {
     chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok()
 }
-
-

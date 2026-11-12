@@ -13,7 +13,9 @@ use crate::tools::ToolError;
 /// (not a total timeout) never cuts off a long-but-active generation, since each
 /// received chunk resets it.
 pub fn model_http_client(user_agent: Option<&str>) -> reqwest::Client {
-    static CLIENTS: std::sync::OnceLock<Mutex<std::collections::HashMap<Option<String>, reqwest::Client>>> = std::sync::OnceLock::new();
+    static CLIENTS: std::sync::OnceLock<
+        Mutex<std::collections::HashMap<Option<String>, reqwest::Client>>,
+    > = std::sync::OnceLock::new();
     let mut clients = CLIENTS.get_or_init(Default::default).lock().unwrap();
     clients
         .entry(user_agent.map(str::to_string))
@@ -148,9 +150,21 @@ pub fn degrade_effort(current: &str) -> Option<&'static str> {
 /// one-shot runs stream nothing and keep the buffered path.
 #[derive(Debug, Clone)]
 pub enum ToolArgEvent {
-    Start { call_id: String, name: String },
-    Delta { call_id: String, chunk: String },
-    End { call_id: String },
+    Start {
+        call_id: String,
+        name: String,
+    },
+    Delta {
+        call_id: String,
+        chunk: String,
+    },
+    End {
+        call_id: String,
+    },
+    /// Visible answer text the model is streaming (voice turns only).
+    Text {
+        chunk: String,
+    },
     Reset,
 }
 
@@ -210,15 +224,23 @@ impl StreamBuffer {
     pub fn tool_event<'a>(handle: impl Into<Option<&'a StreamHandle>>, ev: ToolArgEvent) {
         if let Some(handle) = handle.into()
             && let Ok(buf) = handle.lock()
-                && let Some(tap) = &buf.tool_tap {
-                    let _ = tap.send(ev);
-                }
+            && let Some(tap) = &buf.tool_tap
+        {
+            let _ = tap.send(ev);
+        }
     }
 
     pub fn append(handle: &StreamHandle, delta: &str) {
         if let Ok(mut buf) = handle.lock() {
             buf.text.push_str(delta);
             buf.changed.signal();
+            if buf.voice_turn
+                && let Some(tap) = &buf.tool_tap
+            {
+                let _ = tap.send(ToolArgEvent::Text {
+                    chunk: delta.to_string(),
+                });
+            }
         }
     }
 
@@ -289,7 +311,11 @@ pub fn system_reminder(content: &str) -> String {
 /// Attach a harness note to the end of a Responses-API input list: into the
 /// last function_call_output's text or the last user message, else as a new
 /// user message.
-pub fn attach_reminder_to_items(input: &mut Vec<Value>, content: &str, user_item: impl Fn(&str) -> Value) {
+pub fn attach_reminder_to_items(
+    input: &mut Vec<Value>,
+    content: &str,
+    user_item: impl Fn(&str) -> Value,
+) {
     let note = system_reminder(content);
     if let Some(last) = input.last_mut() {
         if last.get("type").and_then(Value::as_str) == Some("function_call_output")
@@ -356,7 +382,10 @@ fn render_fields(obj: &serde_json::Map<String, Value>, out: &mut String) {
     for (key, value) in obj {
         match value {
             Value::String(s) if s.contains('\n') || s.chars().count() > 200 => {
-                blocks.push_str(&format!("[{key}]\n{}\n[/{key}]\n", s.trim_end_matches('\n')));
+                blocks.push_str(&format!(
+                    "[{key}]\n{}\n[/{key}]\n",
+                    s.trim_end_matches('\n')
+                ));
             }
             Value::String(s) => out.push_str(&format!("{key}: {s}\n")),
             Value::Array(_) | Value::Object(_) => {

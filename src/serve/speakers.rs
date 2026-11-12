@@ -49,7 +49,13 @@ pub(crate) struct Speakers {
 
 impl Speakers {
     #[cfg(test)]
-    pub fn assign(&mut self, key: &str, at_ms: i64, voice: Option<&VoiceScore>, played: bool) -> Speaker {
+    pub fn assign(
+        &mut self,
+        key: &str,
+        at_ms: i64,
+        voice: Option<&VoiceScore>,
+        played: bool,
+    ) -> Speaker {
         self.assign_with_tag(key, at_ms, voice, None, played)
     }
 
@@ -86,13 +92,21 @@ impl Speakers {
         if self.you_ms.is_some_and(|t| now_ms - t <= KEEP_MS) {
             out.push(Speaker::You.label());
         }
-        for c in self.clusters.iter().filter(|c| now_ms - c.last_ms <= KEEP_MS) {
+        for c in self
+            .clusters
+            .iter()
+            .filter(|c| now_ms - c.last_ms <= KEEP_MS)
+        {
             let lbl = Speaker::Voice(c.n).label();
             if !out.contains(&lbl) {
                 out.push(lbl);
             }
         }
-        for (_, sp, _) in self.stt_tags.iter().filter(|(_, _, t)| now_ms - *t <= KEEP_MS) {
+        for (_, sp, _) in self
+            .stt_tags
+            .iter()
+            .filter(|(_, _, t)| now_ms - *t <= KEEP_MS)
+        {
             if *sp != Speaker::Unknown {
                 let lbl = sp.label();
                 if !out.contains(&lbl) {
@@ -144,7 +158,11 @@ impl Speakers {
                 .iter_mut()
                 .map(|c| (cosine(emb, &c.centroid), c))
                 .max_by(|a, b| a.0.total_cmp(&b.0));
-            let need = if v.voiced_secs >= FOUND_SECS { JOIN } else { JOIN_SHORT };
+            let need = if v.voiced_secs >= FOUND_SECS {
+                JOIN
+            } else {
+                JOIN_SHORT
+            };
             if let Some((_, c)) = best.filter(|(sim, _)| *sim >= need) {
                 let sp = Speaker::Voice(c.n);
                 if learn {
@@ -152,7 +170,13 @@ impl Speakers {
                     for (x, y) in c.centroid.iter_mut().zip(emb) {
                         *x = *x * (1.0 - w) + y * w;
                     }
-                    let norm = c.centroid.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-6);
+                    let norm = c
+                        .centroid
+                        .iter()
+                        .map(|x| x * x)
+                        .sum::<f32>()
+                        .sqrt()
+                        .max(1e-6);
                     c.centroid.iter_mut().for_each(|x| *x /= norm);
                     c.count += 1;
                     c.last_ms = at_ms;
@@ -171,7 +195,12 @@ impl Speakers {
                     self.next += 1;
                     self.next
                 };
-                self.clusters.push(Cluster { n, centroid: emb.to_vec(), count: 1, last_ms: at_ms });
+                self.clusters.push(Cluster {
+                    n,
+                    centroid: emb.to_vec(),
+                    count: 1,
+                    last_ms: at_ms,
+                });
                 let sp = Speaker::Voice(n);
                 if let Some(t) = tag {
                     self.record_tag(t, sp, at_ms);
@@ -194,7 +223,10 @@ impl Speakers {
     }
 
     fn lookup_tag(&mut self, tag: &str, at_ms: i64, learn: bool) -> Option<Speaker> {
-        let entry = self.stt_tags.iter_mut().find(|(k, _, t)| k == tag && at_ms - *t <= KEEP_MS)?;
+        let entry = self
+            .stt_tags
+            .iter_mut()
+            .find(|(k, _, t)| k == tag && at_ms - *t <= KEEP_MS)?;
         if learn {
             entry.2 = at_ms;
             if entry.1 == Speaker::You {
@@ -220,7 +252,9 @@ impl Speakers {
 
 fn book() -> std::sync::MutexGuard<'static, HashMap<String, Speakers>> {
     static BOOK: std::sync::OnceLock<Mutex<HashMap<String, Speakers>>> = std::sync::OnceLock::new();
-    BOOK.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+    BOOK.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 pub(crate) fn assign_with_tag(
@@ -231,7 +265,10 @@ pub(crate) fn assign_with_tag(
     stt_speaker: Option<&str>,
     played: bool,
 ) -> Speaker {
-    book().entry(device.to_string()).or_default().assign_with_tag(key, at_ms, voice, stt_speaker, played)
+    book()
+        .entry(device.to_string())
+        .or_default()
+        .assign_with_tag(key, at_ms, voice, stt_speaker, played)
 }
 
 pub(crate) fn peek(device: &str, at_ms: i64, voice: Option<&VoiceScore>) -> (Speaker, Vec<String>) {
@@ -251,7 +288,14 @@ mod tests {
     }
 
     fn voice(emb: &[f32], likelihood: f64, secs: f32) -> VoiceScore {
-        VoiceScore { neural: true, similarity: None, likelihood: Some(likelihood), voiced_secs: secs, embedding: Some(Arc::from(unit(emb))), ms: 0 }
+        VoiceScore {
+            neural: true,
+            similarity: None,
+            likelihood: Some(likelihood),
+            voiced_secs: secs,
+            embedding: Some(Arc::from(unit(emb))),
+            ms: 0,
+        }
     }
 
     #[test]
@@ -259,11 +303,27 @@ mod tests {
         let mut s = Speakers::default();
         let a = [1.0, 0.1, 0.0];
         let b = [0.0, 1.0, 0.1];
-        assert_eq!(s.assign("1", 0, Some(&voice(&[0.0, 0.0, 1.0], 0.95, 3.0)), false), Speaker::You);
-        assert_eq!(s.assign("2", 1000, Some(&voice(&a, 0.05, 3.0)), false), Speaker::Voice(1));
-        assert_eq!(s.assign("3", 2000, Some(&voice(&b, 0.05, 3.0)), false), Speaker::Voice(2));
-        assert_eq!(s.assign("4", 3000, Some(&voice(&[0.9, 0.2, 0.05], 0.05, 2.5)), false), Speaker::Voice(1));
-        assert_eq!(s.assign("2", 9000, None, false), Speaker::Voice(1), "cached per line");
+        assert_eq!(
+            s.assign("1", 0, Some(&voice(&[0.0, 0.0, 1.0], 0.95, 3.0)), false),
+            Speaker::You
+        );
+        assert_eq!(
+            s.assign("2", 1000, Some(&voice(&a, 0.05, 3.0)), false),
+            Speaker::Voice(1)
+        );
+        assert_eq!(
+            s.assign("3", 2000, Some(&voice(&b, 0.05, 3.0)), false),
+            Speaker::Voice(2)
+        );
+        assert_eq!(
+            s.assign("4", 3000, Some(&voice(&[0.9, 0.2, 0.05], 0.05, 2.5)), false),
+            Speaker::Voice(1)
+        );
+        assert_eq!(
+            s.assign("2", 9000, None, false),
+            Speaker::Voice(1),
+            "cached per line"
+        );
         assert_eq!(s.present(4000), ["You", "Voice 1", "Voice 2"]);
     }
 
@@ -271,17 +331,41 @@ mod tests {
     fn short_or_missing_clips_are_unknown_never_a_guess() {
         let mut s = Speakers::default();
         assert_eq!(s.assign("1", 0, None, false), Speaker::Unknown);
-        assert_eq!(s.assign("2", 0, Some(&voice(&[1.0, 0.0, 0.0], 0.05, 1.2)), false), Speaker::Unknown);
-        assert_eq!(s.assign("3", 0, Some(&voice(&[1.0, 0.0, 0.0], 0.05, 3.0)), false), Speaker::Voice(1));
-        assert_eq!(s.assign("4", 0, Some(&voice(&[0.5, 0.85, 0.0], 0.05, 1.2)), false), Speaker::Unknown);
-        assert_eq!(s.assign("5", 0, Some(&voice(&[0.0, 1.0, 0.0], 0.05, 3.0)), true), Speaker::Unknown, "played audio founds no voice");
+        assert_eq!(
+            s.assign("2", 0, Some(&voice(&[1.0, 0.0, 0.0], 0.05, 1.2)), false),
+            Speaker::Unknown
+        );
+        assert_eq!(
+            s.assign("3", 0, Some(&voice(&[1.0, 0.0, 0.0], 0.05, 3.0)), false),
+            Speaker::Voice(1)
+        );
+        assert_eq!(
+            s.assign("4", 0, Some(&voice(&[0.5, 0.85, 0.0], 0.05, 1.2)), false),
+            Speaker::Unknown
+        );
+        assert_eq!(
+            s.assign("5", 0, Some(&voice(&[0.0, 1.0, 0.0], 0.05, 3.0)), true),
+            Speaker::Unknown,
+            "played audio founds no voice"
+        );
     }
 
     #[test]
     fn voices_expire_after_ten_minutes() {
         let mut s = Speakers::default();
-        assert_eq!(s.assign("1", 0, Some(&voice(&[1.0, 0.0, 0.0], 0.05, 3.0)), false), Speaker::Voice(1));
-        assert_eq!(s.assign("2", KEEP_MS + 1, Some(&voice(&[0.0, 1.0, 0.0], 0.05, 3.0)), false), Speaker::Voice(1));
+        assert_eq!(
+            s.assign("1", 0, Some(&voice(&[1.0, 0.0, 0.0], 0.05, 3.0)), false),
+            Speaker::Voice(1)
+        );
+        assert_eq!(
+            s.assign(
+                "2",
+                KEEP_MS + 1,
+                Some(&voice(&[0.0, 1.0, 0.0], 0.05, 3.0)),
+                false
+            ),
+            Speaker::Voice(1)
+        );
         assert!(s.present(KEEP_MS + 1).len() == 1);
     }
 
@@ -290,13 +374,28 @@ mod tests {
         let mut s = Speakers::default();
         let u = voice(&[0.0, 0.0, 1.0], 0.92, 3.0);
         let other = voice(&[1.0, 0.0, 0.0], 0.05, 3.0);
-        assert_eq!(s.assign_with_tag("1", 1000, Some(&u), Some("A"), false), Speaker::You);
-        assert_eq!(s.assign_with_tag("2", 2000, Some(&other), Some("B"), false), Speaker::Voice(1));
+        assert_eq!(
+            s.assign_with_tag("1", 1000, Some(&u), Some("A"), false),
+            Speaker::You
+        );
+        assert_eq!(
+            s.assign_with_tag("2", 2000, Some(&other), Some("B"), false),
+            Speaker::Voice(1)
+        );
         // Short <1s clips with no neural score still resolve via anchored STT speaker tags
-        assert_eq!(s.assign_with_tag("3", 3000, None, Some("A"), false), Speaker::You);
-        assert_eq!(s.assign_with_tag("4", 4000, None, Some("B"), false), Speaker::Voice(1));
+        assert_eq!(
+            s.assign_with_tag("3", 3000, None, Some("A"), false),
+            Speaker::You
+        );
+        assert_eq!(
+            s.assign_with_tag("4", 4000, None, Some("B"), false),
+            Speaker::Voice(1)
+        );
         // New diarized speaker "C" without neural embedding founds Voice 2
-        assert_eq!(s.assign_with_tag("5", 5000, None, Some("C"), false), Speaker::Voice(2));
+        assert_eq!(
+            s.assign_with_tag("5", 5000, None, Some("C"), false),
+            Speaker::Voice(2)
+        );
         assert_eq!(s.present(5000), ["You", "Voice 1", "Voice 2"]);
     }
 }

@@ -157,9 +157,7 @@ pub(super) struct FsDeleteReq {
 
 // POST /fs/write {path, content, prev_hash?} — atomic write (temp + rename) with
 // optimistic-concurrency conflict detection. Token-gated; UTF-8 text only.
-pub(super) async fn write_fs_file(
-    Json(req): Json<FsWriteReq>,
-) -> Response {
+pub(super) async fn write_fs_file(Json(req): Json<FsWriteReq>) -> Response {
     if req.path.trim().is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "path required");
     }
@@ -193,13 +191,19 @@ pub(super) async fn write_fs_file(
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
     if let Err(e) = std::fs::create_dir_all(&parent) {
-        return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("create dir: {e}"));
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("create dir: {e}"),
+        );
     }
     let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     let tmp = parent.join(format!(".{fname}.snippet.tmp"));
     let bytes = req.content.into_bytes();
     if let Err(e) = std::fs::write(&tmp, &bytes) {
-        return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("write temp: {e}"));
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("write temp: {e}"),
+        );
     }
     if let Err(e) = std::fs::rename(&tmp, &path) {
         let _ = std::fs::remove_file(&tmp);
@@ -210,9 +214,7 @@ pub(super) async fn write_fs_file(
 }
 
 // POST /fs/mkdir {path} — create a new directory (token-gated).
-pub(super) async fn make_fs_dir(
-    Json(req): Json<FsMkdirReq>,
-) -> Response {
+pub(super) async fn make_fs_dir(Json(req): Json<FsMkdirReq>) -> Response {
     if req.path.trim().is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "path required");
     }
@@ -225,15 +227,16 @@ pub(super) async fn make_fs_dir(
             .into_response();
     }
     if let Err(e) = std::fs::create_dir_all(&path) {
-        return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("create dir: {e}"));
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("create dir: {e}"),
+        );
     }
     Json(serde_json::json!({"ok": true, "path": path.to_string_lossy()})).into_response()
 }
 
 // POST /fs/delete {path} — remove a file or directory (recursive). Token-gated.
-pub(super) async fn delete_fs_path(
-    Json(req): Json<FsDeleteReq>,
-) -> Response {
+pub(super) async fn delete_fs_path(Json(req): Json<FsDeleteReq>) -> Response {
     if req.path.trim().is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "path required");
     }
@@ -460,9 +463,7 @@ pub(super) struct UploadReq {
 // POST /fs/upload {data_base64, name?} — save an uploaded file (e.g. an image the
 // user posts from the app) to a temp dir and return its absolute path, which the
 // agent can then view with `view_image` (or read).
-pub(super) async fn upload_fs_file(
-    Json(req): Json<UploadReq>,
-) -> Response {
+pub(super) async fn upload_fs_file(Json(req): Json<UploadReq>) -> Response {
     use base64::Engine;
     let bytes = match base64::engine::general_purpose::STANDARD.decode(req.data_base64.trim()) {
         Ok(b) => b,
@@ -473,10 +474,13 @@ pub(super) async fn upload_fs_file(
     }
     const MAX_UPLOAD_FILE_BYTES: usize = 1024 * 1024 * 1024;
     if bytes.len() > MAX_UPLOAD_FILE_BYTES {
-        return api_error(StatusCode::PAYLOAD_TOO_LARGE, format!(
+        return api_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
                 "upload exceeds {} MB limit",
                 MAX_UPLOAD_FILE_BYTES / (1024 * 1024)
-            ));
+            ),
+        );
     }
     // Targeted upload into a directory under the original filename, or (default)
     // a temp dir with a generated name (for chat attachments).
@@ -488,7 +492,10 @@ pub(super) async fn upload_fs_file(
             .and_then(|n| n.to_str())
             .filter(|n| !n.is_empty());
         let Some(name) = name else {
-            return api_error(StatusCode::BAD_REQUEST, "name required when uploading to a directory");
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "name required when uploading to a directory",
+            );
         };
         let p = PathBuf::from(dir).join(name);
         if p.exists() {

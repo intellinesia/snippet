@@ -13,17 +13,17 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::{Json, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Router;
 use serde::Deserialize;
 
+use super::Shared;
 use crate::harness::{CodingHarness, HarnessConfig};
-use crate::memory::{MemoryRepo, ScopeKind, CONSOLIDATE_PREFIX};
+use crate::memory::{CONSOLIDATE_PREFIX, MemoryRepo, ScopeKind};
 use crate::session::{read_session_meta, state_path_for_id, status_str};
-use super::{Shared};
 
 const TICK: Duration = Duration::from_secs(300);
 const DAILY: i64 = 20 * 3600;
@@ -68,7 +68,11 @@ async fn edit_entry(Json(req): Json<EntryReq>) -> Response {
     };
     match result {
         Ok(msg) => {
-            let verb = if req.entry.is_some() { "Edit" } else { "Forget" };
+            let verb = if req.entry.is_some() {
+                "Edit"
+            } else {
+                "Forget"
+            };
             let _ = repo.commit_all(&format!("{verb} from the app"));
             Json(serde_json::json!({ "ok": true, "message": msg })).into_response()
         }
@@ -96,7 +100,10 @@ async fn list_scopes() -> Response {
         .filter(|repo| repo.kind != ScopeKind::Session && repo.exists())
         .map(|repo| {
             let entry = repo.entry_point();
-            let entries = entry.lines().filter(|l| l.trim_start().starts_with("- ")).count();
+            let entries = entry
+                .lines()
+                .filter(|l| l.trim_start().starts_with("- "))
+                .count();
             let last = repo.history(1).into_iter().next();
             let (pending, _) = repo.activity_since_consolidation();
             serde_json::json!({
@@ -166,7 +173,11 @@ fn session_owner(session_id: &str) -> (Option<String>, Option<String>) {
 }
 
 /// Session repos with commits newer than `since`, that feed `target`.
-fn sessions_feeding(target: &MemoryRepo, sessions: &[(MemoryRepo, Option<String>, Option<String>)], since: Option<i64>) -> Vec<MemoryRepo> {
+fn sessions_feeding(
+    target: &MemoryRepo,
+    sessions: &[(MemoryRepo, Option<String>, Option<String>)],
+    since: Option<i64>,
+) -> Vec<MemoryRepo> {
     sessions
         .iter()
         .filter(|(_, project, agent)| match target.kind {
@@ -184,10 +195,16 @@ fn sessions_feeding(target: &MemoryRepo, sessions: &[(MemoryRepo, Option<String>
 }
 
 async fn any_session_running(d: &Shared) -> bool {
-    let paths: Vec<PathBuf> = d.sessions.lock().await.values().map(|s| s.state_path.clone()).collect();
-    paths.iter().any(|sp| {
-        read_session_meta(sp).is_some_and(|state| status_str(state.status) == "running")
-    })
+    let paths: Vec<PathBuf> = d
+        .sessions
+        .lock()
+        .await
+        .values()
+        .map(|s| s.state_path.clone())
+        .collect();
+    paths
+        .iter()
+        .any(|sp| read_session_meta(sp).is_some_and(|state| status_str(state.status) == "running"))
 }
 
 pub async fn consolidation_loop(d: Shared) {
@@ -254,7 +271,9 @@ fn sweep(live: &[String]) {
             .map(|t| t.timestamp())
             .max(last_commit);
         let idle = last_active.is_some_and(|t| now - t > RETIRE_AFTER);
-        let read = last_commit.zip(global_consolidated).is_some_and(|(commit, consolidated)| consolidated > commit);
+        let read = last_commit
+            .zip(global_consolidated)
+            .is_some_and(|(commit, consolidated)| consolidated > commit);
         if idle && read {
             match repo.archive() {
                 Ok(()) => eprintln!("memory sweep: archived idle session memory {id}"),
@@ -300,7 +319,11 @@ fn due_repo() -> Option<MemoryRepo> {
         if fed.is_empty() && own == 0 && !over_budget {
             continue;
         }
-        let newest = fed.iter().filter_map(|s| s.activity_since_consolidation().1).max().max(own_newest);
+        let newest = fed
+            .iter()
+            .filter_map(|s| s.activity_since_consolidation().1)
+            .max()
+            .max(own_newest);
         let activity = fed.len() + own;
         let settled = newest.is_none_or(|t| now - t > SETTLE);
         let stale = last.is_none_or(|t| now - t > DAILY);
@@ -351,7 +374,10 @@ async fn consolidation(d: &Shared, repo: &MemoryRepo) -> Result<(), String> {
         chrono::Utc::now().format("%Y-%m-%d"),
         repo.files()
             .iter()
-            .map(|f| format!("- {f} ({} chars)", repo.read_file(f).map(|t| t.chars().count()).unwrap_or(0)))
+            .map(|f| format!(
+                "- {f} ({} chars)",
+                repo.read_file(f).map(|t| t.chars().count()).unwrap_or(0)
+            ))
             .collect::<Vec<_>>()
             .join("\n"),
     );
@@ -368,7 +394,10 @@ async fn consolidation(d: &Shared, repo: &MemoryRepo) -> Result<(), String> {
     }
     let recent = repo.git(&log_args).unwrap_or_default();
     if !recent.trim().is_empty() {
-        brief.push_str(&format!("\nChanges since the last consolidation:\n{}\n", recent.trim()));
+        brief.push_str(&format!(
+            "\nChanges since the last consolidation:\n{}\n",
+            recent.trim()
+        ));
     }
     if sessions.is_empty() {
         brief.push_str("\nNo session memories changed since the last consolidation.\n");
@@ -392,7 +421,14 @@ async fn consolidation(d: &Shared, repo: &MemoryRepo) -> Result<(), String> {
         let routed: Vec<(String, crate::config::InferenceProfileConfig)> =
             crate::routing::candidates(&config, crate::routing::Route::Memory)
                 .into_iter()
-                .filter_map(|name| config.setups.as_ref()?.get(&name).cloned().map(|c| (name, c)))
+                .filter_map(|name| {
+                    config
+                        .setups
+                        .as_ref()?
+                        .get(&name)
+                        .cloned()
+                        .map(|c| (name, c))
+                })
                 .collect();
         if routed.is_empty() {
             vec![(String::new(), config.for_workspace(repo.root.clone()).model)]
@@ -404,7 +440,8 @@ async fn consolidation(d: &Shared, repo: &MemoryRepo) -> Result<(), String> {
     for (name, profile) in attempts {
         let _ = std::fs::remove_file(&state_path);
         let mut model = profile.build_model();
-        let context = crate::ToolContext::with_owner(repo.root.clone(), "consolidating").map_err(|e| e.to_string())?;
+        let context = crate::ToolContext::with_owner(repo.root.clone(), "consolidating")
+            .map_err(|e| e.to_string())?;
         let harness = CodingHarness::new(
             HarnessConfig {
                 system_prompt: CONSOLIDATE_SYSTEM.to_string(),
@@ -439,10 +476,22 @@ async fn consolidation(d: &Shared, repo: &MemoryRepo) -> Result<(), String> {
 /// changed nothing, so the repo is not picked again until new activity.
 fn finish(repo: &MemoryRepo) -> Result<(), String> {
     repo.commit_all(&format!("{CONSOLIDATE_PREFIX} commit remaining edits"))?;
-    let last_subject = repo.history(1).into_iter().next().map(|c| c.subject).unwrap_or_default();
-    let consolidated_now = repo.last_consolidated().is_some_and(|t| now() - t < 3600) && last_subject.starts_with(CONSOLIDATE_PREFIX);
+    let last_subject = repo
+        .history(1)
+        .into_iter()
+        .next()
+        .map(|c| c.subject)
+        .unwrap_or_default();
+    let consolidated_now = repo.last_consolidated().is_some_and(|t| now() - t < 3600)
+        && last_subject.starts_with(CONSOLIDATE_PREFIX);
     if !consolidated_now {
-        repo.git(&["commit", "-q", "--allow-empty", "-m", &format!("{CONSOLIDATE_PREFIX} reviewed, nothing to change")])?;
+        repo.git(&[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!("{CONSOLIDATE_PREFIX} reviewed, nothing to change"),
+        ])?;
     }
     Ok(())
 }

@@ -177,7 +177,11 @@ pub fn set_user_call(call: Option<UserCall>) -> Result<(), String> {
 fn user_state_line() -> String {
     let now = chrono::Utc::now().timestamp();
     if let Some(call) = user_call() {
-        let about = if call.about.is_empty() { String::new() } else { format!(" ({})", call.about) };
+        let about = if call.about.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", call.about)
+        };
         return format!(
             " THE USER IS ON A CALL{about}, {} minutes in, held for {} more unless they say it ended (then user_on_call ended). Their speech reaches you only when they use your wake word, speak is off, and pings wait unless urgent. Hold new work for a worker until they ask for it.",
             (now - call.since) / 60,
@@ -185,7 +189,9 @@ fn user_state_line() -> String {
         );
     }
     match crate::ambient::seconds_since_user_turn().filter(|s| *s < 300) {
-        Some(secs) => format!(" A voice conversation is open (they last spoke {secs} seconds ago): they may still be thinking aloud, so talk it through and send work to a worker once they've asked for it."),
+        Some(secs) => format!(
+            " A voice conversation is open (they last spoke {secs} seconds ago): they may still be thinking aloud, so talk it through and send work to a worker once they've asked for it."
+        ),
         None => String::new(),
     }
 }
@@ -208,7 +214,9 @@ pub fn standing_rules_note() -> String {
 }
 
 pub fn brief_path() -> PathBuf {
-    crate::config::snippet_home().join("mission-control").join("brief.md")
+    crate::config::snippet_home()
+        .join("mission-control")
+        .join("brief.md")
 }
 
 pub fn read_brief() -> String {
@@ -369,7 +377,10 @@ pub fn ping(title: &str, message: &str, kind: &str) -> Result<&'static str, Stri
 
 pub fn release_held_pings() {
     let state = load();
-    let call = state.user_call.as_ref().is_some_and(|c| c.until > chrono::Utc::now().timestamp());
+    let call = state
+        .user_call
+        .as_ref()
+        .is_some_and(|c| c.until > chrono::Utc::now().timestamp());
     if state.held_pings.is_empty() || call || in_quiet_hours(&state.settings) {
         return;
     }
@@ -426,8 +437,9 @@ pub fn take_due_followups(now: i64) -> Vec<Followup> {
         return Vec::new();
     }
     update(|state| {
-        let (due, later): (Vec<Followup>, Vec<Followup>) =
-            std::mem::take(&mut state.followups).into_iter().partition(|f| f.due_at <= now);
+        let (due, later): (Vec<Followup>, Vec<Followup>) = std::mem::take(&mut state.followups)
+            .into_iter()
+            .partition(|f| f.due_at <= now);
         state.followups = later;
         due
     })
@@ -451,24 +463,49 @@ pub fn remember_question(key: &str) -> bool {
 
 pub fn clock_line() -> String {
     let now = user_now(&load().settings);
-    format!("For the user it's {}:xx on {} (UTC{}).", now.format("%H"), now.format("%a %d %b"), now.format("%:z"))
+    format!(
+        "For the user it's {}:xx on {} (UTC{}).",
+        now.format("%H"),
+        now.format("%a %d %b"),
+        now.format("%:z")
+    )
 }
 
 fn next_wake_status(state: &AutonomyState) -> String {
     let now = chrono::Utc::now().timestamp();
-    match state.followups.iter().filter(|f| f.next_wake).min_by_key(|f| f.due_at) {
+    match state
+        .followups
+        .iter()
+        .filter(|f| f.next_wake)
+        .min_by_key(|f| f.due_at)
+    {
         Some(f) => {
             let at = chrono::DateTime::from_timestamp(f.due_at.max(now), 0)
-                .map(|t| t.with_timezone(user_now(&state.settings).offset()).format("%a %H:%M").to_string())
+                .map(|t| {
+                    t.with_timezone(user_now(&state.settings).offset())
+                        .format("%a %H:%M")
+                        .to_string()
+                })
                 .unwrap_or_default();
-            format!(" Your next wake-up is set for {at} (the user's time): {}.", f.note)
+            format!(
+                " Your next wake-up is set for {at} (the user's time): {}.",
+                f.note
+            )
         }
-        None => " No wake-up of your own is set; reports, questions and board changes still wake you.".to_string(),
+        None => {
+            " No wake-up of your own is set; reports, questions and board changes still wake you."
+                .to_string()
+        }
     }
 }
 
 pub fn mode_line() -> String {
-    format!("{}{}{} {COORDINATE}", mode_status(), user_state_line(), crate::ambient::prompt_line())
+    format!(
+        "{}{}{} {COORDINATE}",
+        mode_status(),
+        user_state_line(),
+        crate::ambient::prompt_line()
+    )
 }
 
 pub fn base_mode_line() -> String {
@@ -487,7 +524,11 @@ fn mode_status() -> String {
         (Some(start), Some(end)) => format!(
             ", quiet hours {start}–{end} in the user's time (UTC{}){}",
             user_now(settings).format("%:z"),
-            if in_quiet_hours(settings) { ", in effect" } else { "" }
+            if in_quiet_hours(settings) {
+                ", in effect"
+            } else {
+                ""
+            }
         ),
         _ => String::new(),
     };
@@ -499,10 +540,9 @@ fn mode_status() -> String {
 }
 
 pub fn next_round_at(state: &AutonomyState) -> Option<i64> {
-    state
-        .settings
-        .on
-        .then(|| state.last_round_at + i64::from(state.settings.round_minutes.max(MIN_ROUND_MINUTES)) * 60)
+    state.settings.on.then(|| {
+        state.last_round_at + i64::from(state.settings.round_minutes.max(MIN_ROUND_MINUTES)) * 60
+    })
 }
 
 #[cfg(test)]
@@ -525,7 +565,12 @@ mod tests {
         assert!(!quiet_at(s, e, ist(), utc(16, 29)), "21:59 IST");
         assert!(quiet_at(s, e, ist(), utc(2, 29)), "07:59 IST");
         assert!(!quiet_at(s, e, ist(), utc(2, 30)), "08:00 IST");
-        assert!(!quiet_at(s, e, chrono::FixedOffset::east_opt(0).unwrap(), utc(16, 30)));
+        assert!(!quiet_at(
+            s,
+            e,
+            chrono::FixedOffset::east_opt(0).unwrap(),
+            utc(16, 30)
+        ));
         assert!(!quiet_at(Some("09:00"), Some("09:00"), ist(), utc(3, 30)));
         assert!(!quiet_at(None, e, ist(), utc(20, 0)));
     }
@@ -534,10 +579,19 @@ mod tests {
     fn quiet_window_end_rolls_to_the_next_morning() {
         let (s, e) = (Some("22:00"), Some("08:00"));
         let next_morning = chrono::Utc.with_ymd_and_hms(2026, 11, 1, 2, 30, 0).unwrap();
-        assert_eq!(quiet_ends_after(s, e, ist(), utc(17, 0)), Some(next_morning));
-        assert_eq!(quiet_ends_after(s, e, ist(), utc(20, 0)), Some(next_morning));
+        assert_eq!(
+            quiet_ends_after(s, e, ist(), utc(17, 0)),
+            Some(next_morning)
+        );
+        assert_eq!(
+            quiet_ends_after(s, e, ist(), utc(20, 0)),
+            Some(next_morning)
+        );
         assert_eq!(quiet_ends_after(s, e, ist(), utc(13, 0)), None);
         let same_day = chrono::Utc.with_ymd_and_hms(2026, 10, 31, 9, 0, 0).unwrap();
-        assert_eq!(quiet_ends_after(Some("13:00"), Some("14:30"), ist(), utc(8, 0)), Some(same_day));
+        assert_eq!(
+            quiet_ends_after(Some("13:00"), Some("14:30"), ist(), utc(8, 0)),
+            Some(same_day)
+        );
     }
 }

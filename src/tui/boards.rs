@@ -36,7 +36,11 @@ pub(crate) struct Boards {
 
 impl Boards {
     pub(crate) fn get(&self, key: &str) -> Fetched {
-        self.slots.lock().ok().and_then(|s| s.get(key).cloned()).unwrap_or_default()
+        self.slots
+            .lock()
+            .ok()
+            .and_then(|s| s.get(key).cloned())
+            .unwrap_or_default()
     }
 
     pub(crate) fn stale(&self, key: &str, max_age: Duration) -> bool {
@@ -90,7 +94,14 @@ impl Boards {
     #[cfg(test)]
     pub(crate) fn seed(&self, key: &str, value: Value) {
         if let Ok(mut s) = self.slots.lock() {
-            s.insert(key.into(), Fetched { value: Some(value), at: Some(Instant::now()), ..Default::default() });
+            s.insert(
+                key.into(),
+                Fetched {
+                    value: Some(value),
+                    at: Some(Instant::now()),
+                    ..Default::default()
+                },
+            );
         }
     }
 
@@ -109,8 +120,7 @@ impl Boards {
         let notice = self.notice.clone();
         let slots = self.slots.clone();
         tokio::spawn(async move {
-            let result =
-                crate::serve::sidecar::api_json(&info, method, &path, &query, body).await;
+            let result = crate::serve::sidecar::api_json(&info, method, &path, &query, body).await;
             if let Ok(mut n) = notice.lock() {
                 *n = Some(match result {
                     Ok(_) => done,
@@ -118,9 +128,10 @@ impl Boards {
                 });
             }
             if let Ok(mut s) = slots.lock()
-                && let Some(slot) = s.get_mut(&refresh) {
-                    slot.at = None;
-                }
+                && let Some(slot) = s.get_mut(&refresh)
+            {
+                slot.at = None;
+            }
         });
     }
 }
@@ -131,23 +142,43 @@ type BoardRequest = (String, String, Vec<(&'static str, String)>, Duration);
 /// The key and request a panel shows, or None for session-local tabs.
 pub(crate) fn board_request(app: &App, tab: PaneTab) -> Option<BoardRequest> {
     match tab {
-        PaneTab::Agents => Some(("agents".into(), "/agents".into(), vec![], Duration::from_secs(10))),
+        PaneTab::Agents => Some((
+            "agents".into(),
+            "/agents".into(),
+            vec![],
+            Duration::from_secs(10),
+        )),
         PaneTab::Tasks => Some((
             "tasks".into(),
             "/mission-control/tasks".into(),
             vec![("archived", "false".into())],
             Duration::from_secs(5),
         )),
-        PaneTab::Jobs => Some(("jobs".into(), "/recurring".into(), vec![], Duration::from_secs(10))),
+        PaneTab::Jobs => Some((
+            "jobs".into(),
+            "/recurring".into(),
+            vec![],
+            Duration::from_secs(10),
+        )),
         PaneTab::Usage => {
             let range = USAGE_RANGES[app.usage_range % USAGE_RANGES.len()];
             let mut query = vec![];
             if let Some(since) = range_since(range.1) {
                 query.push(("since", since.to_string()));
             }
-            Some((format!("usage:{}", range.0), "/usage".into(), query, Duration::from_secs(20)))
+            Some((
+                format!("usage:{}", range.0),
+                "/usage".into(),
+                query,
+                Duration::from_secs(20),
+            ))
         }
-        PaneTab::Vault => Some(("vault".into(), "/vault".into(), vec![], Duration::from_secs(30))),
+        PaneTab::Vault => Some((
+            "vault".into(),
+            "/vault".into(),
+            vec![],
+            Duration::from_secs(30),
+        )),
         _ => None,
     }
 }
@@ -163,29 +194,36 @@ impl App {
             return;
         }
         if let Some((key, path, query, max_age)) = board_request(self, self.shell.tab)
-            && self.boards.stale(&key, max_age) {
-                self.boards.fetch(info.clone(), key, path, query);
-            }
+            && self.boards.stale(&key, max_age)
+        {
+            self.boards.fetch(info.clone(), key, path, query);
+        }
         // An open agent also needs its coordination board.
         if self.shell.tab == PaneTab::Agents
-            && let Some(id) = self.selected_agent_id().filter(|_| self.shell.pane_detail.is_some()) {
-                let key = format!("board:{id}");
-                if self.boards.stale(&key, Duration::from_secs(10)) {
-                    self.boards.fetch(
-                        info,
-                        key,
-                        format!("/agents/{}/board", urlencode(&id)),
-                        vec![("limit", "40".into())],
-                    );
-                }
+            && let Some(id) = self
+                .selected_agent_id()
+                .filter(|_| self.shell.pane_detail.is_some())
+        {
+            let key = format!("board:{id}");
+            if self.boards.stale(&key, Duration::from_secs(10)) {
+                self.boards.fetch(
+                    info,
+                    key,
+                    format!("/agents/{}/board", urlencode(&id)),
+                    vec![("limit", "40".into())],
+                );
             }
+        }
     }
 
     pub(crate) fn selected_agent_id(&self) -> Option<String> {
         let agents = self.boards.get("agents").value?;
         let list = agents.as_array()?;
         let i = self.shell.pane_detail.unwrap_or(self.shell.pane_index);
-        list.get(i).and_then(|a| a.get("id")).and_then(Value::as_str).map(str::to_string)
+        list.get(i)
+            .and_then(|a| a.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
     }
 
     /// How many rows the current panel lists, for cursor movement.
@@ -319,7 +357,9 @@ impl App {
         let Some(input) = self.vault_input.as_mut() else {
             return;
         };
-        if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
             && key.code != KeyCode::Esc
         {
             return;
@@ -330,7 +370,11 @@ impl App {
                 self.set_notice("Cancelled.");
             }
             KeyCode::Backspace => {
-                if input.on_value { input.value.pop(); } else { input.name.pop(); }
+                if input.on_value {
+                    input.value.pop();
+                } else {
+                    input.name.pop();
+                }
             }
             KeyCode::Enter => {
                 if !input.on_value {
@@ -373,7 +417,11 @@ impl App {
             return false;
         };
         let clean = text.trim_end_matches(['\n', '\r']);
-        if input.on_value { input.value.push_str(clean); } else { input.name.push_str(clean.trim()); }
+        if input.on_value {
+            input.value.push_str(clean);
+        } else {
+            input.name.push_str(clean.trim());
+        }
         true
     }
 
@@ -435,8 +483,12 @@ pub(crate) struct VaultInput {
 }
 
 /// Usage ranges `r` cycles through: key, and seconds back (None = all time).
-const USAGE_RANGES: [(&str, Option<i64>); 4] =
-    [("all", None), ("today", Some(0)), ("7d", Some(7 * 86_400)), ("30d", Some(30 * 86_400))];
+const USAGE_RANGES: [(&str, Option<i64>); 4] = [
+    ("all", None),
+    ("today", Some(0)),
+    ("7d", Some(7 * 86_400)),
+    ("30d", Some(30 * 86_400)),
+];
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -473,7 +525,12 @@ fn vault_names(f: &Fetched) -> Vec<String> {
         .as_ref()
         .and_then(|v| v.get("names"))
         .and_then(Value::as_array)
-        .map(|n| n.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|n| {
+            n.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -502,7 +559,10 @@ fn window_label(minutes: i64) -> String {
 }
 
 fn list_len(f: &Fetched) -> usize {
-    f.value.as_ref().and_then(Value::as_array).map_or(0, Vec::len)
+    f.value
+        .as_ref()
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len)
 }
 
 fn job_title(job: &Value) -> String {
@@ -566,7 +626,9 @@ fn next_run(job: &Value) -> String {
 fn urlencode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -631,9 +693,16 @@ pub(crate) fn footer_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(c) = app.board_confirm.as_ref() {
         lines.push(Line::from(""));
-        let body = format!(" ! {}?", c.prompt.trim_end_matches("? y to confirm").trim_end_matches('?'));
+        let body = format!(
+            " ! {}?",
+            c.prompt
+                .trim_end_matches("? y to confirm")
+                .trim_end_matches('?')
+        );
         let bar = Style::default().bg(surface2());
-        lines.push(Line::from(Span::styled(pad(&body, width), Style::default().fg(warn()))).style(bar));
+        lines.push(
+            Line::from(Span::styled(pad(&body, width), Style::default().fg(warn()))).style(bar),
+        );
         let mut keys = super::chrome::hint_line(&[("y", "confirm"), ("any key", "cancel")]);
         keys.spans.insert(0, Span::raw("   "));
         lines.push(keys.style(bar));
@@ -652,7 +721,10 @@ fn wrap(text: &str, width: usize, indent: usize, style: Style) -> Vec<Line<'stat
         let mut line = String::new();
         for word in para.split_whitespace() {
             if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > avail {
-                out.push(Line::from(Span::styled(format!("{}{line}", " ".repeat(indent)), style)));
+                out.push(Line::from(Span::styled(
+                    format!("{}{line}", " ".repeat(indent)),
+                    style,
+                )));
                 line.clear();
             }
             if !line.is_empty() {
@@ -660,20 +732,29 @@ fn wrap(text: &str, width: usize, indent: usize, style: Style) -> Vec<Line<'stat
             }
             line.push_str(word);
         }
-        out.push(Line::from(Span::styled(format!("{}{line}", " ".repeat(indent)), style)));
+        out.push(Line::from(Span::styled(
+            format!("{}{line}", " ".repeat(indent)),
+            style,
+        )));
     }
     out
 }
 
 fn section(label: &str) -> Line<'static> {
-    Line::from(Span::styled(label.to_string(), Style::default().fg(faint()).add_modifier(Modifier::BOLD)))
+    Line::from(Span::styled(
+        label.to_string(),
+        Style::default().fg(faint()).add_modifier(Modifier::BOLD),
+    ))
 }
 
 /// Loading / error / empty states shared by every panel.
 fn state_lines(f: &Fetched, empty: &str, is_empty: bool) -> Option<Vec<Line<'static>>> {
     if f.value.is_none() {
         return Some(vec![match &f.error {
-            Some(e) => Line::from(Span::styled(format!("Couldn't load: {e}"), Style::default().fg(danger()))),
+            Some(e) => Line::from(Span::styled(
+                format!("Couldn't load: {e}"),
+                Style::default().fg(danger()),
+            )),
             None => faint_line("Loading…"),
         }]);
     }
@@ -690,46 +771,93 @@ pub(crate) fn board_lines(app: &App, tab: PaneTab, width: usize) -> Vec<Line<'st
     match tab {
         PaneTab::Agents => {
             let f = app.boards.get("agents");
-            let agents = f.value.as_ref().and_then(Value::as_array).cloned().unwrap_or_default();
+            let agents = f
+                .value
+                .as_ref()
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             if let Some(i) = app.shell.pane_detail.filter(|i| *i < agents.len()) {
                 lines.extend(agent_detail(app, &agents[i], width));
-            } else if let Some(state) = state_lines(&f, "No agents registered.", agents.is_empty()) {
+            } else if let Some(state) = state_lines(&f, "No agents registered.", agents.is_empty())
+            {
                 lines.extend(state);
             } else {
                 for (i, a) in agents.iter().enumerate() {
-                    let name = if s(a, "display_name").is_empty() { s(a, "id") } else { s(a, "display_name") };
-                    lines.push(row(&name, &s(a, "kind"), &s(a, "status"), width, focused && i == app.shell.pane_index));
+                    let name = if s(a, "display_name").is_empty() {
+                        s(a, "id")
+                    } else {
+                        s(a, "display_name")
+                    };
+                    lines.push(row(
+                        &name,
+                        &s(a, "kind"),
+                        &s(a, "status"),
+                        width,
+                        focused && i == app.shell.pane_index,
+                    ));
                 }
             }
         }
         PaneTab::Tasks => {
             let f = app.boards.get("tasks");
-            let tasks = f.value.as_ref().and_then(Value::as_array).cloned().unwrap_or_default();
+            let tasks = f
+                .value
+                .as_ref()
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             if let Some(i) = app.shell.pane_detail.filter(|i| *i < tasks.len()) {
                 lines.extend(task_detail(&tasks[i], width));
-            } else if let Some(state) = state_lines(&f, "No open tasks on the board.", tasks.is_empty()) {
+            } else if let Some(state) =
+                state_lines(&f, "No open tasks on the board.", tasks.is_empty())
+            {
                 lines.extend(state);
             } else {
                 for (i, t) in tasks.iter().enumerate() {
-                    lines.push(row(&s(t, "title"), &short(&s(t, "id")), &s(t, "status"), width, focused && i == app.shell.pane_index));
+                    lines.push(row(
+                        &s(t, "title"),
+                        &short(&s(t, "id")),
+                        &s(t, "status"),
+                        width,
+                        focused && i == app.shell.pane_index,
+                    ));
                 }
             }
         }
         PaneTab::Jobs => {
             let f = app.boards.get("jobs");
-            let jobs = f.value.as_ref().and_then(Value::as_array).cloned().unwrap_or_default();
+            let jobs = f
+                .value
+                .as_ref()
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             if let Some(state) = state_lines(&f, "No scheduled jobs.", jobs.is_empty()) {
                 lines.extend(state);
             } else {
                 for (i, j) in jobs.iter().enumerate() {
                     let enabled = j.get("enabled").and_then(Value::as_bool).unwrap_or(true);
                     let selected = focused && i == app.shell.pane_index;
-                    lines.push(row(&job_title(j), "", if enabled { "enabled" } else { "paused" }, width, selected));
-                    let meta = [schedule_label(j), next_run(j)].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
+                    lines.push(row(
+                        &job_title(j),
+                        "",
+                        if enabled { "enabled" } else { "paused" },
+                        width,
+                        selected,
+                    ));
+                    let meta = [schedule_label(j), next_run(j)]
+                        .into_iter()
+                        .filter(|x| !x.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" · ");
                     lines.push(super::chrome::sub_line(&meta, selected, 4, width));
                     let err = s(j, "last_error");
                     if !err.is_empty() {
-                        lines.push(Line::from(Span::styled(format!("    {}", pad(&err, width.saturating_sub(4))), Style::default().fg(danger()))));
+                        lines.push(Line::from(Span::styled(
+                            format!("    {}", pad(&err, width.saturating_sub(4))),
+                            Style::default().fg(danger()),
+                        )));
                     }
                 }
             }
@@ -737,7 +865,10 @@ pub(crate) fn board_lines(app: &App, tab: PaneTab, width: usize) -> Vec<Line<'st
         PaneTab::Usage => {
             let (key, _) = USAGE_RANGES[app.usage_range % USAGE_RANGES.len()];
             lines.push(Line::from(vec![
-                Span::styled(range_label(key), Style::default().fg(text()).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    range_label(key),
+                    Style::default().fg(text()).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled("  r changes range", Style::default().fg(faint())),
             ]));
             lines.push(Line::from(""));
@@ -749,7 +880,9 @@ pub(crate) fn board_lines(app: &App, tab: PaneTab, width: usize) -> Vec<Line<'st
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
-            if let Some(state) = state_lines(&f, "No model calls in this period.", providers.is_empty()) {
+            if let Some(state) =
+                state_lines(&f, "No model calls in this period.", providers.is_empty())
+            {
                 lines.extend(state);
             } else {
                 for (i, p) in providers.iter().enumerate() {
@@ -770,7 +903,11 @@ pub(crate) fn board_lines(app: &App, tab: PaneTab, width: usize) -> Vec<Line<'st
                     let shown = format!(" {value}{}", if focused { "▏" } else { "" });
                     Span::styled(
                         pad(&shown, field_w),
-                        Style::default().fg(text()).bg(if focused { surface3() } else { surface2() }),
+                        Style::default().fg(text()).bg(if focused {
+                            surface3()
+                        } else {
+                            surface2()
+                        }),
                     )
                 };
                 lines.push(Line::from(vec![
@@ -782,21 +919,41 @@ pub(crate) fn board_lines(app: &App, tab: PaneTab, width: usize) -> Vec<Line<'st
                     lines.push(Line::from(vec![
                         Span::styled(" value   ", Style::default().fg(faint())),
                         // Never echo a secret, not even its length.
-                        field(if input.value.is_empty() { String::new() } else { "••••••••".into() }, true),
+                        field(
+                            if input.value.is_empty() {
+                                String::new()
+                            } else {
+                                "••••••••".into()
+                            },
+                            true,
+                        ),
                     ]));
                 }
                 lines.push(Line::from(""));
-                lines.push(super::chrome::hint_line(if input.on_value { &[("Enter", "save"), ("Esc", "cancel")] } else { &[("Enter", "next"), ("Esc", "cancel")] }));
+                lines.push(super::chrome::hint_line(if input.on_value {
+                    &[("Enter", "save"), ("Esc", "cancel")]
+                } else {
+                    &[("Enter", "next"), ("Esc", "cancel")]
+                }));
                 lines.push(Line::from(""));
             }
-            if let Some(state) = state_lines(&f, "No secrets stored. a adds one.", names.is_empty()) {
+            if let Some(state) = state_lines(&f, "No secrets stored. a adds one.", names.is_empty())
+            {
                 lines.extend(state);
             } else {
                 for (i, n) in names.iter().enumerate() {
-                    let selected = focused && app.vault_input.is_none() && i == app.shell.pane_index;
+                    let selected =
+                        focused && app.vault_input.is_none() && i == app.shell.pane_index;
                     lines.push(
-                        super::chrome::Row { selected, dot: None, title: n, emphasis: false, meta: "", right: Some(("••••••".into(), faint())) }
-                            .line(width),
+                        super::chrome::Row {
+                            selected,
+                            dot: None,
+                            title: n,
+                            emphasis: false,
+                            meta: "",
+                            right: Some(("••••••".into(), faint())),
+                        }
+                        .line(width),
                     );
                 }
             }
@@ -811,19 +968,20 @@ fn provider_lines(p: &Value, width: usize) -> Vec<Line<'static>> {
     let n = |v: &Value, k: &str| v.get(k).and_then(Value::as_i64).unwrap_or(0);
     let sessions = n(p, "sessions");
     let calls = n(p, "calls");
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(s(p, "provider"), Style::default().fg(text()).add_modifier(Modifier::BOLD)),
-            Span::styled(
-                format!(
-                    "  {sessions} session{} · {calls} call{}",
-                    if sessions == 1 { "" } else { "s" },
-                    if calls == 1 { "" } else { "s" }
-                ),
-                Style::default().fg(faint()),
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            s(p, "provider"),
+            Style::default().fg(text()).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "  {sessions} session{} · {calls} call{}",
+                if sessions == 1 { "" } else { "s" },
+                if calls == 1 { "" } else { "s" }
             ),
-        ]),
-    ];
+            Style::default().fg(faint()),
+        ),
+    ])];
     if n(p, "total_tokens") > 0 {
         let cols = [
             ("Total", n(p, "total_tokens")),
@@ -833,26 +991,45 @@ fn provider_lines(p: &Value, width: usize) -> Vec<Line<'static>> {
         ];
         let cw = (width / 4).max(8);
         lines.push(Line::from(
-            cols.iter().map(|(l, _)| Span::styled(pad(l, cw), Style::default().fg(faint()))).collect::<Vec<_>>(),
+            cols.iter()
+                .map(|(l, _)| Span::styled(pad(l, cw), Style::default().fg(faint())))
+                .collect::<Vec<_>>(),
         ));
         lines.push(Line::from(
             cols.iter()
-                .map(|(_, v)| Span::styled(pad(&si(*v), cw), Style::default().fg(text()).add_modifier(Modifier::BOLD)))
+                .map(|(_, v)| {
+                    Span::styled(
+                        pad(&si(*v), cw),
+                        Style::default().fg(text()).add_modifier(Modifier::BOLD),
+                    )
+                })
                 .collect::<Vec<_>>(),
         ));
     }
-    for m in p.get("models").and_then(Value::as_array).cloned().unwrap_or_default() {
+    for m in p
+        .get("models")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
         let model = s(&m, "model");
         if model.is_empty() {
             continue;
         }
         let right = format!("{} · {}×", si(n(&m, "total_tokens")), n(&m, "calls"));
         lines.push(Line::from(vec![
-            Span::styled(format!(" {}", pad(&model, width.saturating_sub(right.len() + 2))), Style::default().fg(code())),
+            Span::styled(
+                format!(" {}", pad(&model, width.saturating_sub(right.len() + 2))),
+                Style::default().fg(code()),
+            ),
             Span::styled(format!(" {right}"), Style::default().fg(faint())),
         ]));
     }
-    let limits = p.get("rate_limits").and_then(Value::as_array).cloned().unwrap_or_default();
+    let limits = p
+        .get("rate_limits")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     if limits.is_empty() {
         let note = match p.get("rate_limits_supported").and_then(Value::as_bool) {
             Some(true) => "No rate-limit report yet.",
@@ -869,13 +1046,26 @@ fn provider_lines(p: &Value, width: usize) -> Vec<Line<'static>> {
         if resets > 0 && resets <= now_secs() {
             lines.push(Line::from(vec![
                 Span::styled(format!(" {label}"), Style::default().fg(soft())),
-                Span::styled("  rolled over · awaiting the next report", Style::default().fg(faint())),
+                Span::styled(
+                    "  rolled over · awaiting the next report",
+                    Style::default().fg(faint()),
+                ),
             ]));
             continue;
         }
-        let used = r.get("used_percent").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 100.0);
+        let used = r
+            .get("used_percent")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            .clamp(0.0, 100.0);
         let left = 100.0 - used;
-        let color = if left < 20.0 { danger() } else if left < 50.0 { warn() } else { success() };
+        let color = if left < 20.0 {
+            danger()
+        } else if left < 50.0 {
+            warn()
+        } else {
+            success()
+        };
         let bar_w = width.saturating_sub(4).min(40);
         lines.push(Line::from(vec![
             Span::styled(format!(" {label}"), Style::default().fg(soft())),
@@ -893,11 +1083,20 @@ fn task_detail(t: &Value, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(vec![
             Span::styled("‹ ", Style::default().fg(accent())),
-            Span::styled(s(t, "title"), Style::default().fg(text()).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                s(t, "title"),
+                Style::default().fg(text()).add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
-            Span::styled(status.replace('_', " "), Style::default().fg(status_color(&status))),
-            Span::styled(format!("  task {}", short(&s(t, "id"))), Style::default().fg(faint())),
+            Span::styled(
+                status.replace('_', " "),
+                Style::default().fg(status_color(&status)),
+            ),
+            Span::styled(
+                format!("  task {}", short(&s(t, "id"))),
+                Style::default().fg(faint()),
+            ),
         ]),
     ];
     for (label, key) in [("Briefing", "description"), ("Latest", "summary")] {
@@ -913,24 +1112,50 @@ fn task_detail(t: &Value, width: usize) -> Vec<Line<'static>> {
 
 fn agent_detail(app: &App, a: &Value, width: usize) -> Vec<Line<'static>> {
     let id = s(a, "id");
-    let name = if s(a, "display_name").is_empty() { id.clone() } else { s(a, "display_name") };
+    let name = if s(a, "display_name").is_empty() {
+        id.clone()
+    } else {
+        s(a, "display_name")
+    };
     let mut lines = vec![
         Line::from(vec![
             Span::styled("‹ ", Style::default().fg(accent())),
-            Span::styled(name, Style::default().fg(text()).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("  {}", s(a, "status")), Style::default().fg(status_color(&s(a, "status")))),
+            Span::styled(
+                name,
+                Style::default().fg(text()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {}", s(a, "status")),
+                Style::default().fg(status_color(&s(a, "status"))),
+            ),
         ]),
-        faint_line(&[s(a, "kind"), id.clone()].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")),
+        faint_line(
+            &[s(a, "kind"), id.clone()]
+                .into_iter()
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · "),
+        ),
     ];
     let caps: Vec<String> = a
         .get("capabilities")
         .and_then(Value::as_array)
-        .map(|c| c.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|c| {
+            c.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
     if !caps.is_empty() {
         lines.push(Line::from(""));
         lines.push(section("Capabilities"));
-        lines.extend(wrap(&caps.join(", "), width, 1, Style::default().fg(soft())));
+        lines.extend(wrap(
+            &caps.join(", "),
+            width,
+            1,
+            Style::default().fg(soft()),
+        ));
     }
     lines.push(Line::from(""));
     lines.push(section("Board"));
@@ -942,7 +1167,11 @@ fn agent_detail(app: &App, a: &Value, width: usize) -> Vec<Line<'static>> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    if let Some(state) = state_lines(&f, "Nothing dispatched, reported or noted yet.", entries.is_empty()) {
+    if let Some(state) = state_lines(
+        &f,
+        "Nothing dispatched, reported or noted yet.",
+        entries.is_empty(),
+    ) {
         lines.extend(state);
     } else {
         for e in entries.iter().take(40) {
@@ -954,12 +1183,21 @@ fn agent_detail(app: &App, a: &Value, width: usize) -> Vec<Line<'static>> {
                     {
                         let ws = s(e, "workspace");
                         let tail = ws.rsplit('/').next().unwrap_or("").to_string();
-                        if tail.is_empty() { String::new() } else { format!("  {tail}") }
+                        if tail.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  {tail}")
+                        }
                     },
                     Style::default().fg(faint()),
                 ),
             ]));
-            lines.extend(wrap(&s(e, "summary"), width, 3, Style::default().fg(soft())));
+            lines.extend(wrap(
+                &s(e, "summary"),
+                width,
+                3,
+                Style::default().fg(soft()),
+            ));
         }
     }
     lines

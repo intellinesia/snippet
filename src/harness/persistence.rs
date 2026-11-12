@@ -204,7 +204,10 @@ impl CodingHarness {
         let task = self
             .session_id()
             .and_then(|session| crate::coordination_tools::session_task(&self.context, &session));
-        if let Some(repo) = task.and_then(|(id, _)| crate::memory::MemoryRepo::task(&id)).filter(|r| r.exists()) {
+        if let Some(repo) = task
+            .and_then(|(id, _)| crate::memory::MemoryRepo::task(&id))
+            .filter(|r| r.exists())
+        {
             repos.push(repo);
         }
         repos
@@ -363,7 +366,12 @@ impl CodingHarness {
                     .filter(|a| !a.is_empty())
                     .or_else(|| (id == crate::mission_control::SESSION_ID).then(|| id.to_string()))
             {
-                let _ = store.note_agent_last_message(&agent_id, &text, &Utc::now().to_rfc3339(), "agent");
+                let _ = store.note_agent_last_message(
+                    &agent_id,
+                    &text,
+                    &Utc::now().to_rfc3339(),
+                    "agent",
+                );
             }
             Ok::<(), String>(())
         }
@@ -382,6 +390,9 @@ impl CodingHarness {
                 crate::session::park_failed_session_work(&id, &prev_status, state);
                 if prev_status == "running" && status != "running" {
                     crate::serve::relay_desk_reply(&store, &id, state);
+                    if status == "waiting_for_input" && state.pending_question.is_some() {
+                        crate::serve::relay_question(&store, &id, state);
+                    }
                 }
                 crate::session::emit_status_transition(
                     &id,

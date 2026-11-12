@@ -38,7 +38,11 @@ pub fn worktree_origin(folder: &Path) -> Option<WorktreeOrigin> {
     let root = linked_worktree_root(folder)?;
     let pointer = std::fs::read_to_string(root.join(".git")).ok()?;
     let gitdir = PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim());
-    let gitdir = if gitdir.is_absolute() { gitdir } else { root.join(gitdir) };
+    let gitdir = if gitdir.is_absolute() {
+        gitdir
+    } else {
+        root.join(gitdir)
+    };
     // `<repo>/.git/worktrees/<name>`; a submodule's pointer names
     // `.git/modules/…` instead and is not a worktree.
     let worktrees = gitdir.parent()?;

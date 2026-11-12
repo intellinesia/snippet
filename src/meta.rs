@@ -410,7 +410,10 @@ pub fn parse_delegate_brief(arguments: &Value) -> Result<DelegateBrief, String> 
         .chars()
         .count();
     if lane_id.is_some() && description.is_empty() {
-        return Err("delegate_task with a lane_id needs a description: the message for that lane.".to_string());
+        return Err(
+            "delegate_task with a lane_id needs a description: the message for that lane."
+                .to_string(),
+        );
     }
     if lane_id.is_none() && collapsed_len < MIN_DELEGATE_DESCRIPTION_CHARS {
         return Err(format!(
@@ -431,7 +434,12 @@ pub fn parse_delegate_brief(arguments: &Value) -> Result<DelegateBrief, String> 
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(|p| p.as_str().map(str::trim).filter(|p| !p.is_empty()).map(str::to_string))
+            .filter_map(|p| {
+                p.as_str()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string)
+            })
             .collect(),
     })
 }
@@ -476,7 +484,13 @@ pub fn parse_ask_user(arguments: &Value) -> Result<Value, String> {
             .and_then(|k| k.get("kind"))
             .and_then(Value::as_str)
             .ok_or_else(|| format!("ask_user: question `{id}` needs `answer_kind.kind`."))?;
-        const KINDS: [&str; 5] = ["free_text", "single_choice", "multi_choice", "yes_no", "confirm"];
+        const KINDS: [&str; 5] = [
+            "free_text",
+            "single_choice",
+            "multi_choice",
+            "yes_no",
+            "confirm",
+        ];
         if !KINDS.contains(&kind) {
             return Err(format!(
                 "ask_user: question `{id}` has unknown answer kind `{kind}`; use one of {}.",

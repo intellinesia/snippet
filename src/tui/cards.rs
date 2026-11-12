@@ -91,7 +91,11 @@ pub(super) fn envelope_card(text: &str) -> Option<Card> {
             kind: "Task from Mission Control".into(),
             reference: (!id.is_empty()).then(|| short(&id)),
             status: "New task".into(),
-            title: Some(if title.is_empty() { "Task".into() } else { title }),
+            title: Some(if title.is_empty() {
+                "Task".into()
+            } else {
+                title
+            }),
             body: task_scope(t),
             footer: None,
         });
@@ -121,7 +125,10 @@ pub(super) fn envelope_card(text: &str) -> Option<Card> {
         return Some(Card {
             glyph: "#",
             tone: muted(),
-            kind: format!("Board · {}", if from.is_empty() { "someone" } else { &from }),
+            kind: format!(
+                "Board · {}",
+                if from.is_empty() { "someone" } else { &from }
+            ),
             reference: (!thread.is_empty()).then(|| thread_ref(&thread)),
             status: "Posted".into(),
             title: Some(task).filter(|s| !s.is_empty()),
@@ -169,7 +176,11 @@ pub(super) fn event_card(event: &HarnessEvent) -> Option<Card> {
                 tone: warn(),
                 kind: "Asked you".into(),
                 reference: None,
-                status: if items.len() > 1 { format!("{} questions", items.len()) } else { "Question".into() },
+                status: if items.len() > 1 {
+                    format!("{} questions", items.len())
+                } else {
+                    "Question".into()
+                },
                 title: None,
                 body: items.join("\n"),
                 footer: None,
@@ -207,14 +218,21 @@ pub(super) fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
     };
     let meta_budget = w.saturating_sub(status_w + 11);
     if meta.chars().count() > meta_budget {
-        meta = meta.chars().take(meta_budget.saturating_sub(1)).collect::<String>() + "…";
+        meta = meta
+            .chars()
+            .take(meta_budget.saturating_sub(1))
+            .collect::<String>()
+            + "…";
     }
     let used = meta.chars().count() + status_w + 10;
     out.push(Line::from(vec![
         Span::styled("╭─ ", frame),
         Span::styled(format!("{} ", card.glyph), Style::default().fg(card.tone)),
         Span::styled(meta, Style::default().fg(muted())),
-        Span::styled(format!(" {}", "─".repeat(w.saturating_sub(used).max(1))), frame),
+        Span::styled(
+            format!(" {}", "─".repeat(w.saturating_sub(used).max(1))),
+            frame,
+        ),
         Span::styled(format!(" {} ", card.status), Style::default().fg(card.tone)),
         Span::styled("─╮", frame),
     ]));
@@ -239,7 +257,11 @@ pub(super) fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
     if !body.is_empty() {
         let rendered = render_prose(body, inner);
         let total = rendered.len();
-        let shown = if total > CARD_BODY_LINES + 1 { CARD_BODY_LINES } else { total };
+        let shown = if total > CARD_BODY_LINES + 1 {
+            CARD_BODY_LINES
+        } else {
+            total
+        };
         for mut line in rendered.into_iter().take(shown) {
             for span in &mut line.spans {
                 if span.style.fg.is_none() || span.style.fg == Some(text()) {
@@ -252,14 +274,20 @@ pub(super) fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
         if shown < total {
             let more = format!("… {} more lines", total - shown);
             let len = more.chars().count();
-            out.push(row(vec![Span::styled(more, Style::default().fg(faint()))], len));
+            out.push(row(
+                vec![Span::styled(more, Style::default().fg(faint()))],
+                len,
+            ));
         }
     }
 
     if let Some(footer) = &card.footer {
         for seg in wrap_one(footer, inner) {
             let len = seg.chars().count();
-            out.push(row(vec![Span::styled(seg, Style::default().fg(muted()))], len));
+            out.push(row(
+                vec![Span::styled(seg, Style::default().fg(muted()))],
+                len,
+            ));
         }
     }
 

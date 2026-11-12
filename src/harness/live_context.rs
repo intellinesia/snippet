@@ -70,7 +70,11 @@ fn sections(
     tasks: String,
 ) -> Vec<(&'static str, String, Option<&'static str>)> {
     let mut out = Vec::new();
-    out.push(("cwd", format!("Working directory: {}", compact_path(cwd)), None));
+    out.push((
+        "cwd",
+        format!("Working directory: {}", compact_path(cwd)),
+        None,
+    ));
 
     let untitled = state
         .title
@@ -89,7 +93,11 @@ fn sections(
 
     if workspace == crate::mission_control::workspace_path() {
         out.push(("autonomy", crate::mission_autonomy::base_mode_line(), None));
-        out.push(("ambient", crate::ambient::prompt_line().trim().to_string(), Some("No device is listening for ambient speech now.")));
+        out.push((
+            "ambient",
+            crate::ambient::prompt_line().trim().to_string(),
+            Some("No device is listening for ambient speech now."),
+        ));
         out.push(("clock", crate::mission_autonomy::clock_line(), None));
     }
 
@@ -135,7 +143,11 @@ fn sections(
 
     out.push(("plan", render_plan(&state.plan), None));
 
-    out.push(("lanes", render_lanes(state), Some("All delegated work has reported back.")));
+    out.push((
+        "lanes",
+        render_lanes(state),
+        Some("All delegated work has reported back."),
+    ));
 
     let watches = if state.watches.is_empty() {
         String::new()
@@ -200,7 +212,12 @@ fn render_lanes(state: &HarnessState) -> String {
         running.len()
     );
     for l in &running {
-        text.push_str(&format!("\n- \"{}\"{} ({})", clip(&l.title, 40), tags(l), l.id));
+        text.push_str(&format!(
+            "\n- \"{}\"{} ({})",
+            clip(&l.title, 40),
+            tags(l),
+            l.id
+        ));
     }
     let finished: Vec<&LaneRecord> = state
         .lanes
@@ -217,7 +234,12 @@ fn render_lanes(state: &HarnessState) -> String {
             LaneStatus::Cancelled => "cancelled",
             LaneStatus::Running => unreachable!("filtered above"),
         };
-        text.push_str(&format!("\n- \"{}\"{} — {status} ({})", clip(&l.title, 40), tags(l), l.id));
+        text.push_str(&format!(
+            "\n- \"{}\"{} — {status} ({})",
+            clip(&l.title, 40),
+            tags(l),
+            l.id
+        ));
     }
     text
 }

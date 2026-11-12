@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod fork_tests {
     use crate::session::*;
-    
+
     use crate::harness::{HarnessEvent, HarnessState, HarnessStatus};
     use crate::llm::HarnessMessage;
 
@@ -162,7 +162,9 @@ mod create_blank_tests {
         let folder = temp_folder(stamp, "blank");
         let store = Store::open_in_memory().unwrap();
 
-        let info = create_blank_session_in(&store, &folder, "Odd request", true, WorkspaceMode::Folder).unwrap();
+        let info =
+            create_blank_session_in(&store, &folder, "Odd request", true, WorkspaceMode::Folder)
+                .unwrap();
         assert_eq!(info.title, "Odd request");
         assert_eq!(info.status, "idle");
         assert_eq!(
@@ -193,7 +195,8 @@ mod create_blank_tests {
         let store = Store::open_in_memory().unwrap();
 
         create_blank_session_in(&store, &folder, "first", false, WorkspaceMode::Folder).unwrap();
-        let second = create_blank_session_in(&store, &folder, "second", false, WorkspaceMode::Folder);
+        let second =
+            create_blank_session_in(&store, &folder, "second", false, WorkspaceMode::Folder);
         assert!(second.is_err(), "uniqueness is the store's question now");
 
         let _ = fs::remove_dir_all(&folder);
@@ -367,9 +370,8 @@ mod create_blank_tests {
         let repo = init_repo(stamp, "shared");
         let workspace = session_workspace(&repo, WorkspaceMode::Worktree);
         let store = Store::open_in_memory().unwrap();
-        let first =
-            create_blank_session_in(&store, &workspace, "one", true, WorkspaceMode::Folder)
-                .unwrap();
+        let first = create_blank_session_in(&store, &workspace, "one", true, WorkspaceMode::Folder)
+            .unwrap();
         let second =
             create_blank_session_in(&store, &workspace, "two", true, WorkspaceMode::Folder)
                 .unwrap();
@@ -377,7 +379,10 @@ mod create_blank_tests {
         remove_session_files_with(Some(&store), &state_path_for_id(&first.id).unwrap());
         assert!(workspace.exists(), "the other session still works here");
         remove_session_files_with(Some(&store), &state_path_for_id(&second.id).unwrap());
-        assert!(!workspace.exists(), "the last session takes the worktree with it");
+        assert!(
+            !workspace.exists(),
+            "the last session takes the worktree with it"
+        );
         let _ = fs::remove_dir_all(&repo);
     }
 
@@ -389,7 +394,17 @@ mod create_blank_tests {
             .as_nanos();
         let repo = init_repo(stamp, "own");
         let mine = repo.with_file_name(format!("snippet-wt-mine-{stamp}"));
-        git_ok(&repo, &["worktree", "add", "-q", "-b", "feature", mine.to_str().unwrap()]);
+        git_ok(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                mine.to_str().unwrap(),
+            ],
+        );
         let store = Store::open_in_memory().unwrap();
         let info =
             create_blank_session_in(&store, &mine, "mine", false, WorkspaceMode::Folder).unwrap();
@@ -423,7 +438,7 @@ mod create_blank_tests {
 #[cfg(test)]
 mod resolve_session_path_tests {
     use crate::session::*;
-    
+
     use std::fs;
 
     #[test]
@@ -443,11 +458,7 @@ mod resolve_session_path_tests {
         fs::create_dir_all(&ws).unwrap();
 
         let resolved = resolve_session_path(root.path(), "ws-2").expect("resolves");
-        assert!(
-            resolved.ends_with("ws-2"),
-            "got {}",
-            resolved.display()
-        );
+        assert!(resolved.ends_with("ws-2"), "got {}", resolved.display());
     }
 
     /// A saved conversation is not a directory, so the completion must not touch
@@ -545,8 +556,8 @@ mod routable_target_tests {
 
 #[cfg(test)]
 mod working_agents_tests {
-    use crate::session::session_task_contexts;
     use crate::coordination::{HandoffMode, Task, TaskStatus};
+    use crate::session::session_task_contexts;
     use crate::store::Store;
 
     /// The roster row has a real FK to `agents(id)`, so the agent must exist.
@@ -633,7 +644,10 @@ mod working_agents_tests {
             .unwrap();
 
         assert_eq!(
-            session_task_contexts(&db).workers.get("proj-1").map(String::as_str),
+            session_task_contexts(&db)
+                .workers
+                .get("proj-1")
+                .map(String::as_str),
             Some("snippet"),
             "a target must key to the canonical session id"
         );
@@ -659,7 +673,13 @@ mod inbox_tool_tests {
     #[test]
     fn an_inbox_cannot_write_delegate_or_report() {
         let tools = crate::session::coordination_tool_registry(None);
-        for name in ["change_files", "write_file", "edit_file", "delegate_task", "report_mission_task"] {
+        for name in [
+            "change_files",
+            "write_file",
+            "edit_file",
+            "delegate_task",
+            "report_mission_task",
+        ] {
             assert!(!tools.contains(name), "{name} must not reach an inbox");
         }
         assert!(tools.contains("bash"));

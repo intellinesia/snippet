@@ -14,25 +14,48 @@ fn route_for(id: &str) -> Option<Route> {
 }
 
 async fn profile_of(d: &Daemon, id: &str) -> String {
-    let live = d.sessions.lock().await.get(id).and_then(|s| s.profile.clone());
-    live.or_else(|| crate::session::state_path_for_id(id).and_then(|p| crate::session::read_session_profile(&p)))
-        .or_else(|| d.config.lock().unwrap().active_setup.clone())
-        .unwrap_or_default()
+    let live = d
+        .sessions
+        .lock()
+        .await
+        .get(id)
+        .and_then(|s| s.profile.clone());
+    live.or_else(|| {
+        crate::session::state_path_for_id(id).and_then(|p| crate::session::read_session_profile(&p))
+    })
+    .or_else(|| d.config.lock().unwrap().active_setup.clone())
+    .unwrap_or_default()
 }
 
 async fn send_input(d: &Daemon, id: &str, text: String) {
-    let tx = d.sessions.lock().await.get(id).filter(|s| !s.join.is_finished()).map(|s| s.input_tx.clone());
+    let tx = d
+        .sessions
+        .lock()
+        .await
+        .get(id)
+        .filter(|s| !s.join.is_finished())
+        .map(|s| s.input_tx.clone());
     if let Some(tx) = tx {
         let _ = tx.send(LoopInput::UserMessage(text));
     }
 }
 
-async fn continue_on(d: &Daemon, id: &str, from: &str, to: &str, resets_at: i64) -> Result<(), String> {
+async fn continue_on(
+    d: &Daemon,
+    id: &str,
+    from: &str,
+    to: &str,
+    resets_at: i64,
+) -> Result<(), String> {
     d.run_session_on_profile(id, to, true).await?;
     record_notice(
         d,
         id,
-        HarnessEvent::ProfileSwitched { from: from.to_string(), to: to.to_string(), resets_at },
+        HarnessEvent::ProfileSwitched {
+            from: from.to_string(),
+            to: to.to_string(),
+            resets_at,
+        },
     )
     .await;
     send_input(
@@ -44,10 +67,14 @@ async fn continue_on(d: &Daemon, id: &str, from: &str, to: &str, resets_at: i64)
     Ok(())
 }
 
-pub(crate) async fn routing_loop(d: Shared, mut rx: tokio::sync::mpsc::UnboundedReceiver<LimitHit>) {
+pub(crate) async fn routing_loop(
+    d: Shared,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<LimitHit>,
+) {
     while let Some(hit) = rx.recv().await {
         let id = hit.session_id.as_str();
-        if crate::session::is_lane_session_id(id) || !d.store.has_conversation(id).unwrap_or(false) {
+        if crate::session::is_lane_session_id(id) || !d.store.has_conversation(id).unwrap_or(false)
+        {
             continue;
         }
         let profile = profile_of(&d, id).await;
@@ -62,16 +89,31 @@ pub(crate) async fn routing_loop(d: Shared, mut rx: tokio::sync::mpsc::Unbounded
                 continue;
             }
         }
-        let options = if route_for(id).is_some() { Vec::new() } else { routing::alternatives(&cfg, &profile) };
+        let options = if route_for(id).is_some() {
+            Vec::new()
+        } else {
+            routing::alternatives(&cfg, &profile)
+        };
         if let Ok(Some(member)) = d.store.member_by_session(id) {
             let message = format!(
                 "`{}` can't run: its conversation {id} hit the limit on profile `{profile}`. It will miss anything sent to it until that session has a working profile.",
                 member.agent_id
             );
             let now = chrono::Utc::now().to_rfc3339();
-            let _ = d.store.update_task_in(&member.task_id, &now, |t| t.notify_once("member_stopped", &message));
+            let _ = d.store.update_task_in(&member.task_id, &now, |t| {
+                t.notify_once("member_stopped", &message)
+            });
         }
-        record_notice(&d, id, HarnessEvent::LimitReached { profile, resets_at, options }).await;
+        record_notice(
+            &d,
+            id,
+            HarnessEvent::LimitReached {
+                profile,
+                resets_at,
+                options,
+            },
+        )
+        .await;
     }
 }
 
@@ -83,10 +125,7 @@ pub(crate) struct LimitReq {
     profile: Option<String>,
 }
 
-pub(crate) async fn resolve_limit(
-    State(d): State<Shared>,
-    Json(req): Json<LimitReq>,
-) -> Response {
+pub(crate) async fn resolve_limit(State(d): State<Shared>, Json(req): Json<LimitReq>) -> Response {
     let id = req.session.as_str();
     let current = profile_of(&d, id).await;
     let resets_at = routing::limited_until(&current).unwrap_or(0);
@@ -102,14 +141,32 @@ pub(crate) async fn resolve_limit(
         }
         "wait" => {
             let until = resets_at.max(chrono::Utc::now().timestamp() + 60);
-            record_notice(&d, id, HarnessEvent::LimitWait { profile: current.clone(), resets_at: until }).await;
+            record_notice(
+                &d,
+                id,
+                HarnessEvent::LimitWait {
+                    profile: current.clone(),
+                    resets_at: until,
+                },
+            )
+            .await;
             let d2 = d.clone();
             let session = id.to_string();
             tokio::spawn(async move {
                 let wait = (until - chrono::Utc::now().timestamp()).max(0) as u64;
                 tokio::time::sleep(std::time::Duration::from_secs(wait + 5)).await;
-                let live = d2.sessions.lock().await.get(&session).is_some_and(|s| !s.join.is_finished());
-                if !live && d2.run_session_on_profile(&session, &current, false).await.is_err() {
+                let live = d2
+                    .sessions
+                    .lock()
+                    .await
+                    .get(&session)
+                    .is_some_and(|s| !s.join.is_finished());
+                if !live
+                    && d2
+                        .run_session_on_profile(&session, &current, false)
+                        .await
+                        .is_err()
+                {
                     return;
                 }
                 send_input(

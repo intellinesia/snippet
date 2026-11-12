@@ -28,13 +28,18 @@ pub(super) fn handover(
     let requests: Vec<String> = messages
         .iter()
         .filter_map(|m| match m {
-            HarnessMessage::User { content } if !content.trim_start().starts_with('[') => Some(clip(content, 400)),
+            HarnessMessage::User { content } if !content.trim_start().starts_with('[') => {
+                Some(clip(content, 400))
+            }
             _ => None,
         })
         .collect();
     if !requests.is_empty() {
         out.push_str("\n\nRecent user requests, oldest first:");
-        for r in requests.iter().skip(requests.len().saturating_sub(REQUESTS)) {
+        for r in requests
+            .iter()
+            .skip(requests.len().saturating_sub(REQUESTS))
+        {
             out.push_str(&format!("\n- {r}"));
         }
     }
@@ -55,11 +60,17 @@ pub(super) fn handover(
         out.push_str(&format!("\n\nLanes still running: {}", running.join(", ")));
     }
     if !state.watches.is_empty() {
-        let w: Vec<String> = state.watches.iter().map(|w| format!("\"{}\" ({})", w.label, w.id)).collect();
+        let w: Vec<String> = state
+            .watches
+            .iter()
+            .map(|w| format!("\"{}\" ({})", w.label, w.id))
+            .collect();
         out.push_str(&format!("\n\nActive watches: {}", w.join(", ")));
     }
     let last = messages.iter().rev().find_map(|m| match m {
-        HarnessMessage::Assistant { content, .. } if !content.trim().is_empty() => Some(clip(content, 1500)),
+        HarnessMessage::Assistant { content, .. } if !content.trim().is_empty() => {
+            Some(clip(content, 1500))
+        }
         _ => None,
     });
     if let Some(last) = last {
@@ -82,12 +93,19 @@ impl CodingHarness {
         if state.messages.len() <= keep + 1 {
             return None;
         }
-        let (Ok(store), Some(session_id)) = (self.context.store(), self.context.durable_session_id()) else {
+        let (Ok(store), Some(session_id)) =
+            (self.context.store(), self.context.durable_session_id())
+        else {
             return None;
         };
         let now = chrono::Utc::now().to_rfc3339();
         // Drop the turns only once they are safely archived.
-        let turns = match crate::history_archive::archive_messages(&store, session_id, &state.messages[keep..], &now) {
+        let turns = match crate::history_archive::archive_messages(
+            &store,
+            session_id,
+            &state.messages[keep..],
+            &now,
+        ) {
             Ok(turns) => turns,
             Err(err) => {
                 state.events.push(HarnessEvent::SystemDecision {
@@ -115,20 +133,41 @@ impl CodingHarness {
         if !pointers.trim().is_empty() {
             content.push_str(&format!("\n\n{}", pointers.trim()));
         }
-        state.messages.push(HarnessMessage::Summary { kind: "cli_compaction".into(), content });
+        state.messages.push(HarnessMessage::Summary {
+            kind: "cli_compaction".into(),
+            content,
+        });
     }
 
     /// Archive everything after the system prompt and continue from a handover.
-    /// Returns the handover, or `None` when there was nothing to fold.
+    /// Returns the handover, or `None` when there was nothing to fold — including
+    /// a repeat right after a lean handover, which an old app can still send.
     pub(super) fn continue_lean(&self, state: &mut HarnessState) -> Option<String> {
+        let last_real = state
+            .messages
+            .iter()
+            .rev()
+            .find(|m| !matches!(m, HarnessMessage::System { .. }));
+        if matches!(
+            last_real,
+            Some(HarnessMessage::Summary { kind, .. }) if kind == "lean_handover"
+        ) {
+            return None;
+        }
         let (older, pointers) = self.archive_history(state)?;
         let branch = crate::session_stats::git_branch(&self.context.current_dir());
         let text = handover(&older, state, branch.as_deref(), &pointers);
-        state.messages.push(HarnessMessage::Summary { kind: "lean_handover".into(), content: text.clone() });
+        state.messages.push(HarnessMessage::Summary {
+            kind: "lean_handover".into(),
+            content: text.clone(),
+        });
         state.last_prompt_tokens = 0;
         state.events.push(HarnessEvent::SystemDecision {
             step: "continued_lean".into(),
-            reasoning: format!("Continued lean: {} earlier messages archived, not sent.", older.len()),
+            reasoning: format!(
+                "Continued lean: {} earlier messages archived, not sent.",
+                older.len()
+            ),
         });
         Some(text)
     }
@@ -141,11 +180,21 @@ mod tests {
     #[test]
     fn handover_carries_requests_plan_and_last_reply() {
         let mut state = HarnessState::default();
-        state.plan = vec![PlanStep { step: "Ship it".into(), status: PlanStatus::InProgress }];
+        state.plan = vec![PlanStep {
+            step: "Ship it".into(),
+            status: PlanStatus::InProgress,
+        }];
         let messages = vec![
-            HarnessMessage::User { content: "fix the header".into() },
-            HarnessMessage::User { content: "[file_watch] noise".into() },
-            HarnessMessage::Assistant { content: "Header fixed.".into(), tool_calls: vec![] },
+            HarnessMessage::User {
+                content: "fix the header".into(),
+            },
+            HarnessMessage::User {
+                content: "[file_watch] noise".into(),
+            },
+            HarnessMessage::Assistant {
+                content: "Header fixed.".into(),
+                tool_calls: vec![],
+            },
         ];
         let text = handover(&messages, &state, Some("ui-polish"), "");
         assert!(text.contains("- fix the header"));

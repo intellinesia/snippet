@@ -1,9 +1,9 @@
 use super::*;
+use crate::llm::NativeToolDefinition;
+use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use crate::llm::NativeToolDefinition;
-use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 pub struct WebSearchTool {
     pub api_key: String,
 }
@@ -222,4 +222,3 @@ impl Tool for WebReadTool {
         })))
     }
 }
-
