@@ -41,7 +41,7 @@ pub fn cache_state(idle: i64, ttl: i64) -> &'static str {
 pub fn cache_ttl_secs(provider: &str, one_hour: bool) -> i64 {
     match provider {
         "anthropic" | "anthropic-compatible" if one_hour => 3600,
-        "claude-code" | "antigravity" => 3600,
+        "claude-code" | "antigravity" | "devin" => 3600,
         "openai" | "chatgpt" => 86_400,
         "gemini" => 1800,
         "xai" | "grok" | "openrouter" | "openai-compatible" => 3600,

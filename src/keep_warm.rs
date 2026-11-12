@@ -35,7 +35,7 @@ pub const MAX_IDLE_HOURS_CEILING: u32 = 24;
 pub fn reason_for(provider: &str) -> Option<&'static str> {
     match provider {
         "anthropic" | "anthropic-compatible" => None,
-        "claude-code" | "antigravity" => {
+        "claude-code" | "antigravity" | "devin" => {
             Some("runs through a CLI driver that owns its own prompt cache")
         }
         "gemini" => Some("Gemini context caches here are explicit with a 30-minute TTL, not a one-hour prompt cache"),

@@ -15,6 +15,7 @@ pub(crate) const LOGIN_PROVIDERS: &[&str] = &[
     "anthropic-compatible",
     "claude-code",
     "antigravity",
+    "devin",
 ];
 
 
@@ -36,6 +37,7 @@ pub(crate) fn provider_defaults(provider: &str) -> (String, String) {
         "chatgpt" => (String::new(), "gpt-5.1-codex".to_string()),
         "claude-code" => (String::new(), "sonnet".to_string()),
         "antigravity" => (String::new(), "gemini-3.8-flash-high".to_string()),
+        "devin" => (String::new(), "swe-2".to_string()),
         "anthropic" => (String::new(), "claude-opus-4-8".to_string()),
         // xAI (Grok/X subscription) — OAuth via `snippet xai login`; no base URL/key.
         "xai" => (String::new(), "grok-4".to_string()),
@@ -65,6 +67,7 @@ pub(crate) fn provider_context_defaults(provider: &str) -> (u64, u8) {
     match provider {
         "openai" | "chatgpt" | "anthropic" | "gemini" | "xai" => (250_000, 90),
         "claude-code" | "antigravity" => (200_000, 90),
+        "devin" => (262_144, 90),
         "opencode-zen" | "opencode-go" => (250_000, 90),
         "openai-compatible" | "anthropic-compatible" => (130_000, 90),
         // Keep openrouter aligned with the hosted-provider defaults unless the
@@ -138,7 +141,7 @@ impl App {
     /// Tab order of the login form fields (Base URL only for openai-compatible).
     pub(crate) fn login_focus_order(&self) -> Vec<SettingsField> {
         // Subscription providers sign in via OAuth — no API key / base URL fields.
-        if matches!(self.form_provider.as_str(), "chatgpt" | "xai" | "claude-code" | "antigravity") {
+        if matches!(self.form_provider.as_str(), "chatgpt" | "xai" | "claude-code" | "antigravity" | "devin") {
             let mut order = vec![SettingsField::Provider, SettingsField::Model];
             if self.reasoning_adjustable() {
                 order.push(SettingsField::Reasoning);
@@ -365,7 +368,7 @@ impl App {
             self.start_xai_login();
             return;
         }
-        if matches!(self.form_provider.as_str(), "claude-code" | "antigravity") {
+        if matches!(self.form_provider.as_str(), "claude-code" | "antigravity" | "devin") {
             self.form_api_key.clear();
             self.form_base_url.clear();
         } else if self.form_api_key.trim().is_empty() {
@@ -760,6 +763,18 @@ pub(crate) fn get_provider_models(provider: &str) -> &'static [&'static str] {
             "gpt-5.4-mini",
         ],
         "claude-code" => &["opus", "sonnet", "haiku"],
+        "devin" => &[
+            "swe-2",
+            "swe-2-high",
+            "swe-2-medium",
+            "swe-2-max",
+            "swe-2-flash",
+            "swe-2-flash-medium",
+            "adaptive",
+            "opus",
+            "sonnet",
+            "gpt",
+        ],
         "antigravity" => &[
             "gemini-3.8-flash-high",
             "gemini-3.1-pro-high",
@@ -779,6 +794,7 @@ pub(crate) async fn fetch_models_from_provider(
     let client = reqwest::Client::new();
     match provider.as_str() {
         "antigravity" => crate::antigravity::models().await,
+        "devin" => crate::devin::models().await,
         "openai" => {
             let url = "https://api.openai.com/v1/models";
             let res = client

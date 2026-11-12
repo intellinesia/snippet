@@ -38,6 +38,7 @@ pub fn purpose(id: &str, cmd: Option<&str>) -> String {
         "ffprobe" => "audio file transcription (ffmpeg)".into(),
         "rg" => "fast code search for agents (falls back to grep)".into(),
         "claude" => "Claude Code provider".into(),
+        "devin" => "Devin CLI provider".into(),
         "libstdcxx" => format!("voice recognition runtime (libstdc++ with {})", voice_glibcxx()),
         "voice-assets" => "voice recognition runtime and model (about 35 MB download)".into(),
         _ => String::new(),
@@ -78,6 +79,10 @@ pub fn install_command(id: &str, pm: Pm, host: &Host) -> Option<String> {
             _ => None,
         },
         "claude" => host.npm.then(|| "npm i -g @anthropic-ai/claude-code".to_string()),
+        "devin" => Some(match pm {
+            Pm::Brew => "brew install --cask devin-cli".to_string(),
+            _ => "curl -fsSL https://cli.devin.ai/install.sh | bash".to_string(),
+        }),
         "libstdcxx" => match pm {
             Pm::Apt | Pm::Zypper => pkg(pm, "libstdc++6"),
             Pm::Dnf | Pm::Apk => pkg(pm, "libstdc++"),
@@ -136,6 +141,7 @@ pub fn check() -> Vec<Item> {
         found("ffprobe", false, on_path("ffprobe")),
         found("rg", false, on_path("rg")),
         found("claude", false, crate::harness::claude_binary()),
+        found("devin", false, crate::devin::binary()),
     ];
     #[cfg(target_os = "linux")]
     items.push(libstdcxx());

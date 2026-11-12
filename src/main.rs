@@ -109,6 +109,8 @@ enum Command {
     },
     #[command(hide = true)]
     AgyHook,
+    #[command(hide = true)]
+    DevinHook,
 }
 
 #[derive(Debug, Subcommand)]
@@ -671,6 +673,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::History { action }) => return history_cli(action),
         Some(Command::Agent { action }) => return runtime()?.block_on(agent_cli(action)),
         Some(Command::AgyHook) => return Ok(snippet::antigravity::run_hook()?),
+        Some(Command::DevinHook) => return Ok(snippet::devin::run_hook()?),
         Some(Command::Doctor { tsv, pm, prefetch }) => {
             snippet::doctor::run(tsv, pm, prefetch);
             Ok(())

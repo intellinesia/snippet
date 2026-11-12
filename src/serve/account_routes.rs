@@ -18,7 +18,7 @@ fn pooled(provider: &str) -> Result<(), Response> {
     if crate::accounts::is_pooled(provider) {
         Ok(())
     } else {
-        Err(api_error(StatusCode::BAD_REQUEST, "provider must be chatgpt, xai or claude-code"))
+        Err(api_error(StatusCode::BAD_REQUEST, "provider must be chatgpt, xai, claude-code or devin"))
     }
 }
 
@@ -49,6 +49,21 @@ pub(crate) async fn add_account(
             if !token.starts_with("sk-ant-") {
                 return api_error(StatusCode::BAD_REQUEST, "paste the token `claude setup-token` prints (it starts with sk-ant-)");
             }
+            let body = serde_json::json!({ "token": token }).to_string();
+            if let Err(e) = crate::accounts::write_credential(&provider, &id, &body) {
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, e);
+            }
+            crate::accounts::set_label(&provider, &id, &label);
+            Json(serde_json::json!({ "id": id, "accounts": listing() })).into_response()
+        }
+        "devin" => {
+            let raw = req.token.as_deref().unwrap_or("");
+            let Some(token) = crate::devin::parse_credential_token(raw) else {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    "paste the `windsurf_api_key` token (or full credentials.toml) from `~/.local/share/devin/credentials.toml`",
+                );
+            };
             let body = serde_json::json!({ "token": token }).to_string();
             if let Err(e) = crate::accounts::write_credential(&provider, &id, &body) {
                 return api_error(StatusCode::INTERNAL_SERVER_ERROR, e);

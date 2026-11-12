@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::llm::RateLimitSnapshot;
 
 pub const MAIN: &str = "main";
-pub const PROVIDERS: [&str; 3] = ["chatgpt", "xai", "claude-code"];
+pub const PROVIDERS: [&str; 4] = ["chatgpt", "xai", "claude-code", "devin"];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Pool {
@@ -77,7 +77,7 @@ pub fn credential_path(provider: &str, id: &str) -> Option<PathBuf> {
     match (provider, id) {
         ("chatgpt", MAIN) => Some(crate::chatgpt_auth::tokens_path()),
         ("xai", MAIN) => Some(crate::xai_auth::tokens_path()),
-        ("claude-code", MAIN) => None,
+        ("claude-code" | "devin", MAIN) => None,
         _ => Some(dir(provider).join(format!("{id}.json"))),
     }
 }
@@ -211,7 +211,7 @@ pub fn list(provider: &str) -> Vec<AccountView> {
 }
 
 pub fn new_id(provider: &str) -> String {
-    if !exists(provider, MAIN) && provider != "claude-code" {
+    if !exists(provider, MAIN) && !matches!(provider, "claude-code" | "devin") {
         return MAIN.to_string();
     }
     uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
@@ -243,7 +243,9 @@ pub fn remove(provider: &str, id: &str) -> Result<(), String> {
             Err(e) => return Err(e.to_string()),
         }
     } else {
-        return Err("the signed-in Claude Code account is managed by `claude` itself".to_string());
+        let cli = if provider == "devin" { "devin" } else { "claude" };
+        let label = if provider == "devin" { "Devin" } else { "Claude Code" };
+        return Err(format!("the signed-in {label} account is managed by `{cli}` itself"));
     }
     edit(provider, |pool| {
         pool.order.retain(|x| x != id);
@@ -307,4 +309,21 @@ pub fn is_limit_response(
         );
     }
     retry_after.is_none_or(|delay| delay.as_secs() > 300)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn devin_is_pooled_with_cli_managed_main_account() {
+        assert!(is_pooled("devin"));
+        assert_eq!(credential_path("devin", MAIN), None);
+        assert!(credential_path("devin", "slot1").unwrap().ends_with("accounts/devin/slot1.json"));
+        let id = new_id("devin");
+        assert_ne!(id, MAIN);
+        assert_eq!(id.len(), 8);
+        let err = remove("devin", MAIN).unwrap_err();
+        assert!(err.contains("Devin") && err.contains("`devin`"), "{err}");
+    }
 }

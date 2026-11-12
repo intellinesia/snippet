@@ -223,7 +223,7 @@ pub(crate) struct CliAgentQuery {
 
 // GET /cli-agent/status — whether a CLI-backed provider is installed and signed in here.
 pub(crate) async fn cli_agent_status(Query(q): Query<CliAgentQuery>) -> Response {
-    if !matches!(q.provider.as_str(), "claude-code" | "antigravity") {
+    if !matches!(q.provider.as_str(), "claude-code" | "antigravity" | "devin") {
         return api_error(StatusCode::BAD_REQUEST, "not a CLI-backed provider");
     }
     Json(crate::harness::cli_agent_status(&q.provider).await).into_response()
