@@ -11,6 +11,8 @@ pub(crate) struct AccountReq {
     #[serde(default)]
     token: Option<String>,
     #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
     order: Option<Vec<String>>,
 }
 
@@ -57,19 +59,30 @@ pub(crate) async fn add_account(
             Json(serde_json::json!({ "id": id, "accounts": listing() })).into_response()
         }
         "devin" => {
-            let raw = req.token.as_deref().unwrap_or("");
-            let Some(token) = crate::devin::parse_credential_token(raw) else {
-                return api_error(
-                    StatusCode::BAD_REQUEST,
-                    "paste the `windsurf_api_key` token (or full credentials.toml) from `~/.local/share/devin/credentials.toml`",
-                );
-            };
-            let body = serde_json::json!({ "token": token }).to_string();
-            if let Err(e) = crate::accounts::write_credential(&provider, &id, &body) {
-                return api_error(StatusCode::INTERNAL_SERVER_ERROR, e);
+            if let Some(raw) = req.token.as_deref().filter(|t| !t.trim().is_empty()) {
+                let Some(token) = crate::devin::parse_credential_token(raw) else {
+                    return api_error(
+                        StatusCode::BAD_REQUEST,
+                        "paste the `windsurf_api_key` token (or full credentials.toml) from `~/.local/share/devin/credentials.toml`",
+                    );
+                };
+                let body = serde_json::json!({ "token": token }).to_string();
+                if let Err(e) = crate::accounts::write_credential(&provider, &id, &body) {
+                    return api_error(StatusCode::INTERNAL_SERVER_ERROR, e);
+                }
+                crate::accounts::set_label(&provider, &id, &label);
+                Json(serde_json::json!({ "id": id, "accounts": listing() })).into_response()
+            } else {
+                match crate::devin::begin_login(&id, &label).await {
+                    Ok(url) => Json(serde_json::json!({
+                        "id": id,
+                        "verification_uri": url,
+                        "needs_code": true,
+                    }))
+                    .into_response(),
+                    Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
+                }
             }
-            crate::accounts::set_label(&provider, &id, &label);
-            Json(serde_json::json!({ "id": id, "accounts": listing() })).into_response()
         }
         "chatgpt" => match crate::chatgpt_auth::begin_device_code_login().await {
             Ok(device) => {
@@ -107,6 +120,36 @@ pub(crate) async fn add_account(
             Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
         },
     }
+}
+
+pub(crate) async fn complete_account(
+    Json(req): Json<AccountReq>,
+) -> Response {
+    if req.provider != "devin" {
+        return api_error(StatusCode::BAD_REQUEST, "provider must be devin");
+    }
+    let Some(id) = req.id.as_deref().map(str::trim).filter(|id| !id.is_empty()) else {
+        return api_error(StatusCode::BAD_REQUEST, "id required");
+    };
+    let Some(code) = req.code.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
+        return api_error(StatusCode::BAD_REQUEST, "code required");
+    };
+    let (token, stored_label) = match crate::devin::complete_login(id, code).await {
+        Ok(done) => done,
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, e),
+    };
+    let body = serde_json::json!({ "token": token }).to_string();
+    if let Err(e) = crate::accounts::write_credential("devin", id, &body) {
+        return api_error(StatusCode::BAD_REQUEST, e);
+    }
+    let chosen_label = req
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .unwrap_or(&stored_label);
+    crate::accounts::set_label("devin", id, chosen_label);
+    Json(serde_json::json!({ "id": id, "accounts": listing() })).into_response()
 }
 
 pub(crate) async fn remove_account(

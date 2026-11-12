@@ -1,6 +1,10 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock};
 
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin};
 
 pub const SESSION_ENV: &str = "SNIPPET_DEVIN_MCP_URL";
 pub const MCP_SERVER_NAME: &str = "snippet";
@@ -582,6 +586,295 @@ pub fn quota_exhausted_hint(event: &Value) -> Option<i64> {
     None
 }
 
+struct Login {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    dir: PathBuf,
+    label: String,
+    lines: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+static LOGINS: LazyLock<tokio::sync::Mutex<HashMap<String, Login>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
+
+pub fn extract_login_url(line: &str) -> Option<String> {
+    let clean = strip_ansi_and_osc(line);
+    for token in clean.split_whitespace() {
+        let Some(pos) = token.find("https://") else {
+            continue;
+        };
+        let candidate = &token[pos..];
+        if let Ok(parsed) = reqwest::Url::parse(candidate)
+            && parsed.scheme() == "https"
+            && let Some(host) = parsed.host_str()
+        {
+            let host = host.to_ascii_lowercase();
+            let allowed = host == "app.devin.ai"
+                || host.ends_with(".devin.ai")
+                || host.ends_with(".codeium.com")
+                || host.ends_with(".windsurf.com");
+            if allowed {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn strip_ansi_and_osc(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            i += 1;
+            if i >= bytes.len() {
+                break;
+            }
+            match bytes[i] {
+                b'[' => {
+                    i += 1;
+                    while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                        i += 1;
+                    }
+                    if i < bytes.len() {
+                        i += 1;
+                    }
+                }
+                b']' => {
+                    i += 1;
+                    let mut closed = false;
+                    while i < bytes.len() {
+                        if bytes[i] == 0x07 {
+                            i += 1;
+                            closed = true;
+                            break;
+                        }
+                        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                            i += 2;
+                            closed = true;
+                            break;
+                        }
+                        i += 1;
+                    }
+                    if closed {
+                        // Replace OSC framing with a space so OSC 8 target and visible label do not glue together.
+                        out.push(b' ');
+                    }
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn valid_login_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+pub async fn begin_login(id: &str, label: &str) -> Result<String, String> {
+    let bin = binary().ok_or("Devin CLI (devin) isn't installed or isn't on PATH")?;
+    begin_login_with(&bin, &crate::config::snippet_home(), id, label).await
+}
+
+async fn begin_login_with(
+    bin: &Path,
+    snippet_home: &Path,
+    id: &str,
+    label: &str,
+) -> Result<String, String> {
+    if !valid_login_id(id) {
+        return Err("invalid account id".to_string());
+    }
+    if let Some(mut old) = LOGINS.lock().await.remove(id) {
+        let _ = old.child.kill().await;
+        let _ = std::fs::remove_dir_all(&old.dir);
+    }
+
+    let dir = snippet_home.join("devin/login").join(id);
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = dir.join("home");
+    let config = dir.join("config");
+    let data = dir.join("data");
+    let cache = dir.join("cache");
+    for sub in [&home, &config, &data, &cache] {
+        std::fs::create_dir_all(sub).map_err(|e| format!("create {}: {e}", sub.display()))?;
+    }
+
+    let mut cmd = tokio::process::Command::new(bin);
+    cmd.args(["auth", "login", "--force-manual-token-flow"])
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_DATA_HOME", &data)
+        .env("XDG_CACHE_HOME", &cache)
+        .env_remove("WINDSURF_API_KEY")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("couldn't start devin auth login: {e}"))?;
+    let stdin = child.stdin.take().ok_or("devin login stdin unavailable")?;
+    let stdout = child.stdout.take().ok_or("devin login stdout unavailable")?;
+    let stderr = child.stderr.take().ok_or("devin login stderr unavailable")?;
+
+    let collected = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let stderr_lines = Arc::clone(&collected);
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            if let Ok(mut buf) = stderr_lines.lock()
+                && buf.len() < 64
+            {
+                buf.push(line);
+            }
+        }
+    });
+
+    let mut out_reader = BufReader::new(stdout).lines();
+    let url_res = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while let Ok(Some(line)) = out_reader.next_line().await {
+            if let Some(url) = extract_login_url(&line) {
+                return Ok(url);
+            }
+            if let Ok(mut buf) = collected.lock()
+                && buf.len() < 64
+            {
+                buf.push(line);
+            }
+        }
+        Err("Devin login exited before printing a sign-in link".to_string())
+    })
+    .await;
+
+    let url = match url_res {
+        Ok(Ok(url)) => url,
+        Ok(Err(msg)) => {
+            let _ = child.kill().await;
+            let detail = last_clean_line(&collected).unwrap_or(msg);
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(detail);
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err("timed out waiting for Devin sign-in link".to_string());
+        }
+    };
+
+    let stdout_lines = Arc::clone(&collected);
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = out_reader.next_line().await {
+            if let Ok(mut buf) = stdout_lines.lock()
+                && buf.len() < 64
+            {
+                buf.push(line);
+            }
+        }
+    });
+
+    if let Some(mut displaced) = LOGINS.lock().await.insert(
+        id.to_string(),
+        Login {
+            child,
+            stdin: Some(stdin),
+            dir: dir.clone(),
+            label: label.to_string(),
+            lines: collected,
+        },
+    ) {
+        let _ = displaced.child.kill().await;
+        if displaced.dir != dir {
+            let _ = std::fs::remove_dir_all(&displaced.dir);
+        }
+    }
+
+    let reap_id = id.to_string();
+    let reap_dir = dir;
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+        let mut guard = LOGINS.lock().await;
+        if guard.get(&reap_id).is_some_and(|entry| entry.dir == reap_dir)
+            && let Some(mut stale) = guard.remove(&reap_id)
+        {
+            drop(guard);
+            let _ = stale.child.kill().await;
+            let _ = std::fs::remove_dir_all(&stale.dir);
+        }
+    });
+
+    Ok(url)
+}
+
+fn last_clean_line(lines: &std::sync::Mutex<Vec<String>>) -> Option<String> {
+    let guard = lines.lock().ok()?;
+    guard
+        .iter()
+        .rev()
+        .map(|l| strip_ansi_and_osc(l))
+        .map(|l| l.trim().to_string())
+        .find(|l| !l.is_empty())
+}
+
+pub async fn complete_login(id: &str, code: &str) -> Result<(String, String), String> {
+    let Some(mut login) = LOGINS.lock().await.remove(id) else {
+        return Err("no sign-in in progress for this account; start again".to_string());
+    };
+    let res = finish_login(&mut login, code).await;
+    let _ = std::fs::remove_dir_all(&login.dir);
+    res
+}
+
+async fn finish_login(login: &mut Login, code: &str) -> Result<(String, String), String> {
+    let mut stdin = login
+        .stdin
+        .take()
+        .ok_or_else(|| "devin login stdin unavailable".to_string())?;
+    let payload = format!("{}\n", code.trim());
+    stdin
+        .write_all(payload.as_bytes())
+        .await
+        .map_err(|e| format!("couldn't send code to Devin login: {e}"))?;
+    let _ = stdin.flush().await;
+    drop(stdin);
+
+    let status = match tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        login.child.wait(),
+    )
+    .await
+    {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => return Err(format!("Devin login failed: {e}")),
+        Err(_) => {
+            let _ = login.child.kill().await;
+            return Err("Devin login timed out waiting for verification".to_string());
+        }
+    };
+
+    if !status.success() {
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let msg = last_clean_line(&login.lines)
+            .unwrap_or_else(|| "Devin rejected the code".to_string());
+        return Err(msg);
+    }
+
+    let cred_path = login.dir.join("data/devin/credentials.toml");
+    let raw = std::fs::read_to_string(&cred_path)
+        .map_err(|_| "Devin login finished without writing credentials.toml".to_string())?;
+    let token = parse_credential_token(&raw)
+        .ok_or_else(|| "Devin credentials.toml did not contain an API token".to_string())?;
+    Ok((token, login.label.clone()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -743,5 +1036,71 @@ mod tests {
         std::fs::write(&priv_db, b"snippet-private-sessions").unwrap();
         assert_eq!(sessions_db_path_in(&snippet_home).as_deref(), Some(priv_db.as_path()));
         assert_eq!(std::fs::read(&real_db).unwrap(), b"real-user-sessions");
+    }
+
+    #[test]
+    fn extract_login_url_handles_plain_osc8_and_non_devin_lines() {
+        let plain = "Visit https://app.devin.ai/auth/cli/continue?state=s1&code_challenge=c1&code_challenge_method=S256&cli_pkce_marker=1 to sign in, then copy the code and paste it below.";
+        assert_eq!(
+            extract_login_url(plain).as_deref(),
+            Some("https://app.devin.ai/auth/cli/continue?state=s1&code_challenge=c1&code_challenge_method=S256&cli_pkce_marker=1")
+        );
+
+        let osc8 = "\x1b[1mVisit \x1b]8;;https://app.devin.ai/auth/cli/continue?state=s2&cli_pkce_marker=1\x1b\\https://app.devin.ai/auth/cli/continue?state=s2&cli_pkce_marker=1\x1b]8;;\x1b\\\x1b[0m to sign in";
+        assert_eq!(
+            extract_login_url(osc8).as_deref(),
+            Some("https://app.devin.ai/auth/cli/continue?state=s2&cli_pkce_marker=1")
+        );
+
+        assert_eq!(
+            extract_login_url("Visit https://auth.windsurf.com/cli?state=s3 now").as_deref(),
+            Some("https://auth.windsurf.com/cli?state=s3")
+        );
+        assert_eq!(extract_login_url("No link on this line at all"), None);
+        assert_eq!(extract_login_url("Visit https://evil.example.com/app.devin.ai?state=bad"), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_cli_begin_and_complete_login_round_trip_and_reject_bad_code() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let fake_bin = tmp.path().join("fake-devin");
+        let script = r#"#!/bin/sh
+printf 'Visit \033]8;;https://app.devin.ai/auth/cli/continue?state=teststate\033\\https://app.devin.ai/auth/cli/continue?state=teststate\033]8;;\033\\ to sign in.\n'
+IFS= read -r code
+if [ "$code" = "good-code" ]; then
+  mkdir -p "$XDG_DATA_HOME/devin"
+  printf 'windsurf_api_key = "fake-token-123"\n' > "$XDG_DATA_HOME/devin/credentials.toml"
+  exit 0
+fi
+printf '\033[31mError: invalid authorization code\033[0m\n' >&2
+exit 1
+"#;
+        std::fs::write(&fake_bin, script).unwrap();
+        std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let snippet_home = tmp.path().join("snippet");
+        let url = begin_login_with(&fake_bin, &snippet_home, "slotA1", "Work")
+            .await
+            .unwrap();
+        assert_eq!(url, "https://app.devin.ai/auth/cli/continue?state=teststate");
+        assert!(snippet_home.join("devin/login/slotA1").is_dir());
+
+        let (tok, label) = complete_login("slotA1", "  good-code  ").await.unwrap();
+        assert_eq!(tok, "fake-token-123");
+        assert_eq!(label, "Work");
+        assert!(!snippet_home.join("devin/login/slotA1").exists());
+
+        let missing = complete_login("slotA1", "good-code").await.unwrap_err();
+        assert_eq!(missing, "no sign-in in progress for this account; start again");
+
+        begin_login_with(&fake_bin, &snippet_home, "slotB2", "")
+            .await
+            .unwrap();
+        let err = complete_login("slotB2", "wrong").await.unwrap_err();
+        assert_eq!(err, "Error: invalid authorization code");
+        assert!(!snippet_home.join("devin/login/slotB2").exists());
     }
 }

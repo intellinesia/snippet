@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -82,7 +82,14 @@ pub fn credential_path(provider: &str, id: &str) -> Option<PathBuf> {
     }
 }
 
+fn devin_main_logged_in(data_dir: Option<&Path>) -> bool {
+    data_dir.is_some_and(|dir| dir.join("credentials.toml").is_file())
+}
+
 fn exists(provider: &str, id: &str) -> bool {
+    if provider == "devin" && id == MAIN {
+        return devin_main_logged_in(crate::devin::real_data_dir().as_deref());
+    }
     match credential_path(provider, id) {
         Some(path) => path.is_file(),
         None => true,
@@ -325,5 +332,15 @@ mod tests {
         assert_eq!(id.len(), 8);
         let err = remove("devin", MAIN).unwrap_err();
         assert!(err.contains("Devin") && err.contains("`devin`"), "{err}");
+    }
+
+    #[test]
+    fn devin_main_counts_only_when_credentials_file_exists() {
+        assert!(!devin_main_logged_in(None));
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(!devin_main_logged_in(Some(dir.path())));
+        let creds = dir.path().join("credentials.toml");
+        std::fs::write(&creds, "windsurf_api_key = \"tok\"\n").unwrap();
+        assert!(devin_main_logged_in(Some(dir.path())));
     }
 }
