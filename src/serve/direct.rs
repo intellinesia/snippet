@@ -55,12 +55,53 @@ fn direct_message_envelope(
     event: &crate::coordination::types::CoordinationEvent,
     history: &[crate::coordination::types::CoordinationEvent],
 ) -> String {
+    let sender = format!("{}:{}", event.actor_kind, event.actor_id);
+    if let Some(reaction) = event
+        .payload
+        .get("reaction")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
+        let target = event
+            .payload
+            .get("reply_to")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        return format!("[reaction] {sender} reacted {reaction} to your message {target}");
+    }
     let body = event
         .payload
         .get("body")
         .and_then(|value| value.as_str())
         .unwrap_or_default();
-    let sender = format!("{}:{}", event.actor_kind, event.actor_id);
+    let event_id_line = if event.event_id.is_empty() {
+        String::new()
+    } else {
+        format!("event_id: {}\n", event.event_id)
+    };
+    let mut reply_lines = String::new();
+    if let Some(target_id) = event
+        .payload
+        .get("reply_to")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        reply_lines.push_str(&format!("reply_to_message: {target_id}\n"));
+        if let Some(target) = history.iter().find(|prior| prior.event_id == target_id) {
+            let quoted: String = target
+                .payload
+                .get("body")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .replace(['\r', '\n'], " ")
+                .chars()
+                .take(160)
+                .collect();
+            reply_lines.push_str(&format!("quoted: {quoted}\n"));
+        }
+    }
     // When the message came from a SESSION, the reply belongs back in that
     // session — that is where the human is reading and where the exchange is
     // recorded. Stated as a `reply_to` line so the agent never has to infer it.
@@ -85,14 +126,23 @@ fn direct_message_envelope(
             history.len()
         ));
         for prior in history {
-            let prior_body = prior
-                .payload
-                .get("body")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
+            let prior_body = if let Some(r) = prior.payload.get("reaction").and_then(|v| v.as_str()) {
+                let target = prior
+                    .payload
+                    .get("reply_to")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                format!("[reacted {r} to {target}]")
+            } else {
+                prior
+                    .payload
+                    .get("body")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
             digest.push_str(&format!(
                 "  {} [{}] {}: {}\n",
                 prior.sequence, prior.actor_kind, prior.actor_id, prior_body
@@ -100,12 +150,13 @@ fn direct_message_envelope(
         }
     }
     format!(
-        "[direct_message]\nthread_id: {thread}\nfrom: {sender}\nfrom_kind: {kind}\nto: {to}\n\
-         reply_to: {reply_to}\n{tags}\
+        "[direct_message]\n{event_id_line}thread_id: {thread}\nfrom: {sender}\nfrom_kind: {kind}\nto: {to}\n\
+         reply_to: {reply_to}\n{reply_lines}{tags}\
          note: {who} wrote directly; this is not a turn in your own conversation. \
          {answer} \
          Recent history only; use read_agent_thread for more.\n{history}body: {body}\n\
          [/direct_message]",
+        event_id_line = event_id_line,
         thread = event.thread_id,
         sender = sender,
         who = if event.actor_kind == "human" { "The user" } else { "A colleague" },
@@ -116,6 +167,7 @@ fn direct_message_envelope(
             "Answer with send_agent_message to `reply_to` above, which is where they're reading."
         },
         reply_to = reply_to,
+        reply_lines = reply_lines,
         tags = crate::coordination::typed::envelope_lines(&event.payload),
         kind = event.actor_kind,
         to = event
@@ -154,6 +206,10 @@ fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool 
     for (i, event) in turn.iter().enumerate().skip(from) {
         if let E::ToolCall { tool_name, arguments } = event
             && tool_name == "send_agent_message"
+            && arguments
+                .get("reaction")
+                .and_then(|v| v.as_str())
+                .is_none_or(|r| r.trim().is_empty())
             && matches!(
                 arguments.get("recipient_agent_id").and_then(|v| v.as_str()).map(str::trim),
                 Some("human" | "local" | "human:local")
@@ -441,6 +497,9 @@ pub(super) async fn deliver_by_urgency(
     payload: &serde_json::Value,
     from_human: bool,
 ) {
+    let from_human = from_human
+        && payload.get("reaction").is_none()
+        && payload.get("kind").and_then(|v| v.as_str()) != Some("reaction");
     let busy = d
         .store
         .get_session_row(session_id)
@@ -577,6 +636,16 @@ async fn deliver_direct(
             }
             None => {}
         }
+        if event.payload.get("reaction").is_some() {
+            let envelope = direct_message_envelope(event, &[]);
+            if let Some(lane) = reply_lane(d, event, &session_id).as_deref()
+                && crate::lanes::deliver_to_lane(&session_id, lane, envelope.clone())
+            {
+                return Ok(());
+            }
+            deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
+            return Ok(());
+        }
         if event.payload.get("about_task").and_then(|v| v.as_str()).is_some() {
             let Some((tx, _path, _stream)) = d.ensure_live(&session_id).await else {
                 return Err(format!("could not start session `{session_id}`"));
@@ -669,6 +738,12 @@ async fn deliver_direct(
     let Some((tx, _path, _stream)) = d.ensure_live(&session_id).await else {
         return Err(format!("could not start inbox session `{session_id}`"));
     };
+    if event.payload.get("reaction").is_some() {
+        let envelope = direct_message_envelope(event, &[]);
+        drop(tx);
+        deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
+        return Ok(());
+    }
     // Exclude the message being delivered: the envelope carries it as `body`.
     let history: Vec<_> = d
         .store
@@ -796,6 +871,7 @@ pub(super) struct DirectSendReq {
     /// back to the chat that asked the question.
     to_kind: String,
     to_id: String,
+    #[serde(default)]
     body: String,
     /// The session this message was asked FROM, when it came from one. Recorded
     /// on the event so the exchange is traceable.
@@ -803,6 +879,12 @@ pub(super) struct DirectSendReq {
     origin_session: Option<String>,
     #[serde(default)]
     idempotency_key: String,
+    #[serde(default)]
+    reply_to: Option<String>,
+    #[serde(default)]
+    reaction: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 /// POST /coordination/direct/messages — send one direct message.
@@ -813,8 +895,39 @@ pub(super) async fn direct_send_message(
     State(d): State<Shared>,
     Json(req): Json<DirectSendReq>,
 ) -> Response {
-    if req.body.trim().is_empty() {
-        return api_error(StatusCode::BAD_REQUEST, "body is required");
+    let (reply_to, reaction) = match crate::coordination::typed::parse_reply_and_reaction(
+        req.reply_to.as_deref(),
+        req.reaction.as_deref(),
+    ) {
+        Ok(parsed) => parsed,
+        Err(error) => return api_error(StatusCode::BAD_REQUEST, error),
+    };
+    let mut extra = serde_json::Map::new();
+    if let Some(reaction_name) = reaction {
+        if let Some(k) = req.kind.as_deref().map(str::trim).filter(|k| !k.is_empty())
+            && k != "reaction"
+        {
+            return api_error(StatusCode::BAD_REQUEST, "reaction kind must be reaction");
+        }
+        crate::coordination::typed::apply_reply_and_reaction(
+            &mut extra,
+            reply_to.as_deref(),
+            Some(reaction_name),
+        );
+    } else {
+        if req.body.trim().is_empty() {
+            return api_error(StatusCode::BAD_REQUEST, "body is required");
+        }
+        if let Some(k) = req.kind.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+            let (parsed_kind, _) = match crate::coordination::typed::parse(Some(k), None) {
+                Ok(parsed) => parsed,
+                Err(error) => return api_error(StatusCode::BAD_REQUEST, error),
+            };
+            if let Some(kind_str) = parsed_kind {
+                extra.insert("kind".into(), json!(kind_str));
+            }
+        }
+        crate::coordination::typed::apply_reply_and_reaction(&mut extra, reply_to.as_deref(), None);
     }
     let from = (req.from_kind.trim(), req.from_id.trim());
     let to = (req.to_kind.trim(), req.to_id.trim());
@@ -887,17 +1000,24 @@ pub(super) async fn direct_send_message(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let prepared_body = match super::transcribe::prepare_message(&d, req.body.trim().to_string()).await {
-        Ok(t) => t,
-        Err(error) => return api_error(StatusCode::BAD_REQUEST, error),
+    let prepared_body = if reaction.is_some() {
+        String::new()
+    } else {
+        match super::transcribe::prepare_message(&d, req.body.trim().to_string()).await {
+            Ok(t) => t,
+            Err(error) => return api_error(StatusCode::BAD_REQUEST, error),
+        }
     };
-    match d.store.send_direct_message_from(
+    match d.store.send_direct_message_typed(
         from,
         to,
         &prepared_body,
         &key,
         &now,
         origin,
+        None,
+        None,
+        extra,
     ) {
         Ok(saved) => {
             let _ = d.coordination_events.send(saved.clone());
@@ -908,7 +1028,9 @@ pub(super) async fn direct_send_message(
             // Record what this session SENT, so a later reply has something to
             // attach to. Without it the answer would appear with no question
             // before it and the model could not tell what was asked.
-            if let Some(origin) = origin {
+            if let Some(origin) = origin
+                && reaction.is_none()
+            {
                 super::record_agent_message(&d, origin, to.1, &prepared_body, true).await;
             }
             (StatusCode::ACCEPTED, Json(saved)).into_response()
@@ -1189,6 +1311,141 @@ mod tests {
         let current = event(1, "local", "hi", "agent:a");
         let envelope = direct_message_envelope(&current, &[]);
         assert!(envelope.contains("first message in this conversation"));
+    }
+
+    #[test]
+    fn envelope_quotes_reply_target_and_formats_reactions_without_history() {
+        let long_body = format!("{}{}", "x".repeat(160), "overflow-not-included");
+        let mut prior = event(1, "a", &long_body, "human:local");
+        prior.actor_kind = "agent".into();
+
+        let mut reply = event(2, "local", "yes, go ahead", "agent:a");
+        reply.payload["reply_to"] = json!("e1");
+        let env = direct_message_envelope(&reply, std::slice::from_ref(&prior));
+        assert!(env.contains("reply_to_message: e1\n"), "{env}");
+        let quoted_line = env.lines().find(|l| l.starts_with("quoted: ")).expect("quoted line");
+        assert_eq!(quoted_line, format!("quoted: {}", "x".repeat(160)));
+
+        let env_missing = direct_message_envelope(&reply, &[]);
+        assert!(env_missing.contains("reply_to_message: e1\n"));
+        assert!(!env_missing.contains("\nquoted: "));
+
+        let mut react = event(3, "local", "", "agent:a");
+        react.payload["reply_to"] = json!("e1");
+        react.payload["reaction"] = json!("check");
+        react.payload["kind"] = json!("reaction");
+        let react_env = direct_message_envelope(&react, &[prior]);
+        assert_eq!(react_env, "[reaction] human:local reacted check to your message e1");
+        assert!(!react_env.contains("history:"));
+    }
+
+    #[tokio::test]
+    async fn direct_send_accepts_reaction_with_empty_body_and_rejects_plain_empty() {
+        use axum::body::to_bytes;
+        let d = test_daemon();
+        d.store.create_agent(&agent("a")).unwrap();
+        let target = human_says(&d.store, "initial", "k-init");
+
+        let bad_plain = super::direct_send_message(
+            State(d.clone()),
+            Json(super::DirectSendReq {
+                from_kind: "human".into(),
+                from_id: "local".into(),
+                to_kind: "agent".into(),
+                to_id: "a".into(),
+                body: "".into(),
+                origin_session: None,
+                idempotency_key: "k-empty".into(),
+                reply_to: None,
+                reaction: None,
+                kind: None,
+            }),
+        )
+        .await;
+        assert_eq!(bad_plain.status(), StatusCode::BAD_REQUEST);
+
+        let bad_react = super::direct_send_message(
+            State(d.clone()),
+            Json(super::DirectSendReq {
+                from_kind: "human".into(),
+                from_id: "local".into(),
+                to_kind: "agent".into(),
+                to_id: "a".into(),
+                body: "".into(),
+                origin_session: None,
+                idempotency_key: "k-no-target".into(),
+                reply_to: None,
+                reaction: Some("check".into()),
+                kind: Some("reaction".into()),
+            }),
+        )
+        .await;
+        assert_eq!(bad_react.status(), StatusCode::BAD_REQUEST);
+
+        let ok_react = super::direct_send_message(
+            State(d.clone()),
+            Json(super::DirectSendReq {
+                from_kind: "human".into(),
+                from_id: "local".into(),
+                to_kind: "agent".into(),
+                to_id: "a".into(),
+                body: "".into(),
+                origin_session: None,
+                idempotency_key: "k-react".into(),
+                reply_to: Some(target.event_id.clone()),
+                reaction: Some("check".into()),
+                kind: Some("reaction".into()),
+            }),
+        )
+        .await;
+        assert_eq!(ok_react.status(), StatusCode::ACCEPTED);
+        let bytes = to_bytes(ok_react.into_body(), 16 * 1024).await.unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(saved["payload"]["reply_to"], target.event_id);
+        assert_eq!(saved["payload"]["reaction"], "check");
+        assert_eq!(saved["payload"]["kind"], "reaction");
+        assert_eq!(saved["payload"]["body"], "");
+
+        let mut mc_rx = fake_busy_session(&d, crate::mission_control::SESSION_ID).await;
+        let mut react_extra = serde_json::Map::new();
+        crate::coordination::typed::apply_reply_and_reaction(
+            &mut react_extra,
+            Some(&target.event_id),
+            Some("eyes"),
+        );
+        let react_event = d
+            .store
+            .send_direct_message_typed(
+                ("human", "local"),
+                ("agent", crate::mission_control::SESSION_ID),
+                "",
+                "k-mc-react",
+                "2026-01-01T00:00:05Z",
+                None,
+                None,
+                None,
+                react_extra,
+            )
+            .unwrap();
+        super::deliver_direct(
+            &d,
+            &crate::coordination::PendingDirectMessage {
+                event: react_event,
+                recipient_kind: "agent".into(),
+                recipient_id: crate::mission_control::SESSION_ID.into(),
+            },
+        )
+        .await
+        .unwrap();
+        match mc_rx.try_recv().expect("reaction queued on busy session") {
+            LoopInput::Queue(item) => {
+                assert_eq!(
+                    item.text,
+                    format!("[reaction] human:local reacted eyes to your message {}", target.event_id)
+                );
+            }
+            other => panic!("expected Queue for reaction on busy session, got {other:?}"),
+        }
     }
     fn test_daemon() -> super::Shared {
         std::sync::Arc::new(crate::serve::Daemon {

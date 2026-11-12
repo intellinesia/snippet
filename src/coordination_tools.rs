@@ -424,13 +424,21 @@ struct ReadThreadArgs {
 
 /// One board message, flattened for the model: who said what, when.
 fn flatten_event(event: &CoordinationEvent) -> Value {
-    json!({
+    let mut out = json!({
+        "event_id": event.event_id,
         "sequence": event.sequence,
         "from": event.actor_id,
         "kind": event.actor_kind,
         "at": event.created_at,
         "body": event.payload.get("body").and_then(|v| v.as_str()).unwrap_or_default(),
-    })
+    });
+    if let Some(reply_to) = event.payload.get("reply_to").and_then(|v| v.as_str()) {
+        out["reply_to"] = json!(reply_to);
+    }
+    if let Some(reaction) = event.payload.get("reaction").and_then(|v| v.as_str()) {
+        out["reaction"] = json!(reaction);
+    }
+    out
 }
 
 pub struct ReadCoordinationThread;
@@ -497,6 +505,7 @@ impl Tool for ReadCoordinationThread {
 #[derive(Deserialize)]
 struct SendAgentMessageArgs {
     recipient_agent_id: String,
+    #[serde(default)]
     body: String,
     #[serde(default)]
     idempotency_key: Option<String>,
@@ -504,6 +513,10 @@ struct SendAgentMessageArgs {
     kind: Option<String>,
     #[serde(default)]
     urgency: Option<String>,
+    #[serde(default)]
+    reply_to: Option<String>,
+    #[serde(default)]
+    reaction: Option<String>,
 }
 
 /// The session id named by the most recent human message in a direct thread.
@@ -514,7 +527,7 @@ fn latest_human_origin(events: &[CoordinationEvent]) -> Option<&str> {
     events
         .iter()
         .rev()
-        .find(|event| event.actor_kind == "human")
+        .find(|event| event.actor_kind == "human" && event.payload.get("reaction").is_none())
         .and_then(|event| event.payload.get("origin_session"))
         .and_then(|value| value.as_str())
         .map(str::trim)
@@ -551,16 +564,18 @@ impl Tool for SendAgentMessage {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "send_agent_message".into(),
-            description: "Reply to a message or contact an agent. For session-origin messages, copy the exact `reply_to` value (`session:<id>`); use `human` only if no session was named, otherwise an agent id or `task:<id>`. This is conversation only: it cannot create work, transfer ownership or authorise workspace changes. Use Mission Control for tasks and `post_task_coordination` for task updates. `urgent` interrupts; reserve it for blockers or wrong direction.".into(),
+            description: "Reply to a message or contact an agent. For session-origin messages, copy the exact `reply_to` value (`session:<id>`); use `human` only if no session was named, otherwise an agent id or `task:<id>`. This is conversation only: it cannot create work, transfer ownership or authorise workspace changes. Use Mission Control for tasks and `post_task_coordination` for task updates. `urgent` interrupts; reserve it for blockers or wrong direction. reply_to quotes the message you answer; reaction acknowledges one without words (check: done or agreed, eyes: seen and on it, thumbs_up, question: unclear, thinking).".into(),
             input_schema: schema(
                 json!({
-                    "recipient_agent_id":{"type":"string","description":"agent id from list_coordination_agents, `task:<id>`, `session:<id>` or `human`"},
+                    "recipient_agent_id":{"type":"string","description":"agent id, `task:<id>`, `session:<id>` or `human`"},
                     "body":{"type":"string"},
-                    "idempotency_key":{"type":"string","description":"optional; a retry with the same key does not duplicate"},
-                    "kind":{"type":"string","enum":["note","question","status","handoff_note","blocker","result","interrupt"],"description":"optional; what the message is, shown to the recipient"},
-                    "urgency":{"type":"string","enum":["normal","urgent"],"description":"optional, default normal. Normal waits until the recipient's current run ends. Urgent stops its run and wakes it now: only for a blocker, a wrong direction or something that makes its work pointless. kind `interrupt` is always urgent."}
+                    "idempotency_key":{"type":"string"},
+                    "kind":{"type":"string","enum":["note","question","status","handoff_note","blocker","result","interrupt"]},
+                    "urgency":{"type":"string","enum":["normal","urgent"],"description":"default normal; `interrupt` is always urgent"},
+                    "reply_to":{"type":"string"},
+                    "reaction":{"type":"string","enum":["check","eyes","thumbs_up","question","thinking"]}
                 }),
-                &["recipient_agent_id", "body"],
+                &["recipient_agent_id"],
             ),
         }
     }
@@ -572,7 +587,12 @@ impl Tool for SendAgentMessage {
         if recipient.is_empty() {
             return Err(ToolError::msg("recipient_agent_id must not be empty"));
         }
-        if args.body.trim().is_empty() {
+        let (reply_to, reaction) = crate::coordination::typed::parse_reply_and_reaction(
+            args.reply_to.as_deref(),
+            args.reaction.as_deref(),
+        )
+        .map_err(ToolError::msg)?;
+        if reaction.is_none() && args.body.trim().is_empty() {
             return Err(ToolError::msg("body must not be empty"));
         }
         // `human` (or `local`) addresses the operator who is talking to this
@@ -587,7 +607,11 @@ impl Tool for SendAgentMessage {
             },
         };
         let db = db(ctx)?;
-        let mut body = args.body.trim().to_string();
+        let mut body = if reaction.is_some() {
+            String::new()
+        } else {
+            args.body.trim().to_string()
+        };
         let task_session;
         let mut about_task: Option<String> = None;
         let (requested_kind, requested_id) = match recipient.strip_prefix("task:") {
@@ -608,7 +632,8 @@ impl Tool for SendAgentMessage {
                         task.id
                     )));
                 }
-                if task.status == TaskStatus::InReview
+                if reaction.is_none()
+                    && task.status == TaskStatus::InReview
                     && ctx.agent_id() == Some(crate::mission_control::SESSION_ID)
                 {
                     let now = now_rfc3339();
@@ -622,7 +647,9 @@ impl Tool for SendAgentMessage {
                         s.review_started_at.clear();
                     });
                 }
-                body = format!("[about task {}: {}]\n{body}", task.id, task.title);
+                if reaction.is_none() {
+                    body = format!("[about task {}: {}]\n{body}", task.id, task.title);
+                }
                 about_task = Some(task.id.clone());
                 task_session = crate::members::working_session(&db, &task);
                 ("session", task_session.as_str())
@@ -681,7 +708,7 @@ impl Tool for SendAgentMessage {
                     "unknown session `{to_id}`. Copy the `reply_to` value from the envelope as written, in full: it names the session the sender is reading."
                 )));
             }
-            if ctx.agent_id() == Some(crate::mission_control::SESSION_ID) {
+            if reaction.is_none() && ctx.agent_id() == Some(crate::mission_control::SESSION_ID) {
                 let target_canon = crate::conversations::canonical_session_id(to_id);
                 if let Ok(in_review) = db.list_tasks(None, Some(&TaskStatus::InReview)) {
                     let now = now_rfc3339();
@@ -702,8 +729,19 @@ impl Tool for SendAgentMessage {
             }
         }
         let (sender_kind, sender_id) = actor(ctx)?;
-        let (kind, urgency) = crate::coordination::typed::parse(args.kind.as_deref(), args.urgency.as_deref())
-            .map_err(ToolError::msg)?;
+        let (kind, urgency) = if reaction.is_some() {
+            (Some("reaction"), crate::coordination::typed::Urgency::Normal)
+        } else {
+            crate::coordination::typed::parse(args.kind.as_deref(), args.urgency.as_deref())
+                .map_err(ToolError::msg)?
+        };
+        let mut extra =
+            crate::coordination::typed::payload_fields(kind, urgency, about_task.as_deref());
+        crate::coordination::typed::apply_reply_and_reaction(
+            &mut extra,
+            reply_to.as_deref(),
+            reaction,
+        );
         let key = args
             .idempotency_key
             .filter(|k| !k.trim().is_empty())
@@ -725,7 +763,7 @@ impl Tool for SendAgentMessage {
                 origin.as_deref(),
                 ctx.lane_origin().map(|(_, lane)| lane),
                 about_task.as_deref(),
-                crate::coordination::typed::payload_fields(kind, urgency, about_task.as_deref()),
+                extra,
             )
             .map_err(|e| ToolError::msg(format!("send message: {e}")))?;
         crate::session::emit_device_event(json!({
@@ -733,6 +771,7 @@ impl Tool for SendAgentMessage {
             "event": saved,
         }));
         Ok(ToolResult::success(json!({
+            "event_id": saved.event_id,
             "thread_id": saved.thread_id,
             "sequence": saved.sequence,
             "to": format!("{to_kind}:{to_id}"),
@@ -2179,5 +2218,84 @@ mod tests {
         assert_eq!(val["task_id"], "t1");
         assert_eq!(val["title"], "Title");
         assert_eq!(val["roster"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn send_agent_message_schema_and_reply_reaction_behavior() {
+        let def = SendAgentMessage.definition();
+        assert!(def.description.contains(
+            "reply_to quotes the message you answer; reaction acknowledges one without words (check: done or agreed, eyes: seen and on it, thumbs_up, question: unclear, thinking)."
+        ));
+        let props = &def.input_schema["properties"];
+        assert_eq!(props["reply_to"]["type"], "string");
+        assert_eq!(
+            props["reaction"]["enum"],
+            json!(["check", "eyes", "thumbs_up", "question", "thinking"])
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = migrate(dir.path());
+        for id in ["sender", "peer"] {
+            db.create_agent(&Agent {
+                id: id.into(),
+                display_name: id.into(),
+                handle: id.into(),
+                kind: AgentKind::Worker,
+                status: AgentStatus::Active,
+                capabilities: vec![],
+            })
+            .unwrap();
+        }
+        let ctx = context(dir.path(), "s-sender").with_agent_id("sender");
+
+        let first = SendAgentMessage
+            .execute(&ctx, json!({"recipient_agent_id": "peer", "body": "can you verify?"}))
+            .await
+            .unwrap();
+        let target_id = first.value["data"]["event_id"].as_str().unwrap().to_string();
+
+        assert!(SendAgentMessage
+            .execute(&ctx, json!({"recipient_agent_id": "peer", "reaction": "eyes"}))
+            .await
+            .is_err());
+        assert!(SendAgentMessage
+            .execute(&ctx, json!({"recipient_agent_id": "peer", "body": ""}))
+            .await
+            .is_err());
+
+        SendAgentMessage
+            .execute(
+                &ctx,
+                json!({
+                    "recipient_agent_id": "peer",
+                    "reply_to": target_id,
+                    "reaction": "eyes",
+                    "body": "ignored text",
+                }),
+            )
+            .await
+            .unwrap();
+
+        SendAgentMessage
+            .execute(
+                &ctx,
+                json!({
+                    "recipient_agent_id": "peer",
+                    "reply_to": target_id,
+                    "body": "all set",
+                }),
+            )
+            .await
+            .unwrap();
+
+        let thread = crate::coordination::direct_thread_id(("agent", "sender"), ("agent", "peer"));
+        let events = db.direct_thread_events(&thread, 0, 10).unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[1].payload["body"], "");
+        assert_eq!(events[1].payload["kind"], "reaction");
+        assert_eq!(events[1].payload["reaction"], "eyes");
+        assert_eq!(events[1].payload["reply_to"], target_id);
+        assert_eq!(events[2].payload["body"], "all set");
+        assert_eq!(events[2].payload["reply_to"], target_id);
     }
 }
