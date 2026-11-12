@@ -1145,6 +1145,8 @@ async fn run_lane_once(
     if let Some(log) = log.as_mut() {
         let _ = log.write_start(&owner, &brief, read_only);
     }
+    let mut grounding_roots = vec![workspace_root.clone()];
+    grounding_roots.extend(link.write_scope.iter().filter(|p| p.is_dir()).cloned());
     let workspace_for_grounding = workspace_root.clone();
     let context = match ToolContext::with_owner(workspace_root, &owner) {
         Ok(context) => {
@@ -1271,7 +1273,7 @@ async fn run_lane_once(
     // Ground the report: the file:line citations the prompt demands are only
     // useful if they're real. Verify each against the workspace and flag the ones
     // that don't resolve, so the orchestrator knows which locations to trust.
-    if let Some(check) = verify_grounding(&workspace_for_grounding, &report) {
+    if let Some(check) = verify_grounding(&grounding_roots, &report) {
         report.push_str("\n\n");
         report.push_str(&check);
     }
@@ -1287,11 +1289,13 @@ async fn run_lane_once(
     Ok((summary, report))
 }
 
-/// Verify every `path:line` reference in `text` against the workspace. Returns a
-/// `[reference_check]` block when the text contains any such references: a
-/// one-line all-clear, or the list of references that don't resolve (missing
-/// file / line beyond EOF) so the orchestrator treats them as unverified.
-fn verify_grounding(workspace: &std::path::Path, text: &str) -> Option<String> {
+/// Verify every `path:line` reference in `text` against the workspace and the
+/// lane's own write scope (a lane in a worktree cites paths relative to it).
+/// Returns a `[reference_check]` block when the text contains any such
+/// references: a one-line all-clear, or the list of references that don't
+/// resolve (missing file / line beyond EOF) so the orchestrator treats them as
+/// unverified.
+fn verify_grounding(roots: &[PathBuf], text: &str) -> Option<String> {
     let re = regex::Regex::new(r"([A-Za-z0-9_~./+\-]+\.[A-Za-z0-9_]+):(\d{1,7})\b").ok()?;
     let mut seen = std::collections::BTreeSet::new();
     let mut verified = 0usize;
@@ -1312,7 +1316,11 @@ fn verify_grounding(workspace: &std::path::Path, text: &str) -> Option<String> {
         let resolved = if std::path::Path::new(path_str).is_absolute() {
             PathBuf::from(path_str)
         } else {
-            workspace.join(path_str)
+            roots
+                .iter()
+                .map(|root| root.join(path_str))
+                .find(|candidate| candidate.exists())
+                .unwrap_or_else(|| roots.first().map(|r| r.join(path_str)).unwrap_or_else(|| PathBuf::from(path_str)))
         };
         match std::fs::read_to_string(&resolved) {
             Ok(content) => {
@@ -1411,6 +1419,24 @@ fn lane_context(model: &dyn AgentModel, defaults: &HarnessConfig) -> (u64, u8) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grounding_resolves_against_the_lane_write_scope_too() {
+        let tmp = std::env::temp_dir().join(format!("grounding-{}", uuid::Uuid::new_v4().simple()));
+        let workspace = tmp.join("workspace");
+        let worktree = tmp.join("worktree");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::create_dir_all(worktree.join("src")).unwrap();
+        std::fs::write(workspace.join("src/a.rs"), "one\ntwo\n").unwrap();
+        std::fs::write(worktree.join("src/b.rs"), "one\ntwo\nthree\n").unwrap();
+        let roots = vec![workspace.clone(), worktree.clone()];
+        let ok = super::verify_grounding(&roots, "see src/a.rs:2 and src/b.rs:3").unwrap();
+        assert!(ok.contains("all 2 file:line"), "{ok}");
+        let bad = super::verify_grounding(&roots, "see src/b.rs:9 and src/c.rs:1").unwrap();
+        assert!(bad.contains("src/b.rs:9 (file has 3 lines)"), "{bad}");
+        assert!(bad.contains("src/c.rs:1 (file not found)"), "{bad}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     fn tool_bytes(defs: &[crate::llm::NativeToolDefinition]) -> Vec<(String, usize)> {
         let mut sizes: Vec<(String, usize)> = defs
             .iter()
