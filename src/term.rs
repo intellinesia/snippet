@@ -609,8 +609,20 @@ impl SessionTerm {
                 unsafe {
                     libc::kill(pid, libc::SIGHUP);
                     libc::kill(pid, libc::SIGTERM);
-                    let mut status = 0;
-                    libc::waitpid(pid, &mut status, 0);
+                }
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+                let mut reaped = reap_if_exited(pid);
+                while !reaped && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    reaped = reap_if_exited(pid);
+                }
+                if !reaped {
+                    // An interactive shell can survive HUP/TERM, so never wait on it unbounded.
+                    unsafe {
+                        libc::kill(pid, libc::SIGKILL);
+                        let mut status = 0;
+                        libc::waitpid(pid, &mut status, 0);
+                    }
                 }
             }
             g.master = None;
