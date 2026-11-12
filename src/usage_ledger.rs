@@ -261,7 +261,7 @@ impl Store {
                     |row| {
                         let provider: String = row.get(0)?;
                         let (p, r, c): (i64, i64, i64) = (row.get(1)?, row.get(2)?, row.get(3)?);
-                        // Anthropic reports cached input apart from prompt tokens; others include it.
+                        // Anthropic reports cached input apart from prompt tokens; others (including devin) include it.
                         let separate = provider.starts_with("anthropic") || provider == "claude-code";
                         Ok((if separate { p + r + c } else { p }).max(0) as u64)
                     },

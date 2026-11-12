@@ -13,6 +13,7 @@ pub mod agent_tools;
 pub mod anthropic;
 pub mod artifacts;
 pub mod antigravity;
+pub mod devin;
 pub mod app_schema;
 pub mod app_store;
 pub mod bg;

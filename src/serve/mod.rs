@@ -1081,6 +1081,7 @@ pub async fn run_serve(
         )
         .route("/accounts", get(account_routes::list_accounts))
         .route("/accounts/add", post(account_routes::add_account))
+        .route("/accounts/complete", post(account_routes::complete_account))
         .route("/accounts/remove", post(account_routes::remove_account))
         .route("/accounts/update", post(account_routes::update_account))
         .route("/xai/login", post(xai_login))

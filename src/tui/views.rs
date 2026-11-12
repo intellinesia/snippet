@@ -308,6 +308,7 @@ pub(crate) fn profile_status(cfg: &crate::config::InferenceProfileConfig) -> Str
     match cfg.provider.as_str() {
         "claude-code" => "installed Claude Code CLI".to_string(),
         "antigravity" => "installed Antigravity CLI".to_string(),
+        "devin" => "installed Devin CLI".to_string(),
         "chatgpt" => {
             if crate::chatgpt_auth::is_signed_in() {
                 "✓ signed in".to_string()

@@ -76,6 +76,24 @@ pub fn spec(provider: &str, model: &str) -> ReasoningSpec {
             false,
             "Antigravity sets effort through the model: pick a -low, -medium or -high variant. It doesn't stream its thinking.",
         ),
+        "devin" => {
+            if m == "swe-2" || m == "swe" || m == "swe-2-flash" {
+                ReasoningSpec::effort(
+                    "Thinking",
+                    &["medium", "high", "max"],
+                    false,
+                    true,
+                    "SWE-2 effort tier (medium, high, max); thoughts stream from Devin ACP.",
+                )
+            } else {
+                ReasoningSpec::fixed(
+                    Control::Model,
+                    "Thinking",
+                    true,
+                    "Devin variants pin their own effort lane (for example swe-2-high or swe-2-flash-medium); thoughts stream when the model supports them.",
+                )
+            }
+        }
         "anthropic" | "anthropic-compatible" => {
             let legacy = m.starts_with("claude-3-") && !m.starts_with("claude-3-7");
             if legacy {
