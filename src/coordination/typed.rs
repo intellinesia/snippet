@@ -45,10 +45,16 @@ pub fn parse(kind: Option<&str>, urgency: Option<&str>) -> Result<(Option<&'stat
     Ok((kind, urgency))
 }
 
+/// One emoji, ZWJ sequences and skin tones included; no ASCII text.
+fn is_emoji(r: &str) -> bool {
+    let n = r.chars().count();
+    (1..=10).contains(&n) && r.chars().all(|c| !c.is_ascii() && !c.is_whitespace())
+}
+
 pub fn parse_reply_and_reaction(
     reply_to: Option<&str>,
     reaction: Option<&str>,
-) -> Result<(Option<String>, Option<&'static str>), String> {
+) -> Result<(Option<String>, Option<String>), String> {
     let reply_to = reply_to
         .map(str::trim)
         .filter(|id| !id.is_empty())
@@ -56,11 +62,10 @@ pub fn parse_reply_and_reaction(
     let reaction = match reaction.map(str::trim).filter(|r| !r.is_empty()) {
         None => None,
         Some(r) => {
-            let valid = REACTIONS
-                .iter()
-                .find(|known| **known == r)
-                .copied()
-                .ok_or_else(|| format!("unknown reaction `{r}`; use one of {}", REACTIONS.join(", ")))?;
+            if !REACTIONS.contains(&r) && !is_emoji(r) {
+                return Err(format!("unknown reaction `{r}`; use one of {} or a single emoji", REACTIONS.join(", ")));
+            }
+            let valid = r.to_string();
             if reply_to.is_none() {
                 return Err("reaction requires reply_to".into());
             }
@@ -159,10 +164,13 @@ mod tests {
         assert!(parse_reply_and_reaction(Some("e1"), Some("confetti")).is_err());
         let (reply_to, reaction) = parse_reply_and_reaction(Some(" e1 "), Some("thumbs_up")).unwrap();
         assert_eq!(reply_to.as_deref(), Some("e1"));
-        assert_eq!(reaction, Some("thumbs_up"));
+        assert_eq!(reaction.as_deref(), Some("thumbs_up"));
+        let (_, emoji) = parse_reply_and_reaction(Some("e1"), Some("👍🏽")).unwrap();
+        assert_eq!(emoji.as_deref(), Some("👍🏽"));
+        assert!(parse_reply_and_reaction(Some("e1"), Some("👍 nice")).is_err());
 
         let mut fields = payload_fields(Some("interrupt"), Urgency::Urgent, None);
-        apply_reply_and_reaction(&mut fields, reply_to.as_deref(), reaction);
+        apply_reply_and_reaction(&mut fields, reply_to.as_deref(), reaction.as_deref());
         let payload = Value::Object(fields);
         assert_eq!(payload["kind"], "reaction");
         assert_eq!(payload["reaction"], "thumbs_up");

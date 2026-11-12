@@ -1064,7 +1064,7 @@ pub(super) async fn direct_send_message(
         Err(error) => return api_error(StatusCode::BAD_REQUEST, error),
     };
     let mut extra = serde_json::Map::new();
-    if let Some(reaction_name) = reaction {
+    if let Some(reaction_name) = reaction.as_ref() {
         if let Some(k) = req.kind.as_deref().map(str::trim).filter(|k| !k.is_empty())
             && k != "reaction"
         {
@@ -1073,7 +1073,7 @@ pub(super) async fn direct_send_message(
         crate::coordination::typed::apply_reply_and_reaction(
             &mut extra,
             reply_to.as_deref(),
-            Some(reaction_name),
+            Some(reaction_name.as_str()),
         );
     } else {
         if req.body.trim().is_empty() {

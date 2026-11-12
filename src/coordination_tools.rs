@@ -744,7 +744,7 @@ impl Tool for SendAgentMessage {
         crate::coordination::typed::apply_reply_and_reaction(
             &mut extra,
             reply_to.as_deref(),
-            reaction,
+            reaction.as_deref(),
         );
         if to_kind == "human" {
             extra.insert("channel".into(), json!("chat"));
