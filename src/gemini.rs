@@ -1,18 +1,6 @@
-//! Native Gemini adapter with explicit prompt caching.
-//!
-//! Gemini used to run through the OpenAI-compatibility shim, which gives only
-//! implicit (automatic, uncontrolled) caching. This adapter speaks Gemini's
-//! native `generateContent` API and manages **explicit** caches via the
-//! `cachedContents` endpoint: it caches the stable prefix (system instruction +
-//! tools + history up to the volatile tail), reuses it across turns while the
-//! prefix matches, recreates it as history grows, and deletes superseded caches.
-//! Ported from wacht's `agent-engine/src/llm/gemini`, trimmed to snippet's shape.
-
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+//! Native Gemini adapter speaking `generateContent` / `streamGenerateContent`.
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
@@ -26,16 +14,6 @@ use crate::llm::{
 use crate::tools::ToolError;
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
-/// How long an explicit cache lives before Gemini evicts it. Storage ($1/M/hr)
-/// only out-costs a read's saving (I−C ≈ $1.35/M) after ~1.35h, so this 30-min TTL
-/// stays net-positive as long as the cache is read again within it.
-const CACHE_TTL_SECS: i64 = 1800;
-/// Minimum estimated prefix tokens below which explicit caching doesn't pay off.
-const CACHE_MIN_TOKENS: usize = 4096;
-const CHARS_PER_TOKEN: usize = 4;
-/// Trailing `contents` kept OUT of the cache — the live-context message changes
-/// every turn, so caching it would invalidate the signature each time.
-const LIVE_TAIL: usize = 1;
 /// Google's documented skip sentinel for replayed functionCall parts on Gemini 3+
 /// (base64 of "skip_thought_signature_validator") — 2.5 doesn't require it.
 const SKIP_THOUGHT_SIGNATURE: &str = "c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I=";
@@ -52,35 +30,10 @@ pub struct GeminiConfig {
     pub reasoning_effort: Option<String>,
 }
 
-/// Live explicit-cache handle, held across the session (the model is reused).
-#[derive(Clone)]
-struct CacheState {
-    cache_name: String,
-    prefix_signature: String,
-    cached_contents_signature: String,
-    cached_content_count: usize,
-    expire_at: DateTime<Utc>,
-    /// Turns this cache has served since creation (M in the re-checkpoint rule).
-    reuse_turns: u32,
-}
-
-struct CachePlan {
-    /// Payload for `POST /cachedContents` (the full cacheable prefix).
-    full_cache_payload: Value,
-    /// The generate request to actually send (reduced to a `cachedContent` ref +
-    /// delta when the prior cache is reusable).
-    send_payload: Value,
-    prefix_signature: String,
-    cached_contents_signature: String,
-    cached_content_count: usize,
-    /// Whether to (re)create the cache this turn (cost rule) vs reuse the prior one.
-    should_refresh: bool,
-}
-
 pub struct GeminiModel {
     config: GeminiConfig,
     client: reqwest::Client,
-    cache: Option<CacheState>,
+    skip_thought_signatures: bool,
 }
 
 impl GeminiModel {
@@ -88,7 +41,7 @@ impl GeminiModel {
         Self {
             config,
             client: crate::llm::model_http_client(None),
-            cache: None,
+            skip_thought_signatures: false,
         }
     }
 }
@@ -114,7 +67,8 @@ impl AgentModel for GeminiModel {
         force_tool: bool,
         sink: Option<StreamHandle>,
     ) -> Result<ModelOutput, ToolError> {
-        let (system, contents) = build_contents(messages, &self.config.model);
+        let (system, contents) =
+            build_contents(messages, &self.config.model, self.skip_thought_signatures);
 
         let mut body = serde_json::Map::new();
         body.insert(
@@ -198,15 +152,6 @@ impl AgentModel for GeminiModel {
         }
         let body = Value::Object(body);
 
-        // Plan explicit caching (reduces the send payload to a cache ref + delta
-        // when reusable). Always on; `build_cache_plan` returns None when the
-        // prefix is below the worthwhile-token minimum.
-        let plan = self.build_cache_plan(&body);
-        let send_body = plan
-            .as_ref()
-            .map(|plan| plan.send_payload.clone())
-            .unwrap_or(body);
-
         // Stream when the caller wants live output (interactive); lanes pass no
         // sink and stay buffered. Streaming pushes text + thought deltas to the
         // sink as they arrive, so Gemini's output and reasoning surface live like
@@ -216,16 +161,11 @@ impl AgentModel for GeminiModel {
                 "{}/models/{}:streamGenerateContent?alt=sse",
                 API_BASE, self.config.model
             );
-            self.stream_generate(&url, &send_body, sink).await?
+            self.stream_generate(&url, &body, sink).await?
         } else {
             let url = format!("{}/models/{}:generateContent", API_BASE, self.config.model);
-            self.post_generate(&url, &send_body).await?
+            self.post_generate(&url, &body).await?
         };
-
-        // Refresh the cache for next turn (create/keep cachedContents), best-effort.
-        if let Some(plan) = plan {
-            self.refresh_cache(&plan).await;
-        }
 
         // The streaming path already pushed thought deltas to the sink live, so the
         // thought return is only needed for the buffered path (which has no sink).
@@ -235,202 +175,30 @@ impl AgentModel for GeminiModel {
 }
 
 impl GeminiModel {
-    /// Build an explicit-cache plan from the request body, and (when the prior
-    /// cache is still a valid prefix) rewrite the send payload to reference it.
-    fn build_cache_plan(&self, body: &Value) -> Option<CachePlan> {
-        let mut send = body.clone();
-        let obj = send.as_object_mut()?;
-        if obj.contains_key("cachedContent") {
-            return None;
-        }
-        let system_instruction = obj.get("system_instruction").cloned();
-        let tools = obj.get("tools").cloned();
-        let tool_config = obj.get("toolConfig").cloned();
-        let contents = obj.get("contents").and_then(Value::as_array).cloned()?;
-        if contents.is_empty() {
-            return None;
-        }
-
-        let cacheable_count = contents.len().saturating_sub(LIVE_TAIL.min(contents.len()));
-        let cacheable = contents[..cacheable_count].to_vec();
-        let tail = contents[cacheable_count..].to_vec();
-        if cacheable.is_empty() {
-            return None;
-        }
-
-        let stable = json!({
-            "systemInstruction": system_instruction,
-            "tools": tools,
-            "toolConfig": tool_config,
-        });
-        let prefix_signature = short_hash(serde_json::to_string(&stable).ok()?.as_bytes());
-        let cached_contents_signature =
-            short_hash(serde_json::to_string(&cacheable).ok()?.as_bytes());
-
-        let mut cache_payload = serde_json::Map::new();
-        cache_payload.insert(
-            "model".to_string(),
-            json!(format!("models/{}", self.config.model)),
-        );
-        cache_payload.insert("ttl".to_string(), json!(format!("{CACHE_TTL_SECS}s")));
-        if let Some(system_instruction) = system_instruction {
-            cache_payload.insert("systemInstruction".to_string(), system_instruction);
-        }
-        cache_payload.insert("contents".to_string(), Value::Array(cacheable.clone()));
-        if let Some(tools) = tools {
-            cache_payload.insert("tools".to_string(), tools);
-        }
-        if let Some(tool_config) = tool_config {
-            cache_payload.insert("toolConfig".to_string(), tool_config);
-        }
-        let full_cache_payload = Value::Object(cache_payload);
-
-        let prefix_tokens = estimate_tokens(&full_cache_payload);
-        if prefix_tokens < CACHE_MIN_TOKENS {
-            return None;
-        }
-
-        // Reuse the prior cache when it's still a valid prefix: send only the new
-        // delta contents (+ live tail), referencing the cache by name. Then decide
-        // whether to ALSO re-create (extend) the cache with the cost rule
-        //   D·M ≥ P
-        // where D = un-cached delta tokens, M = turns this cache has served, P =
-        // full prefix tokens. Re-checkpointing pays off when expected future savings
-        // (0.9·D per future turn) clear the creation cost (P): assuming ~M more
-        // turns gives the break-even D·M ≥ ~1.1·P. The textbook √(2·P·d) optimum
-        // (D·M ≥ 2P) assumes UNIFORM growth; coding agents are bursty (a file read
-        // spikes D), so the myopic coefficient ~1 re-checkpoints big reads promptly
-        // instead of re-sending them fresh for several turns. Price-independent
-        // (creation and fresh sends are both billed at the input rate). With no
-        // reusable cache, should_refresh stays true → create fresh.
-        let mut should_refresh = true;
-        if let Some(prior) = self.cache.as_ref()
-            && self.can_reuse(prior, &prefix_signature, &cacheable) {
-                let delta_contents = cacheable[prior.cached_content_count..].to_vec();
-                let delta_tokens = estimate_tokens(&Value::Array(delta_contents.clone()));
-                let m = (prior.reuse_turns as usize).saturating_add(1);
-                let near_expiry = prior.expire_at <= Utc::now() + chrono::Duration::seconds(120);
-                should_refresh = delta_tokens.saturating_mul(m) >= prefix_tokens || near_expiry;
-
-                let mut delta = delta_contents;
-                delta.extend(tail);
-                obj.remove("system_instruction");
-                obj.remove("tools");
-                obj.remove("toolConfig");
-                obj.insert("cachedContent".to_string(), json!(prior.cache_name));
-                obj.insert("contents".to_string(), Value::Array(delta));
-            }
-
-        Some(CachePlan {
-            full_cache_payload,
-            send_payload: send,
-            prefix_signature,
-            cached_contents_signature,
-            cached_content_count: cacheable.len(),
-            should_refresh,
-        })
-    }
-
-    /// Is the prior cache a still-valid prefix of the current cacheable contents?
-    fn can_reuse(&self, prior: &CacheState, prefix_signature: &str, cacheable: &[Value]) -> bool {
-        if prior.prefix_signature != prefix_signature
-            || prior.expire_at <= Utc::now() + chrono::Duration::seconds(5)
-            || cacheable.len() < prior.cached_content_count
-            || prior.cached_content_count == 0
-        {
-            return false;
-        }
-        let cached_prefix = &cacheable[..prior.cached_content_count];
-        let signature = serde_json::to_string(cached_prefix)
-            .map(|s| short_hash(s.as_bytes()))
-            .unwrap_or_default();
-        signature == prior.cached_contents_signature
-    }
-
-    /// Create (or keep) the explicit cache covering the current prefix, updating
-    /// `self.cache` and deleting any superseded cache. Best-effort: a failure just
-    /// means the next turn re-sends the prefix uncached.
-    async fn refresh_cache(&mut self, plan: &CachePlan) {
-        // The cost rule says keep reusing the existing cache: just age it (M++) so
-        // its re-checkpoint threshold grows. The delta was already sent fresh; the
-        // cache's TTL is unchanged (near-expiry would have forced should_refresh).
-        if !plan.should_refresh {
-            if let Some(prior) = self.cache.as_mut() {
-                prior.reuse_turns = prior.reuse_turns.saturating_add(1);
-            }
-            return;
-        }
-
-        let url = format!("{API_BASE}/cachedContents");
-        let response = self
-            .client
-            .post(&url)
-            .header("x-goog-api-key", &self.config.api_key)
-            .header(CONTENT_TYPE, "application/json")
-            .json(&plan.full_cache_payload)
-            .timeout(Duration::from_secs(60))
-            .send()
-            .await;
-        let Ok(response) = response else { return };
-        if !response.status().is_success() {
-            return;
-        }
-        let Ok(text) = response.text().await else {
-            return;
-        };
-        let Ok(parsed) = serde_json::from_str::<CachedContentResponse>(&text) else {
-            return;
-        };
-        let expire_at = parsed
-            .expire_time
-            .as_deref()
-            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.with_timezone(&Utc))
-            .unwrap_or_else(|| Utc::now() + chrono::Duration::seconds(CACHE_TTL_SECS));
-
-        let superseded = self.cache.as_ref().map(|c| c.cache_name.clone());
-        self.cache = Some(CacheState {
-            cache_name: parsed.name.clone(),
-            prefix_signature: plan.prefix_signature.clone(),
-            cached_contents_signature: plan.cached_contents_signature.clone(),
-            cached_content_count: plan.cached_content_count,
-            expire_at,
-            reuse_turns: 0,
-        });
-        if let Some(old) = superseded
-            && old != parsed.name {
-                self.delete_cache(&old).await;
-            }
-    }
-
-    async fn delete_cache(&self, cache_name: &str) {
-        if cache_name.is_empty() {
-            return;
-        }
-        let _ = self
-            .client
-            .delete(format!("{API_BASE}/{cache_name}"))
-            .header("x-goog-api-key", &self.config.api_key)
-            .timeout(Duration::from_secs(30))
-            .send()
-            .await;
-    }
-
-    async fn post_generate(&self, url: &str, body: &Value) -> Result<GeminiResponse, ToolError> {
+    async fn post_generate(
+        &mut self,
+        url: &str,
+        body: &Value,
+    ) -> Result<GeminiResponse, ToolError> {
         let max_attempts = self.config.max_retries.saturating_add(1).max(1);
+        let can_degrade =
+            thinking_kind(&self.config.model) != Thinking::Budget && !self.skip_thought_signatures;
         let mut last_error = String::new();
         let mut empty_retries = 0u32;
+        let mut invalid_arg_count = 0u32;
+        let mut degraded_body: Option<Value> = None;
         let mut fatal = false;
         let mut attempts = 0u32;
 
         for attempt in 1..=max_attempts {
             attempts = attempt;
+            let active_body = degraded_body.as_ref().unwrap_or(body);
             let response = self
                 .client
                 .post(url)
                 .header("x-goog-api-key", &self.config.api_key)
                 .header(CONTENT_TYPE, "application/json")
-                .json(body)
+                .json(active_body)
                 .send()
                 .await;
 
@@ -450,12 +218,40 @@ impl GeminiModel {
                     if !status.is_success() {
                         let detail = String::from_utf8_lossy(&bytes);
                         last_error = crate::llm::humanize_http_error(status, detail.as_ref());
-                        if is_retryable_status(status) && attempt < max_attempts {
-                            sleep(self.delay(attempt)).await;
-                            continue;
+                        if is_invalid_argument(status, detail.as_ref()) {
+                            log_invalid_argument(
+                                attempt,
+                                max_attempts,
+                                &self.config.model,
+                                active_body,
+                                detail.as_ref(),
+                            );
                         }
-                        fatal = !is_retryable_status(status);
-                        break;
+                        let state = RetryAttemptState {
+                            attempt,
+                            max_attempts,
+                            invalid_arg_count,
+                            can_degrade_signatures: can_degrade && degraded_body.is_none(),
+                        };
+                        match decide_error_retry(status, detail.as_ref(), state) {
+                            ErrorRetryDecision::RetrySame => {
+                                if is_invalid_argument(status, detail.as_ref()) {
+                                    invalid_arg_count += 1;
+                                }
+                                sleep(self.delay(attempt)).await;
+                                continue;
+                            }
+                            ErrorRetryDecision::RetryDegraded => {
+                                invalid_arg_count += 1;
+                                degraded_body = Some(rewrite_thought_signatures(body));
+                                sleep(self.delay(attempt)).await;
+                                continue;
+                            }
+                            ErrorRetryDecision::GiveUp { retryable } => {
+                                fatal = !retryable;
+                                break;
+                            }
+                        }
                     }
                     let parsed: GeminiResponse =
                         serde_json::from_slice(&bytes).map_err(|error| {
@@ -468,6 +264,9 @@ impl GeminiModel {
                         empty_retries += 1;
                         sleep(self.delay(attempt)).await;
                         continue;
+                    }
+                    if degraded_body.is_some() {
+                        self.skip_thought_signatures = true;
                     }
                     return Ok(parsed);
                 }
@@ -495,25 +294,30 @@ impl GeminiModel {
     /// Retries mirror `post_generate`; each attempt clears the sink so a retry never
     /// double-renders already-streamed text.
     async fn stream_generate(
-        &self,
+        &mut self,
         url: &str,
         body: &Value,
         sink: &StreamHandle,
     ) -> Result<GeminiResponse, ToolError> {
         let max_attempts = self.config.max_retries.saturating_add(1).max(1);
+        let can_degrade =
+            thinking_kind(&self.config.model) != Thinking::Budget && !self.skip_thought_signatures;
         let mut last_error = String::new();
+        let mut invalid_arg_count = 0u32;
+        let mut degraded_body: Option<Value> = None;
         let mut fatal = false;
         let mut attempts = 0u32;
 
         for attempt in 1..=max_attempts {
             attempts = attempt;
             StreamBuffer::clear(sink);
+            let active_body = degraded_body.as_ref().unwrap_or(body);
             let response = self
                 .client
                 .post(url)
                 .header("x-goog-api-key", &self.config.api_key)
                 .header(CONTENT_TYPE, "application/json")
-                .json(body)
+                .json(active_body)
                 .send()
                 .await;
 
@@ -523,12 +327,40 @@ impl GeminiModel {
                     if !status.is_success() {
                         let detail = response.text().await.unwrap_or_default();
                         last_error = crate::llm::humanize_http_error(status, &detail);
-                        if is_retryable_status(status) && attempt < max_attempts {
-                            sleep(self.delay(attempt)).await;
-                            continue;
+                        if is_invalid_argument(status, &detail) {
+                            log_invalid_argument(
+                                attempt,
+                                max_attempts,
+                                &self.config.model,
+                                active_body,
+                                &detail,
+                            );
                         }
-                        fatal = !is_retryable_status(status);
-                        break;
+                        let state = RetryAttemptState {
+                            attempt,
+                            max_attempts,
+                            invalid_arg_count,
+                            can_degrade_signatures: can_degrade && degraded_body.is_none(),
+                        };
+                        match decide_error_retry(status, &detail, state) {
+                            ErrorRetryDecision::RetrySame => {
+                                if is_invalid_argument(status, &detail) {
+                                    invalid_arg_count += 1;
+                                }
+                                sleep(self.delay(attempt)).await;
+                                continue;
+                            }
+                            ErrorRetryDecision::RetryDegraded => {
+                                invalid_arg_count += 1;
+                                degraded_body = Some(rewrite_thought_signatures(body));
+                                sleep(self.delay(attempt)).await;
+                                continue;
+                            }
+                            ErrorRetryDecision::GiveUp { retryable } => {
+                                fatal = !retryable;
+                                break;
+                            }
+                        }
                     }
                     match parse_gemini_sse(response, sink).await {
                         Ok(parsed) => {
@@ -536,6 +368,9 @@ impl GeminiModel {
                             if response_empty(&parsed) && attempt < max_attempts {
                                 sleep(self.delay(attempt)).await;
                                 continue;
+                            }
+                            if degraded_body.is_some() {
+                                self.skip_thought_signatures = true;
                             }
                             return Ok(parsed);
                         }
@@ -581,7 +416,11 @@ impl GeminiModel {
     }
 }
 
-fn build_contents(messages: &[HarnessMessage], model: &str) -> (String, Vec<Value>) {
+fn build_contents(
+    messages: &[HarnessMessage],
+    model: &str,
+    skip_thought_signatures: bool,
+) -> (String, Vec<Value>) {
     let mut system = String::new();
     let mut contents: Vec<Value> = Vec::new();
     for (index, message) in messages.iter().enumerate() {
@@ -614,9 +453,12 @@ fn build_contents(messages: &[HarnessMessage], model: &str) -> (String, Vec<Valu
                     // model (signatures are model-specific). Otherwise Gemini 3+
                     // rejects a replayed functionCall without one, so attach the
                     // skip sentinel; Gemini 2.5 needs neither.
-                    let own_signature = call.signature.as_deref().filter(|sig| {
-                        !sig.is_empty() && call.origin_model.as_deref() == Some(model)
-                    });
+                    let own_signature = (!skip_thought_signatures)
+                        .then_some(call.signature.as_deref())
+                        .flatten()
+                        .filter(|sig| {
+                            !sig.is_empty() && call.origin_model.as_deref() == Some(model)
+                        });
                     if let Some(signature) = own_signature {
                         part["thoughtSignature"] = json!(signature);
                     } else if thinking_kind(model) != Thinking::Budget {
@@ -939,24 +781,185 @@ fn supports_thoughts(model: &str) -> bool {
     thinking_kind(model) != Thinking::None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RetryAttemptState {
+    attempt: u32,
+    max_attempts: u32,
+    invalid_arg_count: u32,
+    can_degrade_signatures: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ErrorRetryDecision {
+    RetrySame,
+    RetryDegraded,
+    GiveUp { retryable: bool },
+}
+
+fn decide_error_retry(
+    status: StatusCode,
+    body: &str,
+    state: RetryAttemptState,
+) -> ErrorRetryDecision {
+    if is_retryable_status(status) {
+        if state.attempt < state.max_attempts {
+            return ErrorRetryDecision::RetrySame;
+        }
+        return ErrorRetryDecision::GiveUp { retryable: true };
+    }
+    if is_invalid_argument(status, body) && state.attempt < state.max_attempts {
+        if state.invalid_arg_count == 0 {
+            return ErrorRetryDecision::RetrySame;
+        }
+        if state.invalid_arg_count == 1 && state.can_degrade_signatures {
+            return ErrorRetryDecision::RetryDegraded;
+        }
+    }
+    ErrorRetryDecision::GiveUp { retryable: false }
+}
+
+fn is_invalid_argument(status: StatusCode, body: &str) -> bool {
+    if status != StatusCode::BAD_REQUEST {
+        return false;
+    }
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("error")?
+                .get("status")?
+                .as_str()
+                .map(|s| s == "INVALID_ARGUMENT")
+        })
+        .unwrap_or(false)
+}
+
+
+
+fn rewrite_thought_signatures(body: &Value) -> Value {
+    let mut copy = body.clone();
+    if let Some(contents) = copy.get_mut("contents").and_then(Value::as_array_mut) {
+        for content in contents {
+            rewrite_parts_signatures(content);
+        }
+    }
+    copy
+}
+
+fn rewrite_parts_signatures(node: &mut Value) {
+    match node {
+        Value::Object(obj) => {
+            for (key, value) in obj.iter_mut() {
+                if key == "parts" {
+                    if let Value::Array(parts) = value {
+                        for part in parts {
+                            if let Some(part_obj) = part.as_object_mut()
+                                && part_obj.contains_key("functionCall")
+                            {
+                                part_obj.insert(
+                                    "thoughtSignature".to_string(),
+                                    json!(SKIP_THOUGHT_SIGNATURE),
+                                );
+                            }
+                            rewrite_parts_signatures(part);
+                        }
+                    }
+                } else {
+                    rewrite_parts_signatures(value);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                rewrite_parts_signatures(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn format_invalid_argument_log(
+    attempt: u32,
+    max_attempts: u32,
+    model: &str,
+    req_body: &Value,
+    err_body: &str,
+) -> String {
+    let contents = req_body.get("contents").and_then(Value::as_array);
+    let contents_len = contents.map(Vec::len).unwrap_or(0);
+    let last = contents.and_then(|c| c.last());
+    let last_role = last
+        .and_then(|c| c.get("role"))
+        .and_then(Value::as_str)
+        .unwrap_or("-");
+    let last_parts = last
+        .and_then(|c| c.get("parts"))
+        .and_then(Value::as_array)
+        .map(|parts| {
+            let kinds: Vec<&str> = parts.iter().map(part_kind).collect();
+            if kinds.is_empty() {
+                "-".to_string()
+            } else {
+                kinds.join(",")
+            }
+        })
+        .unwrap_or_else(|| "-".to_string());
+
+    let details = serde_json::from_str::<Value>(err_body)
+        .ok()
+        .and_then(|v| v.get("error")?.get("details").cloned())
+        .and_then(|d| serde_json::to_string(&d).ok())
+        .filter(|s| !s.is_empty() && s != "null" && s != "[]")
+        .map(|s| s.chars().take(500).collect::<String>());
+
+    match details {
+        Some(d) => format!(
+            "[gemini] 400 INVALID_ARGUMENT attempt {attempt}/{max_attempts} model={model} contents={contents_len} last_role={last_role} last_parts={last_parts} {d}"
+        ),
+        None => format!(
+            "[gemini] 400 INVALID_ARGUMENT attempt {attempt}/{max_attempts} model={model} contents={contents_len} last_role={last_role} last_parts={last_parts}"
+        ),
+    }
+}
+
+fn log_invalid_argument(
+    attempt: u32,
+    max_attempts: u32,
+    model: &str,
+    req_body: &Value,
+    err_body: &str,
+) {
+    eprintln!(
+        "{}",
+        format_invalid_argument_log(attempt, max_attempts, model, req_body, err_body)
+    );
+}
+
+fn part_kind(part: &Value) -> &'static str {
+    let Some(obj) = part.as_object() else {
+        return "other";
+    };
+    if obj.contains_key("functionCall") {
+        "functionCall"
+    } else if obj.contains_key("functionResponse") {
+        "functionResponse"
+    } else if obj.contains_key("inline_data") || obj.contains_key("inlineData") {
+        "inline_data"
+    } else if obj.contains_key("file_data") || obj.contains_key("fileData") {
+        "file_data"
+    } else if obj.get("thought").and_then(Value::as_bool) == Some(true) {
+        "thought"
+    } else if obj.contains_key("text") {
+        "text"
+    } else {
+        "other"
+    }
+}
+
 fn is_retryable_status(status: StatusCode) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS
         || status == StatusCode::REQUEST_TIMEOUT
         || status == StatusCode::CONFLICT
         || status.is_server_error()
-}
-
-fn short_hash(bytes: &[u8]) -> String {
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
-fn estimate_tokens(value: &Value) -> usize {
-    serde_json::to_string(value)
-        .map(|s| s.chars().count())
-        .unwrap_or(0)
-        .div_ceil(CHARS_PER_TOKEN)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1014,9 +1017,244 @@ struct UsageMetadata {
     total_token_count: u32,
 }
 
-#[derive(Debug, Deserialize)]
-struct CachedContentResponse {
-    name: String,
-    #[serde(rename = "expireTime", default)]
-    expire_time: Option<String>,
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::ToolCallRecord;
+
+    fn invalid_arg_body() -> &'static str {
+        r#"{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}"#
+    }
+
+    #[test]
+    fn signature_rewrite_replaces_only_function_call_signatures() {
+        let original = json!({
+            "system_instruction": { "parts": [{ "text": "sys" }] },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{ "text": "hello" }]
+                },
+                {
+                    "role": "model",
+                    "parts": [
+                        { "text": "thinking", "thought": true, "thoughtSignature": "keep-non-call" },
+                        {
+                            "functionCall": { "name": "bash", "args": { "cmd": "ls" } },
+                            "thoughtSignature": "real-sig-1"
+                        },
+                        {
+                            "functionCall": { "name": "read", "args": { "path": "a" } }
+                        }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "functionResponse": {
+                                "name": "bash",
+                                "response": { "output": "ok" },
+                                "parts": [
+                                    {
+                                        "functionCall": { "name": "nested", "args": {} },
+                                        "thoughtSignature": "real-sig-nested"
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": { "temperature": 0.2 }
+        });
+
+        let rewritten = rewrite_thought_signatures(&original);
+        assert_eq!(rewritten["system_instruction"], original["system_instruction"]);
+        assert_eq!(rewritten["generationConfig"], original["generationConfig"]);
+        assert_eq!(rewritten["contents"][0], original["contents"][0]);
+        assert_eq!(
+            rewritten["contents"][1]["parts"][0]["thoughtSignature"],
+            json!("keep-non-call")
+        );
+        assert_eq!(
+            rewritten["contents"][1]["parts"][1]["thoughtSignature"],
+            json!(SKIP_THOUGHT_SIGNATURE)
+        );
+        assert_eq!(
+            rewritten["contents"][1]["parts"][2]["thoughtSignature"],
+            json!(SKIP_THOUGHT_SIGNATURE)
+        );
+        assert_eq!(
+            rewritten["contents"][2]["parts"][0]["functionResponse"]["parts"][0]["thoughtSignature"],
+            json!(SKIP_THOUGHT_SIGNATURE)
+        );
+        assert_eq!(
+            rewritten["contents"][2]["parts"][0]["functionResponse"]["response"],
+            json!({ "output": "ok" })
+        );
+    }
+
+    #[test]
+    fn retry_decision_handles_invalid_argument_and_limits() {
+        let body = invalid_arg_body();
+
+        assert_eq!(
+            decide_error_retry(
+                StatusCode::BAD_REQUEST,
+                body,
+                RetryAttemptState {
+                    attempt: 1,
+                    max_attempts: 4,
+                    invalid_arg_count: 0,
+                    can_degrade_signatures: true,
+                }
+            ),
+            ErrorRetryDecision::RetrySame
+        );
+
+        assert_eq!(
+            decide_error_retry(
+                StatusCode::BAD_REQUEST,
+                body,
+                RetryAttemptState {
+                    attempt: 2,
+                    max_attempts: 4,
+                    invalid_arg_count: 1,
+                    can_degrade_signatures: true,
+                }
+            ),
+            ErrorRetryDecision::RetryDegraded
+        );
+
+        assert_eq!(
+            decide_error_retry(
+                StatusCode::BAD_REQUEST,
+                body,
+                RetryAttemptState {
+                    attempt: 3,
+                    max_attempts: 4,
+                    invalid_arg_count: 2,
+                    can_degrade_signatures: false,
+                }
+            ),
+            ErrorRetryDecision::GiveUp { retryable: false }
+        );
+
+        assert_eq!(
+            decide_error_retry(
+                StatusCode::BAD_REQUEST,
+                body,
+                RetryAttemptState {
+                    attempt: 2,
+                    max_attempts: 4,
+                    invalid_arg_count: 1,
+                    can_degrade_signatures: false,
+                }
+            ),
+            ErrorRetryDecision::GiveUp { retryable: false }
+        );
+
+        assert_eq!(
+            decide_error_retry(
+                StatusCode::BAD_REQUEST,
+                body,
+                RetryAttemptState {
+                    attempt: 2,
+                    max_attempts: 2,
+                    invalid_arg_count: 1,
+                    can_degrade_signatures: true,
+                }
+            ),
+            ErrorRetryDecision::GiveUp { retryable: false }
+        );
+
+        let other_400 = r#"{"error":{"code":400,"message":"API key not valid","status":"FAILED_PRECONDITION"}}"#;
+        assert_eq!(
+            decide_error_retry(
+                StatusCode::BAD_REQUEST,
+                other_400,
+                RetryAttemptState {
+                    attempt: 1,
+                    max_attempts: 4,
+                    invalid_arg_count: 0,
+                    can_degrade_signatures: true,
+                }
+            ),
+            ErrorRetryDecision::GiveUp { retryable: false }
+        );
+
+        assert_eq!(
+            decide_error_retry(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{}",
+                RetryAttemptState {
+                    attempt: 1,
+                    max_attempts: 2,
+                    invalid_arg_count: 0,
+                    can_degrade_signatures: true,
+                }
+            ),
+            ErrorRetryDecision::RetrySame
+        );
+        assert_eq!(
+            decide_error_retry(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{}",
+                RetryAttemptState {
+                    attempt: 2,
+                    max_attempts: 2,
+                    invalid_arg_count: 0,
+                    can_degrade_signatures: true,
+                }
+            ),
+            ErrorRetryDecision::GiveUp { retryable: true }
+        );
+    }
+
+    #[test]
+    fn skip_thought_signatures_mode_uses_sentinel_in_build_contents() {
+        let messages = vec![HarnessMessage::Assistant {
+            content: String::new(),
+            tool_calls: vec![ToolCallRecord {
+                id: "1".to_string(),
+                name: "bash".to_string(),
+                arguments: json!({ "cmd": "pwd" }),
+                signature: Some("real-sig".to_string()),
+                origin_model: Some("gemini-4-carbon".to_string()),
+            }],
+        }];
+        let (_, normal) = build_contents(&messages, "gemini-4-carbon", false);
+        assert_eq!(
+            normal[0]["parts"][0]["thoughtSignature"],
+            json!("real-sig")
+        );
+
+        let (_, degraded) = build_contents(&messages, "gemini-4-carbon", true);
+        assert_eq!(
+            degraded[0]["parts"][0]["thoughtSignature"],
+            json!(SKIP_THOUGHT_SIGNATURE)
+        );
+    }
+
+    #[test]
+    fn invalid_argument_log_formats_summary_without_request_body() {
+        let req = json!({
+            "system_instruction": { "parts": [{ "text": "sys-secret" }] },
+            "contents": [
+                { "role": "user", "parts": [{ "text": "turn 1" }] },
+                { "role": "user", "parts": [{ "functionResponse": { "name": "bash", "response": { "output": "sensitive-body" } } }] }
+            ]
+        });
+        let err_with_details = r#"{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"contents[1]"}]}]}}"#;
+        let line = format_invalid_argument_log(1, 4, "gemini-4-carbon", &req, err_with_details);
+        assert!(line.starts_with(
+            "[gemini] 400 INVALID_ARGUMENT attempt 1/4 model=gemini-4-carbon contents=2 last_role=user last_parts=functionResponse "
+        ));
+        assert!(line.contains("BadRequest"));
+        assert!(!line.contains("sensitive-body"));
+        assert!(!line.contains("sys-secret"));
+    }
 }
