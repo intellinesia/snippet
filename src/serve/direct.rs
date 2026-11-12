@@ -757,6 +757,10 @@ async fn deliver_direct(
     pending: &crate::coordination::PendingDirectMessage,
 ) -> Result<(), String> {
     let event = &pending.event;
+    // The session already took this answer as LoopInput::Answer.
+    if event.payload.get("auto").and_then(|v| v.as_str()) == Some("answer") {
+        return Ok(());
+    }
 
     // A reply addressed to a SESSION comes back to where the question was asked.
     // Recorded as a NOTICE: it lands in the transcript and in the model's next

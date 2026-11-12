@@ -398,7 +398,10 @@ impl Store {
                 }
             } else {
                 for mention in mentions {
-                    if agents.iter().any(|a| a == mention) && !mentioned.contains(mention) {
+                    if agents.iter().any(|a| a == mention)
+                        && poster_agent != Some(mention.as_str())
+                        && !mentioned.contains(mention)
+                    {
                         mentioned.push(mention.clone());
                     }
                 }
@@ -695,6 +698,9 @@ mod tests {
         db.post_group_message(&id, ("agent", "a"), "@c over to you", &["c".into()], None, "k2", T1)
             .unwrap();
         assert_eq!(kinds(&pending(&db, T2)), vec![("group".into(), "c".into())]);
+        db.post_group_message(&id, ("agent", "b"), "@b note to self", &["b".into()], None, "k3", T2)
+            .unwrap();
+        assert_eq!(kinds(&pending(&db, T2)), vec![("group".into(), "c".into())], "an agent never wakes itself");
     }
 
     #[test]
