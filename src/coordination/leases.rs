@@ -72,6 +72,18 @@ impl Store {
         })
     }
 
+    /// Every lease still open, oldest first.
+    pub fn open_leases(&self) -> Result<Vec<Lease>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT task_id, session_id, agent_id, fencing_token, acquired_at FROM session_leases
+                 WHERE released_at IS NULL ORDER BY acquired_at, lease_id",
+            )?;
+            let rows = stmt.query_map([], lease_from_row)?;
+            rows.collect()
+        })
+    }
+
     /// The recorded lease, without syncing it; for read-only views.
     pub fn lease_of(&self, task_id: &str) -> Result<Option<Lease>, StoreError> {
         self.with_connection(|conn| open_lease(conn, task_id))
@@ -90,6 +102,16 @@ impl Store {
     }
 }
 
+fn lease_from_row(row: &rusqlite::Row<'_>) -> Result<Lease, rusqlite::Error> {
+    Ok(Lease {
+        task_id: row.get(0)?,
+        session_id: row.get(1)?,
+        agent_id: row.get(2)?,
+        fencing_token: row.get::<_, i64>(3)? as u64,
+        acquired_at: row.get(4)?,
+    })
+}
+
 fn open_lease(
     conn: &rusqlite::Connection,
     task_id: &str,
@@ -98,15 +120,7 @@ fn open_lease(
         "SELECT task_id, session_id, agent_id, fencing_token, acquired_at FROM session_leases
          WHERE task_id = ?1 AND released_at IS NULL",
         params![task_id],
-        |r| {
-            Ok(Lease {
-                task_id: r.get(0)?,
-                session_id: r.get(1)?,
-                agent_id: r.get(2)?,
-                fencing_token: r.get::<_, i64>(3)? as u64,
-                acquired_at: r.get(4)?,
-            })
-        },
+        lease_from_row,
     )
     .optional()
 }

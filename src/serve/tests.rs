@@ -936,3 +936,184 @@ fn a_separate_desk_profile_moves_only_the_desk() {
     assert_eq!(d.store.agent_desk_profile("builder").unwrap(), None);
     assert_eq!(d.routed_profile("inbox-builder").as_deref(), Some("work"));
 }
+
+fn task_in_review(store: &crate::store::Store, id: &str) {
+    let mut task = crate::coordination::Task::filed_by_human(
+        id.into(),
+        "T".into(),
+        "d".into(),
+        "s1".into(),
+        0,
+        "2026-01-01T00:00:00Z".into(),
+    );
+    task.status = crate::coordination::TaskStatus::InProgress;
+    task.reporting_session = Some("s1".into());
+    store.create_task(&task).unwrap();
+    store
+        .update_task_in(id, "t", |t| {
+            t.status = crate::coordination::TaskStatus::InReview
+        })
+        .unwrap();
+    store
+        .modify_task_state(id, "t", |s| {
+            s.pending_report = Some(crate::coordination::PendingReport {
+                summary: "done it".into(),
+                artifacts: vec![],
+            });
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn verdict_route_approves_a_task_in_review_and_conflicts_otherwise() {
+    let d = authed_daemon();
+    task_in_review(&d.store, "vt1");
+    task_in_review(&d.store, "vt2");
+
+    let bad = coordination::task_verdict(
+        State(d.clone()),
+        axum::extract::Path("vt1".to_string()),
+        Json(coordination::TaskVerdictReq {
+            verdict: "maybe".into(),
+            findings: vec![],
+        }),
+    )
+    .await;
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+    let no_findings = coordination::task_verdict(
+        State(d.clone()),
+        axum::extract::Path("vt2".to_string()),
+        Json(coordination::TaskVerdictReq {
+            verdict: "changes".into(),
+            findings: vec![],
+        }),
+    )
+    .await;
+    assert_eq!(no_findings.status(), StatusCode::BAD_REQUEST);
+
+    let sent_back = coordination::task_verdict(
+        State(d.clone()),
+        axum::extract::Path("vt2".to_string()),
+        Json(coordination::TaskVerdictReq {
+            verdict: "changes".into(),
+            findings: vec!["src/a.rs:1 fix it".into()],
+        }),
+    )
+    .await;
+    assert_eq!(sent_back.status(), StatusCode::OK);
+    assert_eq!(
+        d.store.get_task("vt2").unwrap().unwrap().status,
+        crate::coordination::TaskStatus::InProgress
+    );
+
+    let approved = coordination::task_verdict(
+        State(d.clone()),
+        axum::extract::Path("vt1".to_string()),
+        Json(coordination::TaskVerdictReq {
+            verdict: "approve".into(),
+            findings: vec![],
+        }),
+    )
+    .await;
+    assert_eq!(approved.status(), StatusCode::OK);
+    let done = d.store.get_task("vt1").unwrap().unwrap();
+    assert_eq!(done.status, crate::coordination::TaskStatus::Done);
+    assert_eq!(done.result.unwrap().summary, "done it");
+
+    let conflict = coordination::task_verdict(
+        State(d.clone()),
+        axum::extract::Path("vt1".to_string()),
+        Json(coordination::TaskVerdictReq {
+            verdict: "approve".into(),
+            findings: vec![],
+        }),
+    )
+    .await;
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+
+    let missing = coordination::task_verdict(
+        State(d),
+        axum::extract::Path("nope".to_string()),
+        Json(coordination::TaskVerdictReq {
+            verdict: "approve".into(),
+            findings: vec![],
+        }),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn release_route_ends_the_turn_lease_and_seat() {
+    let d = authed_daemon();
+    let now = chrono::Utc::now().to_rfc3339();
+    d.store
+        .create_agent(&crate::coordination::types::Agent {
+            id: "w".into(),
+            display_name: "w".into(),
+            handle: "w".into(),
+            kind: crate::coordination::types::AgentKind::Worker,
+            status: crate::coordination::types::AgentStatus::Active,
+            capabilities: vec![],
+        })
+        .unwrap();
+    let mut task = crate::coordination::Task::filed_by_human(
+        "rt1".into(),
+        "T".into(),
+        "d".into(),
+        "sess-main".into(),
+        0,
+        now.clone(),
+    );
+    task.status = crate::coordination::TaskStatus::InProgress;
+    d.store.create_task(&task).unwrap();
+    d.store
+        .add_task_agent_full(
+            "rt1",
+            "w",
+            "implementer",
+            Some("sess-w"),
+            "",
+            "active",
+            &now,
+        )
+        .unwrap();
+    d.store.open_turn("rt1", "w", "sess-w", "{}", &now).unwrap();
+    d.store.sync_task_lease("rt1", &now).unwrap();
+    assert!(d.store.lease_of("rt1").unwrap().is_some());
+
+    let missing = agent_routes::release_agent_session(
+        State(d.clone()),
+        axum::extract::Path(("w".to_string(), "other-session".to_string())),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    let released = agent_routes::release_agent_session(
+        State(d.clone()),
+        axum::extract::Path(("w".to_string(), "sess-w".to_string())),
+    )
+    .await;
+    assert_eq!(released.status(), StatusCode::OK);
+    assert_eq!(
+        d.store.list_task_agents("rt1").unwrap()[0].status,
+        "released"
+    );
+    assert!(d.store.open_turn_of("rt1").unwrap().is_none());
+    assert!(d.store.lease_of("rt1").unwrap().is_none());
+    let events = d.store.events_for_thread(&task.thread_id, 0, 100).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event_type == "task.seat_released" && e.actor_id == "user"),
+        "{events:?}"
+    );
+
+    let again = agent_routes::release_agent_session(
+        State(d),
+        axum::extract::Path(("w".to_string(), "sess-w".to_string())),
+    )
+    .await;
+    assert_eq!(again.status(), StatusCode::NOT_FOUND);
+}

@@ -248,6 +248,73 @@ pub(super) fn goal_stall_wake(
     ))
 }
 
+/// User turns in a seat's session since the task's last progress that mean the
+/// user took the session back.
+const PARK_USER_TURNS: i64 = 2;
+
+/// Settle seats the task state has outlived. Terminal tasks release every open
+/// seat, lease and turn — `task_turns.ended_at` is never left NULL for finished
+/// work. On live tasks, a seat whose session the user has driven since the
+/// task's last progress is parked, once. Returns the ids it touched.
+pub(super) fn seat_sweep(store: &Store, now: DateTime<Utc>) -> Vec<String> {
+    let stamp = now.to_rfc3339();
+    let mut touched = Vec::new();
+    for task in store.list_tasks(None, None).unwrap_or_default() {
+        if task.status.is_terminal() {
+            let had_turn = store.open_turn_of(&task.id).ok().flatten().is_some();
+            let seats = crate::members::release_all_seats(store, &task, &stamp);
+            if seats > 0 || had_turn {
+                touched.push(task.id.clone());
+            }
+            continue;
+        }
+        for member in store.list_task_agents(&task.id).unwrap_or_default() {
+            if member.removed_at.is_some() || member.status != "active" {
+                continue;
+            }
+            let session = member
+                .work_session_id
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| task.session_id.clone());
+            if session.trim().is_empty() {
+                continue;
+            }
+            let since = task.last_progress_at.as_deref().unwrap_or(&task.updated_at);
+            let user_turns = store
+                .count_user_messages_since(&session, since)
+                .unwrap_or(0);
+            if user_turns < PARK_USER_TURNS {
+                continue;
+            }
+            if store
+                .park_task_agent_seat(&task.id, &member.agent_id)
+                .unwrap_or(false)
+            {
+                crate::review_tools::room_event(
+                    store,
+                    &task,
+                    "task.seat_parked",
+                    "user",
+                    "user",
+                    serde_json::json!({
+                        "body": format!(
+                            "{}'s seat is parked: the session had {user_turns} user turns since the task's last progress.",
+                            member.agent_id
+                        ),
+                        "task_id": task.id,
+                        "agent_id": member.agent_id,
+                        "session": session,
+                    }),
+                    &stamp,
+                );
+                touched.push(task.id.clone());
+            }
+        }
+    }
+    touched
+}
+
 const OWED_AFTER_MINUTES: i64 = 20;
 
 /// Notices for questions and blockers that have waited past the threshold with no
@@ -629,5 +696,124 @@ mod tests {
         goal_at(&store, "g", 8, None);
         let text = goal_stall_wake(&store, Utc::now(), false).unwrap();
         assert!(text.contains("## Goals stalled") && text.contains("last next_step: none"));
+    }
+
+    fn agent(store: &Store, id: &str) {
+        store
+            .create_agent(&crate::coordination::types::Agent {
+                id: id.into(),
+                display_name: id.into(),
+                handle: id.into(),
+                kind: crate::coordination::types::AgentKind::Worker,
+                status: crate::coordination::types::AgentStatus::Active,
+                capabilities: vec![],
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn the_seat_sweep_releases_seats_turns_and_leases_of_terminal_tasks() {
+        let store = Store::open_in_memory().unwrap();
+        agent(&store, "w");
+        let now = Utc::now().to_rfc3339();
+        let mut task = Task::filed_by_human(
+            "st1".into(),
+            "t".into(),
+            "d".into(),
+            "sess-main".into(),
+            0,
+            now.clone(),
+        );
+        task.status = TaskStatus::Done;
+        store.create_task(&task).unwrap();
+        store
+            .add_task_agent_full(
+                "st1",
+                "w",
+                "implementer",
+                Some("sess-w"),
+                "",
+                "active",
+                &now,
+            )
+            .unwrap();
+        store.open_turn("st1", "w", "sess-w", "{}", &now).unwrap();
+        store.sync_task_lease("st1", &now).unwrap();
+        assert!(store.lease_of("st1").unwrap().is_some());
+        assert_eq!(seat_sweep(&store, Utc::now()), vec!["st1".to_string()]);
+        assert_eq!(store.list_task_agents("st1").unwrap()[0].status, "released");
+        assert!(store.open_turn_of("st1").unwrap().is_none());
+        assert!(store.lease_of("st1").unwrap().is_none());
+        assert!(
+            seat_sweep(&store, Utc::now()).is_empty(),
+            "nothing left to do"
+        );
+    }
+
+    #[test]
+    fn the_seat_sweep_parks_a_seat_the_user_has_driven_once() {
+        let store = Store::open_in_memory().unwrap();
+        agent(&store, "w");
+        let now = Utc::now().to_rfc3339();
+        let mut task = Task::filed_by_human(
+            "pk1".into(),
+            "t".into(),
+            "d".into(),
+            "sess-main".into(),
+            0,
+            now.clone(),
+        );
+        task.status = TaskStatus::InProgress;
+        task.last_progress_at = Some("2026-01-03T00:00:00Z".into());
+        store.create_task(&task).unwrap();
+        store
+            .add_task_agent_full(
+                "pk1",
+                "w",
+                "implementer",
+                Some("sess-w"),
+                "",
+                "active",
+                &now,
+            )
+            .unwrap();
+        let row = crate::conversations::SessionRow {
+            id: "sess-w".into(),
+            workspace_key: "wk".into(),
+            workspace: "/code/thing".into(),
+            title: None,
+            status: "idle".into(),
+            created_at: "2026-01-02T00:00:00Z".into(),
+            updated_at: "2026-01-02T00:00:00Z".into(),
+            last_active: None,
+            profile: None,
+            role: "standard".into(),
+            agent_id: None,
+            kind: "conversation".into(),
+            settled_at: None,
+            keep_awake: false,
+            resume_mode: "ask".into(),
+            last_changes: None,
+            total_changes: None,
+        };
+        store.create_conversation(&row, &[], "{}").unwrap();
+        let user = |text: &str| crate::llm::HarnessMessage::User {
+            content: text.into(),
+        };
+        store
+            .append_conversation_messages(
+                "sess-w",
+                &[user("one"), user("two")],
+                "2026-01-04T00:00:00Z",
+            )
+            .unwrap();
+        assert_eq!(seat_sweep(&store, Utc::now()), vec!["pk1".to_string()]);
+        assert_eq!(store.list_task_agents("pk1").unwrap()[0].status, "parked");
+        let events = store.events_for_thread(&task.thread_id, 0, 100).unwrap();
+        assert!(
+            events.iter().any(|e| e.event_type == "task.seat_parked"),
+            "{events:?}"
+        );
+        assert!(seat_sweep(&store, Utc::now()).is_empty(), "parked once");
     }
 }

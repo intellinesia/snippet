@@ -1074,6 +1074,10 @@ pub async fn run_serve(
             "/agents/{agent_id}/reach",
             get(get_agent_reach).put(put_agent_reach),
         )
+        .route(
+            "/agents/{agent_id}/sessions/{session_id}/release",
+            post(agent_routes::release_agent_session),
+        )
         .route("/agents/{agent_id}", axum::routing::delete(delete_agent))
         .merge(coordination::router())
         .merge(groups::router())

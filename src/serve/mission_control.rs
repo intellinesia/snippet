@@ -1370,6 +1370,10 @@ pub fn register_builtin_agents(d: &Shared) {
     }
 }
 
+/// Seat sweep runs on the dispatch tick but scans every task, so it is
+/// throttled to once a minute.
+static SEAT_SWEEP_AT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
 pub async fn dispatch_loop(daemon: Shared) {
     loop {
         let now = chrono::Utc::now().to_rfc3339();
@@ -1389,6 +1393,12 @@ pub async fn dispatch_loop(daemon: Shared) {
             chrono::Utc::now(),
             super::stall::probe_session,
         );
+        let sweep_now = chrono::Utc::now();
+        let last_sweep =
+            SEAT_SWEEP_AT.swap(sweep_now.timestamp(), std::sync::atomic::Ordering::Relaxed);
+        if last_sweep == 0 || sweep_now.timestamp() - last_sweep >= 60 {
+            super::stall::seat_sweep(&daemon.store, sweep_now);
+        }
         wake_for_stalled_goals(&daemon).await;
         for (session, notice) in super::stall::owed_sweep(&daemon.store, chrono::Utc::now()) {
             daemon
