@@ -244,18 +244,29 @@ pub fn prepare_home(
     prompt: &str,
     account: Option<&str>,
 ) -> Result<PreparedEnv, String> {
+    prepare_home_in(&crate::config::snippet_home(), real_data_dir().as_deref(), key, mcp_url, prompt, account)
+}
+
+fn prepare_home_in(
+    snippet_home: &Path,
+    real_data: Option<&Path>,
+    key: &str,
+    mcp_url: &str,
+    prompt: &str,
+    account: Option<&str>,
+) -> Result<PreparedEnv, String> {
     let slot: String = account
         .unwrap_or(crate::accounts::MAIN)
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
         .collect();
-    let acct_root = crate::config::snippet_home().join("devin/accounts").join(&slot);
+    let acct_root = snippet_home.join("devin/accounts").join(&slot);
     let home = acct_root.join("home");
     let xdg_data_home = acct_root.join("data");
     let xdg_cache_home = acct_root.join("cache");
     let data_dir = xdg_data_home.join("devin");
 
-    let sess_root = crate::config::snippet_home().join("devin/homes").join(key);
+    let sess_root = snippet_home.join("devin/homes").join(key);
     let xdg_config_home = sess_root.join("config");
     let cfg_dir = xdg_config_home.join("devin");
 
@@ -264,12 +275,7 @@ pub fn prepare_home(
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("create {}: {e}", data_dir.display()))?;
     std::fs::create_dir_all(&xdg_cache_home).map_err(|e| format!("create {}: {e}", xdg_cache_home.display()))?;
 
-    // Share the CLI's session store (`cli/sessions.db`) across runs and rotated accounts so
-    // `session/load` always finds prior conversation nodes without touching ~/.config/devin.
-    let shared_cli = real_data_dir()
-        .map(|d| d.join("cli"))
-        .filter(|d| d.exists())
-        .unwrap_or_else(|| crate::config::snippet_home().join("devin/shared-cli"));
+    let shared_cli = snippet_home.join("devin/shared-cli");
     std::fs::create_dir_all(&shared_cli).map_err(|e| format!("create {}: {e}", shared_cli.display()))?;
     ensure_symlink(&shared_cli, &data_dir.join("cli"))?;
 
@@ -278,7 +284,7 @@ pub fn prepare_home(
     if let Some(tok) = &token {
         write_credentials_file(&cred_target, tok)?;
     } else if (account.is_none() || account == Some(crate::accounts::MAIN))
-        && let Some(real_creds) = real_data_dir().map(|d| d.join("credentials.toml")).filter(|p| p.is_file())
+        && let Some(real_creds) = real_data.map(|d| d.join("credentials.toml")).filter(|p| p.is_file())
     {
         ensure_symlink(&real_creds, &cred_target)?;
     }
@@ -482,11 +488,12 @@ pub fn parse_model_ids(raw: &Value) -> Vec<String> {
 }
 
 fn sessions_db_path() -> Option<PathBuf> {
-    let real = real_data_dir().map(|d| d.join("cli/sessions.db")).filter(|p| p.is_file());
-    real.or_else(|| {
-        let fallback = crate::config::snippet_home().join("devin/shared-cli/sessions.db");
-        fallback.is_file().then_some(fallback)
-    })
+    sessions_db_path_in(&crate::config::snippet_home())
+}
+
+fn sessions_db_path_in(snippet_home: &Path) -> Option<PathBuf> {
+    let db = snippet_home.join("devin/shared-cli/sessions.db");
+    db.is_file().then_some(db)
 }
 
 /// Copy a Devin session in `sessions.db` under a fresh id so a forked Snippet
@@ -705,5 +712,35 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM message_nodes WHERE session_id = ?1", [&forked], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn prepare_home_and_sessions_db_never_use_real_data_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let real_devin = dir.path().join("real-devin");
+        let real_cli = real_devin.join("cli");
+        std::fs::create_dir_all(&real_cli).unwrap();
+        let real_db = real_cli.join("sessions.db");
+        std::fs::write(&real_db, b"real-user-sessions").unwrap();
+        std::fs::write(real_devin.join("credentials.toml"), "windsurf_api_key = \"devin-main\"\n").unwrap();
+
+        let snippet_home = dir.path().join("snippet-home");
+        let env = prepare_home_in(&snippet_home, Some(&real_devin), "sess-1", "http://127.0.0.1:9999/mcp", "prompt", None).unwrap();
+        let cli_link = env.xdg_data_home.join("devin/cli");
+        assert_eq!(
+            std::fs::read_link(&cli_link).unwrap(),
+            snippet_home.join("devin/shared-cli")
+        );
+        let cred_link = env.xdg_data_home.join("devin/credentials.toml");
+        assert_eq!(
+            std::fs::read_link(&cred_link).unwrap(),
+            real_devin.join("credentials.toml")
+        );
+        assert_eq!(sessions_db_path_in(&snippet_home), None);
+
+        let priv_db = snippet_home.join("devin/shared-cli/sessions.db");
+        std::fs::write(&priv_db, b"snippet-private-sessions").unwrap();
+        assert_eq!(sessions_db_path_in(&snippet_home).as_deref(), Some(priv_db.as_path()));
+        assert_eq!(std::fs::read(&real_db).unwrap(), b"real-user-sessions");
     }
 }

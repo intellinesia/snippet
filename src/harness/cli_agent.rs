@@ -3457,10 +3457,27 @@ mod devin_acp_tests {
     async fn devin_live_acp_turn_tool_call_and_resume() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("probe.txt"), "sentinel-42\n").unwrap();
-        let snippet_home = dir.path().join("snippet-home");
-        unsafe {
-            std::env::set_var("SNIPPET_HOME", &snippet_home);
+        let bin = crate::devin::binary().expect("devin binary");
+        let fake_home = dir.path().join("home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        if let Some(real_devin) = crate::devin::real_data_dir() {
+            let fake_devin = fake_home.join(".local/share/devin");
+            std::fs::create_dir_all(&fake_devin).unwrap();
+            let creds = real_devin.join("credentials.toml");
+            if creds.is_file() {
+                std::os::unix::fs::symlink(&creds, fake_devin.join("credentials.toml")).unwrap();
+            }
         }
+        if let Some(real_cfg) = crate::devin::real_home().map(|h| h.join(".config/devin/config.json")).filter(|p| p.is_file()) {
+            let fake_cfg = fake_home.join(".config/devin");
+            std::fs::create_dir_all(&fake_cfg).unwrap();
+            std::os::unix::fs::symlink(&real_cfg, fake_cfg.join("config.json")).unwrap();
+        }
+        unsafe {
+            std::env::set_var("SNIPPET_DEVIN_BIN", &bin);
+            std::env::set_var("HOME", &fake_home);
+        }
+        let snippet_home = crate::config::snippet_home();
         let state_path = snippet_home.join("workspaces/devin-live-smoke");
         let mut profile = InferenceProfileConfig::default();
         profile.provider = "devin".into();
