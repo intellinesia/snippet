@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -200,6 +200,8 @@ struct TurnInner {
     first_push: Option<Instant>,
     ctx_open: bool,
     file: Option<std::fs::File>,
+    pcm: Option<Arc<Mutex<Vec<u8>>>>,
+    result: Option<oneshot::Sender<(Vec<u8>, i64)>>,
 }
 
 pub struct StreamTurn {
@@ -548,7 +550,9 @@ fn begin(t: &StreamTurn, i: &mut TurnInner) {
     }
     i.started = true;
     i.start_offset = t.session.st.lock().unwrap().completed_ms;
-    send_phone(&t.device, PhoneFrame::Text(json!({"t": "tts_start", "turn": t.turn}).to_string()));
+    if i.pcm.is_none() {
+        send_phone(&t.device, PhoneFrame::Text(json!({"t": "tts_start", "turn": t.turn}).to_string()));
+    }
 }
 
 fn on_audio(session: &Session, pcm: &[u8]) {
@@ -569,10 +573,16 @@ fn deliver_audio(t: &Arc<StreamTurn>, pcm: &[u8]) {
         crate::ambient::mark_last("first_chunk");
     }
     i.bytes += pcm.len() as u64;
-    if let Some(f) = i.file.as_mut() {
+    if let Some(sink) = &i.pcm {
+        sink.lock().unwrap().extend_from_slice(pcm);
+    } else if let Some(f) = i.file.as_mut() {
         let _ = f.write_all(pcm);
     }
+    let memo = i.pcm.is_some();
     drop(i);
+    if memo {
+        return;
+    }
     let mut frame = Vec::with_capacity(4 + pcm.len());
     frame.extend_from_slice(&(t.turn as u32).to_le_bytes());
     frame.extend_from_slice(pcm);
@@ -752,7 +762,7 @@ fn on_rime_event(session: &Session, raw: &str) {
 }
 
 fn finish_turn(t: &StreamTurn, ms: i64) {
-    let (stopped, text) = {
+    let (stopped, text, memo) = {
         let mut i = t.inner.lock().unwrap();
         if i.audio_ms.is_some() {
             return;
@@ -760,8 +770,17 @@ fn finish_turn(t: &StreamTurn, ms: i64) {
         i.audio_ms = Some(ms);
         i.ended_at = Some(Instant::now());
         i.file = None;
-        (i.stopped, i.text.clone())
+        let pcm = i
+            .pcm
+            .take()
+            .map(|sink| std::mem::take(&mut *sink.lock().unwrap()))
+            .unwrap_or_default();
+        (i.stopped, i.text.clone(), i.result.take().map(|tx| (tx, pcm)))
     };
+    if let Some((tx, pcm)) = memo {
+        let _ = tx.send((pcm, ms));
+        return;
+    }
     if let Ok(store) = crate::ambient::store() {
         store.write(|c| {
             c.execute(
@@ -1057,6 +1076,91 @@ pub async fn settle(max: Duration) {
     }
 }
 
+const MEMO_DEVICE: &str = "voice-memo";
+const MEMO_TIMEOUT: Duration = Duration::from_secs(300);
+static MEMO_TURN: AtomicI64 = AtomicI64::new(1);
+static MEMO_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn wav(pcm: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(pcm.len() + 44);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&((pcm.len() + 36) as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&24_000u32.to_le_bytes());
+    out.extend_from_slice(&48_000u32.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
+    out.extend_from_slice(pcm);
+    out
+}
+
+/// Render `text` for a voice memo: the same providers as `speak`, collected to
+/// memory instead of streamed to a phone. Returns WAV bytes and duration in ms.
+pub async fn render_memo(text: &str) -> Result<(Vec<u8>, i64), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("nothing to say".into());
+    }
+    let unconfigured = || "text-to-speech is not configured on this server; send the text instead".to_string();
+    if !enabled() {
+        return Err(unconfigured());
+    }
+    let _serial = MEMO_LOCK.lock().await;
+    let s = session(MEMO_DEVICE).ok_or_else(unconfigured)?;
+    let deadline = tokio::time::Instant::now() + CONNECT_WAIT;
+    loop {
+        let notified = s.changed.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        {
+            let st = s.st.lock().unwrap();
+            if st.connected && !st.closed && !st.retired {
+                break;
+            }
+            if st.closed {
+                return Err("speech synthesis could not connect; send the text instead".into());
+            }
+        }
+        tokio::select! {
+            _ = &mut notified => {}
+            _ = tokio::time::sleep_until(deadline) => {
+                return Err("speech synthesis did not connect in time; send the text instead".into());
+            }
+        }
+    }
+    let (tx, rx) = oneshot::channel();
+    let sink = Arc::new(Mutex::new(Vec::new()));
+    let turn = Arc::new(StreamTurn {
+        turn: MEMO_TURN.fetch_add(1, Ordering::SeqCst),
+        created: Instant::now(),
+        device: MEMO_DEVICE.into(),
+        session: s.clone(),
+        inner: Mutex::new(TurnInner { pcm: Some(sink), result: Some(tx), ..Default::default() }),
+    });
+    if !turn.push(text) {
+        return Err("speech synthesis is not ready; send the text instead".into());
+    }
+    turn.flush();
+    match tokio::time::timeout(MEMO_TIMEOUT, rx).await {
+        Ok(Ok((pcm, ms))) if !pcm.is_empty() => Ok((wav(&pcm), ms)),
+        Ok(Ok(_)) => Err("speech synthesis produced no audio".into()),
+        Ok(Err(_)) => Err("speech synthesis ended before the audio arrived".into()),
+        Err(_) => {
+            turn.inner.lock().unwrap().stopped = true;
+            s.st.lock().unwrap().queue.retain(|x| !Arc::ptr_eq(x, &turn));
+            if s.provider == Provider::Rime && turn.inner.lock().unwrap().ctx_open {
+                s.send(json!({"contextId": ctx_id(turn.turn), "cancel": {}}));
+            }
+            Err("speech synthesis timed out; send the text instead".into())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1250,5 +1354,38 @@ mod tests {
             stop(Some(&dev), "cancelled", None);
             settle(Duration::from_secs(2)).await;
         }
+    }
+
+    #[test]
+    fn wav_wraps_pcm_in_a_header() {
+        let pcm = vec![1u8, 2, 3, 4];
+        let out = wav(&pcm);
+        assert_eq!(&out[..4], b"RIFF");
+        assert_eq!(&out[8..12], b"WAVE");
+        assert_eq!(u32::from_le_bytes(out[4..8].try_into().unwrap()), (pcm.len() + 36) as u32);
+        assert_eq!(&out[36..40], b"data");
+        assert_eq!(u32::from_le_bytes(out[40..44].try_into().unwrap()), pcm.len() as u32);
+        assert_eq!(u32::from_le_bytes(out[24..28].try_into().unwrap()), 24_000);
+        assert_eq!(&out[44..], &pcm[..]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs a TTS provider key and network"]
+    async fn live_memo_render_produces_a_wav() {
+        let home = std::env::temp_dir().join(format!("snippet-memo-live-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("HOME", &home) };
+        let mut c = crate::config::SnippetConfig::default();
+        if let Ok(key) = std::env::var("RIME_API_KEY") {
+            c.rime_api_key = Some(key);
+            c.ambient.tts_provider = "rime".into();
+        } else {
+            c.deepgram_api_key = Some(std::env::var("DEEPGRAM_API_KEY").expect("DEEPGRAM_API_KEY"));
+        }
+        apply_config(&c);
+        let (bytes, ms) = render_memo("this is a short test memo").await.unwrap();
+        assert!(bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE");
+        assert!(ms > 0);
+        apply_config(&crate::config::SnippetConfig::default());
     }
 }

@@ -98,6 +98,7 @@ pub fn add_mission_control_tools(registry: &mut ToolRegistry) {
     registry.insert(UpdateBrief);
     registry.insert(ScheduleFollowup);
     registry.insert(PingUser);
+    registry.insert(SendVoiceMemo);
     registry.insert(AnswerWorker);
     registry.insert(ReadFile);
 }
@@ -308,6 +309,15 @@ struct PingUserArgs {
     message: String,
     #[serde(default)]
     kind: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SendVoiceMemoArgs {
+    text: String,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -923,6 +933,162 @@ impl Tool for PingUser {
     }
 }
 
+fn voice_memo_fields(
+    session: &str,
+    artifact: &crate::artifacts::Artifact,
+    version: &crate::artifacts::Version,
+    url: &str,
+    duration_ms: i64,
+    transcript: &str,
+    to_human: bool,
+) -> serde_json::Map<String, Value> {
+    let mut extra = serde_json::Map::new();
+    if to_human {
+        extra.insert("channel".into(), json!("chat"));
+    }
+    extra.insert(
+        "attachment".into(),
+        json!({
+            "kind": "audio",
+            "url": url,
+            "duration_ms": duration_ms,
+            "transcript": transcript,
+        }),
+    );
+    extra.insert(
+        "artifact".into(),
+        json!({
+            "session": session,
+            "id": artifact.id,
+            "title": artifact.title,
+            "version": version.n,
+            "url": url,
+            "kind": "audio",
+        }),
+    );
+    extra
+}
+
+pub struct SendVoiceMemo;
+#[async_trait]
+impl Tool for SendVoiceMemo {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "send_voice_memo".into(),
+            description: "Send the user (or one agent) a voice memo: the text is rendered to audio, kept as an artifact they can replay, and delivered as a message with the audio attached and its transcript as the body. Use it for a result they'd rather hear than read; it never needs a device listening, unlike speak, which is for live replies. If voice memos aren't configured or rendering fails, send the text instead.".into(),
+            input_schema: schema(
+                json!({
+                    "text": {"type": "string", "description": "What the memo says, in plain spoken sentences."},
+                    "to": {"type": "string", "description": "`human` (default) or an agent id from the directory."},
+                    "title": {"type": "string", "description": "Short title for the audio artifact; defaults to the start of the text."}
+                }),
+                &["text"],
+            ),
+        }
+    }
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let args: SendVoiceMemoArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let transcript = crate::speech::speakable(&args.text);
+        let transcript = transcript.trim();
+        if transcript.is_empty() {
+            return Err(ToolError::msg("nothing to say (bracketed notes are never spoken)"));
+        }
+        let (wav, duration_ms) =
+            crate::tts_stream::render_memo(transcript).await.map_err(ToolError::msg)?;
+        let session = ctx
+            .durable_session_id()
+            .or(ctx.lane_origin().map(|(session, _)| session))
+            .ok_or_else(|| ToolError::msg("voice memos need a saved session"))?
+            .to_string();
+        let title = args
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| transcript.chars().take(40).collect());
+        let dir = crate::config::snippet_home().join("tmp");
+        std::fs::create_dir_all(&dir).map_err(|e| ToolError::msg(format!("create temp dir: {e}")))?;
+        let file = dir.join(format!("voice-memo-{}.wav", chrono::Utc::now().timestamp_millis()));
+        std::fs::write(&file, &wav).map_err(|e| ToolError::msg(format!("write memo audio: {e}")))?;
+        let presented = crate::artifacts::present(&session, &file, Some(&title), None, None);
+        let _ = std::fs::remove_file(&file);
+        let presented = presented.map_err(ToolError::msg)?;
+        let version = presented
+            .artifact
+            .latest()
+            .ok_or_else(|| ToolError::msg("memo artifact has no version"))?;
+        let info = crate::serve::sidecar::read_daemon_info()
+            .ok_or_else(|| ToolError::msg("the daemon's address isn't available, so the memo can't be linked"))?;
+        let url = crate::artifacts::signed_path(&info.token, &session, &presented.artifact.id, version, 30 * 24 * 3600);
+        let to = args
+            .to
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .unwrap_or("human");
+        let store = ctx
+            .store()
+            .map_err(|e| ToolError::msg(format!("open store: {e}")))?;
+        let (to_kind, to_id) = if to == "human" || to == "local" {
+            ("human", crate::coordination::LOCAL_HUMAN_ID)
+        } else {
+            match store
+                .get_agent(to)
+                .map_err(|e| ToolError::msg(format!("look up agent: {e}")))?
+            {
+                None => {
+                    return Err(ToolError::msg(format!(
+                        "unknown agent `{to}` — list_coordination_agents shows the directory. Omit `to` or pass `human` for the user."
+                    )));
+                }
+                Some(agent) if agent.status == crate::coordination::types::AgentStatus::Disabled => {
+                    return Err(ToolError::msg(format!("agent `{to}` is disabled")));
+                }
+                Some(_) => ("agent", to),
+            }
+        };
+        let (sender_kind, sender_id) = crate::coordination_tools::speaks_as(ctx)
+            .ok_or_else(|| ToolError::msg("send_voice_memo requires a session identity"))?;
+        let extra = voice_memo_fields(
+            &session,
+            &presented.artifact,
+            version,
+            &url,
+            duration_ms,
+            transcript,
+            to_kind == "human",
+        );
+        let origin = ctx
+            .durable_session_id()
+            .or(ctx.lane_origin().map(|(session, _)| session))
+            .map(str::to_string);
+        let saved = store
+            .send_direct_message_typed(
+                (sender_kind, &sender_id),
+                (to_kind, to_id),
+                transcript,
+                &uuid::Uuid::new_v4().to_string(),
+                &chrono::Utc::now().to_rfc3339(),
+                origin.as_deref(),
+                ctx.lane_origin().map(|(_, lane)| lane),
+                None,
+                extra,
+            )
+            .map_err(|e| ToolError::msg(format!("send message: {e}")))?;
+        crate::session::emit_device_event(json!({
+            "kind": "coordination_event",
+            "event": saved,
+        }));
+        Ok(ToolResult::success(json!({
+            "sent": true,
+            "duration_ms": duration_ms,
+            "artifact_id": presented.artifact.id,
+        })))
+    }
+}
+
 fn open_reach_store(ctx: &ToolContext) -> Result<crate::store::Store, ToolError> {
     let path = ctx
         .store_path()
@@ -995,6 +1161,7 @@ impl Tool for ReachPolicyTool {
 }
 
 pub fn add_worker_report_tool(registry: &mut ToolRegistry) {
+    registry.insert(SendVoiceMemo);
     registry.insert(ReportMissionTask);
     registry.insert(crate::task_state_tools::UpdateTaskState);
     registry.insert(crate::task_state_tools::TaskLedger);
@@ -3541,6 +3708,43 @@ impl Tool for CreateRecurringJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_memo_payload_shape() {
+        let artifact = crate::artifacts::Artifact {
+            id: "standup".into(),
+            title: "Standup".into(),
+            kind: "audio".into(),
+            caption: None,
+            versions: Vec::new(),
+        };
+        let version = crate::artifacts::Version {
+            n: 1,
+            created_at: 0,
+            entry: "standup.wav".into(),
+            hash: "abc".into(),
+            source: "/tmp/standup.wav".into(),
+        };
+        let extra = voice_memo_fields("s1", &artifact, &version, "/a/1/sig/x", 1234, "hello there", true);
+        let value = Value::Object(extra);
+        let round: Value = serde_json::from_str(&serde_json::to_string(&value).unwrap()).unwrap();
+        assert_eq!(round, value);
+        let attachment = &round["attachment"];
+        assert_eq!(attachment["kind"], "audio");
+        assert_eq!(attachment["url"], "/a/1/sig/x");
+        assert_eq!(attachment["duration_ms"], 1234);
+        assert_eq!(attachment["transcript"], "hello there");
+        let art = &round["artifact"];
+        assert_eq!(art["session"], "s1");
+        assert_eq!(art["id"], "standup");
+        assert_eq!(art["title"], "Standup");
+        assert_eq!(art["version"], 1);
+        assert_eq!(art["url"], "/a/1/sig/x");
+        assert_eq!(art["kind"], "audio");
+        assert_eq!(round["channel"], "chat");
+        let agent = voice_memo_fields("s1", &artifact, &version, "/a/1/sig/x", 1, "t", false);
+        assert!(agent.get("channel").is_none());
+    }
 
     #[test]
     fn turn_changes_is_not_shown_to_mission_control() {
