@@ -255,16 +255,11 @@ impl Store {
             )?;
             let context = conn
                 .query_row(
-                    "SELECT provider, prompt_tokens, cache_read_tokens, cache_creation_tokens FROM usage_ledger
+                    "SELECT prompt_tokens FROM usage_ledger
                      WHERE session_id = ?1 AND purpose = ?2 ORDER BY at DESC, id DESC LIMIT 1",
                     params![session_id, PURPOSE_TURN],
-                    |row| {
-                        let provider: String = row.get(0)?;
-                        let (p, r, c): (i64, i64, i64) = (row.get(1)?, row.get(2)?, row.get(3)?);
-                        // Anthropic reports cached input apart from prompt tokens; others (including devin) include it.
-                        let separate = provider.starts_with("anthropic") || provider == "claude-code";
-                        Ok((if separate { p + r + c } else { p }).max(0) as u64)
-                    },
+                    // Every adapter already folds cached input into prompt_tokens.
+                    |row| Ok(row.get::<_, i64>(0)?.max(0) as u64),
                 )
                 .ok();
             Ok((at, context))
@@ -456,5 +451,23 @@ mod tests {
         assert_eq!(spend.len(), 1);
         assert_eq!(spend[0]["calls"], 1);
         assert_eq!(spend[0]["cache_read_tokens"], 49_000);
+    }
+
+    #[test]
+    fn resume_context_is_the_prompt_without_counting_cache_twice() {
+        let store = Store::open_in_memory().unwrap();
+        let turn = TokenUsage {
+            prompt_tokens: 96_002,
+            completion_tokens: 10,
+            cache_read_tokens: 95_572,
+            cache_creation_tokens: 428,
+            ..TokenUsage::default()
+        };
+        store
+            .record_usage("s", "claude-code", "opus", &turn)
+            .unwrap();
+        store.record_usage("a", "anthropic", "opus", &turn).unwrap();
+        assert_eq!(store.cache_touch("s").unwrap().1, Some(96_002));
+        assert_eq!(store.cache_touch("a").unwrap().1, Some(96_002));
     }
 }
