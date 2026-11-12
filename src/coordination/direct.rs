@@ -382,30 +382,52 @@ impl Store {
             let _ = self.note_agent_last_message(agent, &envelope_text(body), created_at, from);
         }
 
-        let owes_reply = matches!(saved.payload.get("kind").and_then(|k| k.as_str()), Some("question" | "blocker"))
-            .then_some(created_at);
+        let reaction = saved.payload.get("reaction").and_then(|v| v.as_str());
+        let is_reaction =
+            reaction.is_some() || saved.payload.get("kind").and_then(|k| k.as_str()) == Some("reaction");
+        let owes_reply = (!is_reaction
+            && matches!(saved.payload.get("kind").and_then(|k| k.as_str()), Some("question" | "blocker")))
+        .then_some(created_at);
+        let recipient_read_at = (recipient.0 == "human" && is_reaction).then_some(created_at);
         // The sender has by definition already seen this message; the recipient
         // has not, so its `read_at` stays NULL until it reads the thread.
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT OR IGNORE INTO message_deliveries
-                 (event_id, recipient_kind, recipient_id, recipient, queued_at, awaiting_reply)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (event_id, recipient_kind, recipient_id, recipient, queued_at, read_at, awaiting_reply)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     saved.event_id,
                     recipient.0,
                     recipient.1,
                     recipient_ref,
                     created_at,
+                    recipient_read_at,
                     owes_reply
                 ],
             )?;
-            conn.execute(
-                "UPDATE message_deliveries SET awaiting_reply = NULL
-                 WHERE awaiting_reply IS NOT NULL AND recipient = ?1 AND event_id IN (
-                     SELECT event_id FROM board_events WHERE thread_id = ?2 AND actor_id = ?3 AND actor_kind = ?4)",
-                params![sender_ref, saved.thread_id, recipient.1, recipient.0],
-            )?;
+            if is_reaction {
+                if sender.0 == "human"
+                    && matches!(reaction, Some("check" | "thumbs_up"))
+                    && let Some(target_id) = saved.payload.get("reply_to").and_then(|v| v.as_str())
+                {
+                    conn.execute(
+                        "UPDATE message_deliveries SET awaiting_reply = NULL
+                         WHERE awaiting_reply IS NOT NULL AND recipient = ?1 AND event_id = ?2
+                           AND EXISTS (
+                               SELECT 1 FROM board_events
+                               WHERE event_id = ?2 AND thread_id = ?3 AND actor_kind = 'agent')",
+                        params![sender_ref, target_id, saved.thread_id],
+                    )?;
+                }
+            } else {
+                conn.execute(
+                    "UPDATE message_deliveries SET awaiting_reply = NULL
+                     WHERE awaiting_reply IS NOT NULL AND recipient = ?1 AND event_id IN (
+                         SELECT event_id FROM board_events WHERE thread_id = ?2 AND actor_id = ?3 AND actor_kind = ?4)",
+                    params![sender_ref, saved.thread_id, recipient.1, recipient.0],
+                )?;
+            }
             conn.execute(
                 "INSERT OR IGNORE INTO message_deliveries
                  (event_id, recipient_kind, recipient_id, recipient, queued_at, delivered_at, read_at)
@@ -1171,5 +1193,94 @@ mod tests {
         db.mark_direct_delivered(&post.event_id, "room", "task:t1", "2026-01-01T00:00:06Z").unwrap();
         assert!(db.list_pending_room_wakes(50, "9999").unwrap().is_empty());
         assert_eq!(db.last_human_event_at("task:other").unwrap(), None);
+    }
+
+    #[test]
+    fn human_check_or_thumbs_up_reaction_settles_target_question_only() {
+        let db = Store::open_in_memory().unwrap();
+        db.create_agent(&worker("a")).unwrap();
+
+        let ask = |key: &str, at: &str| {
+            let mut extra = serde_json::Map::new();
+            extra.insert("kind".into(), serde_json::json!("question"));
+            db.send_direct_message_typed(
+                ("agent", "a"),
+                ("human", LOCAL_HUMAN_ID),
+                "ship now?",
+                key,
+                at,
+                None,
+                None,
+                None,
+                extra,
+            )
+            .unwrap()
+        };
+        let react = |target: &str, name: &str, key: &str, at: &str| {
+            let mut extra = serde_json::Map::new();
+            crate::coordination::typed::apply_reply_and_reaction(&mut extra, Some(target), Some(name));
+            db.send_direct_message_typed(
+                ("human", LOCAL_HUMAN_ID),
+                ("agent", "a"),
+                "",
+                key,
+                at,
+                None,
+                None,
+                None,
+                extra,
+            )
+            .unwrap()
+        };
+        let awaiting = |event_id: &str| -> Option<String> {
+            db.with_connection(|conn| {
+                conn.query_row(
+                    "SELECT awaiting_reply FROM message_deliveries WHERE event_id = ?1 AND recipient = 'human:local'",
+                    params![event_id],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap()
+        };
+
+        let q1 = ask("q1", "2026-01-01T00:00:00Z");
+        let q2 = ask("q2", "2026-01-01T00:00:01Z");
+        assert!(awaiting(&q1.event_id).is_some());
+        assert!(awaiting(&q2.event_id).is_some());
+
+        react(&q1.event_id, "question", "r-question", "2026-01-01T00:00:02Z");
+        assert!(awaiting(&q1.event_id).is_some(), "question reaction must not settle");
+
+        react(&q1.event_id, "eyes", "r-eyes", "2026-01-01T00:00:03Z");
+        assert!(awaiting(&q1.event_id).is_some(), "eyes reaction must not settle");
+
+        let check_ev = react(&q1.event_id, "check", "r-check", "2026-01-01T00:00:04Z");
+        assert_eq!(check_ev.payload["reply_to"], q1.event_id);
+        assert_eq!(check_ev.payload["reaction"], "check");
+        assert_eq!(check_ev.payload["kind"], "reaction");
+        assert_eq!(awaiting(&q1.event_id), None, "check clears awaiting_reply for target");
+        assert!(awaiting(&q2.event_id).is_some(), "other questions stay unsettled");
+
+        react(&q2.event_id, "thumbs_up", "r-up", "2026-01-01T00:00:05Z");
+        assert_eq!(awaiting(&q2.event_id), None, "thumbs_up also clears target");
+
+        let mut agent_react = serde_json::Map::new();
+        crate::coordination::typed::apply_reply_and_reaction(&mut agent_react, Some(&q1.event_id), Some("eyes"));
+        db.mark_direct_read("human", LOCAL_HUMAN_ID, &q1.thread_id, "2026-01-01T00:00:06Z")
+            .unwrap();
+        db.send_direct_message_typed(
+            ("agent", "a"),
+            ("human", LOCAL_HUMAN_ID),
+            "",
+            "agent-react",
+            "2026-01-01T00:00:07Z",
+            None,
+            None,
+            None,
+            agent_react,
+        )
+        .unwrap();
+        let human_threads = db.list_direct_threads("human", LOCAL_HUMAN_ID).unwrap();
+        assert_eq!(human_threads[0].unread, 0, "reactions do not count as unread for human");
     }
 }
