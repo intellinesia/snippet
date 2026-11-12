@@ -524,6 +524,10 @@ pub(super) fn record_question_answer(
         extra,
     ) {
         Ok(saved) => {
+            // The session already took this as its answer; a queued delivery would wake the agent a second time.
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = store.mark_direct_delivered(&saved.event_id, "agent", &agent_id, &now);
+            let _ = store.mark_direct_read_event(&saved.event_id, &now);
             crate::session::emit_device_event(json!({
                 "kind": "coordination_event",
                 "event": saved.clone(),
@@ -1353,6 +1357,14 @@ pub(super) async fn direct_answer(
         return api_error(
             StatusCode::CONFLICT,
             "no question is waiting in that session",
+        );
+    }
+    if latest_question_event(&d.store, session)
+        .is_some_and(|q| q.event_id != req.question_event_id.trim())
+    {
+        return api_error(
+            StatusCode::CONFLICT,
+            "that question is no longer the one waiting in that session",
         );
     }
     crate::speech::cancel_all("interrupted");

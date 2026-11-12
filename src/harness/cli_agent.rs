@@ -1047,23 +1047,25 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
                         if !vault.is_empty() {
                             vault.scrub_value(&mut value);
                         }
-                        if let Ok(mut served) = late_state.served.lock() {
-                            let queue = served.entry(late_name.clone()).or_default();
-                            queue.push_back(value.clone());
-                            if queue.len() > 32 {
-                                queue.pop_front();
-                            }
-                        }
                         let rendered = crate::llm::render_tool_result(&value);
                         if let Ok(mut late) = late_state.late.lock() {
                             late.push_back((late_name, rendered));
                         }
                     });
+                    let pending = format!("{name_for_record} is still running after 200s. Its result will be attached to your next tool result as <late_tool_result name=\"{name_for_record}\">. Carry on with other work; do not rerun it.");
+                    // Keeps `served` one entry per call so the next call to this tool records its own value.
+                    if let Ok(mut served) = state.served.lock() {
+                        let queue = served.entry(name_for_record.clone()).or_default();
+                        queue.push_back(json!({"schema_version": 1, "status": "success", "data": {"output": pending.clone()}}));
+                        if queue.len() > 32 {
+                            queue.pop_front();
+                        }
+                    }
                     return Some(json!({
                         "jsonrpc": "2.0",
                         "id": id,
                         "result": {
-                            "content": [{"type": "text", "text": format!("{name_for_record} is still running after 200s. Its result will be attached to your next tool result as <late_tool_result name=\"{name_for_record}\">. Carry on with other work; do not rerun it.")}],
+                            "content": [{"type": "text", "text": pending}],
                             "isError": false,
                         }
                     }));
@@ -4016,6 +4018,13 @@ mod devinrel_tests {
             .expect("late_tool_result block");
         assert!(late_text.contains("name=\"bash\""), "{late_text}");
         assert!(late_text.contains("late output"), "{late_text}");
+        let served: Vec<String> = state.served.lock().unwrap()["bash"]
+            .iter()
+            .map(|v| v["data"]["output"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(served.len(), 2, "one served entry per call: {served:?}");
+        assert!(served[0].contains("still running"), "{served:?}");
+        assert_eq!(served[1], "ok", "the second call records its own value: {served:?}");
     }
 
     fn get_request(method: &str, token: &str) -> Request {

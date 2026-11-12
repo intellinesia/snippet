@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,7 @@ struct UsageCache {
 }
 
 static REFRESHING: AtomicBool = AtomicBool::new(false);
+static LAST_ATTEMPT: AtomicI64 = AtomicI64::new(0);
 
 fn cache_path() -> PathBuf {
     crate::config::snippet_home().join("claude-code/usage.json")
@@ -66,10 +67,22 @@ pub fn refresh_if_stale(max_age_secs: i64) {
     if load_cache().is_some_and(|c| now - c.fetched_at < max_age_secs) {
         return;
     }
+    // A failing probe writes no cache; without this every /usage call would start another.
+    if now - LAST_ATTEMPT.load(Ordering::SeqCst) < max_age_secs {
+        return;
+    }
     if REFRESHING.swap(true, Ordering::SeqCst) {
         return;
     }
+    LAST_ATTEMPT.store(now, Ordering::SeqCst);
     std::thread::spawn(|| {
+        struct Done;
+        impl Drop for Done {
+            fn drop(&mut self) {
+                REFRESHING.store(false, Ordering::SeqCst);
+            }
+        }
+        let _done = Done;
         let ids = crate::accounts::ids("claude-code");
         let multi = ids.len() > 1;
         let mut accounts = HashMap::new();
@@ -93,7 +106,6 @@ pub fn refresh_if_stale(max_age_secs: i64) {
         if !accounts.is_empty() {
             store_cache(&UsageCache { fetched_at: chrono::Utc::now().timestamp(), accounts });
         }
-        REFRESHING.store(false, Ordering::SeqCst);
     });
 }
 
@@ -120,6 +132,11 @@ fn main_token() -> Option<String> {
 }
 
 fn cli_version() -> String {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(probe_cli_version).clone()
+}
+
+fn probe_cli_version() -> String {
     let probe = |bin: &Path| {
         std::process::Command::new(bin)
             .arg("--version")

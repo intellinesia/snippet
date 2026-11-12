@@ -202,6 +202,9 @@ pub(super) fn event_from_row(row: &rusqlite::Row<'_>) -> Result<CoordinationEven
     })
 }
 
+/// `(delivered_at, read_at)` for one event.
+pub type DeliveryMarks = (Option<String>, Option<String>);
+
 impl Store {
     /// Send one direct message, recording the conversation and the recipient's
     /// delivery state alongside the event.
@@ -767,7 +770,7 @@ impl Store {
     pub fn direct_deliveries(
         &self,
         event_ids: &[String],
-    ) -> Result<HashMap<String, (Option<String>, Option<String>)>, StoreError> {
+    ) -> Result<HashMap<String, DeliveryMarks>, StoreError> {
         if event_ids.is_empty() {
             return Ok(HashMap::new());
         }

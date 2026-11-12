@@ -465,9 +465,15 @@ mod tests {
             vec![(p1.event_id.clone(), "group".into(), "b".into())]
         );
 
-        db.post_group_message(&id, ("agent", "b"), "green", &[], Some(&p1.event_id), "k2", T1)
+        let green = db
+            .post_group_message(&id, ("agent", "b"), "green", &[], Some(&p1.event_id), "k2", T1)
             .unwrap();
         deliver(&db, T1, &mut delivered);
+        deliver(&db, "2026-01-01T00:00:15+00:00", &mut delivered);
+        assert!(
+            !delivered.iter().any(|(e, _, _)| e == &green.event_id),
+            "an agent's unmentioned reply wakes nobody: {delivered:?}"
+        );
 
         let p2 = db
             .post_group_message(&id, ("human", "human"), "and the tests?", &[], None, "k3", T2)

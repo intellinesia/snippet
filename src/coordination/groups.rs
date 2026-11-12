@@ -403,7 +403,8 @@ impl Store {
                     }
                 }
             }
-            let immediate: Vec<String> = if !mentioned.is_empty() {
+            // An agent's post wakes only whom it names; a lead or deferred fallback would let agents wake each other forever.
+            let immediate: Vec<String> = if !mentioned.is_empty() || poster_agent.is_some() {
                 mentioned
             } else {
                 match resolve_lead(&tx, thread_id, &agents)? {
@@ -413,7 +414,7 @@ impl Store {
             };
             let deferred: Vec<String> = agents
                 .iter()
-                .filter(|a| poster_agent != Some(a.as_str()) && !immediate.contains(a))
+                .filter(|a| poster_agent.is_none() && !immediate.contains(a))
                 .cloned()
                 .collect();
 
@@ -684,20 +685,16 @@ mod tests {
     }
 
     #[test]
-    fn the_posters_own_lead_post_wakes_nobody_immediately() {
+    fn an_agents_unmentioned_post_wakes_nobody() {
         let (db, id) = three_agent_group();
         db.set_group_lead(&id, "b").unwrap();
-        db.post_group_message(&id, ("agent", "b"), "taking this", &[], None, "k1", T0)
+        db.post_group_message(&id, ("agent", "a"), "taking this", &[], None, "k1", T0)
             .unwrap();
         assert!(pending(&db, T0).is_empty());
-        let later = kinds(&pending(&db, T2));
-        assert_eq!(
-            later,
-            vec![
-                ("group_deferred".into(), "a".into()),
-                ("group_deferred".into(), "c".into()),
-            ]
-        );
+        assert!(pending(&db, T2).is_empty());
+        db.post_group_message(&id, ("agent", "a"), "@c over to you", &["c".into()], None, "k2", T1)
+            .unwrap();
+        assert_eq!(kinds(&pending(&db, T2)), vec![("group".into(), "c".into())]);
     }
 
     #[test]

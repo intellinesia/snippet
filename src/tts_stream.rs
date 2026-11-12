@@ -1122,7 +1122,8 @@ pub async fn settle(max: Duration) {
 
 const MEMO_DEVICE: &str = "voice-memo";
 const MEMO_TIMEOUT: Duration = Duration::from_secs(300);
-static MEMO_TURN: AtomicI64 = AtomicI64::new(1);
+// Negative so memo turns never match an ambient_turns row.
+static MEMO_TURN: AtomicI64 = AtomicI64::new(-1);
 static MEMO_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn wav(pcm: &[u8]) -> Vec<u8> {
@@ -1180,7 +1181,7 @@ pub async fn render_memo(text: &str) -> Result<(Vec<u8>, i64), String> {
     let (tx, rx) = oneshot::channel();
     let sink = Arc::new(Mutex::new(Vec::new()));
     let turn = Arc::new(StreamTurn {
-        turn: MEMO_TURN.fetch_add(1, Ordering::SeqCst),
+        turn: MEMO_TURN.fetch_sub(1, Ordering::SeqCst),
         created: Instant::now(),
         device: MEMO_DEVICE.into(),
         session: s.clone(),
@@ -1200,6 +1201,9 @@ pub async fn render_memo(text: &str) -> Result<(Vec<u8>, i64), String> {
             if s.provider == Provider::Rime && turn.inner.lock().unwrap().ctx_open {
                 s.send(json!({"contextId": ctx_id(turn.turn), "cancel": {}}));
             }
+            // A late frame for this text must not reach the next memo; it gets a fresh connection.
+            s.st.lock().unwrap().retired = true;
+            let _ = s.cmd.send(Cmd::Close);
             Err("speech synthesis timed out; send the text instead".into())
         }
     }
