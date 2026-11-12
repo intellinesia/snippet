@@ -1004,6 +1004,53 @@ pub(crate) fn lane_tool_registry(
     tools
 }
 
+pub const WORK_TOOL_BUDGET_BYTES: usize = 28_600;
+pub const MISSION_CONTROL_TOOL_BUDGET_BYTES: usize = 58_350;
+pub const DESK_TOOL_BUDGET_BYTES: usize = 14_300;
+pub const LANE_TOOL_BUDGET_BYTES: usize = 9_500;
+
+pub fn definition_byte_size(d: &NativeToolDefinition) -> usize {
+    d.name.len() + d.description.len() + d.input_schema.to_string().len()
+}
+
+pub fn role_tool_definitions(
+    role: &str,
+    custom_dir: Option<PathBuf>,
+) -> Option<(Vec<NativeToolDefinition>, usize)> {
+    let key = Some("k".to_string());
+    let with_meta = |mut defs: Vec<NativeToolDefinition>, lanes: bool| {
+        defs.extend(crate::meta::conversation_meta_definitions_for(false, lanes));
+        defs
+    };
+    match role {
+        "work" => Some((
+            with_meta(crate::session::work_tool_registry(key, custom_dir).definitions(), true),
+            WORK_TOOL_BUDGET_BYTES,
+        )),
+        "mission_control" => Some((
+            with_meta(crate::session::mission_control_tool_registry(key).definitions(), true),
+            MISSION_CONTROL_TOOL_BUDGET_BYTES,
+        )),
+        "desk" => Some((
+            crate::session::coordination_tool_registry(key).definitions(),
+            DESK_TOOL_BUDGET_BYTES,
+        )),
+        "lane" => {
+            let (progress_tx, _rx) = mpsc::unbounded_channel();
+            let parent = MessageParent {
+                lane_id: "lane-1".into(),
+                progress_tx,
+                mailbox: Arc::new(LaneMailbox::default()),
+            };
+            Some((
+                lane_tool_registry(key, None, parent, false).definitions(),
+                LANE_TOOL_BUDGET_BYTES,
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// Profiles a lane tries in order: a pinned profile then the parent's; unpinned,
 /// the parent's (`None` when unknown: the factory default), then the routing chain.
 fn lane_route(
@@ -1450,20 +1497,8 @@ mod tests {
     /// above today's sizes; lower them as descriptions get tighter.
     #[test]
     fn tool_definition_budget_per_role() {
-        let key = Some("k".to_string());
-        let (progress_tx, _rx) = mpsc::unbounded_channel();
-        let parent = MessageParent { lane_id: "lane-1".into(), progress_tx, mailbox: Arc::new(LaneMailbox::default()) };
-        let with_meta = |mut defs: Vec<crate::llm::NativeToolDefinition>, lanes: bool| {
-            defs.extend(crate::meta::conversation_meta_definitions_for(false, lanes));
-            defs
-        };
-        let roles = [
-            ("work", with_meta(crate::session::work_tool_registry(key.clone(), None).definitions(), true), 27_850),
-            ("mission_control", with_meta(crate::session::mission_control_tool_registry(key.clone()).definitions(), true), 57_600),
-            ("desk", crate::session::coordination_tool_registry(key.clone()).definitions(), 13_550),
-            ("lane", lane_tool_registry(key.clone(), None, parent, false).definitions(), 9_500),
-        ];
-        for (role, defs, cap) in roles {
+        for role in ["work", "mission_control", "desk", "lane"] {
+            let (defs, cap) = role_tool_definitions(role, None).unwrap();
             let sizes = tool_bytes(&defs);
             let total: usize = sizes.iter().map(|s| s.1).sum();
             let top: Vec<String> = sizes.iter().take(15).map(|(n, b)| format!("{n} {b}")).collect();

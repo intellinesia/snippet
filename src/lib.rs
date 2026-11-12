@@ -29,6 +29,7 @@ pub mod conversations;
 pub mod doctor;
 pub mod gemini;
 pub mod harness;
+pub mod harness_map;
 pub mod history_archive;
 pub mod inline;
 mod lane_log;

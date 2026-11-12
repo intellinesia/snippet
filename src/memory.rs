@@ -22,15 +22,15 @@ use std::sync::Mutex;
 
 pub const ENTRY_FILE: &str = "MEMORY.md";
 const INDEX_HEADING: &str = "## Index";
-const ENTRY_PROMPT_CHARS: usize = 4_000;
+pub const ENTRY_PROMPT_CHARS: usize = 4_000;
 const ARCHIVE_DIR: &str = "session-memory-archive";
-const MAX_ENTRY_CHARS: usize = 400;
+pub const MAX_ENTRY_CHARS: usize = 400;
 const IGNORED: &[&str] = &[".lock", ".tmp-*", ".snippet/"];
 pub const CONSOLIDATE_PREFIX: &str = "Consolidate:";
 
 static GIT_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeKind {
     Global,

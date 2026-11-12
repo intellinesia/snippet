@@ -152,7 +152,7 @@ pub struct SpecializedAgentPromptContext<'a> {
 /// cannot disagree about how the agent is introduced to itself.
 fn identity_overlay(agent_id: &str, identity: &str) -> String {
     format!(
-        "## Your identity: {agent_id}\n\nThe identity below sets your expertise, judgment and voice. Everything above still governs how you work, talk and finish.\n\n{identity}\n",
+        "## Your identity: {agent_id}\n\nThe identity below sets your expertise, judgment and voice. Everything above still governs how you work, talk and finish.\n\n{identity}\n\n## Improving yourself\n\nAfter a task, judge the run against your playbook for that kind of work and update the playbook in your agent memory with what held up or failed. When a lesson changes how your role should work, send Mission Control a proposed identity change rather than editing your identity alone. Call `harness_map` whenever you are unsure what you are made of or how you reach the user.\n",
         identity = identity.trim(),
     )
 }
@@ -189,4 +189,30 @@ pub fn specialized_coordination_prompt(context: SpecializedAgentPromptContext<'_
         base = coordination_prompt(context.context),
         overlay = identity_overlay(context.agent_id, context.identity),
     )
+}
+
+#[cfg(test)]
+mod self_improvement_tests {
+    use super::*;
+
+    #[test]
+    fn identity_overlay_includes_bounded_self_improvement_paragraph() {
+        let ctx = PromptContext::default();
+        let prompt = specialized_agent_system_prompt(SpecializedAgentPromptContext {
+            agent_id: "researcher",
+            identity: "# Researcher\n\nFinds primary sources.",
+            context: &ctx,
+        });
+        let section = prompt
+            .split("## Improving yourself\n\n")
+            .nth(1)
+            .expect("missing Improving yourself section")
+            .trim();
+        assert!(section.contains("playbook"));
+        assert!(section.contains("Mission Control"));
+        assert!(section.contains("harness_map"));
+        assert!(!section.contains("\n- ") && !section.contains("\n* "));
+        let sentences = section.split('.').filter(|s| !s.trim().is_empty()).count();
+        assert!(sentences <= 4, "expected at most 4 sentences, got {sentences}: {section}");
+    }
 }

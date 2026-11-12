@@ -454,6 +454,87 @@ pub(crate) fn apply_outbound_human(
     decision
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn deliver_channel(
+    store: &Store,
+    sender: (&str, &str),
+    raw_channel: &str,
+    body: &str,
+    origin_session: Option<&str>,
+    origin_lane: Option<&str>,
+    about_task: Option<&str>,
+    mut extra: Map<String, Value>,
+) -> Result<crate::coordination::types::CoordinationEvent, String> {
+    let channel = Channel::parse(raw_channel).ok_or_else(|| {
+        format!(
+            "unsupported channel `{raw_channel}`; supported targets are `human`, an agent id, `channel:chat`, or `channel:push`"
+        )
+    })?;
+    match channel {
+        Channel::Chat | Channel::Push => {}
+        Channel::Voice | Channel::TaskRoom => {
+            return Err(format!(
+                "channel `{}` has no direct delivery path; supported targets are `human`, an agent id, `channel:chat`, or `channel:push`",
+                channel.as_str()
+            ));
+        }
+    }
+    let cfg = load(store, sender.1);
+    if channel == Channel::Push {
+        let enabled = cfg
+            .channels
+            .get(&Channel::Push)
+            .map(|s| s.enabled)
+            .unwrap_or(true);
+        if !enabled {
+            return Err(
+                "channel `push` is disabled in reach policy; supported active targets are `human`, an agent id, or `channel:chat`".into(),
+            );
+        }
+        let quiet_gated = cfg
+            .channels
+            .get(&Channel::Push)
+            .map(|s| s.quiet_hours)
+            .unwrap_or(true);
+        let (quiet, on_call) = crate::mission_autonomy::quiet_and_call_in(store);
+        let title = store
+            .get_agent(sender.1)
+            .ok()
+            .flatten()
+            .map(|a| a.display_name)
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| sender.1.to_string());
+        if quiet_gated && (quiet || on_call) {
+            let _ = crate::mission_autonomy::hold_ping_in(store, sender.1, &title, body, "result");
+            extra.insert("held".into(), json!(["push"]));
+        } else {
+            let _ = crate::mission_autonomy::send_ping_in(store, sender.1, &title, body, "result", false);
+        }
+    }
+    extra.insert("channel".into(), json!(channel.as_str()));
+    extra.entry("kind".to_string()).or_insert_with(|| json!("result"));
+    let key = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let saved = store
+        .send_direct_message_typed(
+            sender,
+            ("human", crate::coordination::LOCAL_HUMAN_ID),
+            body,
+            &key,
+            &now,
+            origin_session,
+            origin_lane,
+            about_task,
+            extra,
+        )
+        .map_err(|e| format!("send channel message: {e}"))?;
+    crate::session::emit_device_event(json!({
+        "kind": "coordination_event",
+        "event": saved.clone(),
+    }));
+    Ok(saved)
+}
+
 pub fn view(store: &Store, agent_id: &str) -> Value {
     let reach = load(store, agent_id);
     let (quiet, on_call) = crate::mission_autonomy::quiet_and_call_in(store);
