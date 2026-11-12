@@ -402,6 +402,10 @@ fn book() -> std::sync::MutexGuard<'static, CallBook> {
     BOOK.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
 }
 
+pub(crate) fn has_active_call() -> bool {
+    book().active().is_some()
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }

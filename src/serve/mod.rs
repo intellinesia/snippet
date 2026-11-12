@@ -43,6 +43,7 @@ mod assembly;
 mod listener;
 mod ambient_watch;
 mod call_detect;
+pub(crate) mod ambient_room;
 pub(crate) mod call_track;
 mod recording_routes;
 mod speakers;
@@ -906,6 +907,7 @@ pub async fn run_serve(
     // Register the built-in agents before anything can address them.
     mission_control::register_builtin_agents(&daemon);
     ambient_routes::resume(daemon.clone());
+    ambient_room::init(daemon.clone());
     call_track::recover(daemon.clone());
     call_track::sweep_loop(daemon.clone());
     ambient_routes::warm_voice(daemon.clone());

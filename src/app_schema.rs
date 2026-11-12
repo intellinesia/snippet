@@ -200,6 +200,43 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              entry_json TEXT NOT NULL,
              updated_at INTEGER NOT NULL
          );
+         CREATE TABLE IF NOT EXISTS ambient_room (
+             device TEXT PRIMARY KEY,
+             updated_at INTEGER NOT NULL,
+             present TEXT NOT NULL DEFAULT '',
+             topic TEXT NOT NULL DEFAULT '',
+             activity TEXT NOT NULL DEFAULT '',
+             digest TEXT NOT NULL DEFAULT '',
+             delivered_at INTEGER NOT NULL DEFAULT 0,
+             topic_updated_at INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE TABLE IF NOT EXISTS ambient_room_lines (
+             id INTEGER PRIMARY KEY,
+             device TEXT NOT NULL,
+             at_ms INTEGER NOT NULL,
+             speaker TEXT NOT NULL DEFAULT '',
+             text TEXT NOT NULL,
+             score REAL NOT NULL,
+             event_ids TEXT NOT NULL DEFAULT '',
+             digested INTEGER NOT NULL DEFAULT 0,
+             attempts INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE INDEX IF NOT EXISTS ambient_room_lines_device
+             ON ambient_room_lines(device, digested, at_ms);
+         CREATE TABLE IF NOT EXISTS ambient_room_items (
+             id INTEGER PRIMARY KEY,
+             device TEXT NOT NULL,
+             created_at INTEGER NOT NULL,
+             kind TEXT NOT NULL,
+             text TEXT NOT NULL,
+             rank INTEGER NOT NULL DEFAULT 0,
+             remember INTEGER NOT NULL DEFAULT 0,
+             source TEXT NOT NULL DEFAULT '',
+             state TEXT NOT NULL DEFAULT 'pending',
+             asked_at INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE INDEX IF NOT EXISTS ambient_room_items_device
+             ON ambient_room_items(device, kind, state);
 "#,
     )
 }
