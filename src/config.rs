@@ -936,7 +936,7 @@ pub fn provider_supported(provider: &str) -> bool {
 /// snapshot. So this exists to let the Usage screen distinguish "cannot report"
 /// from "hasn't reported yet" instead of one generic empty state for both.
 pub fn provider_reports_rate_limits(provider: &str) -> bool {
-    matches!(provider, "chatgpt" | "claude-code" | "antigravity")
+    matches!(provider, "chatgpt" | "claude-code" | "antigravity" | "devin")
 }
 
 fn default_provider() -> String {

@@ -1343,9 +1343,56 @@ async fn usage_summary(State(d): State<Shared>, Query(q): Query<UsageQuery>) -> 
             .and_then(|id| crate::accounts::usage(provider, &id))
             .filter(|rate| rate.is_reported())
     };
-    let chatgpt_rate = pooled("chatgpt").or_else(|| crate::chatgpt::read_global_usage().filter(|rate| rate.is_reported()));
-    let claude_rate = pooled("claude-code").or_else(|| crate::harness::claude_rate_limits().filter(|rate| rate.is_reported()));
+    crate::claude_usage::refresh_if_stale(300);
+    crate::devin_usage::refresh_if_stale(300);
     crate::antigravity::refresh_quota_if_stale(300);
+    // With several pooled accounts, every account's recorded snapshot is shown,
+    // prefixed by its label, instead of only the active account's.
+    let labelled_accounts = |provider: &str| -> Vec<crate::llm::RateLimitSnapshot> {
+        let ids = crate::accounts::ids(provider);
+        if ids.len() < 2 {
+            return Vec::new();
+        }
+        ids.into_iter()
+            .filter_map(|id| {
+                let mut snap = crate::accounts::usage(provider, &id).filter(|s| s.is_reported())?;
+                let acct = crate::accounts::label(provider, &id);
+                snap.label = Some(match snap.label.take() {
+                    Some(existing) if !existing.trim().is_empty() => format!("{acct} · {existing}"),
+                    _ => acct,
+                });
+                Some(snap)
+            })
+            .collect()
+    };
+    let chatgpt_rates: Vec<crate::llm::RateLimitSnapshot> = {
+        let snaps = labelled_accounts("chatgpt");
+        if snaps.is_empty() {
+            pooled("chatgpt")
+                .or_else(|| crate::chatgpt::read_global_usage().filter(|rate| rate.is_reported()))
+                .into_iter()
+                .collect()
+        } else {
+            snaps
+        }
+    };
+    let claude_rates: Vec<crate::llm::RateLimitSnapshot> = {
+        let snaps = crate::claude_usage::cached();
+        if snaps.is_empty() {
+            let snaps = labelled_accounts("claude-code");
+            if snaps.is_empty() {
+                pooled("claude-code")
+                    .or_else(|| crate::harness::claude_rate_limits().filter(|rate| rate.is_reported()))
+                    .into_iter()
+                    .collect()
+            } else {
+                snaps
+            }
+        } else {
+            snaps
+        }
+    };
+    let devin_rates = crate::devin_usage::cached();
     let agy_quota = crate::antigravity::cached_quota().map(|(_, groups)| groups).unwrap_or_default();
     let mut order: Vec<String> = Vec::new();
     let mut providers: HashMap<String, serde_json::Value> = HashMap::new();
@@ -1353,8 +1400,9 @@ async fn usage_summary(State(d): State<Shared>, Query(q): Query<UsageQuery>) -> 
         let entry = providers.entry(row.provider.clone()).or_insert_with(|| {
             order.push(row.provider.clone());
             let rate_limits: Vec<serde_json::Value> = match row.provider.as_str() {
-                "chatgpt" => chatgpt_rate.iter().map(|r| serde_json::to_value(r).unwrap_or_default()).collect(),
-                "claude-code" => claude_rate.iter().map(|r| serde_json::to_value(r).unwrap_or_default()).collect(),
+                "chatgpt" => chatgpt_rates.iter().map(|r| serde_json::to_value(r).unwrap_or_default()).collect(),
+                "claude-code" => claude_rates.iter().map(|r| serde_json::to_value(r).unwrap_or_default()).collect(),
+                "devin" => devin_rates.iter().map(|r| serde_json::to_value(r).unwrap_or_default()).collect(),
                 "antigravity" => agy_quota.iter().map(|r| serde_json::to_value(r).unwrap_or_default()).collect(),
                 _ => Vec::new(),
             };
