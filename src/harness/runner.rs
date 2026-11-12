@@ -8,6 +8,7 @@ impl CodingHarness {
             context,
             written_messages: std::sync::atomic::AtomicUsize::new(0),
             written_events: std::sync::atomic::AtomicUsize::new(0),
+            presence: Default::default(),
         }
     }
 
@@ -181,6 +182,11 @@ impl CodingHarness {
         }
 
         loop {
+            match state.status {
+                HarnessStatus::Running => {}
+                HarnessStatus::WaitingForInput => self.presence("waiting", "user"),
+                _ => self.presence("idle", ""),
+            }
             // Apply any input buffered during a step. A message that arrived mid- or
             // post-turn wakes the loop so the next step addresses it. Moving this
             // before the idle-queue flush ensures mid-run queued messages land in
@@ -443,6 +449,10 @@ impl CodingHarness {
                             TurnEndKind::Ask => HarnessStatus::WaitingForInput,
                             TurnEndKind::Complete => HarnessStatus::Idle,
                         };
+                        match state.status {
+                            HarnessStatus::WaitingForInput => self.presence("waiting", "user"),
+                            _ => self.presence("idle", ""),
+                        }
                         if matches!(kind, TurnEndKind::Complete) {
                             self.emit_turn_changes(&mut state, &mut vars).await;
                         }
@@ -577,6 +587,7 @@ impl CodingHarness {
                         total: lane_approvals.len(),
                     });
                     state.status = HarnessStatus::WaitingForInput;
+                    self.presence("waiting", "user");
                     lane_prompt_shown = true;
                     self.persist(&mut state, &lanes).await?;
                 }
@@ -742,6 +753,7 @@ impl CodingHarness {
             }
         }
 
+        self.presence("idle", "");
         Ok(state)
     }
 }

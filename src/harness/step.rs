@@ -60,10 +60,12 @@ impl CodingHarness {
         let request_messages = self.build_request(state, vars, model).await;
 
         self.lane_progress("model", MODEL_ACTIVITY_TEXT);
+        self.presence("thinking", "");
         // Clear any leftover live-stream text before this turn streams into it;
         // the sink is present only for the interactive conversation.
         if let Some(sink) = sink {
             StreamBuffer::clear(sink);
+            StreamBuffer::set_voice_turn(sink, voice_turn(&request_messages));
         }
 
         let mut output = match self
@@ -216,11 +218,34 @@ impl CodingHarness {
                 crate::ambient::mark_last("llm_request");
                 crate::ambient::working(300);
             }
-            let error = match model
-                .generate(request_messages, definitions, false, sink.cloned())
-                .await
-            {
+            let generated = {
+                let generate = model.generate(request_messages, definitions, false, sink.cloned());
+                tokio::pin!(generate);
+                let mut changes = sink.and_then(StreamBuffer::changes);
+                loop {
+                    tokio::select! {
+                        result = &mut generate => break result,
+                        woke = async {
+                            match changes.as_mut() {
+                                Some(rx) => rx.changed().await.is_ok(),
+                                None => false,
+                            }
+                        }, if changes.is_some() => {
+                            if !woke {
+                                changes = None;
+                            } else if sink.is_some_and(|s| s.lock().is_ok_and(|b| !b.text.trim().is_empty())) {
+                                self.presence("typing", "");
+                                changes = None;
+                            }
+                        }
+                    }
+                }
+            };
+            let error = match generated {
                 Ok(output) => {
+                    if output.content_text.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+                        self.presence("typing", "");
+                    }
                     if voice {
                         crate::ambient::mark_last("llm_done");
                     }

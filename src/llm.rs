@@ -163,6 +163,9 @@ pub struct StreamBuffer {
     /// Whether the buffered text is ready for the UI. Text is held back until
     /// the harness knows whether the model turn is a final answer or a tool turn.
     pub text_visible: bool,
+    /// The turn answers an ambient voice turn; clients hold its text as thinking.
+    /// Set per turn by the harness, not reset by `clear` (providers clear mid-turn).
+    pub voice_turn: bool,
     /// Reasoning/thinking tokens, when the provider returns them — shown dimmed,
     /// separate from the answer. Best-effort: empty for models that don't emit it.
     pub thinking: String,
@@ -236,6 +239,12 @@ impl StreamBuffer {
             if let Some(tap) = &buf.tool_tap {
                 let _ = tap.send(ToolArgEvent::Reset);
             }
+        }
+    }
+
+    pub fn set_voice_turn(handle: &StreamHandle, voice: bool) {
+        if let Ok(mut buf) = handle.lock() {
+            buf.voice_turn = voice;
         }
     }
 

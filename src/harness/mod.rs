@@ -919,6 +919,7 @@ pub struct CodingHarness {
     /// rewriting the transcript.
     pub(super) written_messages: std::sync::atomic::AtomicUsize,
     pub(super) written_events: std::sync::atomic::AtomicUsize,
+    presence: std::sync::Mutex<presence::Presence>,
 }
 
 
@@ -934,6 +935,7 @@ mod live_context;
 mod memory_reflection;
 mod meta_tools;
 mod persistence;
+mod presence;
 pub(crate) use persistence::ensure_snippet_gitignored;
 mod prompts;
 mod runner;
