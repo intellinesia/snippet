@@ -302,6 +302,23 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              ON agent_board(agent_id, workspace);
          CREATE INDEX IF NOT EXISTS tasks_goal ON tasks(goal_id);
          CREATE INDEX IF NOT EXISTS task_agents_session ON task_agents(work_session_id);
+
+         -- Group threads: board threads with scope 'group'. The meta row holds
+         -- the lead agent; replies are claimed per post so one agent answers a
+         -- post at most once.
+         CREATE TABLE IF NOT EXISTS group_meta (
+             thread_id TEXT PRIMARY KEY REFERENCES board_threads(id) ON DELETE CASCADE,
+             lead_agent TEXT,
+             created_by TEXT NOT NULL,
+             created_at TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS group_replies (
+             post_event_id TEXT NOT NULL,
+             agent_id TEXT NOT NULL,
+             reply_event_id TEXT NOT NULL,
+             claimed_at TEXT NOT NULL,
+             PRIMARY KEY (post_event_id, agent_id)
+         );
 "#,
     )
 }

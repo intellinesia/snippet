@@ -12,6 +12,7 @@ pub mod direct;
 pub mod typed;
 mod events;
 pub mod goals;
+pub mod groups;
 pub mod handoffs;
 pub mod last_message;
 pub use last_message::LastMessage;
@@ -35,6 +36,7 @@ pub use direct::{
 };
 pub use agents::AgentRemoval;
 pub use goals::{Goal, GoalCriterion, GoalStatus};
+pub use groups::{GroupMember, GroupSummary};
 pub use task_state::{Decision, PendingReport, StatePatch, TaskState, VerifyMethod, VerifyMode};
 pub use identity::{AgentHome, IdentityError};
 pub use tasks::{offer_marker, progress_stamp, stall_marker_for_current_spell, stall_threshold_minutes, stalled_minutes,

@@ -68,6 +68,7 @@ mod mission_control;
 pub use mission_control::{mission_error, validated_owned_paths};
 mod recurring;
 mod review;
+mod groups;
 mod stall;
 mod goals;
 mod agent_wakes;
@@ -972,7 +973,9 @@ pub async fn run_serve(
     }
     {
         let d = daemon.clone();
+        let groups_d = d.clone();
         tokio::spawn(async move { direct::direct_dispatch_loop(d).await });
+        tokio::spawn(async move { groups::group_dispatch_loop(groups_d).await });
         tokio::spawn(crate::bg::watch_loop());
     }
     {
@@ -1024,6 +1027,7 @@ pub async fn run_serve(
         .route("/agents/{agent_id}/reach", get(get_agent_reach).put(put_agent_reach))
         .route("/agents/{agent_id}", axum::routing::delete(delete_agent))
         .merge(coordination::router())
+        .merge(groups::router())
         .route(
             "/coordination/direct/messages",
             get(direct::direct_list_messages).post(direct::direct_send_message),
