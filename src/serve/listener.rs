@@ -600,10 +600,12 @@ impl Listener {
             let device = self.device.clone();
             let sent = super::autonomy::mission_control_inputs();
             let guard = super::attention::classify_begin(&self.device);
+            let probe_seq = crate::tts_stream::probe_begin(&device);
             tokio::spawn(async move {
                 let _guard = guard;
                 let verdict = super::ambient_watch::classify_live(&d, &device, &clean_text, during_playback, live_vp).await;
                 let go = super::ambient_router::should_interrupt(&d, &verdict, &clean_text);
+                crate::tts_stream::probe_verdict(&device, probe_seq, go);
                 let mut do_interrupt = false;
                 {
                     let mut s = me.inner.lock().unwrap();

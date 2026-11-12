@@ -151,6 +151,8 @@ pub enum ToolArgEvent {
     Start { call_id: String, name: String },
     Delta { call_id: String, chunk: String },
     End { call_id: String },
+    /// Visible answer text the model is streaming (voice turns only).
+    Text { chunk: String },
     Reset,
 }
 
@@ -219,6 +221,9 @@ impl StreamBuffer {
         if let Ok(mut buf) = handle.lock() {
             buf.text.push_str(delta);
             buf.changed.signal();
+            if buf.voice_turn && let Some(tap) = &buf.tool_tap {
+                let _ = tap.send(ToolArgEvent::Text { chunk: delta.to_string() });
+            }
         }
     }
 
