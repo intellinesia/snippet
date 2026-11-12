@@ -168,7 +168,7 @@ pub fn is_limit_error(message: &str) -> bool {
         || m.contains("rate limit")
         || m.contains("rate_limit")
         || m.contains("usage limit")
-        || m.contains("hit your limit")
+        || (m.contains("hit your") && m.contains("limit"))
         || m.contains("limit reached")
         || m.contains("too many requests")
         || m.contains("resource_exhausted")
