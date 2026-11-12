@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use super::ambient_watch::{self, Verdict};
+use crate::ambient_tuning::Tuning;
 
-const HOLD: Duration = Duration::from_millis(1600);
 const FAST_HOLD: Duration = Duration::from_millis(150);
 const ACTIVITY_HOLD: Duration = Duration::from_secs(30);
 const STALL: Duration = Duration::from_millis(2000);
@@ -18,9 +18,6 @@ const MERGE_GAP: f64 = 1.5;
 const CONTINUED_GAP: f64 = 4.0;
 const MAX_PARTS: usize = 5;
 const MAX_SPAN: f64 = 30.0;
-const PASSIVE_THRESHOLD: f64 = 0.6;
-const PINNED_THRESHOLD: f64 = 0.5;
-const LIVE_REPLY_THRESHOLD: f64 = 0.5;
 const VETO_THRESHOLD: f64 = 0.6;
 const MATCH_THRESHOLD: f64 = 0.7;
 
@@ -185,8 +182,8 @@ async fn actor(d: Shared, device: String, mut rx: mpsc::UnboundedReceiver<Msg>) 
             match buffered.remove(&first) {
                 Some(Some(part)) => accept(&d, &device, part, &mut turn, &mut deadline, &mut last, &mut pending).await,
                 Some(None) => {
-                    if announced.is_empty() && !turn.is_empty() && deadline.is_some_and(|t| t > Instant::now() + HOLD) {
-                        deadline = Some(Instant::now() + HOLD);
+                    if announced.is_empty() && !turn.is_empty() && deadline.is_some_and(|t| t > Instant::now() + hold_for(&device)) {
+                        deadline = Some(Instant::now() + hold_for(&device));
                     }
                 }
                 None => {}
@@ -232,7 +229,7 @@ async fn accept(
             turn[i] = part;
             classify_turn(d, device, turn, pending);
             let live = crate::ambient::conversation().is_some() || crate::tts_stream::busy_for(device);
-            *deadline = Some(Instant::now() + if live { FAST_HOLD } else { HOLD });
+            *deadline = Some(Instant::now() + if live { FAST_HOLD } else { hold_for(device) });
             return;
         }
         if let Some(l) = last.as_mut().filter(|l| l.ids.contains(&revised)) {
@@ -263,7 +260,7 @@ async fn accept(
         }
     let mergeable = turn.last().is_some_and(|prev| {
         let gap = part.started - prev.ended;
-        let allowed = if part.continued || deadline.is_some_and(|t| t > Instant::now() + HOLD) { CONTINUED_GAP } else { MERGE_GAP };
+        let allowed = if part.continued || deadline.is_some_and(|t| t > Instant::now() + hold_for(device)) { CONTINUED_GAP } else { MERGE_GAP };
         let same_stt_speaker = match (prev.stt_speaker.as_deref(), part.stt_speaker.as_deref()) {
             (Some(a), Some(b)) => a == b,
             _ => true,
@@ -303,7 +300,7 @@ async fn accept(
         flush(d, device, parts, true, last, pending.take()).await;
     } else {
         classify_turn(d, device, turn, pending);
-        let hold = if live { FAST_HOLD } else { HOLD };
+        let hold = if live { FAST_HOLD } else { hold_for(device) };
         *deadline = Some(Instant::now() + hold);
     }
 }
@@ -336,21 +333,28 @@ fn mark_verdict(d: &Shared, ids: &[String], v: &Verdict, delivered: bool) {
     });
 }
 
-fn decide(live: bool, pinned: bool, v: &Verdict, wake: bool, expecting: bool) -> (bool, bool) {
+fn hold_for(device: &str) -> Duration {
+    crate::ambient_tuning::current(device).hold()
+}
+
+fn decide(live: bool, pinned: bool, v: &Verdict, wake: bool, expecting: bool, t: &Tuning) -> (bool, bool) {
     if !v.kept() {
+        return (false, false);
+    }
+    if t.only_my_voice && !wake && v.user_voice().is_some_and(|u| u < 0.5) {
         return (false, false);
     }
     let matched = expecting && v.matches >= MATCH_THRESHOLD;
     let clear = v.veto() < VETO_THRESHOLD;
     let wake = wake && v.veto() < 0.8;
     if live {
-        return (wake || matched || (clear && v.addressed >= LIVE_REPLY_THRESHOLD), false);
+        return (wake || matched || (clear && v.addressed >= t.live_reply_threshold), false);
     }
     if pinned {
-        let go = wake || matched || (clear && v.addressed >= PINNED_THRESHOLD);
+        let go = wake || matched || (clear && v.addressed >= t.pinned_threshold);
         return (go, go);
     }
-    (wake || matched || (clear && v.addressed >= PASSIVE_THRESHOLD), false)
+    (wake || matched || (clear && v.addressed >= t.address_threshold), false)
 }
 
 pub(super) fn should_interrupt(d: &Shared, v: &Verdict, text: &str) -> bool {
@@ -361,7 +365,8 @@ pub(super) fn should_interrupt(d: &Shared, v: &Verdict, text: &str) -> bool {
     let wake = ambient_watch::wake_word(text, &phrases);
     let expecting = crate::ambient::expectation().is_some();
     let pinned = crate::ambient::is_pinned();
-    decide(true, pinned, v, wake, expecting).0
+    let tuning = crate::ambient_tuning::current(&crate::ambient_tuning::lease_device());
+    decide(true, pinned, v, wake, expecting, &tuning).0
 }
 
 async fn flush(d: &Shared, device: &str, parts: Vec<Part>, fast: bool, last: &mut Option<Flushed>, pending: Option<Pending>) {
@@ -373,10 +378,12 @@ async fn flush(d: &Shared, device: &str, parts: Vec<Part>, fast: bool, last: &mu
         super::ambient_routes::mark(last, "flush");
     }
     let text = parts.iter().map(|p| p.text.trim()).collect::<Vec<_>>().join(" ");
-    let (phrases, ttl) = {
+    let (phrases, cfg_ttl) = {
         let c = d.config.lock().unwrap();
         (c.ambient.wake_phrases.clone(), c.ambient.conversation_timeout_secs)
     };
+    let tuning = crate::ambient_tuning::current(device);
+    let ttl = if tuning.conversation_ttl_s > 0 { tuning.conversation_ttl_s } else { cfg_ttl };
     let holder = crate::ambient::lease_holder().map(|(h, _)| h);
     let routable = holder.as_deref() == Some(device);
     let wake = ambient_watch::wake_word(&text, &phrases);
@@ -403,7 +410,7 @@ async fn flush(d: &Shared, device: &str, parts: Vec<Part>, fast: bool, last: &mu
         }
         let go = wake
             || early.as_ref().is_some_and(|v| {
-                decide(live, pinned, v, wake, expecting).0
+                decide(live, pinned, v, wake, expecting, &tuning).0
                     && (!super::call_track::holds(device) || super::call_track::reaches_assistant(device, v, wake))
             });
         if go {
@@ -440,7 +447,7 @@ async fn flush(d: &Shared, device: &str, parts: Vec<Part>, fast: bool, last: &mu
     }
     let on_call = super::call_track::holds(device);
     if !delivered && routable {
-        let (go, open) = decide(live, pinned, &verdict, wake, expecting);
+        let (go, open) = decide(live, pinned, &verdict, wake, expecting, &tuning);
         if go && (!on_call || super::call_track::reaches_assistant(device, &verdict, wake)) {
             if open {
                 crate::ambient::open_conversation(device, ttl);
@@ -598,6 +605,10 @@ fn context(d: &Shared, device: &str, ids: &[String]) -> String {
     format!("<context>{}</context>", body.join("\n"))
 }
 
+fn profile_attr(device: &str) -> String {
+    format!(" profile=\"{}\"", crate::ambient_tuning::current(device).profile.as_str())
+}
+
 async fn deliver(
     d: &Shared,
     device: &str,
@@ -654,6 +665,7 @@ async fn deliver(
     if v.suggest >= 0.6 {
         attrs.push_str(" suggest=\"conversation\"");
     }
+    attrs.push_str(&profile_attr(device));
     if wake {
         attrs.push_str(" wake=\"true\"");
     }
@@ -723,5 +735,57 @@ mod revision_tests {
         f.revision = Some(("a".into(), "a2".into()));
         assert_eq!(f.latest("a"), "a2");
         assert_eq!(f.latest("b"), "b");
+    }
+}
+
+#[cfg(test)]
+mod tuning_tests {
+    use super::*;
+    use crate::ambient_tuning::Profile;
+
+    fn verdict(user_voice: Option<f64>) -> Verdict {
+        let mut v = Verdict::inherited();
+        v.addressed = 0.65;
+        v.echo = 0.2;
+        v.voice = user_voice.map(|l| {
+            std::sync::Arc::new(crate::voiceprint::VoiceScore { neural: true, similarity: None, likelihood: Some(l), voiced_secs: 1.0, embedding: None, ms: 0 })
+        });
+        v
+    }
+
+    fn go(p: Profile, v: &Verdict, wake: bool) -> bool {
+        decide(false, false, v, wake, false, &Tuning::profile_defaults(p)).0
+    }
+
+    #[test]
+    fn same_verdict_differs_by_profile() {
+        let v = verdict(None);
+        assert!(go(Profile::Alone, &v, false));
+        assert!(go(Profile::Demo, &v, false));
+        assert!(!go(Profile::WithPeople, &v, false));
+        assert!(!go(Profile::Meeting, &v, false));
+    }
+
+    #[test]
+    fn wake_word_wins_everywhere() {
+        let v = verdict(Some(0.1));
+        for p in [Profile::Alone, Profile::WithPeople, Profile::Meeting, Profile::Demo, Profile::Driving] {
+            assert!(go(p, &v, true), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn only_my_voice_blocks_a_foreign_voice() {
+        let v = verdict(Some(0.2));
+        let mut with_people = Tuning::profile_defaults(Profile::WithPeople);
+        with_people.address_threshold = 0.6;
+        assert!(!decide(false, false, &v, false, false, &with_people).0);
+        assert!(go(Profile::Alone, &v, false));
+    }
+
+    #[test]
+    fn envelope_carries_profile() {
+        assert!(profile_attr("tune-env-device").contains("profile=\"alone\""));
+        assert_eq!(crate::ambient::state_json("t")["profile"], "alone");
     }
 }

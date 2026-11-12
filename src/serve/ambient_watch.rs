@@ -352,6 +352,14 @@ pub(super) struct Moment {
     pub live_conversation: bool,
 }
 
+pub(super) fn with_tuning(rules: Option<Value>, device: &str) -> Option<Value> {
+    let mut out = rules.unwrap_or_else(|| json!({}));
+    if let (Some(o), Value::Object(extra)) = (out.as_object_mut(), crate::ambient_tuning::classifier_json(device)) {
+        o.extend(extra);
+    }
+    Some(out)
+}
+
 pub(super) fn policy_rules_json(policy: &crate::recording_policy::RecordingPolicy, now_ms: i64) -> Option<Value> {
     let local = crate::recording_policy::local_at(now_ms);
     let active = policy.active_rules(now_ms, local);
@@ -755,7 +763,7 @@ pub(crate) async fn classify(d: &Shared, ids: &[String], text: &str, voices: Vec
         during_playback,
         user_voice: early_voice.as_ref().filter(|v| v.neural).and_then(|v| v.likelihood),
         speakers_present: present,
-        classifier_rules: policy_rules_json(&policy, now_ms),
+        classifier_rules: with_tuning(policy_rules_json(&policy, now_ms), &device),
         live_conversation: super::call_track::holds(&device),
     };
     let classifier = ask_classifier(&key, classifier_state(&moment), with_pending, expecting);
@@ -881,7 +889,7 @@ pub(crate) async fn classify_live(d: &Shared, device: &str, text: &str, during_p
         during_playback,
         user_voice: None,
         speakers_present: super::speakers::peek(device, now_ms, None).1,
-        classifier_rules: policy_rules_json(&policy, now_ms),
+        classifier_rules: with_tuning(policy_rules_json(&policy, now_ms), device),
         live_conversation: super::call_track::holds(&device),
     };
     let legacy = user_voice.map(|l| {

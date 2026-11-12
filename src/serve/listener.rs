@@ -904,8 +904,18 @@ fn is_quick_barge(key: &str) -> bool {
 }
 
 fn has_barge_command(words: &[Heard]) -> bool {
+    has_barge_command_with(words, &crate::ambient_tuning::current_for_lease().barge_words)
+}
+
+fn has_barge_command_with(words: &[Heard], extra: &[String]) -> bool {
     if words.iter().any(|w| is_quick_barge(&w.key)) {
         return true;
+    }
+    if !extra.is_empty() {
+        let hit = |k: &str| extra.iter().any(|e| e == k);
+        if words.iter().any(|w| hit(&w.key)) || words.windows(2).any(|w| hit(&format!("{} {}", w[0].key, w[1].key))) {
+            return true;
+        }
     }
     words.windows(2).any(|w| {
         matches!(

@@ -1427,7 +1427,7 @@ mod tests {
         };
         let roles = [
             ("work", with_meta(crate::session::work_tool_registry(key.clone(), None).definitions(), true), 27_850),
-            ("mission_control", with_meta(crate::session::mission_control_tool_registry(key.clone()).definitions(), true), 55_750),
+            ("mission_control", with_meta(crate::session::mission_control_tool_registry(key.clone()).definitions(), true), 56_400),
             ("desk", crate::session::coordination_tool_registry(key.clone()).definitions(), 13_200),
             ("lane", lane_tool_registry(key.clone(), None, parent, false).definitions(), 9_500),
         ];

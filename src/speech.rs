@@ -170,7 +170,7 @@ fn reuse_flux_turn(p: &FluxProvisional, text: &str) -> Reuse {
     Reuse::Done
 }
 
-pub async fn speak(text: &str, expecting: Option<&str>, about: Option<&str>, replace: bool) -> Result<Value, String> {
+pub async fn speak(text: &str, expecting: Option<&str>, about: Option<&str>, replace: bool, urgent: bool) -> Result<Value, String> {
     let clean = speakable(text);
     let text = clean.trim();
     if text.is_empty() {
@@ -180,9 +180,20 @@ pub async fn speak(text: &str, expecting: Option<&str>, about: Option<&str>, rep
         abandon_stream();
         return Err("the user is on a call: speech is off until it ends, so reply in text".into());
     }
-    if crate::ambient::room_busy() {
+    let tuning = crate::ambient_tuning::current_for_lease();
+    let forward = tuning.chattiness == crate::ambient_tuning::Chattiness::Forward;
+    if !forward && crate::ambient::room_busy() {
         abandon_stream();
         return Err("people nearby are in a conversation or meeting, so speaking would talk over them: reply in the chat instead, and use ping_user if it cannot wait".into());
+    }
+    if quiet_hold(&tuning) && !urgent {
+        abandon_stream();
+        return Ok(json!({
+            "held": true,
+            "spoken": false,
+            "result": "held: quiet profile. The user has not spoken to you recently, so nothing was said aloud.",
+            "next": "Put it in the chat, or call ping_user if it cannot wait; set urgent true on speak only when waiting would cause harm.",
+        }));
     }
     let (device, conversation) = prepare().await?;
     if let Some(kind) = expecting.filter(|k| !k.is_empty() && *k != "none") {
@@ -440,9 +451,17 @@ enum Route {
     Off,
 }
 
+fn quiet_hold(t: &crate::ambient_tuning::Tuning) -> bool {
+    t.chattiness == crate::ambient_tuning::Chattiness::Quiet
+        && crate::ambient::seconds_since_user_turn().is_none_or(|s| s > t.room_quiet_s)
+}
+
 fn fresh_route() -> Route {
     let floor = crate::ambient::conversation().is_some() && crate::ambient::floor_held();
-    if crate::tts_stream::enabled() && !crate::ambient::call_quiet() && !crate::ambient::room_busy() && !floor { Route::Pending } else { Route::Off }
+    let t = crate::ambient_tuning::current_for_lease();
+    let forward = t.chattiness == crate::ambient_tuning::Chattiness::Forward;
+    let busy = !forward && crate::ambient::room_busy();
+    if crate::tts_stream::enabled() && !crate::ambient::call_quiet() && !busy && !floor && !quiet_hold(&t) { Route::Pending } else { Route::Off }
 }
 
 fn direct_claims(text: &str, done: bool) -> Option<Route> {

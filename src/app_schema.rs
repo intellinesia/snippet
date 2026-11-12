@@ -141,6 +141,23 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              ON ambient_turns(device, id);
          CREATE INDEX IF NOT EXISTS ambient_turns_created
              ON ambient_turns(created_at);
+         CREATE TABLE IF NOT EXISTS ambient_tuning (
+             device TEXT PRIMARY KEY,
+             profile TEXT NOT NULL DEFAULT 'alone',
+             knobs_json TEXT NOT NULL DEFAULT '{}',
+             expires_at INTEGER,
+             set_by TEXT NOT NULL DEFAULT '',
+             reason TEXT NOT NULL DEFAULT '',
+             updated_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS ambient_feedback (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             device TEXT NOT NULL,
+             event_ids TEXT NOT NULL,
+             text TEXT NOT NULL,
+             was TEXT NOT NULL,
+             created_at INTEGER NOT NULL
+         );
          CREATE TABLE IF NOT EXISTS ambient_calls (
              id TEXT PRIMARY KEY NOT NULL,
              device TEXT NOT NULL,
