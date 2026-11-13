@@ -41,29 +41,11 @@ fn store_cache(cache: &UsageCache) {
     }
 }
 
-/// Every account's probed snapshots, in pool order.
-pub fn cached() -> Vec<RateLimitSnapshot> {
-    let Some(cache) = load_cache() else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for id in crate::accounts::ids("claude-code") {
-        if let Some(snaps) = cache.accounts.get(&id) {
-            seen.insert(id.clone());
-            out.extend(snaps.iter().cloned());
-        }
-    }
-    let mut rest: Vec<&String> = cache
-        .accounts
-        .keys()
-        .filter(|k| !seen.contains(*k))
-        .collect();
-    rest.sort();
-    for id in rest {
-        out.extend(cache.accounts[id].iter().cloned());
-    }
-    out
+/// One account's probed snapshots.
+pub fn cached_for(id: &str) -> Vec<RateLimitSnapshot> {
+    load_cache()
+        .and_then(|c| c.accounts.get(id).cloned())
+        .unwrap_or_default()
 }
 
 pub fn refresh_if_stale(max_age_secs: i64) {
