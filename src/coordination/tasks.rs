@@ -571,6 +571,19 @@ pub(super) fn task_from_row(row: &rusqlite::Row<'_>) -> Result<Task, rusqlite::E
     })
 }
 
+pub(super) fn task_agent_from_row(row: &rusqlite::Row<'_>) -> Result<TaskAgent, rusqlite::Error> {
+    Ok(TaskAgent {
+        task_id: row.get(0)?,
+        agent_id: row.get(1)?,
+        work_session_id: row.get(2)?,
+        scope: row.get(3)?,
+        status: row.get(4)?,
+        role: row.get(5)?,
+        added_at: row.get(6)?,
+        removed_at: row.get(7)?,
+    })
+}
+
 pub(super) const TASK_COLUMNS: &str = "id, title, description, status, priority, created_by_kind,
      created_by_id, created_at, updated_at, completed_at, thread_id, session_id,
      handoff_json, handoff_mode, reporting_session, dispatch_failures, result_json,
@@ -1639,6 +1652,70 @@ impl Store {
             )?;
             tx.commit()?;
             Ok(removed)
+        })
+    }
+
+    /// The seat `agent_id` holds in `session_id`, if it holds one.
+    pub fn seat_of(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+    ) -> Result<Option<TaskAgent>, StoreError> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT task_id, agent_id, work_session_id, scope, status, role, added_at, removed_at
+                 FROM task_agents
+                 WHERE agent_id = ?1 AND work_session_id = ?2 AND removed_at IS NULL
+                 ORDER BY added_at DESC LIMIT 1",
+                params![agent_id, session_id],
+                task_agent_from_row,
+            )
+            .optional()
+        })
+    }
+
+    /// Every seat that is not finished or removed, across all tasks.
+    pub fn live_task_seats(&self) -> Result<Vec<TaskAgent>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT task_id, agent_id, work_session_id, scope, status, role, added_at, removed_at
+                 FROM task_agents
+                 WHERE removed_at IS NULL
+                   AND status NOT IN ('done', 'withdrawn', 'released')
+                 ORDER BY task_id, added_at",
+            )?;
+            let rows = stmt.query_map([], task_agent_from_row)?;
+            rows.collect()
+        })
+    }
+
+    /// Mark one seat `released`: it no longer holds the turn. `false` when the
+    /// seat was already finished or removed.
+    pub fn release_task_agent_seat(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+    ) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            Ok(conn.execute(
+                "UPDATE task_agents SET status = 'released'
+                 WHERE task_id = ?1 AND agent_id = ?2 AND removed_at IS NULL
+                   AND status NOT IN ('done', 'withdrawn', 'released')",
+                params![task_id, agent_id],
+            )? == 1)
+        })
+    }
+
+    /// Park the seat holding the turn: the user took the session back. `false`
+    /// when the agent is not the active member.
+    pub fn park_task_agent_seat(&self, task_id: &str, agent_id: &str) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            Ok(conn.execute(
+                "UPDATE task_agents SET status = 'parked'
+                 WHERE task_id = ?1 AND agent_id = ?2 AND removed_at IS NULL
+                   AND status = 'active'",
+                params![task_id, agent_id],
+            )? == 1)
         })
     }
 

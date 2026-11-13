@@ -9,6 +9,7 @@ use super::{Store, StoreError, Task, TaskAgent, TaskStatus};
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 pub struct Turn {
     pub id: i64,
+    pub task_id: String,
     pub agent_id: String,
     pub session_id: String,
     pub started_at: String,
@@ -20,19 +21,20 @@ pub struct Turn {
 }
 
 const TURN_COLUMNS: &str =
-    "id, agent_id, session_id, started_at, ended_at, snapshot, files_json, commits_json";
+    "id, task_id, agent_id, session_id, started_at, ended_at, snapshot, files_json, commits_json";
 
 fn turn_from_row(row: &rusqlite::Row<'_>) -> Result<Turn, rusqlite::Error> {
     let list = |raw: String| serde_json::from_str(&raw).unwrap_or_default();
     Ok(Turn {
         id: row.get(0)?,
-        agent_id: row.get(1)?,
-        session_id: row.get(2)?,
-        started_at: row.get(3)?,
-        ended_at: row.get(4)?,
-        snapshot: row.get(5)?,
-        files: list(row.get(6)?),
-        commits: list(row.get(7)?),
+        task_id: row.get(1)?,
+        agent_id: row.get(2)?,
+        session_id: row.get(3)?,
+        started_at: row.get(4)?,
+        ended_at: row.get(5)?,
+        snapshot: row.get(6)?,
+        files: list(row.get(7)?),
+        commits: list(row.get(8)?),
     })
 }
 
@@ -79,6 +81,17 @@ impl Store {
                 turn_from_row,
             )
             .optional()
+        })
+    }
+
+    /// Every turn still open across all tasks, oldest first.
+    pub fn open_turns(&self) -> Result<Vec<Turn>, StoreError> {
+        self.with_connection(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {TURN_COLUMNS} FROM task_turns WHERE ended_at IS NULL ORDER BY id"
+            ))?;
+            let rows = stmt.query_map([], turn_from_row)?;
+            rows.collect()
         })
     }
 

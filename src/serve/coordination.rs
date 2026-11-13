@@ -114,6 +114,7 @@ pub fn router() -> Router<Shared> {
             "/coordination/tasks/{task_id}/agents/{agent_id}/lease",
             post(transfer_task_lease),
         )
+        .route("/coordination/tasks/{task_id}/verdict", post(task_verdict))
         .route(
             "/coordination/threads/{thread_id}/events",
             get(thread_events),
@@ -192,6 +193,89 @@ pub struct CoordinationTaskLinkReq {
     pub to_task_id: String,
     #[serde(default)]
     pub kind: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct TaskVerdictReq {
+    pub verdict: String,
+    #[serde(default)]
+    pub findings: Vec<String>,
+}
+
+/// POST /coordination/tasks/{task_id}/verdict — the human's approve or send-back
+/// on a task in review, through the same path `submit_review` takes.
+pub(super) async fn task_verdict(
+    State(d): State<Shared>,
+    Path(task_id): Path<String>,
+    Json(req): Json<TaskVerdictReq>,
+) -> Response {
+    let approve = match req.verdict.trim() {
+        "approve" => true,
+        "changes" => false,
+        other => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                format!("verdict must be approve or changes, got `{other}`"),
+            );
+        }
+    };
+    let findings: Vec<String> = req
+        .findings
+        .iter()
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .collect();
+    if !approve && findings.is_empty() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "changes needs findings: say what to fix",
+        );
+    }
+    let task = match d.store.get_task(&task_id) {
+        Ok(Some(task)) => task,
+        Ok(None) => return api_error(StatusCode::NOT_FOUND, format!("no task `{task_id}`")),
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("load task: {error}"),
+            );
+        }
+    };
+    if task.status != TaskStatus::InReview {
+        return api_error(
+            StatusCode::CONFLICT,
+            format!("task `{task_id}` is {}, not in_review", task.status),
+        );
+    }
+    let state = d
+        .store
+        .task_state(&task_id)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let workspace = crate::members::task_workspace(&d.store, &task)
+        .unwrap_or_else(|| d.mission_control_root.clone());
+    let ctx = crate::ToolContext::with_owner(workspace, "user")
+        .unwrap_or_else(|_| crate::ToolContext::with_owner("/", "user").unwrap())
+        .with_agent_id("user")
+        .with_store_path(crate::store::default_db_path());
+    match crate::review_tools::apply_verdict(
+        &ctx,
+        &d.store,
+        &task,
+        &state,
+        approve,
+        &findings,
+        "user",
+        chrono::Utc::now().to_rfc3339(),
+    ) {
+        Ok(done) => Json(serde_json::json!({
+            "task_id": done.id,
+            "status": done.status.as_str(),
+        }))
+        .into_response(),
+        Err(error) => api_error(StatusCode::CONFLICT, error.to_string()),
+    }
 }
 
 #[derive(Deserialize)]

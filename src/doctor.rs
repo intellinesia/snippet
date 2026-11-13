@@ -365,6 +365,80 @@ pub fn prefetch() {
     }
 }
 
+/// Seats, leases and turns older than a day are worth a look; a seat on a
+/// finished task is stale outright.
+const STALE_SECS: i64 = 24 * 3600;
+
+fn age_of(stamp: &str, now: chrono::DateTime<chrono::Utc>) -> (i64, String) {
+    let secs = chrono::DateTime::parse_from_rfc3339(stamp)
+        .map(|at| (now - at.with_timezone(&chrono::Utc)).num_seconds().max(0))
+        .unwrap_or(0);
+    let label = if secs >= 86400 {
+        format!("{}d{}h", secs / 86400, (secs % 86400) / 3600)
+    } else if secs >= 3600 {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}m", (secs / 60).max(1))
+    };
+    (secs, label)
+}
+
+/// Open leases, open turns and live seats with their ages, read from the local
+/// store. Empty when there is no database or it cannot be read.
+pub fn coordination_lines() -> Vec<String> {
+    let path = crate::store::default_db_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    let Ok(store) = crate::store::Store::open(&path) else {
+        return Vec::new();
+    };
+    let now = chrono::Utc::now();
+    let mut lines = Vec::new();
+    for lease in store.open_leases().unwrap_or_default() {
+        let (secs, age) = age_of(&lease.acquired_at, now);
+        let stale = secs > STALE_SECS;
+        lines.push(format!(
+            "lease   task {} agent {} session {} age {age}{}",
+            lease.task_id,
+            lease.agent_id,
+            lease.session_id,
+            if stale { " STALE" } else { "" }
+        ));
+    }
+    for turn in store.open_turns().unwrap_or_default() {
+        let (secs, age) = age_of(&turn.started_at, now);
+        let stale = secs > STALE_SECS;
+        lines.push(format!(
+            "turn    task {} agent {} session {} age {age}{}",
+            turn.task_id,
+            turn.agent_id,
+            turn.session_id,
+            if stale { " STALE" } else { "" }
+        ));
+    }
+    for seat in store.live_task_seats().unwrap_or_default() {
+        let task_status = store
+            .get_task(&seat.task_id)
+            .ok()
+            .flatten()
+            .map(|t| t.status.to_string())
+            .unwrap_or_else(|| "unknown".into());
+        let terminal = matches!(task_status.as_str(), "done" | "failed" | "cancelled");
+        let (secs, age) = age_of(&seat.added_at, now);
+        let stale = terminal || secs > STALE_SECS;
+        lines.push(format!(
+            "seat    task {} agent {} status {} task {} age {age}{}",
+            seat.task_id,
+            seat.agent_id,
+            seat.status,
+            task_status,
+            if stale { " STALE" } else { "" }
+        ));
+    }
+    lines
+}
+
 pub fn run(tsv: bool, pm: Option<Pm>, prefetch_assets: bool) {
     if prefetch_assets {
         prefetch();
@@ -379,6 +453,13 @@ pub fn run(tsv: bool, pm: Option<Pm>, prefetch_assets: bool) {
         }
     } else {
         print!("{}", report(&items, pm, &host));
+        let lines = coordination_lines();
+        if !lines.is_empty() {
+            println!("\ncoordination (open seats):");
+            for line in lines {
+                println!("  {line}");
+            }
+        }
     }
 }
 

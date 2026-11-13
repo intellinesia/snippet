@@ -33,6 +33,7 @@ use crate::session::{
 };
 
 mod account_routes;
+pub mod agent_now;
 pub mod agent_routes;
 mod ambient_context;
 pub(crate) mod ambient_room;
@@ -1055,6 +1056,7 @@ pub async fn run_serve(
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/agents", get(list_agents).post(create_agent))
+        .route("/agents/{agent_id}/now", get(agent_now::agent_now))
         .route("/agents/{agent_id}/board", get(agent_board))
         .route("/agents/{agent_id}/inbox", get(agent_inbox))
         .route("/agents/{agent_id}/status", post(set_agent_status))
@@ -1073,6 +1075,10 @@ pub async fn run_serve(
         .route(
             "/agents/{agent_id}/reach",
             get(get_agent_reach).put(put_agent_reach),
+        )
+        .route(
+            "/agents/{agent_id}/sessions/{session_id}/release",
+            post(agent_routes::release_agent_session),
         )
         .route("/agents/{agent_id}", axum::routing::delete(delete_agent))
         .merge(coordination::router())

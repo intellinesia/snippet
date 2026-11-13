@@ -376,6 +376,24 @@ impl Store {
         })
     }
 
+    /// How many user turns the session has taken at or after `since`.
+    pub fn count_user_messages_since(
+        &self,
+        session_id: &str,
+        since: &str,
+    ) -> Result<i64, StoreError> {
+        let row = self.get_session_row(session_id)?;
+        let id = row.map_or_else(|| session_id.to_string(), |row| row.id);
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM session_messages
+                 WHERE session_id = ?1 AND role = 'user' AND created_at >= ?2",
+                params![id, since],
+                |row| row.get(0),
+            )
+        })
+    }
+
     /// Load a session's transcript in order.
     pub fn load_conversation_messages(
         &self,

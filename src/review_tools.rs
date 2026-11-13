@@ -95,18 +95,26 @@ pub fn submit_for_review(
     artifacts: &[String],
     now: &str,
 ) -> Result<Task, ToolError> {
+    let by_mc = matches!(mode, VerifyMode::MissionControl | VerifyMode::User);
     store
         .modify_task_state(&task.id, now, |s| {
             s.pending_report = Some(PendingReport {
                 summary: summary.to_string(),
                 artifacts: artifacts.to_vec(),
             });
-            s.review_started_at.clear();
+            // Mission Control and user reviews have no reviewer lane to start
+            // the clock, so it starts here; the reviewer path stamps it when
+            // the reviewer actually starts.
+            s.review_started_at = if by_mc {
+                now.to_string()
+            } else {
+                String::new()
+            };
             s.review_escalated = false;
+            s.review_nudges = 0;
             s.review_findings.clear();
         })
         .map_err(|e| ToolError::msg(format!("record report: {e}")))?;
-    let by_mc = matches!(mode, VerifyMode::MissionControl | VerifyMode::User);
     let updated = store
         .update_task_in(&task.id, now, |t| {
             t.status = TaskStatus::InReview;
@@ -138,23 +146,44 @@ pub fn submit_for_review(
 
 fn post_room(ctx: &ToolContext, store: &Store, task: &Task, event_type: &str, body: &str) {
     let author = ctx.agent_id().unwrap_or("reviewer").to_string();
+    let payload =
+        crate::coordination_tools::stamp_origin(ctx, json!({"body": body, "task_id": task.id}));
+    room_event(
+        store,
+        task,
+        event_type,
+        "agent",
+        &author,
+        payload,
+        &chrono::Utc::now().to_rfc3339(),
+    );
+}
+
+/// One event in the task's room, persisted, pushed to devices and queued as a
+/// wake for its participants.
+pub(crate) fn room_event(
+    store: &Store,
+    task: &Task,
+    event_type: &str,
+    actor_kind: &str,
+    actor_id: &str,
+    payload: Value,
+    created_at: &str,
+) {
     let event = crate::coordination::types::CoordinationEvent {
         event_id: uuid::Uuid::new_v4().to_string(),
         thread_id: task.thread_id.clone(),
         partition_key: format!("thread:{}", task.thread_id),
         sequence: 0,
         event_type: event_type.into(),
-        actor_kind: "agent".into(),
-        actor_id: author,
+        actor_kind: actor_kind.into(),
+        actor_id: actor_id.into(),
         payload_version: 1,
-        payload: crate::coordination_tools::stamp_origin(
-            ctx,
-            json!({"body": body, "task_id": task.id}),
-        ),
+        payload,
         causation_id: None,
         correlation_id: Some(task.id.clone()),
         idempotency_key: uuid::Uuid::new_v4().to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: created_at.to_string(),
     };
     if let Ok(saved) = store.append_event(&event) {
         crate::session::emit_device_event(
@@ -162,6 +191,53 @@ fn post_room(ctx: &ToolContext, store: &Store, task: &Task, event_type: &str, bo
         );
         crate::serve::queue_coordination_wake(store, saved);
     }
+}
+
+/// A worker re-reports while its task is still in review: the new report
+/// replaces the pending one, the round count and review clock restart, and the
+/// room hears that the earlier report was superseded.
+pub fn supersede_report(
+    ctx: &ToolContext,
+    store: &Store,
+    task: &Task,
+    summary: &str,
+    artifacts: &[String],
+    now: &str,
+) -> Result<Task, ToolError> {
+    let rounds = store
+        .modify_task_state(&task.id, now, |s| {
+            s.pending_report = Some(PendingReport {
+                summary: summary.to_string(),
+                artifacts: artifacts.to_vec(),
+            });
+            s.review_rounds += 1;
+            s.review_started_at = now.to_string();
+            s.review_escalated = false;
+            s.review_nudges = 0;
+            s.review_findings.clear();
+        })
+        .map_err(|e| ToolError::msg(format!("record report: {e}")))?
+        .review_rounds;
+    let _ = store.update_task_in(&task.id, now, |t| {
+        t.notify_once(
+            "report_superseded",
+            &format!(
+                "{summary}\nThe worker re-reported while the task was in review (round {rounds})."
+            ),
+        );
+    });
+    let updated = store
+        .get_task(&task.id)
+        .map_err(|e| ToolError::msg(e.to_string()))?
+        .ok_or_else(|| ToolError::msg("task vanished"))?;
+    post_room(
+        ctx,
+        store,
+        &updated,
+        "task.report_superseded",
+        &format!("New report supersedes the pending one (review round {rounds}).\n{summary}"),
+    );
+    Ok(updated)
 }
 
 /// Hand a review the reviewer cannot give to Mission Control. The task stays in
@@ -483,109 +559,133 @@ impl Tool for SubmitReview {
             ctx.agent_id().unwrap_or("reviewer").to_string()
         };
         let now = chrono::Utc::now().to_rfc3339();
-        if !is_mc {
-            let verdict = if approve { "approved" } else { "sent back" };
-            let summary = format!(
-                "{} {verdict}: {} {}",
-                task.id,
-                task.title,
-                findings.join("; ")
-            );
-            let _ = store.record_board_entry(
-                &reviewer,
-                crate::coordination::BoardEntryKind::Noted,
-                &crate::coordination::NewBoardEntry {
-                    session_id: Some(&task.session_id),
-                    workspace: None,
-                    summary: summary.trim(),
-                    correlation_id: Some(&task.id),
-                    created_at: &now,
-                },
-            );
-        }
+        let verdict = apply_verdict(
+            ctx, &store, &task, &state, approve, &findings, &reviewer, now,
+        )?;
         if approve {
-            let note = if findings.is_empty() {
-                String::new()
-            } else {
-                format!(" Notes: {}", findings.join("; "))
-            };
-            let done = approve_pending(
-                ctx,
-                &store,
-                &task,
-                &state,
-                &reviewer,
-                &format!("review approved.{note}"),
-                now,
-            )?;
             return Ok(ToolResult::success(
-                json!({"task_id": done.id, "status": "done"}),
+                json!({"task_id": verdict.id, "status": "done"}),
             ));
         }
-        let rounds = state.review_rounds + 1;
-        let patch = crate::coordination::StatePatch {
-            add_decisions: vec![format!("review asked for changes (round {rounds})")],
-            ..Default::default()
-        };
-        let _ = store.patch_task_state(&task.id, &patch, None, &reviewer, &now);
-        let state = store
-            .modify_task_state(&task.id, &now, |s| {
-                s.review_rounds = rounds;
-                s.review_findings = findings.clone();
-                s.pending_report = None;
-                s.review_started_at.clear();
-            })
-            .map_err(|e| ToolError::msg(e.to_string()))?;
-        let back = crate::members::working_session(&store, &task);
-        let reopened = store
-            .update_task_in(&task.id, &now, |t| {
-                t.status = TaskStatus::InProgress;
-                t.reporting_session = Some(back);
-            })
-            .map_err(|e| ToolError::msg(e.to_string()))?;
-        post_room(
-            ctx,
-            &store,
-            &reopened,
-            "task.review_findings",
-            &format!(
-                "{reviewer} sent the work back (round {rounds}):\n{}",
-                findings.join("\n")
-            ),
-        );
-        let envelope = format!(
-            "[review_findings]\ntask_id: {}\ntitle: {}\nreviewer: {reviewer}\nround: {rounds}\nThe review sent this task back. Fix every finding, then report again with report_mission_task (task_id {}).\nfindings:\n{}\n{}\n[/review_findings]",
+        Ok(ToolResult::success(json!({
+            "task_id": verdict.id,
+            "status": "in_progress",
+            "sent_back_to": verdict.reporting_session,
+        })))
+    }
+}
+
+/// Apply a verdict on a task in review, recorded against `reviewer`: approve
+/// completes it from the pending report; changes sends it back to the worker
+/// with the findings. Shared by `submit_review` and the human verdict route.
+pub fn apply_verdict(
+    ctx: &ToolContext,
+    store: &Store,
+    task: &Task,
+    state: &crate::coordination::TaskState,
+    approve: bool,
+    findings: &[String],
+    reviewer: &str,
+    now: String,
+) -> Result<Task, ToolError> {
+    if reviewer != crate::mission_control::SESSION_ID {
+        let verdict = if approve { "approved" } else { "sent back" };
+        let summary = format!(
+            "{} {verdict}: {} {}",
             task.id,
             task.title,
-            task.id,
-            findings
-                .iter()
-                .map(|f| format!("  - {f}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            {
-                let mut ledger = state.clone();
-                ledger.review_findings.clear();
-                ledger.render(false)
+            findings.join("; ")
+        );
+        let _ = store.record_board_entry(
+            reviewer,
+            crate::coordination::BoardEntryKind::Noted,
+            &crate::coordination::NewBoardEntry {
+                session_id: Some(&task.session_id),
+                workspace: None,
+                summary: summary.trim(),
+                correlation_id: Some(&task.id),
+                created_at: &now,
             },
         );
-        store
-            .send_task_notice(
-                ("agent", &reviewer),
-                reopened
-                    .reporting_session
-                    .as_deref()
-                    .unwrap_or(&task.session_id),
-                &task.id,
-                "task_brief",
-                &envelope,
-                &now,
-            )
-            .map_err(|e| ToolError::msg(format!("send findings: {e}")))?;
-        Ok(ToolResult::success(
-            json!({"task_id": reopened.id, "status": "in_progress", "sent_back_to": reopened.reporting_session}),
-        ))
     }
+    if approve {
+        let note = if findings.is_empty() {
+            String::new()
+        } else {
+            format!(" Notes: {}", findings.join("; "))
+        };
+        return approve_pending(
+            ctx,
+            store,
+            task,
+            state,
+            reviewer,
+            &format!("review approved.{note}"),
+            now,
+        );
+    }
+    let rounds = state.review_rounds + 1;
+    let patch = crate::coordination::StatePatch {
+        add_decisions: vec![format!("review asked for changes (round {rounds})")],
+        ..Default::default()
+    };
+    let _ = store.patch_task_state(&task.id, &patch, None, reviewer, &now);
+    let state = store
+        .modify_task_state(&task.id, &now, |s| {
+            s.review_rounds = rounds;
+            s.review_findings = findings.to_vec();
+            s.pending_report = None;
+            s.review_started_at.clear();
+            s.review_nudges = 0;
+        })
+        .map_err(|e| ToolError::msg(e.to_string()))?;
+    let back = crate::members::working_session(store, task);
+    let reopened = store
+        .update_task_in(&task.id, &now, |t| {
+            t.status = TaskStatus::InProgress;
+            t.reporting_session = Some(back);
+        })
+        .map_err(|e| ToolError::msg(e.to_string()))?;
+    post_room(
+        ctx,
+        store,
+        &reopened,
+        "task.review_findings",
+        &format!(
+            "{reviewer} sent the work back (round {rounds}):\n{}",
+            findings.join("\n")
+        ),
+    );
+    let envelope = format!(
+        "[review_findings]\ntask_id: {}\ntitle: {}\nreviewer: {reviewer}\nround: {rounds}\nThe review sent this task back. Fix every finding, then report again with report_mission_task (task_id {}).\nfindings:\n{}\n{}\n[/review_findings]",
+        task.id,
+        task.title,
+        task.id,
+        findings
+            .iter()
+            .map(|f| format!("  - {f}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        {
+            let mut ledger = state.clone();
+            ledger.review_findings.clear();
+            ledger.render(false)
+        },
+    );
+    store
+        .send_task_notice(
+            ("agent", reviewer),
+            reopened
+                .reporting_session
+                .as_deref()
+                .unwrap_or(&task.session_id),
+            &task.id,
+            "task_brief",
+            &envelope,
+            &now,
+        )
+        .map_err(|e| ToolError::msg(format!("send findings: {e}")))?;
+    Ok(reopened)
 }
 
 #[cfg(test)]
@@ -654,7 +754,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reporting_done_holds_the_task_for_review_and_refuses_a_second_report() {
+    async fn reporting_done_holds_the_task_for_review_and_a_re_report_supersedes() {
         let dir = tempfile::tempdir().unwrap();
         let (store, _) = seed(dir.path(), "s1");
         let worker = ToolContext::new(dir.path())
@@ -683,18 +783,31 @@ mod tests {
             store.get_task("rv1").unwrap().unwrap().status,
             TaskStatus::InReview
         );
+        let task = store.get_task("rv1").unwrap().unwrap();
         let again = crate::mission_tools::ReportMissionTask
-            .execute(&worker, report("ran the tests"))
+            .execute(&worker, report("re-ran everything"))
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(again.contains("is in review"), "{again}");
+            .unwrap();
+        assert_eq!(again.value["data"]["in_review"], "mission_control");
+        assert_eq!(
+            store.get_task("rv1").unwrap().unwrap().status,
+            TaskStatus::InReview
+        );
         let state = store.task_state("rv1").unwrap().unwrap();
+        assert_eq!(state.review_rounds, 1);
+        assert!(!state.review_started_at.is_empty());
         assert_eq!(
             state.pending_report.unwrap().summary,
             "Scope: fix a
 Done: all of it
-How: ran the tests"
+How: re-ran everything"
+        );
+        let events = store.events_for_thread(&task.thread_id, 0, 100).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.event_type == "task.report_superseded"),
+            "{events:?}"
         );
     }
 

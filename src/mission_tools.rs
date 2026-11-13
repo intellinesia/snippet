@@ -4149,12 +4149,6 @@ impl Tool for ReportMissionTask {
                 .get_task(&args.task_id)
                 .map_err(|e| ToolError::msg(format!("load task: {e}")))?
                 .ok_or_else(|| ToolError::msg("unknown task"))?;
-            if bound.status == TaskStatus::InReview && !is_mc {
-                return Err(ToolError::msg(format!(
-                    "task `{}` is in review; its verdict will reach this session. Nothing to report meanwhile.",
-                    args.task_id
-                )));
-            }
             if bound.status.is_terminal() {
                 return Err(ToolError::msg(format!(
                     "task `{}` is already {}; there is nothing to report. Work the user asks for directly in this chat is not a task: answer them here instead.",
@@ -4178,6 +4172,26 @@ impl Tool for ReportMissionTask {
                 .get_task(&args.task_id)
                 .map_err(|e| ToolError::msg(format!("load task: {e}")))?
                 .ok_or_else(|| ToolError::msg("unknown task"))?;
+            if current.status == TaskStatus::InReview {
+                let held = crate::review_tools::supersede_report(
+                    ctx,
+                    &store,
+                    &current,
+                    &summary,
+                    &args.artifacts,
+                    &now,
+                )?;
+                let state = store
+                    .task_state(&held.id)
+                    .map_err(|e| ToolError::msg(e.to_string()))?
+                    .unwrap_or_default();
+                let mode = crate::review_tools::review_route(&store, &held, &state);
+                return Ok(ToolResult::success(json!({
+                    "task": task_view(&held),
+                    "in_review": mode.as_str(),
+                    "note": "This report superseded the pending one and restarted the review. You will get the verdict in this session; if changes are asked for, fix them and report again.",
+                })));
+            }
             if let Some(mode) = crate::review_tools::gate_done(&store, &current, &now)? {
                 let held = crate::review_tools::submit_for_review(
                     ctx,

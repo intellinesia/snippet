@@ -98,6 +98,13 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
                             "max_context_tokens".into(),
                             context_limits.get(&agent.id).copied().into(),
                         );
+                        let (presence, needs_you) =
+                            super::agent_now::agent_presence_and_needs(&d.store, &agent.id);
+                        object.insert(
+                            "presence".into(),
+                            serde_json::to_value(presence).unwrap_or(serde_json::Value::Null),
+                        );
+                        object.insert("needs_you".into(), needs_you.into());
                     }
                     value
                 })
@@ -734,6 +741,66 @@ pub(crate) async fn put_agent_reach(
         Err(error) => api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("save agent reach: {error}"),
+        ),
+    }
+}
+
+/// POST /agents/{agent_id}/sessions/{session_id}/release — hand back the seat
+/// this agent holds in that session: its turn, lease and seat all close.
+pub(crate) async fn release_agent_session(
+    State(d): State<Shared>,
+    axum::extract::Path((agent_id, session_id)): axum::extract::Path<(String, String)>,
+) -> Response {
+    let seat = match d.store.seat_of(&agent_id, &session_id) {
+        Ok(Some(seat)) => seat,
+        Ok(None) => {
+            return api_error(StatusCode::NOT_FOUND, "agent holds no seat in that session");
+        }
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("find seat: {error}"),
+            );
+        }
+    };
+    let task = match d.store.get_task(&seat.task_id) {
+        Ok(Some(task)) => task,
+        Ok(None) => {
+            return api_error(StatusCode::NOT_FOUND, format!("no task `{}`", seat.task_id));
+        }
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("load task: {error}"),
+            );
+        }
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    match crate::members::release_seat(&d.store, &task, &agent_id, &now) {
+        Ok(true) => {
+            crate::review_tools::room_event(
+                &d.store,
+                &task,
+                "task.seat_released",
+                "user",
+                "user",
+                serde_json::json!({
+                    "body": format!("{agent_id} released its seat in {session_id}."),
+                    "task_id": task.id,
+                    "agent_id": agent_id,
+                    "session": session_id,
+                }),
+                &now,
+            );
+            Json(serde_json::json!({"released": true, "task_id": task.id})).into_response()
+        }
+        Ok(false) => api_error(
+            StatusCode::NOT_FOUND,
+            "agent holds no live seat in that session",
+        ),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("release seat: {error}"),
         ),
     }
 }

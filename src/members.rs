@@ -374,6 +374,63 @@ pub fn pass_turn(
     })
 }
 
+/// Release one agent's seat on a task: the seat goes inactive, its open turn
+/// closes and the lease follows the roster. `false` when it held no live seat.
+pub fn release_seat(store: &Store, task: &Task, agent_id: &str, now: &str) -> Result<bool, String> {
+    if !store
+        .release_task_agent_seat(&task.id, agent_id)
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(false);
+    }
+    close_open_turn_for(store, task, Some(agent_id), now);
+    store
+        .sync_task_lease(&task.id, now)
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Release every live seat on a task — for terminal work, where nothing should
+/// still hold a turn, a lease or a seat. Returns how many seats moved.
+pub fn release_all_seats(store: &Store, task: &Task, now: &str) -> usize {
+    let mut released = 0;
+    for member in store.list_task_agents(&task.id).unwrap_or_default() {
+        if member.removed_at.is_some()
+            || matches!(member.status.as_str(), "done" | "withdrawn" | "released")
+        {
+            continue;
+        }
+        if store
+            .release_task_agent_seat(&task.id, &member.agent_id)
+            .unwrap_or(false)
+        {
+            released += 1;
+        }
+    }
+    close_open_turn_for(store, task, None, now);
+    let _ = store.sync_task_lease(&task.id, now);
+    released
+}
+
+/// Close the task's open turn when it belongs to `agent` (any agent when `None`),
+/// attributing changes when the workspace is still there.
+fn close_open_turn_for(store: &Store, task: &Task, agent: Option<&str>, now: &str) {
+    let Ok(Some(turn)) = store.open_turn_of(&task.id) else {
+        return;
+    };
+    if agent.is_some_and(|a| turn.agent_id != a) {
+        return;
+    }
+    match task_workspace(store, task) {
+        Some(workspace) => {
+            close_turn(store, task, &workspace, now);
+        }
+        None => {
+            let _ = store.close_turn(turn.id, &[], &[], now);
+        }
+    }
+}
+
 /// The handover as the room reads it. Measured changes sit beside the claim so a
 /// reader can tell what the member said from what actually moved.
 pub fn handover_body(handover: &Handover, passed: &Passed) -> String {
