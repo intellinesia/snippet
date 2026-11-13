@@ -359,15 +359,12 @@ impl CodingHarness {
                 let ts = Utc::now().timestamp();
                 let _ = on_busy(|| store.set_session_last_active(&id, ts)).await;
             }
+            // Only Mission Control's session is a user thread; other agents' previews come from DMs.
             if let Some(text) = turn_text
-                && let Ok(Some(row)) = store.get_session_row(&id)
-                && let Some(agent_id) = row
-                    .agent_id
-                    .filter(|a| !a.is_empty())
-                    .or_else(|| (id == crate::mission_control::SESSION_ID).then(|| id.to_string()))
+                && id == crate::mission_control::SESSION_ID
             {
                 let _ = store.note_agent_last_message(
-                    &agent_id,
+                    &id,
                     &text,
                     &Utc::now().to_rfc3339(),
                     "agent",
