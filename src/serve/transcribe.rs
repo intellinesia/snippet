@@ -3,8 +3,6 @@ use super::*;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-const MAX_ATTACHMENTS: usize = 5;
-
 fn is_audio_path(path: &Path) -> bool {
     matches!(
         path.extension()
@@ -63,11 +61,6 @@ async fn audio_duration_seconds(path: &Path) -> Result<f64, String> {
 /// both the transcript and the source attachment reference.
 pub(super) async fn prepare_message(d: &Daemon, text: String) -> Result<String, String> {
     let markers: Vec<PathBuf> = text.lines().filter_map(attachment_path).collect();
-    if markers.len() > MAX_ATTACHMENTS {
-        return Err(format!(
-            "a message can contain at most {MAX_ATTACHMENTS} attachments"
-        ));
-    }
     let audio_paths: Vec<PathBuf> = markers
         .iter()
         .filter(|path| is_audio_path(path))
