@@ -1,8 +1,8 @@
 //! Per-agent "last message" preview for the agent list and inbox.
 //!
-//! One row per agent, written where messages happen (a direct message between
-//! the user and the agent, a finished assistant turn in any session working for
-//! the agent), so listing agents never loads a thread. An empty `text` row is a
+//! One row per agent, written only from the user's own thread with it (direct
+//! messages, or Mission Control's session), so listing agents never loads a
+//! thread. Desk, task and group turns never count. An empty `text` row is a
 //! "looked, found nothing" marker that stops the lazy backfill repeating.
 
 use std::collections::HashMap;
@@ -14,7 +14,6 @@ use super::direct::{LOCAL_HUMAN_ID, direct_thread_id};
 use crate::store::{Store, StoreError};
 
 const MAX_CHARS: usize = 200;
-const BACKFILL_SESSIONS: u32 = 5;
 const BACKFILL_TAIL: u32 = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -79,11 +78,11 @@ impl Store {
         let at_ms = millis_of(at);
         self.with_connection(|conn| {
             conn.execute(
-                "INSERT INTO agent_last_message (agent_id, text, at_ms, from_side)
+                "INSERT INTO agent_last_dm (agent_id, text, at_ms, from_side)
                  VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(agent_id) DO UPDATE SET
                     text = excluded.text, at_ms = excluded.at_ms, from_side = excluded.from_side
-                 WHERE excluded.at_ms >= agent_last_message.at_ms",
+                 WHERE excluded.at_ms >= agent_last_dm.at_ms",
                 params![agent_id, text, at_ms, from],
             )?;
             Ok(())
@@ -94,7 +93,7 @@ impl Store {
     pub fn agent_last_messages(&self) -> Result<HashMap<String, LastMessage>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT agent_id, text, at_ms, from_side FROM agent_last_message WHERE text <> ''",
+                "SELECT agent_id, text, at_ms, from_side FROM agent_last_dm WHERE text <> ''",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((
@@ -118,7 +117,7 @@ impl Store {
     ) -> Result<Option<LastMessage>, StoreError> {
         let stored: Option<(String, i64, String)> = self.with_connection(|conn| {
             conn.query_row(
-                "SELECT text, at_ms, from_side FROM agent_last_message WHERE agent_id = ?1",
+                "SELECT text, at_ms, from_side FROM agent_last_dm WHERE agent_id = ?1",
                 params![agent_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
@@ -131,14 +130,11 @@ impl Store {
                 from,
             })),
             Some(_) => Ok(None),
-            None => self.backfill_agent_last_message(agent_id),
+            None => self.backfill_agent_last_dm(agent_id),
         }
     }
 
-    fn backfill_agent_last_message(
-        &self,
-        agent_id: &str,
-    ) -> Result<Option<LastMessage>, StoreError> {
+    fn backfill_agent_last_dm(&self, agent_id: &str) -> Result<Option<LastMessage>, StoreError> {
         let mut best: Option<(i64, String, &'static str)> = None;
 
         let thread = direct_thread_id(("agent", agent_id), ("human", LOCAL_HUMAN_ID));
@@ -164,25 +160,10 @@ impl Store {
             }
         }
 
-        // Mission Control's own chat is its session; it has no agent-owned ones.
         let sessions: Vec<String> = if is_mission_control(agent_id) {
             vec![agent_id.to_string()]
         } else {
-            self.with_connection(|conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT id FROM sessions WHERE agent_id = ?1 AND id <> ?2
-                     ORDER BY updated_at DESC LIMIT ?3",
-                )?;
-                let rows = stmt.query_map(
-                    params![
-                        agent_id,
-                        crate::mission_control::SESSION_ID,
-                        BACKFILL_SESSIONS
-                    ],
-                    |row| row.get::<_, String>(0),
-                )?;
-                rows.collect::<Result<_, _>>()
-            })?
+            Vec::new()
         };
         for id in sessions {
             let tail = self.load_recent_conversation(&id, BACKFILL_TAIL)?;
@@ -204,7 +185,7 @@ impl Store {
             Some((ms, text, from)) => {
                 self.with_connection(|conn| {
                     conn.execute(
-                        "INSERT OR IGNORE INTO agent_last_message (agent_id, text, at_ms, from_side)
+                        "INSERT OR IGNORE INTO agent_last_dm (agent_id, text, at_ms, from_side)
                          VALUES (?1, ?2, ?3, ?4)",
                         params![agent_id, text, ms, from],
                     )?;
@@ -219,7 +200,7 @@ impl Store {
             None => {
                 self.with_connection(|conn| {
                     conn.execute(
-                        "INSERT OR IGNORE INTO agent_last_message (agent_id, text, at_ms, from_side)
+                        "INSERT OR IGNORE INTO agent_last_dm (agent_id, text, at_ms, from_side)
                          VALUES (?1, '', 0, 'agent')",
                         params![agent_id],
                     )?;
@@ -367,7 +348,7 @@ mod tests {
         )
         .unwrap();
         db.with_connection(|c| {
-            c.execute("DELETE FROM agent_last_message", [])?;
+            c.execute("DELETE FROM agent_last_dm", [])?;
             Ok(())
         })
         .unwrap();
@@ -385,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn backfill_reads_a_session_turn_when_newer() {
+    fn backfill_ignores_desk_and_task_sessions() {
         let db = Store::open_in_memory().unwrap();
         db.create_agent(&worker("a")).unwrap();
         db.save_session_scalar(
@@ -422,13 +403,13 @@ mod tests {
         )
         .unwrap();
         db.with_connection(|c| {
-            c.execute("DELETE FROM agent_last_message", [])?;
+            c.execute("DELETE FROM agent_last_dm", [])?;
             Ok(())
         })
         .unwrap();
         let got = db.agent_last_message_or_backfill("a").unwrap().unwrap();
-        assert_eq!(got.text, "From the desk");
-        assert_eq!(got.from, "agent");
+        assert_eq!(got.text, "older");
+        assert_eq!(got.from, "user");
     }
 
     #[test]

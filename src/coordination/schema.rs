@@ -32,7 +32,8 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              nickname TEXT NOT NULL
          );
 
-         CREATE TABLE IF NOT EXISTS agent_last_message (
+         DROP TABLE IF EXISTS agent_last_message;
+         CREATE TABLE IF NOT EXISTS agent_last_dm (
              agent_id TEXT PRIMARY KEY NOT NULL,
              text TEXT NOT NULL,
              at_ms INTEGER NOT NULL,
