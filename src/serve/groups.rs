@@ -499,6 +499,7 @@ mod tests {
             created_at: String::new(),
             last_event_at: None,
             unread: 0,
+            last_message: None,
         };
         let e = super::group_added_envelope(&group);
         assert!(e.starts_with("[group_added]\nthread_id: group:1\ntitle: jh\n"));
