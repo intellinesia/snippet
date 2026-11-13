@@ -38,6 +38,16 @@ pub struct GroupSummary {
     pub last_event_at: Option<String>,
     /// Events the human has not read yet.
     pub unread: i64,
+    pub last_message: Option<GroupLastMessage>,
+}
+
+/// The newest post in a group, for the list preview.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupLastMessage {
+    pub from_kind: String,
+    pub from_id: String,
+    pub body: String,
+    pub at: String,
 }
 
 /// Validation failures cross `with_connection` as `InvalidParameterName`
@@ -72,6 +82,27 @@ fn group_from_row(
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
+    let last_message = conn
+        .query_row(
+            "SELECT actor_kind, actor_id, payload_json, created_at FROM board_events
+             WHERE thread_id = ?1 AND event_type = 'group_message'
+             ORDER BY sequence DESC LIMIT 1",
+            params![id],
+            |r| {
+                let payload: String = r.get(2)?;
+                let body = serde_json::from_str::<serde_json::Value>(&payload)
+                    .ok()
+                    .and_then(|v| v.get("body").and_then(|b| b.as_str()).map(str::to_owned))
+                    .unwrap_or_default();
+                Ok(GroupLastMessage {
+                    from_kind: r.get(0)?,
+                    from_id: r.get(1)?,
+                    body,
+                    at: r.get(3)?,
+                })
+            },
+        )
+        .optional()?;
     Ok(GroupSummary {
         id,
         title: row.get(1)?,
@@ -80,6 +111,7 @@ fn group_from_row(
         created_at: row.get(3)?,
         last_event_at: row.get(4)?,
         unread: row.get(5)?,
+        last_message,
     })
 }
 
@@ -661,6 +693,18 @@ mod tests {
         assert!(db.is_group_member(&id, "agent", "a").unwrap());
         assert_eq!(db.list_groups().unwrap().len(), 1);
         assert!(db.get_group("direct:x").unwrap().is_none());
+    }
+
+    #[test]
+    fn list_groups_carries_the_newest_post() {
+        let (db, id) = three_agent_group();
+        assert!(db.list_groups().unwrap()[0].last_message.is_none());
+        db.post_group_message(&id, ("human", "human"), "first", &[], None, "k1", T0)
+            .unwrap();
+        db.post_group_message(&id, ("agent", "a"), "second", &[], None, "k2", T2)
+            .unwrap();
+        let last = db.list_groups().unwrap()[0].last_message.clone().unwrap();
+        assert_eq!((last.from_id.as_str(), last.body.as_str()), ("a", "second"));
     }
 
     #[test]
