@@ -356,10 +356,14 @@ async fn post_group(
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty())
             .collect();
+        let body = match super::transcribe::prepare_message(&d, body.to_string()).await {
+            Ok(text) => text,
+            Err(error) => return api_error(StatusCode::BAD_REQUEST, error),
+        };
         d.store.post_group_message(
             &id,
             ("human", "human"),
-            body,
+            &body,
             &mentions,
             in_reply_to,
             &uuid::Uuid::new_v4().to_string(),
