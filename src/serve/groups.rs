@@ -381,11 +381,14 @@ async fn post_group(
 
 /// The `[group_message]` envelope handed to a woken agent. `history` is the
 /// prior slice of the thread, rendered by the same digest the DM envelope uses.
+/// `members` pairs each agent in the group with the one-line summary of what
+/// it is for, so a woken agent can tell who is better placed for what.
 fn group_message_envelope(
     event: &crate::coordination::types::CoordinationEvent,
     title: &str,
     reply_expected: bool,
     history: &[crate::coordination::types::CoordinationEvent],
+    members: &[(String, String)],
 ) -> String {
     let body = event
         .payload
@@ -404,6 +407,20 @@ fn group_message_envelope(
         "[group_message]\nthread_id: {}\ntitle: {}\nfrom: {}:{}\n",
         event.thread_id, title, event.actor_kind, event.actor_id
     );
+    if !members.is_empty() {
+        let line: Vec<String> = members
+            .iter()
+            .map(|(id, summary)| {
+                let summary: String = summary.chars().take(120).collect();
+                if summary.is_empty() {
+                    id.clone()
+                } else {
+                    format!("{id} ({summary})")
+                }
+            })
+            .collect();
+        envelope.push_str(&format!("members: {}\n", line.join("; ")));
+    }
     if !mentions.is_empty() {
         envelope.push_str(&format!("mentions: {}\n", mentions.join(", ")));
     }
@@ -418,13 +435,71 @@ fn group_message_envelope(
         if reply_expected {
             "this post is waiting on the group; answer in the thread with \
              group_thread post, setting in_reply_to to the event you answer. \
-             One reply per agent per post."
+             One reply per agent per post. Before doing work from it, say in one line \
+             what you are taking; hand the parts another member is better placed for \
+             to them by naming them, instead of doing everything yourself."
         } else {
             "join only if you add something: an answer, a relevant view, a correction. \
+             If someone has already answered or said they are taking this, do not redo it; \
+             take only what is yours and say so in one line first. \
              Otherwise end your turn without writing anything, not even that you are staying quiet."
         }
     ));
     envelope
+}
+
+/// The nudge the lead gets when a human's post has had no reply from anyone
+/// in the group for [`crate::coordination::GROUP_UNANSWERED_SECONDS`].
+fn group_unanswered_envelope(
+    event: &crate::coordination::types::CoordinationEvent,
+    waiting_minutes: i64,
+) -> String {
+    let body = event
+        .payload
+        .get("body")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    format!(
+        "[owed_reply]\nfrom: {}:{}\nthread_id: {}\nevent_id: {}\nwaiting_minutes: {waiting_minutes}\n\
+         note: nobody in the group has answered this post and you lead the group. \
+         Answer it with group_thread post (in_reply_to this event), or name in one line \
+         the member who should and mention them.\nbody: {body}\n[/owed_reply]",
+        event.actor_kind, event.actor_id, event.thread_id, event.event_id
+    )
+}
+
+/// What a deferred wake did: handed over, found moot, or pushed back because
+/// the first responder is still mid-turn and may claim it.
+enum GroupWake {
+    Delivered,
+    Skipped,
+    Postponed,
+}
+
+/// How long after a post the deferred members keep waiting for the first
+/// responder to finish; past this the wake goes out regardless.
+const GROUP_CLAIM_WAIT_MAX_SECS: i64 = 300;
+const GROUP_CLAIM_RECHECK_SECS: i64 = 15;
+
+/// Whether any agent woken first for this post is still running its turn.
+async fn first_responder_busy(d: &Shared, event_id: &str) -> bool {
+    let first = d
+        .store
+        .group_immediate_recipients(event_id)
+        .unwrap_or_default();
+    for agent_id in first {
+        let session_id = super::direct::recipient_session_id(&agent_id);
+        let busy = d
+            .store
+            .get_session_row(&session_id)
+            .ok()
+            .flatten()
+            .is_some_and(|row| matches!(row.status.as_str(), "running" | "waiting_for_input"));
+        if busy {
+            return true;
+        }
+    }
+    false
 }
 
 /// Hand one scheduled group wake to its agent's session. A deferred wake
@@ -432,20 +507,68 @@ fn group_message_envelope(
 async fn deliver_group(
     d: &Shared,
     pending: &crate::coordination::PendingDirectMessage,
-) -> Result<(), String> {
+) -> Result<GroupWake, String> {
     let event = &pending.event;
     let agent_id = pending.recipient_id.as_str();
-    if pending.recipient_kind == "group_deferred"
-        && d.store.group_has_replies(&event.event_id).unwrap_or(false)
-    {
-        return Ok(());
+    if pending.recipient_kind == "group_unanswered" {
+        if d.store.group_has_replies(&event.event_id).unwrap_or(false) {
+            return Ok(GroupWake::Skipped);
+        }
+        let waiting = chrono::DateTime::parse_from_rfc3339(&event.created_at)
+            .map(|at| (chrono::Utc::now() - at.with_timezone(&chrono::Utc)).num_minutes())
+            .unwrap_or_default();
+        let envelope = group_unanswered_envelope(event, waiting);
+        if agent_id != crate::mission_control::SESSION_ID {
+            super::direct::ensure_agent_inbox(d, agent_id).await?;
+        }
+        let session_id = super::direct::recipient_session_id(agent_id);
+        let Some((tx, _path, _stream)) = d.ensure_live(&session_id).await else {
+            return Err(format!("could not start inbox session `{session_id}`"));
+        };
+        drop(tx);
+        super::direct::deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
+        return Ok(GroupWake::Delivered);
     }
-    let title = d
-        .store
-        .get_group(&event.thread_id)
-        .ok()
-        .flatten()
-        .map(|group| group.title)
+    if pending.recipient_kind == "group_deferred" {
+        if d.store.group_has_replies(&event.event_id).unwrap_or(false) {
+            return Ok(GroupWake::Skipped);
+        }
+        let age = chrono::DateTime::parse_from_rfc3339(&event.created_at)
+            .map(|at| (chrono::Utc::now() - at.with_timezone(&chrono::Utc)).num_seconds())
+            .unwrap_or(i64::MAX);
+        if age < GROUP_CLAIM_WAIT_MAX_SECS && first_responder_busy(d, &event.event_id).await {
+            let retry_at = (chrono::Utc::now()
+                + chrono::Duration::seconds(GROUP_CLAIM_RECHECK_SECS))
+            .to_rfc3339();
+            let _ = d
+                .store
+                .postpone_group_delivery(&event.event_id, agent_id, &retry_at);
+            return Ok(GroupWake::Postponed);
+        }
+    }
+    let group = d.store.get_group(&event.thread_id).ok().flatten();
+    let title = group
+        .as_ref()
+        .map(|group| group.title.clone())
+        .unwrap_or_default();
+    let root = crate::coordination::agents_root(&d.mission_control_root);
+    let members: Vec<(String, String)> = group
+        .as_ref()
+        .map(|group| {
+            group
+                .members
+                .iter()
+                .filter(|m| m.kind == "agent")
+                .map(|m| {
+                    let summary = crate::coordination::AgentHome::new(root.clone(), &m.id)
+                        .ok()
+                        .and_then(|home| home.read_identity().ok())
+                        .map(|text| crate::coordination_tools::identity_summary(&text))
+                        .unwrap_or_default();
+                    (m.id.clone(), summary)
+                })
+                .collect()
+        })
         .unwrap_or_default();
     // The wake carries the same bounded history a DM wake does, minus the post
     // being delivered and the daemon's own acknowledgements.
@@ -457,8 +580,13 @@ async fn deliver_group(
             super::direct::DIRECT_HISTORY_ON_WAKE,
         )
         .unwrap_or_default();
-    let envelope =
-        group_message_envelope(event, &title, pending.recipient_kind == "group", &history);
+    let envelope = group_message_envelope(
+        event,
+        &title,
+        pending.recipient_kind == "group",
+        &history,
+        &members,
+    );
     if agent_id != crate::mission_control::SESSION_ID {
         super::direct::ensure_agent_inbox(d, agent_id).await?;
     }
@@ -475,7 +603,7 @@ async fn deliver_group(
         event.actor_kind == "human",
     )
     .await;
-    Ok(())
+    Ok(GroupWake::Delivered)
 }
 
 /// Deliver every scheduled-but-undelivered group wake. Same shape as the
@@ -492,7 +620,8 @@ pub async fn group_dispatch_loop(d: Shared) {
                 for message in pending {
                     let at = chrono::Utc::now().to_rfc3339();
                     match deliver_group(&d, &message).await {
-                        Ok(()) => {
+                        Ok(GroupWake::Postponed) => {}
+                        Ok(GroupWake::Delivered | GroupWake::Skipped) => {
                             let _ = d.store.mark_direct_delivered(
                                 &message.event.event_id,
                                 &message.recipient_kind,
@@ -720,19 +849,27 @@ mod tests {
             idempotency_key: "k".into(),
             created_at: T0.into(),
         };
-        let expected = group_message_envelope(&event, "build", true, &[]);
+        let members = vec![
+            ("a".to_string(), "Reviews Rust PRs.".to_string()),
+            ("b".to_string(), String::new()),
+        ];
+        let expected = group_message_envelope(&event, "build", true, &[], &members);
         for field in [
             "thread_id: group:x",
             "title: build",
+            "members: a (Reviews Rust PRs.); b",
             "from: human:human",
             "mentions: b",
             "in_reply_to: p0",
             "reply_expected: true",
+            "say in one line what you are taking",
             "body: hi",
         ] {
             assert!(expected.contains(field), "missing {field} in {expected}");
         }
-        let deferred = group_message_envelope(&event, "build", false, &[]);
+        let deferred = group_message_envelope(&event, "build", false, &[], &[]);
+        assert!(!deferred.contains("members:"));
+        assert!(deferred.contains("do not redo it"));
         assert!(deferred.contains("reply_expected: false"));
         assert!(
             deferred.contains(
@@ -787,7 +924,7 @@ mod tests {
             prior(3, "agent", "a", "auto ack", true),
         ];
         // The digest hides the `auto` event, so two messages render.
-        let env = group_message_envelope(&event, "build", true, &history);
+        let env = group_message_envelope(&event, "build", true, &history, &[]);
         assert!(env.contains("history: last 2 message(s), oldest first"));
         assert!(env.contains("  1 [agent] a: first post"));
         assert!(env.contains("  2 [human] human: second post"));
@@ -798,7 +935,7 @@ mod tests {
         assert!(digest_at < body_at, "body must stay last: {env}");
         assert!(env.ends_with("[/group_message]"));
 
-        let env = group_message_envelope(&event, "build", true, &[]);
+        let env = group_message_envelope(&event, "build", true, &[], &[]);
         assert!(env.contains("history: (first message in this conversation)"));
         assert!(env.find("history:").unwrap() < env.find("body: wake body").unwrap());
     }
