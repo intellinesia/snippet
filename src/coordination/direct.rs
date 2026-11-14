@@ -214,6 +214,10 @@ pub(super) fn event_from_row(
 
 /// `(delivered_at, read_at)` for one event.
 /// The app sends emoji and agents send names; either form of a yes settles a question.
+pub(crate) fn is_removed_reaction(payload: &serde_json::Value) -> bool {
+    payload.get("removed").and_then(|v| v.as_bool()) == Some(true)
+}
+
 pub(crate) fn settles_question(reaction: &str) -> bool {
     matches!(reaction, "check" | "thumbs_up" | "✅" | "✔️") || reaction.starts_with('👍')
 }
@@ -469,6 +473,7 @@ impl Store {
             if is_reaction {
                 if sender.0 == "human"
                     && reaction.is_some_and(settles_question)
+                    && !is_removed_reaction(&saved.payload)
                     && let Some(target_id) = saved.payload.get("reply_to").and_then(|v| v.as_str())
                 {
                     conn.execute(
@@ -1436,6 +1441,32 @@ mod tests {
         assert!(
             awaiting(&q1.event_id).is_some(),
             "question reaction must not settle"
+        );
+
+        {
+            let mut extra = serde_json::Map::new();
+            crate::coordination::typed::apply_reply_and_reaction(
+                &mut extra,
+                Some(&q1.event_id),
+                Some("check"),
+            );
+            extra.insert("removed".into(), serde_json::json!(true));
+            db.send_direct_message_typed(
+                ("human", LOCAL_HUMAN_ID),
+                ("agent", "a"),
+                "",
+                "r-removed",
+                "2026-01-01T00:00:02Z",
+                None,
+                None,
+                None,
+                extra,
+            )
+            .unwrap();
+        }
+        assert!(
+            awaiting(&q1.event_id).is_some(),
+            "removing a check must not settle"
         );
 
         react(&q1.event_id, "eyes", "r-eyes", "2026-01-01T00:00:03Z");

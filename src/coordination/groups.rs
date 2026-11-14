@@ -755,6 +755,28 @@ impl Store {
         idempotency_key: &str,
         created_at: &str,
     ) -> Result<CoordinationEvent, StoreError> {
+        self.post_group_reaction_ex(
+            thread_id,
+            actor,
+            target_event_id,
+            reaction,
+            false,
+            idempotency_key,
+            created_at,
+        )
+    }
+
+    /// `removed` records taking a reaction back; readers fold events in order.
+    pub fn post_group_reaction_ex(
+        &self,
+        thread_id: &str,
+        actor: (&str, &str),
+        target_event_id: &str,
+        reaction: &str,
+        removed: bool,
+        idempotency_key: &str,
+        created_at: &str,
+    ) -> Result<CoordinationEvent, StoreError> {
         let reaction = reaction.trim();
         if reaction.is_empty() {
             return Err(StoreError::InvalidInput("`reaction` is required".into()));
@@ -811,6 +833,19 @@ impl Store {
             Ok(())
         }))?;
 
+        let mut payload = serde_json::json!({
+                "body": "",
+                "kind": "reaction",
+                "reaction": reaction,
+                "reply_to": target_event_id,
+                "in_reply_to": target_event_id,
+                "mentions": [],
+                "from_kind": actor.0,
+                "from_id": actor.1,
+        });
+        if removed {
+            payload["removed"] = serde_json::json!(true);
+        }
         let event = CoordinationEvent {
             event_id,
             thread_id: thread_id.to_string(),
@@ -820,16 +855,7 @@ impl Store {
             actor_kind: actor.0.to_string(),
             actor_id: actor.1.to_string(),
             payload_version: 1,
-            payload: serde_json::json!({
-                "body": "",
-                "kind": "reaction",
-                "reaction": reaction,
-                "reply_to": target_event_id,
-                "in_reply_to": target_event_id,
-                "mentions": [],
-                "from_kind": actor.0,
-                "from_id": actor.1,
-            }),
+            payload,
             causation_id: None,
             correlation_id: None,
             idempotency_key: idempotency_key.to_string(),
@@ -1081,6 +1107,24 @@ mod tests {
         let outsider =
             db.post_group_reaction(&id, ("agent", "ghost"), &post.event_id, "check", "r3", T2);
         assert!(outsider.is_err(), "only members react");
+        let removed = db
+            .post_group_reaction_ex(
+                &id,
+                ("human", "human"),
+                &post.event_id,
+                "thumbs_up",
+                true,
+                "r4",
+                T2,
+            )
+            .unwrap();
+        assert_eq!(removed.payload["removed"], true);
+        assert!(reaction.payload.get("removed").is_none());
+        assert_eq!(
+            db.list_pending_group_deliveries(50, T2).unwrap().len(),
+            before,
+            "a removal wakes nobody either"
+        );
     }
 
     #[test]
