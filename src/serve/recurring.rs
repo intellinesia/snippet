@@ -286,6 +286,23 @@ async fn report_wake(
                 "mission_control: unavailable".into()
             }
         }
+        ReportTo::Group => {
+            let thread = wake.report.group.clone().unwrap_or_default();
+            let poster = match crate::agent_wakes::group_poster(
+                &daemon.recurring_root,
+                &wake.owner,
+                wake.owner_kind,
+            ) {
+                Ok(poster) => poster,
+                Err(error) => return format!("group: failed: {error}"),
+            };
+            let body = if status == "completed" {
+                format!("{label}: {summary}")
+            } else {
+                format!("{label} ({status}): {summary}")
+            };
+            post_run_card(daemon, &thread, &poster, &body)
+        }
         ReportTo::TaskRoom => {
             let task_id = wake.report.task_id.clone().unwrap_or_default();
             match post_to_task_room(
@@ -365,10 +382,14 @@ fn report_run_to_group(
     } else {
         format!("{label} ({status}): {summary}")
     };
+    Some(post_run_card(daemon, thread, &poster, &body))
+}
+
+fn post_run_card(daemon: &Shared, thread: &str, poster: &str, body: &str) -> String {
     match daemon.store.post_group_card(
         thread,
-        ("agent", poster.as_str()),
-        &body,
+        ("agent", poster),
+        body,
         None,
         &uuid::Uuid::new_v4().to_string(),
         &chrono::Utc::now().to_rfc3339(),
@@ -378,9 +399,9 @@ fn report_run_to_group(
                 "kind": "coordination_event",
                 "event": event,
             }));
-            Some(format!("group: {thread}"))
+            format!("group: {thread}")
         }
-        Err(error) => Some(format!("group: failed: {error}")),
+        Err(error) => format!("group: failed: {error}"),
     }
 }
 

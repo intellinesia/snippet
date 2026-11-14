@@ -46,8 +46,18 @@ async fn list_wakes(State(d): State<Shared>) -> Response {
     }
 }
 
-async fn get_wake(State(d): State<Shared>, AxumPath(owner): AxumPath<String>) -> Response {
-    match agent_wakes::get(&d.recurring_root, &owner) {
+#[derive(Deserialize)]
+struct NameQuery {
+    #[serde(default)]
+    name: Option<String>,
+}
+
+async fn get_wake(
+    State(d): State<Shared>,
+    AxumPath(owner): AxumPath<String>,
+    Query(q): Query<NameQuery>,
+) -> Response {
+    match agent_wakes::get_named(&d.recurring_root, &owner, q.name.as_deref()) {
         Ok(Some(job)) => {
             Json(agent_wakes::view_with_runs(&d.recurring_root, &job, now())).into_response()
         }
@@ -73,8 +83,12 @@ async fn put_wake(
     }
 }
 
-async fn delete_wake(State(d): State<Shared>, AxumPath(owner): AxumPath<String>) -> Response {
-    match agent_wakes::clear(&d.recurring_root, &owner) {
+async fn delete_wake(
+    State(d): State<Shared>,
+    AxumPath(owner): AxumPath<String>,
+    Query(q): Query<NameQuery>,
+) -> Response {
+    match agent_wakes::clear_named(&d.recurring_root, &owner, q.name.as_deref()) {
         Ok(true) => Json(json!({"owner": owner, "deleted": true})).into_response(),
         Ok(false) => not_found(&owner),
         Err(error) => mission_error(error),

@@ -96,6 +96,7 @@ pub struct MemoryScopeInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WakeScheduleInfo {
     pub job_id: String,
+    pub name: Option<String>,
     pub title: String,
     pub schedule: String,
     pub enabled: bool,
@@ -123,7 +124,7 @@ pub struct KeepWarmInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WakesInfo {
-    pub schedule: Option<WakeScheduleInfo>,
+    pub schedules: Vec<WakeScheduleInfo>,
     pub keep_warm: Option<KeepWarmInfo>,
     pub watches: Vec<Value>,
 }
@@ -326,21 +327,16 @@ pub(crate) fn build_with(
         .collect();
 
     let wake_root = crate::recurring::default_root();
-    let schedule = crate::agent_wakes::get(&wake_root, agent_id)
-        .ok()
-        .flatten()
-        .or_else(|| {
-            (!session_id.trim().is_empty())
-                .then(|| {
-                    crate::agent_wakes::get(&wake_root, session_id)
-                        .ok()
-                        .flatten()
-                })
-                .flatten()
-        })
-        .and_then(|job| {
+    let mut jobs = crate::agent_wakes::list_for(&wake_root, agent_id).unwrap_or_default();
+    if !session_id.trim().is_empty() && session_id != agent_id {
+        jobs.extend(crate::agent_wakes::list_for(&wake_root, session_id).unwrap_or_default());
+    }
+    let schedules: Vec<WakeScheduleInfo> = jobs
+        .into_iter()
+        .filter_map(|job| {
             let wake = job.wake?;
             Some(WakeScheduleInfo {
+                name: wake.name,
                 job_id: job.id,
                 title: job.title,
                 schedule: job.schedule.display(),
@@ -353,7 +349,8 @@ pub(crate) fn build_with(
                 next_run_at: job.enabled.then_some(job.next_run_at),
                 last_run_at: job.last_run_at,
             })
-        });
+        })
+        .collect();
     let keep_warm = crate::keep_warm::get(&wake_root, agent_id)
         .ok()
         .flatten()
@@ -382,7 +379,7 @@ pub(crate) fn build_with(
         })
         .unwrap_or_default();
     let wakes = WakesInfo {
-        schedule,
+        schedules,
         keep_warm,
         watches,
     };
@@ -597,35 +594,34 @@ pub fn schema() -> Value {
             },
             "wakes": {
                 "type": "object",
-                "required": ["schedule", "keep_warm", "watches"],
+                "required": ["schedules", "keep_warm", "watches"],
                 "additionalProperties": false,
                 "properties": {
-                    "schedule": {
-                        "anyOf": [
-                            {"type": "null"},
-                            {
-                                "type": "object",
-                                "required": [
-                                    "job_id", "title", "schedule", "enabled", "set_by",
-                                    "quiet_start", "quiet_end", "max_runs_per_day",
-                                    "report_to", "next_run_at", "last_run_at"
-                                ],
-                                "additionalProperties": false,
-                                "properties": {
-                                    "job_id": {"type": "string"},
-                                    "title": {"type": "string"},
-                                    "schedule": {"type": "string"},
-                                    "enabled": {"type": "boolean"},
-                                    "set_by": {"type": "string", "enum": setter_enum},
-                                    "quiet_start": {"type": ["string", "null"]},
-                                    "quiet_end": {"type": ["string", "null"]},
-                                    "max_runs_per_day": {"type": "integer"},
-                                    "report_to": {"type": "string", "enum": ["mission_control", "user", "task_room", "none"]},
-                                    "next_run_at": {"type": ["integer", "null"]},
-                                    "last_run_at": {"type": ["integer", "null"]}
-                                }
+                    "schedules": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": [
+                                "job_id", "name", "title", "schedule", "enabled", "set_by",
+                                "quiet_start", "quiet_end", "max_runs_per_day",
+                                "report_to", "next_run_at", "last_run_at"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                                "job_id": {"type": "string"},
+                                "name": {"type": ["string", "null"]},
+                                "title": {"type": "string"},
+                                "schedule": {"type": "string"},
+                                "enabled": {"type": "boolean"},
+                                "set_by": {"type": "string", "enum": setter_enum},
+                                "quiet_start": {"type": ["string", "null"]},
+                                "quiet_end": {"type": ["string", "null"]},
+                                "max_runs_per_day": {"type": "integer"},
+                                "report_to": {"type": "string", "enum": ["mission_control", "user", "task_room", "group", "none"]},
+                                "next_run_at": {"type": ["integer", "null"]},
+                                "last_run_at": {"type": ["integer", "null"]}
                             }
-                        ]
+                        }
                     },
                     "keep_warm": {
                         "anyOf": [
