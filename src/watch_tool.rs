@@ -56,8 +56,11 @@ fn resolve_owner(ctx: &ToolContext, agent_id: Option<&str>) -> Result<String, To
         (false, None) => ctx
             .agent_id()
             .filter(|a| *a != crate::coordination::SNIPPET_AGENT_ID)
-            .or(ctx.durable_session_id())
-            .ok_or_else(|| ToolError::msg("this session has no durable identity to own watches"))?
+            .ok_or_else(|| {
+                ToolError::msg(
+                    "a watch wakes an agent's desk, and this session runs as no named agent; ask that agent or Mission Control (agent_id) to add it",
+                )
+            })?
             .to_string(),
     };
     Ok(owner)
