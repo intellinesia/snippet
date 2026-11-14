@@ -917,6 +917,21 @@ impl Store {
         })
     }
 
+    /// Who leads the current round: the set lead, else the agent the human last
+    /// addressed, else the first agent.
+    pub fn group_round_lead(&self, thread_id: &str) -> Result<Option<String>, StoreError> {
+        self.with_connection(|conn| {
+            let agents: Vec<String> = conn
+                .prepare(
+                    "SELECT actor_id FROM board_participants
+                     WHERE thread_id = ?1 AND actor_kind = 'agent' ORDER BY actor_id",
+                )?
+                .query_map(params![thread_id], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            resolve_lead(conn, thread_id, &agents)
+        })
+    }
+
     /// Agents woken at once for `post_event_id` (the named ones, or the lead).
     pub fn group_immediate_recipients(
         &self,
@@ -1227,6 +1242,25 @@ mod tests {
                 ("group_deferred".into(), "c".into()),
             ]
         );
+    }
+
+    #[test]
+    fn the_round_lead_follows_whom_the_human_addressed() {
+        let (db, id) = three_agent_group();
+        assert_eq!(db.group_round_lead(&id).unwrap().as_deref(), Some("a"));
+        db.post_group_message(
+            &id,
+            ("human", "human"),
+            "@b hi",
+            &["b".into()],
+            None,
+            "k1",
+            T0,
+        )
+        .unwrap();
+        assert_eq!(db.group_round_lead(&id).unwrap().as_deref(), Some("b"));
+        db.set_group_lead(&id, "c").unwrap();
+        assert_eq!(db.group_round_lead(&id).unwrap().as_deref(), Some("c"));
     }
 
     #[test]

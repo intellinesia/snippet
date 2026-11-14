@@ -294,6 +294,9 @@ pub struct RecurringJob {
     pub wake: Option<crate::agent_wakes::WakePolicy>,
     #[serde(default)]
     pub last_result: Option<String>,
+    /// Group thread each run's summary is also posted to.
+    #[serde(default)]
+    pub report_group: Option<String>,
 }
 
 /// One fire of a job, kept for audit.
@@ -312,6 +315,50 @@ pub struct RecurringRun {
 
 pub fn store_at(root: &Path) -> Result<Store, String> {
     store_for(root)
+}
+
+/// The agent a session's run reports speak as in a group.
+pub fn group_poster(store: &Store, session_id: &str) -> String {
+    store
+        .get_session_row(session_id)
+        .ok()
+        .flatten()
+        .and_then(|row| row.agent_id)
+        .unwrap_or_else(|| crate::coordination::SNIPPET_AGENT_ID.to_string())
+}
+
+/// A group a session's runs may report to: it exists and the session's agent is in it.
+pub fn check_report_group(root: &Path, session_id: &str, thread_id: &str) -> Result<(), String> {
+    let store = store_for(root)?;
+    if !thread_id.starts_with("group:")
+        || store
+            .get_group(thread_id)
+            .map_err(|e| e.to_string())?
+            .is_none()
+    {
+        return Err(format!("`{thread_id}` is not a group thread id"));
+    }
+    let poster = group_poster(&store, session_id);
+    if !store
+        .is_group_member(thread_id, "agent", &poster)
+        .map_err(|e| e.to_string())?
+    {
+        return Err(format!(
+            "`{poster}` (the agent of session `{session_id}`) is not in that group; add it first"
+        ));
+    }
+    Ok(())
+}
+
+/// "2026-11-15 21:00 local (15:30 UTC)" for a unix timestamp.
+pub fn fmt_local_and_utc(at: u64) -> String {
+    use chrono::TimeZone;
+    let utc = chrono::Utc
+        .timestamp_opt(i64::try_from(at).unwrap_or(i64::MAX), 0)
+        .single()
+        .map(|dt| dt.format("%H:%M").to_string())
+        .unwrap_or_else(|| "??".into());
+    format!("{} local ({utc} UTC)", fmt_local_time(at))
 }
 
 /// How a fire reaches the session.
@@ -567,6 +614,7 @@ pub fn create_job_with(
         updated_at: now,
         wake: None,
         last_result: None,
+        report_group: None,
     };
     store_for(root)?
         .upsert_recurring_job(&job)
@@ -813,6 +861,7 @@ mod tests {
             updated_at: 0,
             wake: None,
             last_result: None,
+            report_group: None,
         })
         .unwrap();
         // Old on-disk jobs (no delivery field) must parse as Goal.
@@ -894,6 +943,51 @@ mod tests {
     }
 
     #[test]
+    fn report_group_persists_and_must_be_a_group_the_agent_is_in() {
+        let root = tempfile::TempDir::new().unwrap();
+        let job = create_job(
+            root.path(),
+            "T",
+            "s1",
+            "do it",
+            Schedule::Interval { every_secs: 300 },
+            None,
+        )
+        .unwrap();
+        assert!(check_report_group(root.path(), "s1", "group:nope").is_err());
+        let store = store_at(root.path()).unwrap();
+        use crate::coordination::types::{Agent, AgentKind, AgentStatus};
+        store
+            .create_agent(&Agent {
+                id: "x".into(),
+                display_name: "x".into(),
+                handle: "x".into(),
+                kind: AgentKind::Worker,
+                status: AgentStatus::Active,
+                capabilities: vec![],
+            })
+            .unwrap();
+        let group = store
+            .create_group(
+                "g",
+                ("human", "human"),
+                &["x".into()],
+                None,
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+        let err = check_report_group(root.path(), "s1", &group.id).unwrap_err();
+        assert!(err.contains("not in that group"), "{err}");
+        update_job(root.path(), &job.id, |j| {
+            j.report_group = Some(group.id.clone())
+        })
+        .unwrap();
+        let back = list_jobs(root.path()).unwrap();
+        assert_eq!(back[0].report_group.as_deref(), Some(group.id.as_str()));
+        assert!(fmt_local_and_utc(1_794_756_600).contains("UTC)"));
+    }
+
+    #[test]
     fn render_goal_is_work_to_complete() {
         let job = RecurringJob {
             id: "abc".into(),
@@ -912,6 +1006,7 @@ mod tests {
             updated_at: 0,
             wake: None,
             last_result: None,
+            report_group: None,
         };
         let msg = job.render_goal(None).unwrap();
         // Formatted header, then the instruction, then the outcome directive.
@@ -946,6 +1041,7 @@ mod tests {
             updated_at: 0,
             wake: None,
             last_result: None,
+            report_group: None,
         };
         let msg = job.render_goal(None).unwrap();
         assert!(msg.contains("follow the plan"));

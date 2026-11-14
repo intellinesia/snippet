@@ -189,8 +189,8 @@ impl Store {
                 "INSERT INTO recurring_jobs
                    (id, title, session_id, prompt, plan_path, schedule_json, delivery,
                     enabled, next_run_at, last_run_at, last_error, queued,
-                    created_at, updated_at, wake_json, last_result)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                    created_at, updated_at, wake_json, last_result, report_group)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
                  ON CONFLICT(id) DO UPDATE SET
                    title = excluded.title,
                    session_id = excluded.session_id,
@@ -205,7 +205,8 @@ impl Store {
                    queued = excluded.queued,
                    updated_at = excluded.updated_at,
                    wake_json = excluded.wake_json,
-                   last_result = excluded.last_result",
+                   last_result = excluded.last_result,
+                   report_group = excluded.report_group",
                 params![
                     job.id,
                     job.title,
@@ -223,6 +224,7 @@ impl Store {
                     job.updated_at as i64,
                     wake,
                     job.last_result,
+                    job.report_group,
                 ],
             )?;
             Ok(())
@@ -527,7 +529,7 @@ impl Store {
 
 const JOB_COLUMNS: &str = "id, title, session_id, prompt, plan_path, schedule_json, delivery, \
                            enabled, next_run_at, last_run_at, last_error, queued, \
-                           created_at, updated_at, wake_json, last_result";
+                           created_at, updated_at, wake_json, last_result, report_group";
 
 fn delivery_str(delivery: &Delivery) -> &'static str {
     match delivery {
@@ -582,5 +584,6 @@ fn recurring_job_from_row(row: &rusqlite::Row<'_>) -> Result<RecurringJob, rusql
             .get::<_, Option<String>>(14)?
             .and_then(|raw| serde_json::from_str(&raw).ok()),
         last_result: row.get(15)?,
+        report_group: row.get(16)?,
     })
 }

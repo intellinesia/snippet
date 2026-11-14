@@ -4539,6 +4539,8 @@ struct CreateRecurringArgs {
     prompt: String,
     #[serde(default)]
     plan_path: Option<String>,
+    #[serde(default)]
+    report_group: Option<String>,
 }
 
 pub struct ListRecurringJobs;
@@ -4568,7 +4570,8 @@ impl Tool for ListRecurringJobs {
                     "schedule": job.schedule.display(),
                     "plan_path": job.plan_path,
                     "enabled": job.enabled,
-                    "next_run_at": job.next_run_at,
+                    "next_run": crate::recurring::fmt_local_and_utc(job.next_run_at),
+                    "report_group": job.report_group,
                 })
             })
             .collect();
@@ -4622,14 +4625,15 @@ impl Tool for CreateRecurringJob {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "create_recurring_job".into(),
-            description: "Schedule work that repeats: each run sets a goal on the target session (the current one if session_id is omitted), and its complete_goal summary is shown to the user and reported to you as a [recurring_run_report]. schedule: `every 5m|15m|1h|1d` (at least 5 minutes), `daily HH:MM`, or one-off `at HH:MM` / `in 30m`. Give a prompt, a plan_path the session rereads each run, or both. The first run starts within seconds unless the session is busy.".into(),
+            description: "Schedule repeat work: each run sets a goal on the target session, and its complete_goal summary reaches the user, you and report_group if set. schedule: `every 5m|1h|1d` (5m min), `daily HH:MM`, or one-off `at HH:MM` / `in 30m`. Clock times are the user's local time, not UTC. Give a prompt, a plan_path reread each run, or both. The first run starts at once, or when the session is free.".into(),
             input_schema: schema(
                 json!({
                     "title": {"type": "string"},
                     "session_id": {"type": "string", "description": "Target worker session id (defaults to current session; never Mission Control)"},
                     "schedule": {"type": "string", "description": "e.g. `every 1h`, `daily 09:00`, `at 14:00`, `in 30m`"},
                     "prompt": {"type": "string"},
-                    "plan_path": {"type": "string"}
+                    "plan_path": {"type": "string"},
+                    "report_group": {"type": "string", "description": "group:<id> the work came from"}
                 }),
                 &["title", "schedule"],
             ),
@@ -4662,6 +4666,20 @@ impl Tool for CreateRecurringJob {
             ));
         }
         let schedule = crate::recurring::Schedule::parse(&args.schedule).map_err(ToolError::msg)?;
+        let report_group = args
+            .report_group
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(str::to_string);
+        if let Some(group) = &report_group {
+            crate::recurring::check_report_group(
+                &crate::recurring::default_root(),
+                session_id,
+                group,
+            )
+            .map_err(ToolError::msg)?;
+        }
         let title = args.title.trim().to_lowercase();
         let plan = args
             .plan_path
@@ -4692,6 +4710,16 @@ impl Tool for CreateRecurringJob {
             args.plan_path.as_deref(),
         )
         .map_err(ToolError::msg)?;
+        let job = match report_group {
+            Some(group) => {
+                crate::recurring::update_job(&crate::recurring::default_root(), &job.id, |j| {
+                    j.report_group = Some(group)
+                })
+                .map_err(ToolError::msg)?
+            }
+            None => job,
+        };
+        let then = job.schedule.next_after(job.next_run_at.max(job.created_at));
         Ok(ToolResult::success(json!({
             "job": {
                 "id": job.id,
@@ -4699,7 +4727,9 @@ impl Tool for CreateRecurringJob {
                 "session_id": job.session_id,
                 "schedule": job.schedule.display(),
                 "plan_path": job.plan_path,
-                "next_run_at": job.next_run_at,
+                "report_group": job.report_group,
+                "first_run": "now",
+                "then": crate::recurring::fmt_local_and_utc(then),
             },
             "note": "Scheduled. The first run starts within seconds (or right after the session's current goal), so don't also create a task for it.",
         })))
