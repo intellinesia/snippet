@@ -43,6 +43,10 @@ pub struct SessionEntry {
     pub profile: Option<String>,
     pub cache: String,
     pub idle_secs: i64,
+    /// Prompt tokens of the session's last request: how full its context is.
+    pub context_tokens: u64,
+    /// The session's recorded context window, when it has run a turn.
+    pub context_window: Option<u64>,
     pub settled: bool,
     pub keep_awake: bool,
     pub task_id: Option<String>,
@@ -188,19 +192,26 @@ pub(crate) fn build_with(
                 || s.agent_id.as_deref() == Some(agent_id)
                 || s.worker_agent_id.as_deref() == Some(agent_id)
         })
-        .map(|s| SessionEntry {
-            id: s.id.clone(),
-            title: s.title.clone(),
-            folder: s.folder.clone(),
-            status: s.status.clone(),
-            profile: s.profile.clone(),
-            cache: s.cache.to_string(),
-            idle_secs: s.idle_secs,
-            settled: s.settled,
-            keep_awake: s.keep_awake,
-            task_id: s.task_id.clone(),
-            is_current: s.id == session_id,
-            is_desk: crate::session::is_inbox_session_id(&s.id),
+        .map(|s| {
+            let state = crate::session::state_path_for_id(&s.id)
+                .and_then(|path| crate::session::read_session_meta(&path));
+            SessionEntry {
+                id: s.id.clone(),
+                title: s.title.clone(),
+                folder: s.folder.clone(),
+                status: s.status.clone(),
+                profile: s.profile.clone(),
+                cache: s.cache.to_string(),
+                idle_secs: s.idle_secs,
+                context_tokens: state.as_ref().map_or(0, |st| st.last_prompt_tokens),
+                context_window: state
+                    .and_then(|st| (st.context_window > 0).then_some(st.context_window)),
+                settled: s.settled,
+                keep_awake: s.keep_awake,
+                task_id: s.task_id.clone(),
+                is_current: s.id == session_id,
+                is_desk: crate::session::is_inbox_session_id(&s.id),
+            }
         })
         .collect();
 
@@ -496,7 +507,8 @@ pub fn schema() -> Value {
                     "type": "object",
                     "required": [
                         "id", "title", "folder", "status", "profile", "cache",
-                        "idle_secs", "settled", "keep_awake", "task_id", "is_current", "is_desk"
+                        "idle_secs", "context_tokens", "context_window",
+                        "settled", "keep_awake", "task_id", "is_current", "is_desk"
                     ],
                     "additionalProperties": false,
                     "properties": {
@@ -507,6 +519,8 @@ pub fn schema() -> Value {
                         "profile": {"type": ["string", "null"]},
                         "cache": {"type": "string"},
                         "idle_secs": {"type": "integer"},
+                        "context_tokens": {"type": "integer"},
+                        "context_window": {"type": ["integer", "null"]},
                         "settled": {"type": "boolean"},
                         "keep_awake": {"type": "boolean"},
                         "task_id": {"type": ["string", "null"]},
@@ -877,6 +891,50 @@ mod tests {
             assert!(obj.contains_key(key), "missing top-level key `{key}`");
         }
         validate_node(&value, &schema, "$");
+    }
+
+    /// Sessions carry their context fill so a desk can pick a warm one.
+    #[test]
+    fn sessions_carry_context_fill() {
+        let store = crate::store::Store::open_cached(crate::store::default_db_path()).unwrap();
+        let mut state = crate::harness::HarnessState::blank(
+            "/tmp/ws-map-ctx".to_string(),
+            Some("map ctx".to_string()),
+        );
+        state.last_prompt_tokens = 42_000;
+        state.context_window = 200_000;
+        let mut extras = crate::conversations::SessionExtras::default();
+        extras.agent_id = Some("map-agent".to_string());
+        store
+            .import_session("ws-map-ctx", "key", &state, &extras)
+            .unwrap();
+
+        let map = build("map-agent", "ws-map-ctx", "desk");
+        let entry = map
+            .sessions
+            .iter()
+            .find(|s| s.id == "ws-map-ctx")
+            .expect("the imported session is listed");
+        assert_eq!(entry.context_tokens, 42_000);
+        assert_eq!(entry.context_window, Some(200_000));
+
+        // A session that never ran a turn reports no window.
+        let mut blank = crate::harness::HarnessState::blank(
+            "/tmp/ws-map-blank".to_string(),
+            Some("map blank".to_string()),
+        );
+        blank.context_window = 0;
+        store
+            .import_session("ws-map-blank", "key", &blank, &extras)
+            .unwrap();
+        let map = build("map-agent", "ws-map-blank", "desk");
+        let entry = map
+            .sessions
+            .iter()
+            .find(|s| s.id == "ws-map-blank")
+            .unwrap();
+        assert_eq!(entry.context_tokens, 0);
+        assert_eq!(entry.context_window, None);
     }
 
     #[test]

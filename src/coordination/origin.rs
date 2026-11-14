@@ -363,7 +363,7 @@ fn sweep_attention(store: &Store) {
                         session_id: Some(session),
                         workspace: None,
                         summary: &format!(
-                            "Task {} is waiting on the boss: {}, shown in {}",
+                            "Task {} is waiting on the user: {}, shown in {}",
                             task.title,
                             if is_question { "question" } else { "approval" },
                             shown
@@ -765,7 +765,7 @@ mod tests {
         assert!(
             board
                 .iter()
-                .any(|e| e.summary.contains("waiting on the boss"))
+                .any(|e| e.summary.contains("waiting on the user"))
         );
         // A task with no origin posts nothing.
         let mut plain = task("t2");
