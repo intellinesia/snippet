@@ -79,6 +79,7 @@ pub mod session_routes;
 mod settle_routes;
 mod stall;
 pub(crate) mod watches;
+mod followups;
 use crate::term::SessionTerms;
 pub(crate) use session_routes::*;
 pub mod sidecar;
@@ -1019,7 +1020,9 @@ pub async fn run_serve(
         let watches_d = d.clone();
         tokio::spawn(async move { direct::direct_dispatch_loop(d).await });
         tokio::spawn(async move { groups::group_dispatch_loop(groups_d).await });
+        let followups_d = watches_d.clone();
         tokio::spawn(async move { watches::watch_loop(watches_d).await });
+        tokio::spawn(async move { followups::followup_loop(followups_d).await });
         tokio::spawn(crate::bg::watch_loop());
     }
     {

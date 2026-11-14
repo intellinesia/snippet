@@ -357,6 +357,18 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
          );
          CREATE INDEX IF NOT EXISTS agent_watch_events_by_watch
              ON agent_watch_events(watch_id, at);
+         CREATE TABLE IF NOT EXISTS session_followups (
+             id TEXT PRIMARY KEY,
+             session_id TEXT NOT NULL,
+             owner TEXT,
+             due_at TEXT NOT NULL,
+             note TEXT NOT NULL,
+             created_at TEXT NOT NULL,
+             delivered_at TEXT,
+             error TEXT
+         );
+         CREATE INDEX IF NOT EXISTS session_followups_due
+             ON session_followups(delivered_at, due_at);
 "#,
     )
 }

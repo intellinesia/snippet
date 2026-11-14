@@ -534,6 +534,7 @@ pub(crate) fn work_tool_registry(
     tools.insert(crate::progress::ReportProgress);
     tools.insert(crate::review_tools::SubmitReview);
     tools.insert(crate::profiles::ListProfiles);
+    tools.insert(crate::followup_tool::SessionWakeTool);
     tools
 }
 
@@ -544,6 +545,7 @@ pub(crate) fn coordination_tool_registry(exa_api_key: Option<String>) -> ToolReg
     crate::coordination_tools::add_coordination_tools(&mut tools);
     crate::mission_tools::add_coordination_session_tools(&mut tools);
     tools.insert(crate::coordination_tools::DeclineTask);
+    tools.insert(crate::followup_tool::SessionWakeTool);
     tools.insert(crate::builtins::read_only_shell::ReadOnlyBashTool);
     if let Some(key) = exa_api_key.filter(|k| !k.trim().is_empty()) {
         tools.insert(crate::builtins::WebSearchTool {
