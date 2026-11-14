@@ -834,7 +834,11 @@ impl Tool for SendAgentMessage {
                     "actor_id": orig.actor_id,
                 }),
             );
-            if orig.actor_kind == "human" && requested_kind == "session" {
+            if orig.actor_kind == "human"
+                && orig.event_type == "direct_message.sent"
+                && orig.thread_id.starts_with("direct:agent:")
+                && requested_kind == "session"
+            {
                 extra.insert("about_thread".into(), json!(orig.thread_id));
             }
         }
@@ -3140,6 +3144,53 @@ mod tests {
         assert_eq!(
             task_events[0].payload["forwarded_from"]["event_id"],
             orig.event_id
+        );
+
+        // Forwarding a human post from a task room sets no about_thread.
+        db.add_task_agent_full(
+            "t-fwd",
+            "a",
+            "implementer",
+            Some("task-sess-fwd"),
+            "",
+            "active",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        let room_post = db
+            .append_event(&CoordinationEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                thread_id: task.thread_id.clone(),
+                partition_key: format!("thread:{}", task.thread_id),
+                sequence: 0,
+                event_type: "message.posted".into(),
+                actor_kind: "human".into(),
+                actor_id: crate::coordination::LOCAL_HUMAN_ID.into(),
+                payload_version: 1,
+                payload: json!({"body": "note in task room"}),
+                causation_id: None,
+                correlation_id: None,
+                idempotency_key: "k-room-post".into(),
+                created_at: "2026-01-01T00:00:01Z".into(),
+            })
+            .unwrap();
+        SendAgentMessage
+            .execute(
+                &a_ctx,
+                json!({
+                    "recipient_agent_id": "task:t-fwd",
+                    "forward": room_post.event_id,
+                    "body": "from room",
+                }),
+            )
+            .await
+            .unwrap();
+        let task_events = db.direct_thread_events(&task_thread, 0, 10).unwrap();
+        assert_eq!(task_events.len(), 2);
+        assert!(task_events[1].payload.get("about_thread").is_none());
+        assert_eq!(
+            task_events[1].payload["forwarded_from"]["event_id"],
+            room_post.event_id
         );
     }
 

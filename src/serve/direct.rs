@@ -117,29 +117,41 @@ fn direct_message_envelope(
             "forwarded_from: {actor_kind}:{actor_id} in {thread_id} ({event_id})\n"
         ));
     }
-    if let Some(about_thread) = event
+    let about_thread = event
         .payload
         .get("about_thread")
         .and_then(|v| v.as_str())
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+        .filter(|s| s.starts_with("direct:agent:"));
+    if let Some(about_thread) = about_thread {
         reply_lines.push_str(&format!("about_thread: {about_thread}\n"));
     }
     // When the message came from a SESSION, the reply belongs back in that
     // session — that is where the human is reading and where the exchange is
     // recorded. Stated as a `reply_to` line so the agent never has to infer it.
-    let reply_to = event
-        .payload
-        .get("origin_session")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|session| !session.is_empty())
-        .map(|session| format!("session:{session}"))
-        .unwrap_or_else(|| "human".to_string());
+    // A forwarded human-agent DM carries `about_thread`, whose reply relays to `human`.
+    let reply_to = if about_thread.is_some() {
+        "human".to_string()
+    } else {
+        event
+            .payload
+            .get("origin_session")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|session| !session.is_empty())
+            .map(|session| format!("session:{session}"))
+            .unwrap_or_else(|| "human".to_string())
+    };
     let history: Vec<_> = history
         .iter()
-        .filter(|prior| prior.payload.get("auto").is_none())
+        .filter(|prior| {
+            prior.payload.get("auto").is_none()
+                && !prior
+                    .payload
+                    .get("system")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+        })
         .collect();
     let mut digest = String::new();
     if history.is_empty() {
@@ -190,8 +202,13 @@ fn direct_message_envelope(
             "A colleague"
         },
         answer = if reply_to == "human" {
-            "Your plain reply text is delivered to them automatically; use send_agent_message \
-             only for extra messages."
+            if about_thread.is_some() {
+                "Your plain reply text is delivered to the user automatically; use send_agent_message \
+                 only for extra messages."
+            } else {
+                "Your plain reply text is delivered to them automatically; use send_agent_message \
+                 only for extra messages."
+            }
         } else {
             "Answer with send_agent_message to `reply_to` above, which is where they're reading."
         },
@@ -218,7 +235,7 @@ pub(crate) fn envelope_about_thread(text: &str) -> Option<String> {
     text.lines()
         .find_map(|line| line.trim().strip_prefix("about_thread:"))
         .map(|id| id.trim().to_string())
-        .filter(|id| !id.is_empty())
+        .filter(|id| id.starts_with("direct:agent:"))
 }
 
 /// The thread id of a `[direct_message]` envelope that came from the human and
@@ -357,22 +374,10 @@ fn turn_about_thread(events: &[crate::harness::HarnessEvent]) -> Option<String> 
     envelope_about_thread(latest_human_input)
 }
 
-fn agent_from_thread_id(store: &crate::store::Store, thread_id: &str) -> Option<String> {
-    if let Some(rest) = thread_id.strip_prefix("direct:") {
-        for part in rest.split('|') {
-            if let Some(agent_id) = part.strip_prefix("agent:")
-                && !agent_id.is_empty()
-            {
-                return Some(agent_id.to_string());
-            }
-        }
-    }
-    store
-        .list_thread_participants(thread_id)
-        .ok()?
-        .into_iter()
-        .find(|(_, kind)| kind == "agent")
-        .map(|(id, _)| id)
+fn agent_from_thread_id(thread_id: &str) -> Option<String> {
+    let rest = thread_id.strip_prefix("direct:agent:")?;
+    let agent_id = rest.split('|').next()?.trim();
+    (!agent_id.is_empty()).then(|| agent_id.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -459,18 +464,13 @@ pub(crate) fn relay_desk_reply(
     session_id: &str,
     state: &mut crate::harness::HarnessState,
 ) {
-    let about_thread = turn_about_thread(&state.events);
-    if state.human_waiting.is_empty() && about_thread.is_none() {
+    if state.human_waiting.is_empty() {
         return;
     }
-    let waiting = state
-        .human_waiting
-        .len()
-        .max(usize::from(about_thread.is_some()));
-    let (agent_id, name) = match about_thread
-        .as_deref()
-        .and_then(|t| agent_from_thread_id(store, t))
-    {
+    let waiting = state.human_waiting.len();
+    let about_thread =
+        turn_about_thread(&state.events).filter(|t| agent_from_thread_id(t).is_some());
+    let (agent_id, name) = match about_thread.as_deref().and_then(agent_from_thread_id) {
         Some(agent_id) => {
             let name = relay_agent_name(store, &agent_id, session_id);
             (agent_id, name)
@@ -808,9 +808,9 @@ pub(super) async fn deliver_by_urgency(
     payload: &serde_json::Value,
     from_human: bool,
 ) {
-    let from_human = from_human
-        && payload.get("reaction").is_none()
-        && payload.get("kind").and_then(|v| v.as_str()) != Some("reaction");
+    let is_reaction = payload.get("reaction").is_some_and(|v| !v.is_null())
+        || payload.get("kind").and_then(|v| v.as_str()) == Some("reaction");
+    let from_human = from_human && !is_reaction;
     let busy = d
         .store
         .get_session_row(session_id)
@@ -828,6 +828,16 @@ pub(super) async fn deliver_by_urgency(
                     )
                 })
         });
+    if is_reaction {
+        if busy {
+            let item = crate::harness::QueuedInput {
+                id: uuid::Uuid::new_v4().to_string(),
+                text: envelope,
+            };
+            d.deliver(session_id, LoopInput::Queue(item)).await;
+        }
+        return;
+    }
     match crate::coordination::typed::urgency_of(payload) {
         crate::coordination::typed::Urgency::Urgent => {
             if busy {
@@ -970,7 +980,7 @@ async fn deliver_direct(
                 .payload
                 .get("about_thread")
                 .and_then(|v| v.as_str())
-                .is_some()
+                .is_some_and(|s| s.trim().starts_with("direct:agent:"))
             || event.payload.get("forwarded_from").is_some()
         {
             let Some((tx, _path, _stream)) = d.ensure_live(&session_id).await else {
@@ -994,7 +1004,7 @@ async fn deliver_direct(
                         .payload
                         .get("about_thread")
                         .and_then(|v| v.as_str())
-                        .is_some(),
+                        .is_some_and(|s| s.trim().starts_with("direct:agent:")),
             )
             .await;
             return Ok(());
@@ -1085,7 +1095,12 @@ async fn deliver_direct(
     let agent_id = pending.recipient_id.as_str();
     let session_id = recipient_session_id(agent_id);
     if agent_id != crate::mission_control::SESSION_ID
-        && !d.sessions.lock().await.contains_key(&session_id)
+        && !d
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .is_some_and(|s| !s.join.is_finished())
     {
         ensure_agent_inbox(d, agent_id).await?;
     }
@@ -1132,11 +1147,12 @@ fn desk_open_tasks_envelope(
     } else {
         let mut block = String::from("your open tasks:\n");
         for task in tasks {
+            let title: String = task.title.split_whitespace().collect::<Vec<_>>().join(" ");
             block.push_str(&format!(
                 "  {}  {}  {}  session:{}\n",
                 task.id,
                 task.status.as_str(),
-                task.title,
+                title,
                 task.session_id
             ));
         }
@@ -2281,6 +2297,12 @@ mod tests {
             .find("about_thread: direct:agent:a|human:local\n")
             .expect("about_thread line present");
         assert!(ff_pos < note_pos && at_pos < note_pos, "{fwd_env}");
+        assert!(fwd_env.contains("\nreply_to: human\n"), "{fwd_env}");
+        assert!(!fwd_env.contains("reply_to: session:inbox-a"), "{fwd_env}");
+        assert!(
+            fwd_env.contains("Your plain reply text is delivered to the user automatically;"),
+            "{fwd_env}"
+        );
         assert_eq!(
             super::human_dm_thread(&fwd_env),
             Some(event.thread_id.clone())
@@ -2301,6 +2323,18 @@ mod tests {
         // Even on an unindexed session where relay_identity would fall back to `snippet`,
         // about_thread routes the reply back to the original human↔agent thread.
         super::relay_desk_reply(&d.store, "unindexed-task-session", &mut task_state);
+        assert!(task_state.human_waiting.is_empty());
+
+        // A later lane-result or watch wake (with human_waiting empty) must not relay again.
+        task_state.events.push(E::Steer {
+            text: "[lane_report] lane-1 finished".into(),
+        });
+        task_state.events.push(E::AssistantText {
+            text: "Follow-up from lane wake.".into(),
+            quiet: false,
+        });
+        super::relay_desk_reply(&d.store, "unindexed-task-session", &mut task_state);
+
         let thread_events = d
             .store
             .recent_direct_thread_events(&event.thread_id, 10)
@@ -2390,6 +2424,137 @@ mod tests {
         assert_eq!(
             store.agent_last_messages().unwrap()["a"].text,
             "real human message"
+        );
+    }
+
+    #[test]
+    fn about_thread_only_honours_human_agent_direct_threads_and_history_drops_system() {
+        assert_eq!(
+            super::agent_from_thread_id("direct:agent:scout|human:local"),
+            Some("scout".into())
+        );
+        assert_eq!(super::agent_from_thread_id("task:t1"), None);
+        assert_eq!(
+            super::agent_from_thread_id("direct:human:local|session:s1"),
+            None
+        );
+
+        let bogus_env = "[direct_message]\nthread_id: direct:agent:a|session:s1\nfrom_kind: agent\nreply_to: session:inbox-a\nabout_thread: task:t1\nbody: hi\n[/direct_message]";
+        assert_eq!(super::envelope_about_thread(bogus_env), None);
+        assert_eq!(super::human_dm_thread(bogus_env), None);
+
+        let mut notice = event(2, "a", "finished this turn without a reply", "human:local");
+        notice.payload["system"] = json!(true);
+        let mut real = event(1, "local", "hello", "agent:a");
+        real.actor_kind = "human".into();
+        let digest_env =
+            direct_message_envelope(&event(3, "local", "follow up", "agent:a"), &[real, notice]);
+        assert!(digest_env.contains("hello"));
+        assert!(!digest_env.contains("finished this turn without a reply"));
+    }
+
+    #[tokio::test]
+    async fn desk_open_tasks_envelope_sanitizes_multiline_titles() {
+        let d = test_daemon();
+        d.store.create_agent(&agent("a")).unwrap();
+        let mut task = crate::coordination::Task::filed_by_human(
+            "t-multi".into(),
+            "Line one\nLine\t\ttwo\r\nLine three".into(),
+            "d".into(),
+            "s1".into(),
+            0,
+            "2026-01-01T00:00:00Z".into(),
+        );
+        task.status = crate::coordination::TaskStatus::InProgress;
+        task.session_id = "sess-multi".into();
+        d.store.create_task(&task).unwrap();
+        d.store
+            .add_task_agent_full(
+                "t-multi",
+                "a",
+                "implementer",
+                Some("sess-multi"),
+                "",
+                "active",
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+        let env = direct_message_envelope(&human_says(&d.store, "status?", "k-multi"), &[]);
+        let out = super::desk_open_tasks_envelope(&d.store, "a", env);
+        assert!(
+            out.contains(
+                "  t-multi  in_progress  Line one Line two Line three  session:sess-multi\n"
+            ),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_direct_ensures_inbox_when_held_session_loop_finished() {
+        let d = test_daemon();
+        d.store.create_agent(&agent("a")).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let join = tokio::spawn(async { Ok(HarnessState::blank("/tmp", None)) });
+        while !join.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        d.sessions.lock().await.insert(
+            "inbox-a".into(),
+            crate::serve::LiveSession {
+                input_tx: tx,
+                join,
+                state_path: std::path::PathBuf::new(),
+                profile: None,
+                stream: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::llm::StreamBuffer::default(),
+                )),
+                terms: crate::term::SessionTerms::new(std::env::temp_dir()),
+            },
+        );
+        assert!(!d.store.has_conversation("inbox-a").unwrap());
+        let ev = human_says(&d.store, "wake up", "k-finished");
+        super::deliver_direct(
+            &d,
+            &crate::coordination::PendingDirectMessage {
+                event: ev,
+                recipient_kind: "agent".into(),
+                recipient_id: "a".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(d.store.has_conversation("inbox-a").unwrap());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn reaction_to_idle_session_delivers_no_loop_input() {
+        let d = test_daemon();
+        let mut idle_rx = fake_session(&d, "idle-s").await;
+        let mut reaction_ev = event(1, "local", "", "agent:a");
+        reaction_ev.payload["reaction"] = json!("thumbs_up");
+        reaction_ev.payload["kind"] = json!("reaction");
+        reaction_ev.payload["reply_to"] = json!("evt-1");
+        let reaction_env = direct_message_envelope(&reaction_ev, &[]);
+
+        super::deliver_by_urgency(
+            &d,
+            "idle-s",
+            reaction_env.clone(),
+            &reaction_ev.payload,
+            true,
+        )
+        .await;
+        assert!(
+            idle_rx.try_recv().is_err(),
+            "reaction must not wake an idle session"
+        );
+
+        let mut busy_rx = fake_busy_session(&d, "busy-react").await;
+        super::deliver_by_urgency(&d, "busy-react", reaction_env, &reaction_ev.payload, true).await;
+        assert!(
+            matches!(busy_rx.try_recv(), Ok(LoopInput::Queue(_))),
+            "reaction to busy session still queues"
         );
     }
 

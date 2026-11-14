@@ -1569,7 +1569,8 @@ impl Store {
                    AND EXISTS (
                         SELECT 1 FROM task_agents ta
                         WHERE ta.task_id = tasks.id AND ta.agent_id = ?1
-                          AND ta.removed_at IS NULL)
+                          AND ta.removed_at IS NULL
+                          AND ta.status NOT IN ('done', 'withdrawn', 'released'))
                  ORDER BY updated_at DESC, id DESC
                  LIMIT ?2"
             ))?;
@@ -2786,5 +2787,54 @@ mod tests {
         let a2 = roster.iter().find(|a| a.agent_id == "a2").unwrap();
         assert_eq!(a1.status, "waiting");
         assert_eq!(a2.status, "active");
+    }
+
+    #[test]
+    fn open_tasks_of_agent_excludes_done_withdrawn_and_released_seats() {
+        let db = Store::open_in_memory().unwrap();
+        db.create_agent(&crate::coordination::types::Agent {
+            id: "a1".into(),
+            display_name: "Agent 1".into(),
+            handle: "agent1".into(),
+            kind: crate::coordination::types::AgentKind::Worker,
+            status: crate::coordination::types::AgentStatus::Active,
+            capabilities: vec![],
+        })
+        .unwrap();
+        for (id, seat_status) in [
+            ("t-active", "active"),
+            ("t-waiting", "waiting"),
+            ("t-done", "done"),
+            ("t-withdrawn", "withdrawn"),
+            ("t-released", "released"),
+        ] {
+            let mut task = Task::filed_by_human(
+                id.into(),
+                format!("Task {id}"),
+                "desc".into(),
+                "s1".into(),
+                0,
+                "2026-01-01T00:00:00Z".into(),
+            );
+            task.status = TaskStatus::InProgress;
+            db.create_task(&task).unwrap();
+            db.add_task_agent_full(
+                id,
+                "a1",
+                "implementer",
+                Some("sess-1"),
+                "",
+                seat_status,
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+        }
+        let open: Vec<String> = db
+            .open_tasks_of_agent("a1", 8)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(open, vec!["t-waiting".to_string(), "t-active".to_string()]);
     }
 }
