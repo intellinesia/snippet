@@ -214,7 +214,7 @@ pub(super) fn event_from_row(
 
 /// `(delivered_at, read_at)` for one event.
 /// The app sends emoji and agents send names; either form of a yes settles a question.
-fn settles_question(reaction: &str) -> bool {
+pub(crate) fn settles_question(reaction: &str) -> bool {
     matches!(reaction, "check" | "thumbs_up" | "✅" | "✔️") || reaction.starts_with('👍')
 }
 

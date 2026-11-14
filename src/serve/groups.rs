@@ -170,8 +170,8 @@ fn group_added_envelope(group: &crate::coordination::GroupSummary) -> String {
         .collect();
     format!(
         "[group_added]\nthread_id: {}\ntitle: {}\nmembers: {}\nlead: {}\n\
-         note: you were added to this group chat. Nothing to do now: do not post, just end \
-         your turn. Posts reach you as [group_message]; answer with group_thread post.\n\
+         note: you were added to this group chat. Nothing to do now: do not post and write \
+         nothing, just end your turn. Posts reach you as [group_message]; answer with group_thread post.\n\
          [/group_added]",
         group.id,
         group.title,
@@ -388,7 +388,8 @@ fn group_message_envelope(
              group_thread post, setting in_reply_to to the event you answer. \
              One reply per agent per post."
         } else {
-            "reply only if this is a question in your field; otherwise do nothing."
+            "join only if you add something: an answer, a relevant view, a correction. \
+             Otherwise end your turn without writing anything, not even that you are staying quiet."
         }
     ));
     envelope
@@ -702,8 +703,9 @@ mod tests {
         let deferred = group_message_envelope(&event, "build", false, &[]);
         assert!(deferred.contains("reply_expected: false"));
         assert!(
-            deferred
-                .contains("reply only if this is a question in your field; otherwise do nothing.")
+            deferred.contains(
+                "join only if you add something: an answer, a relevant view, a correction."
+            )
         );
     }
 

@@ -791,6 +791,40 @@ fn body_of<'a>(payload: &'a serde_json::Value, envelope: &'a str) -> &'a str {
     envelope
 }
 
+const ANSWERED_BY_REACTION_NOTE: &str = "the user answered the question you were waiting on with this reaction: take it as a yes and carry on.";
+
+/// A human `check` or `thumbs_up` on a message of this agent that was awaiting
+/// a reply is an answer, not an acknowledgement, so it has to wake the agent.
+fn reaction_answers_question(
+    store: &crate::coordination::Store,
+    event: &crate::coordination::types::CoordinationEvent,
+) -> bool {
+    if event.actor_kind != "human" {
+        return false;
+    }
+    let settles = event
+        .payload
+        .get("reaction")
+        .and_then(|v| v.as_str())
+        .is_some_and(crate::coordination::direct::settles_question);
+    if !settles {
+        return false;
+    }
+    event
+        .payload
+        .get("reply_to")
+        .and_then(|v| v.as_str())
+        .and_then(|id| store.event_by_id(id).ok().flatten())
+        .is_some_and(|target| {
+            target.thread_id == event.thread_id
+                && target.actor_kind == "agent"
+                && matches!(
+                    target.payload.get("kind").and_then(|k| k.as_str()),
+                    Some("question" | "blocker")
+                )
+        })
+}
+
 fn prefix_envelope_note(envelope: String, prefix: &str) -> String {
     let spaced = if prefix.ends_with(' ') {
         prefix.to_string()
@@ -816,8 +850,13 @@ pub(super) async fn deliver_by_urgency(
     payload: &serde_json::Value,
     from_human: bool,
 ) {
-    let is_reaction = payload.get("reaction").is_some_and(|v| !v.is_null())
-        || payload.get("kind").and_then(|v| v.as_str()) == Some("reaction");
+    let answers_question = payload
+        .get("answers_question")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let is_reaction = !answers_question
+        && (payload.get("reaction").is_some_and(|v| !v.is_null())
+            || payload.get("kind").and_then(|v| v.as_str()) == Some("reaction"));
     let from_human = from_human && !is_reaction;
     let busy = d
         .store
@@ -1118,7 +1157,14 @@ async fn deliver_direct(
     if event.payload.get("reaction").is_some() {
         let envelope = direct_message_envelope(event, &[]);
         drop(tx);
-        deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
+        if reaction_answers_question(&d.store, event) {
+            let envelope = prefix_envelope_note(envelope, ANSWERED_BY_REACTION_NOTE);
+            let mut payload = event.payload.clone();
+            payload["answers_question"] = serde_json::json!(true);
+            deliver_by_urgency(d, &session_id, envelope, &payload, true).await;
+        } else {
+            deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
+        }
         return Ok(());
     }
     // Exclude the message being delivered: the envelope carries it as `body`.
@@ -2564,6 +2610,105 @@ mod tests {
             matches!(busy_rx.try_recv(), Ok(LoopInput::Queue(_))),
             "reaction to busy session still queues"
         );
+    }
+
+    #[test]
+    fn a_settling_reaction_answers_only_an_awaited_agent_question() {
+        let d = test_daemon();
+        d.store.create_agent(&agent("a")).unwrap();
+        let human = ("human", crate::coordination::LOCAL_HUMAN_ID);
+        let send = |from: (&str, &str),
+                    to: (&str, &str),
+                    kind: Option<&str>,
+                    react: Option<(&str, &str)>,
+                    key: &str| {
+            let mut extra = serde_json::Map::new();
+            if let Some(k) = kind {
+                extra.insert("kind".into(), json!(k));
+            }
+            if let Some((target, name)) = react {
+                crate::coordination::typed::apply_reply_and_reaction(
+                    &mut extra,
+                    Some(target),
+                    Some(name),
+                );
+            }
+            d.store
+                .send_direct_message_typed(
+                    from,
+                    to,
+                    "",
+                    key,
+                    "2026-01-01T00:00:00Z",
+                    None,
+                    None,
+                    None,
+                    extra,
+                )
+                .unwrap()
+        };
+        let question = send(("agent", "a"), human, Some("question"), None, "q");
+        let note = send(("agent", "a"), human, Some("note"), None, "n");
+
+        let yes = send(
+            human,
+            ("agent", "a"),
+            None,
+            Some((&question.event_id, "thumbs_up")),
+            "r1",
+        );
+        assert!(
+            super::reaction_answers_question(&d.store, &yes),
+            "thumbs_up on an awaited question answers it"
+        );
+
+        let eyes = send(
+            human,
+            ("agent", "a"),
+            None,
+            Some((&question.event_id, "eyes")),
+            "r2",
+        );
+        assert!(
+            !super::reaction_answers_question(&d.store, &eyes),
+            "eyes is an acknowledgement, not an answer"
+        );
+
+        let on_note = send(
+            human,
+            ("agent", "a"),
+            None,
+            Some((&note.event_id, "check")),
+            "r3",
+        );
+        assert!(
+            !super::reaction_answers_question(&d.store, &on_note),
+            "a check on a plain note answers nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_answering_reaction_wakes_an_idle_session() {
+        let d = test_daemon();
+        let mut idle_rx = fake_session(&d, "idle-answer").await;
+        let mut ev = event(1, "local", "", "agent:a");
+        ev.payload["reaction"] = json!("thumbs_up");
+        ev.payload["kind"] = json!("reaction");
+        ev.payload["reply_to"] = json!("evt-1");
+        ev.payload["answers_question"] = json!(true);
+        let env =
+            prefix_envelope_note(direct_message_envelope(&ev, &[]), ANSWERED_BY_REACTION_NOTE);
+        super::deliver_by_urgency(&d, "idle-answer", env, &ev.payload, true).await;
+        match idle_rx.try_recv() {
+            Ok(LoopInput::UserMessage(text)) => {
+                assert!(
+                    text.contains("take it as a yes"),
+                    "envelope says what the reaction means: {text}"
+                );
+                assert!(text.contains("reacted thumbs_up to your message evt-1"));
+            }
+            other => panic!("an answering reaction must wake the idle session, got {other:?}"),
+        }
     }
 
     #[test]
