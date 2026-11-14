@@ -81,6 +81,23 @@ fn actionable_candidates_do_not_include_ui_only_events() {
     );
     assert_eq!(direct["source_key"], "source");
     assert!(notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":"direct_message.sent","thread_id":"thread","payload":{"recipient":"human:local"}}})).is_none());
+    let mention = notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":"group_message","event_id":"g1","thread_id":"group:x","payload":{"from_kind":"agent","from_id":"scout","body":"@boss pick one","mentions":["human"]}}})).unwrap();
+    assert_eq!(mention["kind"], "group_mention");
+    assert_eq!(
+        mention["destination"],
+        json!({"type":"conversation","id":"group:x"})
+    );
+    assert_eq!(mention["title"], "scout mentioned you");
+    assert!(notification_allowed(
+        &crate::mission_control::ControlSettings::default(),
+        &mention
+    ));
+    for payload in [
+        json!({"from_kind":"agent","from_id":"scout","body":"hi","mentions":["lead"]}),
+        json!({"from_kind":"human","from_id":"human","body":"hi","mentions":["human"]}),
+    ] {
+        assert!(notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":"group_message","event_id":"g2","thread_id":"group:x","payload":payload}})).is_none());
+    }
     let task = notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":"task.message","event_id":"source","correlation_id":"task","payload":{"body":"help"}}})).unwrap();
     assert_eq!(task["destination"]["type"], "task");
     for event_type in ["direct_message.read", "direct_message.delivered"] {

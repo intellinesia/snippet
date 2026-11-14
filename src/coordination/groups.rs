@@ -62,6 +62,33 @@ pub struct GroupLastMessage {
 /// Validation failures cross `with_connection` as `InvalidParameterName`
 /// and are mapped back to [`StoreError::InvalidInput`] at the boundary.
 /// Members named in `body` by id, handle or display name, as whole words.
+/// Whether an agent's post mentions the user: `human` or `boss` in
+/// `mentions`, or `@human` / `@boss` in the text.
+pub(crate) fn mentions_human(body: &str, mentions: &[String]) -> bool {
+    const ALIASES: &[&str] = &["human", "boss"];
+    if mentions
+        .iter()
+        .any(|m| ALIASES.contains(&m.trim().trim_start_matches('@').to_lowercase().as_str()))
+    {
+        return true;
+    }
+    let text = body.to_lowercase();
+    ALIASES.iter().any(|alias| {
+        let token = format!("@{alias}");
+        text.match_indices(&token).any(|(at, m)| {
+            let open = text[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+            let close = text[at + m.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '_' | '-')));
+            open && close
+        })
+    })
+}
+
 pub(crate) fn named_in_body(body: &str, members: &[(String, String, String)]) -> Vec<String> {
     let text = body.to_lowercase();
     let joined = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '/');
@@ -703,9 +730,22 @@ impl Store {
             Ok(())
         }))?;
 
+        let mut stored: Vec<String> = mentions
+            .iter()
+            .filter(|m| {
+                !matches!(
+                    m.trim().trim_start_matches('@').to_lowercase().as_str(),
+                    "human" | "boss"
+                )
+            })
+            .cloned()
+            .collect();
+        if actor.0 == "agent" && mentions_human(body, mentions) {
+            stored.push("human".into());
+        }
         let mut payload = serde_json::json!({
             "body": body,
-            "mentions": mentions,
+            "mentions": stored,
             "from_kind": actor.0,
             "from_id": actor.1,
         });
@@ -1006,6 +1046,18 @@ impl Store {
 mod tests {
     use super::*;
     use crate::coordination::types::{Agent, AgentKind, AgentStatus};
+
+    #[test]
+    fn human_mentions_by_field_or_text() {
+        let none: Vec<String> = Vec::new();
+        assert!(mentions_human("", &["human".into()]));
+        assert!(mentions_human("", &["@Boss".into()]));
+        assert!(mentions_human("@boss which one?", &none));
+        assert!(mentions_human("Need you, @human.", &none));
+        assert!(!mentions_human("the boss wants it", &none));
+        assert!(!mentions_human("mail me@bossco.com", &none));
+        assert!(!mentions_human("@bossy", &none));
+    }
 
     fn worker(id: &str) -> Agent {
         Agent {
