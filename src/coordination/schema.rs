@@ -320,6 +320,27 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              claimed_at TEXT NOT NULL,
              PRIMARY KEY (post_event_id, agent_id)
          );
+
+         CREATE TABLE IF NOT EXISTS seat_plans (
+             session_id TEXT PRIMARY KEY NOT NULL,
+             agent_id TEXT NOT NULL,
+             steps_json TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             last_change_at TEXT NOT NULL,
+             stalled_flagged_at TEXT
+         );
+         CREATE INDEX IF NOT EXISTS seat_plans_agent ON seat_plans(agent_id);
+
+         CREATE TABLE IF NOT EXISTS seat_wakes (
+             id TEXT PRIMARY KEY NOT NULL,
+             session_id TEXT NOT NULL,
+             agent_id TEXT NOT NULL,
+             due_at TEXT NOT NULL,
+             note TEXT NOT NULL,
+             reply_in TEXT,
+             created_at TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS seat_wakes_due ON seat_wakes(due_at);
 "#,
     )
 }

@@ -94,7 +94,6 @@ pub fn add_mission_control_tools(registry: &mut ToolRegistry) {
     registry.insert(Recordings);
     registry.insert(RecordingPolicyTool);
     registry.insert(UpdateBrief);
-    registry.insert(ScheduleFollowup);
     registry.insert(PingUser);
     registry.insert(SendVoiceMemo);
     registry.insert(AnswerWorker);
@@ -286,7 +285,11 @@ struct ScheduleFollowupArgs {
     in_minutes: Option<i64>,
     #[serde(default)]
     in_seconds: Option<u64>,
+    #[serde(default)]
+    at: Option<String>,
     note: String,
+    #[serde(default)]
+    reply_in: Option<String>,
     #[serde(default)]
     next_wake: bool,
     #[serde(default)]
@@ -299,17 +302,19 @@ impl Tool for ScheduleFollowup {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "schedule_wake".into(),
-            description: "Be woken after a delay: pass in_seconds (5 to 3600, e.g. 10s to quietly check whether the user continued a cut-off or out-of-context spoken turn without disturbing them) or in_minutes (1 to 10080, for a deploy window, a check you promised, or the morning after quiet hours). When in_seconds is used (or unless_user_speaks is true), the wake fires with a snapshot of recent microphone lines even if automated wakes are off, and cancels itself automatically if the user speaks to you first.".into(),
+            description: "Schedule a one-shot wake for this seat: pass in_minutes (1 to 10080) or at (RFC 3339), note, and optional reply_in thread id. Mission Control also accepts in_seconds (5 to 3600) for quick ambient checks, unless_user_speaks, and next_wake.".into(),
             input_schema: schema(json!({
-                "in_seconds": {"type": "integer", "description": "How many seconds from now (5 to 3600) for a quick ambient or follow-up check."},
                 "in_minutes": {"type": "integer", "description": "How many minutes from now (1 to 10080)."},
+                "at": {"type": "string", "description": "RFC 3339 timestamp at which to wake this seat."},
                 "note": {"type": "string", "description": "What to check or do when woken."},
-                "unless_user_speaks": {"type": "boolean", "description": "Cancel the wake if the user speaks or messages you before it fires. Default true for in_seconds."},
-                "next_wake": {"type": "boolean", "description": "This is your next general check-in; replaces any earlier one."}
+                "reply_in": {"type": "string", "description": "Optional thread id where the result is owed."},
+                "in_seconds": {"type": "integer", "description": "Mission Control only: seconds from now (5 to 3600) for a quick ambient check."},
+                "unless_user_speaks": {"type": "boolean", "description": "Mission Control only: cancel the wake if the user speaks or messages first."},
+                "next_wake": {"type": "boolean", "description": "Mission Control only: this is your next general check-in; replaces any earlier one."}
             }), &["note"]),
         }
     }
-    async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: ScheduleFollowupArgs =
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         if args.note.trim().is_empty() {
@@ -317,28 +322,114 @@ impl Tool for ScheduleFollowup {
                 "note must say what to do when the wake-up is due",
             ));
         }
-        if let Some(secs) = args.in_seconds {
-            let secs = secs.clamp(3, 3600);
-            let unless = args.unless_user_speaks.unwrap_or(true);
-            crate::ambient::schedule_quick_wake(secs, args.note.trim().to_string(), unless);
+        let is_mc = ctx.is_mission_control()
+            || ctx.agent_id() == Some(crate::mission_control::SESSION_ID)
+            || ctx.durable_session_id().is_some_and(|id| {
+                crate::conversations::canonical_session_id(id) == crate::mission_control::SESSION_ID
+            });
+        if is_mc {
+            if let Some(secs) = args.in_seconds {
+                let secs = secs.clamp(3, 3600);
+                let unless = args.unless_user_speaks.unwrap_or(true);
+                crate::ambient::schedule_quick_wake(secs, args.note.trim().to_string(), unless);
+                return Ok(ToolResult::success(json!({
+                    "scheduled": true,
+                    "in_seconds": secs,
+                    "unless_user_speaks": unless,
+                    "note": "Quick check-in timer started; cancels automatically if the user speaks to you first.",
+                })));
+            }
+            let due_at = if let Some(at_raw) = args.at.as_deref() {
+                let dt = chrono::DateTime::parse_from_rfc3339(at_raw.trim())
+                    .map_err(|e| ToolError::msg(format!("at must be RFC 3339: {e}")))?;
+                if dt.with_timezone(&chrono::Utc) <= chrono::Utc::now() {
+                    return Err(ToolError::msg("at must be in the future"));
+                }
+                dt.timestamp()
+            } else {
+                let minutes = args.in_minutes.unwrap_or(1).clamp(1, 10080);
+                chrono::Utc::now().timestamp() + minutes * 60
+            };
+            let store = db(ctx)?;
+            let followup = crate::mission_autonomy::schedule_followup_in(
+                &store,
+                due_at,
+                args.note.trim(),
+                args.next_wake,
+            )
+            .map_err(ToolError::msg)?;
+            let on = crate::mission_autonomy::load_from(&store).settings.on;
             return Ok(ToolResult::success(json!({
                 "scheduled": true,
-                "in_seconds": secs,
-                "unless_user_speaks": unless,
-                "note": "Quick check-in timer started; cancels automatically if the user speaks to you first.",
+                "id": followup.id,
+                "in_minutes": args.in_minutes.unwrap_or(1).clamp(1, 10080),
+                "note": if on { "You'll be woken with this note when it's due." } else { "Saved, but automated wakes are off: it fires only once the user turns them on." },
             })));
         }
-        let minutes = args.in_minutes.unwrap_or(1).clamp(1, 10080);
-        let due_at = chrono::Utc::now().timestamp() + minutes * 60;
-        let followup =
-            crate::mission_autonomy::schedule_followup(due_at, args.note.trim(), args.next_wake)
-                .map_err(ToolError::msg)?;
-        let on = crate::mission_autonomy::is_on();
+
+        if args.in_seconds.is_some() {
+            return Err(ToolError::msg(
+                "in_seconds is only available to Mission Control; use in_minutes or at",
+            ));
+        }
+        let session_id = ctx
+            .durable_session_id()
+            .ok_or_else(|| ToolError::msg("schedule_wake requires a durable session id"))?;
+        let due_at = match (args.at.as_deref(), args.in_minutes) {
+            (Some(at_raw), _) => {
+                let dt = chrono::DateTime::parse_from_rfc3339(at_raw.trim())
+                    .map_err(|e| ToolError::msg(format!("at must be RFC 3339: {e}")))?;
+                let utc = dt.with_timezone(&chrono::Utc);
+                if utc <= chrono::Utc::now() {
+                    return Err(ToolError::msg("at must be in the future"));
+                }
+                utc.to_rfc3339()
+            }
+            (None, Some(minutes)) => {
+                if !(1..=10080).contains(&minutes) {
+                    return Err(ToolError::msg("in_minutes must be between 1 and 10080"));
+                }
+                (chrono::Utc::now() + chrono::Duration::minutes(minutes)).to_rfc3339()
+            }
+            (None, None) => {
+                return Err(ToolError::msg(
+                    "schedule_wake requires in_minutes (1 to 10080) or at (RFC 3339)",
+                ));
+            }
+        };
+        let store = db(ctx)?;
+        let reply_in = match args.reply_in.as_deref().map(str::trim) {
+            Some("") => return Err(ToolError::msg("reply_in must not be empty")),
+            Some(thread_id) => {
+                if !store
+                    .thread_exists(thread_id)
+                    .map_err(|e| ToolError::msg(format!("check reply_in: {e}")))?
+                {
+                    return Err(ToolError::msg(format!(
+                        "unknown reply_in thread `{thread_id}`"
+                    )));
+                }
+                Some(thread_id.to_string())
+            }
+            None => None,
+        };
+        let agent_id = ctx.agent_id().unwrap_or("");
+        let wake = store
+            .schedule_seat_wake(
+                session_id,
+                agent_id,
+                &due_at,
+                args.note.trim(),
+                reply_in.as_deref(),
+                &now_rfc3339(),
+            )
+            .map_err(|e| ToolError::msg(format!("schedule wake: {e}")))?;
         Ok(ToolResult::success(json!({
             "scheduled": true,
-            "id": followup.id,
-            "in_minutes": minutes,
-            "note": if on { "You'll be woken with this note when it's due." } else { "Saved, but automated wakes are off: it fires only once the user turns them on." },
+            "id": wake.id,
+            "due_at": wake.due_at,
+            "reply_in": wake.reply_in,
+            "note": "You'll be woken with this note when it's due.",
         })))
     }
 }
@@ -5077,6 +5168,84 @@ mod tests {
             4000
         );
         assert_eq!(one.value["data"]["task"]["reason"], "offered");
+    }
+}
+
+#[cfg(test)]
+mod schedule_wake_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn non_mc_writes_seat_wakes_and_mc_writes_followups() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("snippet.db");
+        let store = Store::open(&db_path).unwrap();
+        let mut extra = serde_json::Map::new();
+        extra.insert("kind".into(), "question".into());
+        let msg = store
+            .send_direct_message_typed(
+                ("agent", "desk"),
+                ("human", "local"),
+                "hi",
+                "k1",
+                "2026-11-14T00:00:00Z",
+                None,
+                None,
+                None,
+                extra,
+            )
+            .unwrap();
+
+        let seat_ctx = ToolContext::new(dir.path())
+            .unwrap()
+            .with_durable_session_id("sess-desk")
+            .with_agent_id("desk")
+            .with_store_path(&db_path);
+        ScheduleFollowup
+            .execute(
+                &seat_ctx,
+                json!({
+                    "in_minutes": 15,
+                    "note": "follow up with human",
+                    "reply_in": msg.thread_id,
+                }),
+            )
+            .await
+            .unwrap();
+
+        let wakes = store.list_seat_wakes(Some("sess-desk")).unwrap();
+        assert_eq!(wakes.len(), 1);
+        assert_eq!(wakes[0].agent_id, "desk");
+        assert_eq!(wakes[0].note, "follow up with human");
+        assert_eq!(wakes[0].reply_in.as_deref(), Some(msg.thread_id.as_str()));
+        assert!(
+            crate::mission_autonomy::load_from(&store)
+                .followups
+                .is_empty()
+        );
+
+        let mc_ctx = ToolContext::mission_control(dir.path())
+            .unwrap()
+            .with_durable_session_id(crate::mission_control::SESSION_ID)
+            .with_agent_id(crate::mission_control::SESSION_ID)
+            .with_store_path(&db_path);
+        ScheduleFollowup
+            .execute(
+                &mc_ctx,
+                json!({
+                    "in_minutes": 10,
+                    "note": "mc check-in",
+                    "next_wake": true,
+                }),
+            )
+            .await
+            .unwrap();
+
+        let state = crate::mission_autonomy::load_from(&store);
+        assert_eq!(state.followups.len(), 1);
+        assert_eq!(state.followups[0].note, "mc check-in");
+        assert!(state.followups[0].next_wake);
+        assert_eq!(store.list_seat_wakes(None).unwrap().len(), 1);
     }
 }
 

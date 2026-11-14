@@ -21,6 +21,7 @@ pub mod turns;
 pub use turns::SessionMember;
 mod identity;
 pub mod leases;
+pub mod plans;
 pub mod reach;
 pub mod schema;
 mod task_state;
@@ -40,6 +41,7 @@ pub use direct::{
 pub use goals::{Goal, GoalCriterion, GoalStatus};
 pub use groups::{GroupMember, GroupSummary};
 pub use identity::{AgentHome, IdentityError};
+pub use plans::{SeatPlan, SeatWake};
 pub use task_state::{Decision, PendingReport, StatePatch, TaskState, VerifyMethod, VerifyMode};
 pub use tasks::{
     HandoffMode, NotificationMarker, Task, TaskAgent, TaskFilter, TaskHandoff, TaskLink,

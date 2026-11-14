@@ -183,7 +183,21 @@ pub(super) fn render_plan(plan: &[PlanStep]) -> String {
             PlanStatus::InProgress => "[>]",
             PlanStatus::Pending => "[ ]",
         };
-        text.push_str(&format!("\n{mark} {}", step.step));
+        let mut meta = Vec::new();
+        if let Some(reply_in) = &step.reply_in {
+            meta.push(format!("reply in {reply_in}"));
+        }
+        if let Some(waiting_on) = &step.waiting_on {
+            meta.push(format!("waiting on {waiting_on}"));
+        }
+        if let Some(wake_at) = &step.wake_at {
+            meta.push(format!("wake {wake_at}"));
+        }
+        if meta.is_empty() {
+            text.push_str(&format!("\n{mark} {}", step.step));
+        } else {
+            text.push_str(&format!("\n{mark} {} ({})", step.step, meta.join("; ")));
+        }
     }
     text
 }
@@ -339,4 +353,34 @@ pub(super) fn first_question_text(rendered: &Value) -> Option<String> {
         .and_then(|question| question.get("text"))
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_plan_shows_commitment_fields_in_parentheses() {
+        let plan = vec![
+            PlanStep {
+                step: "Send status".into(),
+                status: PlanStatus::InProgress,
+                reply_in: Some("direct:agent:x|human:local".into()),
+                waiting_on: None,
+                wake_at: Some("2026-11-14T09:00Z".into()),
+            },
+            PlanStep {
+                step: "Wait for build".into(),
+                status: PlanStatus::Pending,
+                reply_in: None,
+                waiting_on: Some("task:t-1".into()),
+                wake_at: None,
+            },
+        ];
+        let rendered = render_plan(&plan);
+        assert!(rendered.contains(
+            "\n[>] Send status (reply in direct:agent:x|human:local; wake 2026-11-14T09:00Z)"
+        ));
+        assert!(rendered.contains("\n[ ] Wait for build (waiting on task:t-1)"));
+    }
 }

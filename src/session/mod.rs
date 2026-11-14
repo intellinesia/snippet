@@ -323,7 +323,7 @@ impl AgentRuntime {
             tools,
             prompt: mission_control_system_prompt(),
             allow_lane_control: false,
-            hidden_meta: &["monitor", "set_session_title", "update_plan"],
+            hidden_meta: &["monitor", "set_session_title"],
             memory: true,
         })
     }
@@ -445,13 +445,7 @@ impl AgentRuntime {
             ),
             // Nothing to delegate: no lane control in a coordination session.
             allow_lane_control: false,
-            hidden_meta: &[
-                "ask_user",
-                "monitor",
-                "present_file",
-                "set_session_title",
-                "update_plan",
-            ],
+            hidden_meta: &["ask_user", "monitor", "present_file", "set_session_title"],
             memory: true,
         })
     }
@@ -1328,6 +1322,15 @@ pub fn read_session_state(state_path: &Path) -> Option<HarnessState> {
 
 /// The store-backed read: resolve the id from the path, then load the scalar
 /// plus both logs.
+fn hydrate_plan_from_store(store: &crate::store::Store, id: &str, state: &mut HarnessState) {
+    if state.plan.is_empty()
+        && let Ok(Some(saved)) = store.plan_for_session(id)
+        && !saved.steps.is_empty()
+    {
+        state.plan = saved.steps;
+    }
+}
+
 fn read_session_state_from_store(state_path: &Path) -> Option<HarnessState> {
     let id = session_id_for_state_path(state_path);
     let store = store_for_sessions()?;
@@ -1337,7 +1340,9 @@ fn read_session_state_from_store(state_path: &Path) -> Option<HarnessState> {
     let scalar = store.load_session_scalar(&id).ok()??;
     let messages = store.load_conversation_messages(&id).ok()?;
     let events = store.load_conversation_events(&id).ok()?;
-    crate::harness::state_from_scalar(&scalar, messages, events).ok()
+    let mut state = crate::harness::state_from_scalar(&scalar, messages, events).ok()?;
+    hydrate_plan_from_store(&store, &id, &mut state);
+    Some(state)
 }
 
 /// A session's scalar state (status, workspace, queue, lanes, …) without its
@@ -1348,7 +1353,9 @@ pub fn read_session_meta(state_path: &Path) -> Option<HarnessState> {
         && store.has_conversation(&id).ok()?
     {
         let scalar = store.load_session_scalar(&id).ok()??;
-        return crate::harness::state_from_scalar(&scalar, Vec::new(), Vec::new()).ok();
+        let mut state = crate::harness::state_from_scalar(&scalar, Vec::new(), Vec::new()).ok()?;
+        hydrate_plan_from_store(&store, &id, &mut state);
+        return Some(state);
     }
     read_session_state(state_path)
 }

@@ -1405,9 +1405,127 @@ pub async fn dispatch_loop(daemon: Shared) {
                 .deliver(&session, crate::harness::LoopInput::UserMessage(notice))
                 .await;
         }
+        let plan_now = chrono::Utc::now();
+        let quiet =
+            crate::mission_autonomy::in_quiet_hours(&crate::mission_autonomy::load().settings);
+        for (session, envelope) in plan_wakes_due(&daemon.store, plan_now) {
+            deliver_plan_envelope(&daemon, &session, envelope).await;
+        }
+        for (session, envelope) in plan_wakes_stalled(&daemon.store, plan_now, quiet) {
+            deliver_plan_envelope(&daemon, &session, envelope).await;
+        }
+        for (session, envelope) in seat_wakes_due(&daemon.store, plan_now) {
+            deliver_plan_envelope(&daemon, &session, envelope).await;
+        }
         deliver_mission_control_reports(&daemon).await;
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+const PLAN_STALL_SECS: i64 = 2 * 3600;
+
+async fn deliver_plan_envelope(daemon: &Daemon, session: &str, envelope: String) {
+    crate::session::wake_settled(session);
+    daemon
+        .deliver(session, LoopInput::UserMessage(envelope))
+        .await;
+}
+
+fn clip_chars(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut = text
+        .char_indices()
+        .nth(max.saturating_sub(1))
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    format!("{}…", &text[..cut])
+}
+
+pub(super) fn plan_wakes_due(
+    store: &crate::store::Store,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<(String, String)> {
+    store
+        .due_wakes(now)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(session_id, _agent_id, step)| {
+            let reply_in = step.reply_in.as_deref().unwrap_or("none");
+            let envelope = format!(
+                "[plan_wake]\nstep: {}\nreply_in: {reply_in}\nnote: you asked to be woken for this step. Do it, update your plan, and post the result where it is owed.\n[/plan_wake]",
+                step.step
+            );
+            (session_id, envelope)
+        })
+        .collect()
+}
+
+pub(super) fn plan_wakes_for_task(
+    store: &crate::store::Store,
+    task_id: &str,
+    status: &str,
+    report: Option<&str>,
+) -> Vec<(String, String)> {
+    let report_line = report
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(|r| format!("\nreport: {}", clip_chars(r, 1500)))
+        .unwrap_or_default();
+    store
+        .steps_waiting_on(&format!("task:{task_id}"))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(session_id, _agent_id, step)| {
+            let reply_in = step.reply_in.as_deref().unwrap_or("none");
+            let envelope = format!(
+                "[plan_wake]\nstep: {}\nreply_in: {reply_in}\nwaiting_on: task:{task_id} {status}{report_line}\nnote: the task you were waiting on finished. Update your plan and post the result where it is owed.\n[/plan_wake]",
+                step.step
+            );
+            (session_id, envelope)
+        })
+        .collect()
+}
+
+pub(super) fn plan_wakes_stalled(
+    store: &crate::store::Store,
+    now: chrono::DateTime<chrono::Utc>,
+    quiet: bool,
+) -> Vec<(String, String)> {
+    if quiet {
+        return Vec::new();
+    }
+    store
+        .stale_in_progress(now, PLAN_STALL_SECS)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(session_id, _agent_id, step)| {
+            let reply_in = step.reply_in.as_deref().unwrap_or("none");
+            let envelope = format!(
+                "[plan_stalled]\nstep: {}\nreply_in: {reply_in}\nnote: this step has been in_progress for over 2 hours with no plan update. Finish it, update your plan, or ask for help.\n[/plan_stalled]",
+                step.step
+            );
+            (session_id, envelope)
+        })
+        .collect()
+}
+
+pub(super) fn seat_wakes_due(
+    store: &crate::store::Store,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<(String, String)> {
+    store
+        .take_due_seat_wakes(now)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|wake| {
+            let reply_in = wake.reply_in.as_deref().unwrap_or("none");
+            let envelope = format!("[wake]\nnote: {}\nreply_in: {reply_in}\n[/wake]", wake.note);
+            (wake.session_id, envelope)
+        })
+        .collect()
 }
 
 async fn wake_for_stalled_goals(daemon: &Shared) {
@@ -1513,6 +1631,16 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
                 daemon
                     .deliver_wake(mission_control::SESSION_ID, LoopInput::UserMessage(text))
                     .await;
+            }
+            if matches!(marker.kind.as_str(), "done" | "failed" | "cancelled") {
+                for (session, envelope) in plan_wakes_for_task(
+                    &daemon.store,
+                    &task.id,
+                    &marker.kind,
+                    Some(&marker.message),
+                ) {
+                    deliver_plan_envelope(daemon, &session, envelope).await;
+                }
             }
             delivered_any = true;
             let _ = daemon
@@ -1643,5 +1771,128 @@ async fn update_settings(State(d): State<Shared>, Json(req): Json<MissionSetting
     ) {
         Ok(settings) => Json(settings).into_response(),
         Err(error) => mission_error(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::{PlanStatus, PlanStep};
+    use crate::store::Store;
+
+    fn utc(raw: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(raw)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn plan_wakes_due_formats_envelope_and_fires_once() {
+        let store = Store::open_in_memory().unwrap();
+        let step = PlanStep {
+            step: "Check release health".into(),
+            status: PlanStatus::InProgress,
+            reply_in: Some("direct:agent:a|human:local".into()),
+            waiting_on: None,
+            wake_at: Some("2026-11-14T08:00:00Z".into()),
+        };
+        store
+            .save_plan("sess-a", "a", &[step], "2026-11-14T07:00:00Z")
+            .unwrap();
+
+        let wakes = plan_wakes_due(&store, utc("2026-11-14T08:05:00Z"));
+        assert_eq!(wakes.len(), 1);
+        assert_eq!(wakes[0].0, "sess-a");
+        assert!(wakes[0].1.contains("[plan_wake]"));
+        assert!(wakes[0].1.contains("step: Check release health"));
+        assert!(wakes[0].1.contains("reply_in: direct:agent:a|human:local"));
+        assert!(wakes[0].1.contains("[/plan_wake]"));
+        assert!(plan_wakes_due(&store, utc("2026-11-14T08:06:00Z")).is_empty());
+    }
+
+    #[test]
+    fn plan_wakes_for_task_builds_envelope_and_clips_report() {
+        let store = Store::open_in_memory().unwrap();
+        let step = PlanStep {
+            step: "Relay test results".into(),
+            status: PlanStatus::InProgress,
+            reply_in: Some("group:123".into()),
+            waiting_on: Some("task:t-77".into()),
+            wake_at: None,
+        };
+        store
+            .save_plan("sess-desk", "desk", &[step], "2026-11-14T07:00:00Z")
+            .unwrap();
+
+        let long_report = "x".repeat(2000);
+        let wakes = plan_wakes_for_task(&store, "t-77", "done", Some(&long_report));
+        assert_eq!(wakes.len(), 1);
+        assert_eq!(wakes[0].0, "sess-desk");
+        assert!(wakes[0].1.contains("[plan_wake]"));
+        assert!(wakes[0].1.contains("waiting_on: task:t-77 done"));
+        assert!(wakes[0].1.contains("reply_in: group:123"));
+        let report_line = wakes[0]
+            .1
+            .lines()
+            .find(|l| l.starts_with("report: "))
+            .unwrap();
+        assert_eq!(
+            report_line
+                .strip_prefix("report: ")
+                .unwrap()
+                .chars()
+                .count(),
+            1500
+        );
+    }
+
+    #[test]
+    fn plan_wakes_stalled_respects_quiet_hours_and_flags_once() {
+        let store = Store::open_in_memory().unwrap();
+        let step = PlanStep {
+            step: "Debug CI".into(),
+            status: PlanStatus::InProgress,
+            reply_in: None,
+            waiting_on: None,
+            wake_at: None,
+        };
+        store
+            .save_plan("sess-w", "w", &[step], "2026-11-14T00:00:00Z")
+            .unwrap();
+
+        let later = utc("2026-11-14T03:00:00Z");
+        assert!(plan_wakes_stalled(&store, later, true).is_empty());
+        let first = plan_wakes_stalled(&store, later, false);
+        assert_eq!(first.len(), 1);
+        assert!(first[0].1.contains("[plan_stalled]"));
+        assert!(first[0].1.contains("step: Debug CI"));
+        assert!(plan_wakes_stalled(&store, utc("2026-11-14T04:00:00Z"), false).is_empty());
+    }
+
+    #[test]
+    fn seat_wakes_due_fires_once_with_wake_envelope() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .schedule_seat_wake(
+                "sess-1",
+                "agent-1",
+                "2026-11-14T08:00:00Z",
+                "ping the deploy channel",
+                Some("direct:agent:agent-1|human:local"),
+                "2026-11-14T07:00:00Z",
+            )
+            .unwrap();
+        assert!(seat_wakes_due(&store, utc("2026-11-14T07:30:00Z")).is_empty());
+        let due = seat_wakes_due(&store, utc("2026-11-14T08:00:00Z"));
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, "sess-1");
+        assert!(due[0].1.contains("[wake]"));
+        assert!(due[0].1.contains("note: ping the deploy channel"));
+        assert!(
+            due[0]
+                .1
+                .contains("reply_in: direct:agent:agent-1|human:local")
+        );
+        assert!(seat_wakes_due(&store, utc("2026-11-14T08:05:00Z")).is_empty());
     }
 }

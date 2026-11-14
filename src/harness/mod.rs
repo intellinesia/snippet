@@ -267,10 +267,16 @@ pub enum HarnessEvent {
 }
 
 /// One step of the agent's visible plan.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanStep {
     pub step: String,
     pub status: PlanStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_in: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_on: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

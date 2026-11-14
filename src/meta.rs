@@ -204,7 +204,10 @@ fn update_plan_tool() -> NativeToolDefinition {
                         "type": "object",
                         "properties": {
                             "step": { "type": "string", "description": "A short, concrete step." },
-                            "status": { "type": "string", "enum": ["pending", "in_progress", "done"] }
+                            "status": { "type": "string", "enum": ["pending", "in_progress", "done"] },
+                            "reply_in": { "type": "string", "description": "Optional thread id (direct, group or task room) where the result of this step is owed." },
+                            "waiting_on": { "type": "string", "description": "Optional task (`task:<id>`) or lane (`lane:<id>`) reference this step waits for." },
+                            "wake_at": { "type": "string", "description": "Optional RFC 3339 timestamp at which to wake this seat for this step." }
                         },
                         "required": ["step", "status"],
                         "additionalProperties": false

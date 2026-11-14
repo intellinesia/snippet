@@ -685,4 +685,38 @@ mod inbox_tool_tests {
         assert!(tools.contains("bash"));
         assert!(tools.contains("send_agent_message"));
     }
+
+    #[test]
+    fn desk_runtime_includes_update_plan_and_schedule_wake() {
+        use crate::session::*;
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = AgentRuntime::coordination(
+            RuntimeInputs {
+                workspace: dir.path().to_path_buf(),
+                durable_id: Some("desk-a".into()),
+                prompt_ctx: crate::prompts::PromptContext::default(),
+                exa_api_key: None,
+                base_model: InferenceProfileConfig::default(),
+                setups: None,
+            },
+            ("agent-a", "identity"),
+        )
+        .unwrap();
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                allow_lane_control: runtime.allow_lane_control,
+                hidden_meta: runtime.hidden_meta,
+                ..HarnessConfig::default()
+            },
+            runtime.tools,
+            runtime.context,
+        );
+        let names: Vec<String> = harness
+            .definitions_for(true, false)
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(names.iter().any(|n| n == "update_plan"), "{names:?}");
+        assert!(names.iter().any(|n| n == "schedule_wake"), "{names:?}");
+    }
 }

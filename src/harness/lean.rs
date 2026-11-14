@@ -183,6 +183,9 @@ mod tests {
         state.plan = vec![PlanStep {
             step: "Ship it".into(),
             status: PlanStatus::InProgress,
+            reply_in: None,
+            waiting_on: None,
+            wake_at: None,
         }];
         let messages = vec![
             HarnessMessage::User {

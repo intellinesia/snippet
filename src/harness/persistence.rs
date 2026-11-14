@@ -82,6 +82,7 @@ impl CodingHarness {
             if let Some(title) = self.config.session_title.clone() {
                 state.title = Some(title);
             }
+            self.hydrate_seat_plan(&mut state);
             return Ok(state);
         }
 
@@ -147,11 +148,29 @@ impl CodingHarness {
             compactions: 0,
             reflected_events: Some(0),
         };
+        self.hydrate_seat_plan(&mut state);
         self.persist_state(&mut state).await?;
         if request.is_some() {
             self.bump_activity();
         }
         Ok(state)
+    }
+
+    fn hydrate_seat_plan(&self, state: &mut HarnessState) {
+        if !state.plan.is_empty() {
+            return;
+        }
+        let Some(session_id) = self.session_id() else {
+            return;
+        };
+        let Some(store) = self.store() else {
+            return;
+        };
+        if let Ok(Some(saved)) = store.plan_for_session(&session_id)
+            && !saved.steps.is_empty()
+        {
+            state.plan = saved.steps;
+        }
     }
 
     pub(super) async fn persist(
@@ -363,12 +382,8 @@ impl CodingHarness {
             if let Some(text) = turn_text
                 && id == crate::mission_control::SESSION_ID
             {
-                let _ = store.note_agent_last_message(
-                    &id,
-                    &text,
-                    &Utc::now().to_rfc3339(),
-                    "agent",
-                );
+                let _ =
+                    store.note_agent_last_message(&id, &text, &Utc::now().to_rfc3339(), "agent");
             }
             Ok::<(), String>(())
         }

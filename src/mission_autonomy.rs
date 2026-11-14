@@ -414,6 +414,16 @@ pub fn release_held_pings() {
 }
 
 pub fn schedule_followup(due_at: i64, note: &str, next_wake: bool) -> Result<Followup, String> {
+    let s = store()?;
+    schedule_followup_in(&s, due_at, note, next_wake)
+}
+
+pub fn schedule_followup_in(
+    store: &Store,
+    due_at: i64,
+    note: &str,
+    next_wake: bool,
+) -> Result<Followup, String> {
     let followup = Followup {
         id: uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
         due_at,
@@ -421,7 +431,7 @@ pub fn schedule_followup(due_at: i64, note: &str, next_wake: bool) -> Result<Fol
         next_wake,
     };
     let saved = followup.clone();
-    update(move |state| {
+    update_in(store, move |state| {
         if next_wake {
             state.followups.retain(|f| !f.next_wake);
         }

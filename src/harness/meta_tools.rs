@@ -49,31 +49,35 @@ impl CodingHarness {
                     ),
                 }
             }
-            "update_plan" => match parse_plan(arguments) {
-                Ok(steps) => {
-                    let done = steps
-                        .iter()
-                        .filter(|s| s.status == PlanStatus::Done)
-                        .count();
-                    let total = steps.len();
-                    let explanation = arguments
-                        .get("explanation")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string);
-                    state.plan = steps.clone();
-                    self.mirror_plan_to_task(&steps);
-                    state
-                        .events
-                        .push(HarnessEvent::PlanUpdated { steps, explanation });
-                    (
-                        json!({"schema_version": 1, "status": "success", "data": {"done": done, "total": total}}),
-                        MetaControl::Continue,
-                    )
+            "update_plan" => {
+                let store = self.store();
+                match parse_plan(arguments, store.as_ref()) {
+                    Ok(steps) => {
+                        let done = steps
+                            .iter()
+                            .filter(|s| s.status == PlanStatus::Done)
+                            .count();
+                        let total = steps.len();
+                        let explanation = arguments
+                            .get("explanation")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string);
+                        state.plan = steps.clone();
+                        self.mirror_plan_to_task(&steps);
+                        self.save_seat_plan(&steps);
+                        state
+                            .events
+                            .push(HarnessEvent::PlanUpdated { steps, explanation });
+                        (
+                            json!({"schema_version": 1, "status": "success", "data": {"done": done, "total": total}}),
+                            MetaControl::Continue,
+                        )
+                    }
+                    Err(message) => (tool_error(&message), MetaControl::Continue),
                 }
-                Err(message) => (tool_error(&message), MetaControl::Continue),
-            },
+            }
             "set_session_title" => {
                 let title = arguments
                     .get("title")
@@ -510,7 +514,7 @@ impl CodingHarness {
         }
     }
 
-    pub(super) fn definitions_for(
+    pub(crate) fn definitions_for(
         &self,
         conversation_mode: bool,
         goal_active: bool,
@@ -567,10 +571,36 @@ impl CodingHarness {
             .collect();
         let _ = store.set_task_work_plan(&task_id, &work);
     }
+
+    fn save_seat_plan(&self, steps: &[PlanStep]) {
+        let Some(session_id) = self.context.durable_session_id() else {
+            return;
+        };
+        let Some(store_path) = self.context.store_path() else {
+            return;
+        };
+        let Ok(store) = crate::store::Store::open_cached(store_path) else {
+            return;
+        };
+        let agent_id = self.context.agent_id().unwrap_or("");
+        let now = Utc::now().to_rfc3339();
+        let _ = store.save_plan(session_id, agent_id, steps, &now);
+    }
 }
 
 /// Validate an `update_plan` call: 1–12 non-empty steps, at most one in progress.
-pub(super) fn parse_plan(arguments: &Value) -> Result<Vec<PlanStep>, String> {
+pub(super) fn parse_plan(
+    arguments: &Value,
+    store: Option<&crate::store::Store>,
+) -> Result<Vec<PlanStep>, String> {
+    parse_plan_at(arguments, store, Utc::now())
+}
+
+pub(super) fn parse_plan_at(
+    arguments: &Value,
+    store: Option<&crate::store::Store>,
+    now: chrono::DateTime<Utc>,
+) -> Result<Vec<PlanStep>, String> {
     let steps: Vec<PlanStep> = arguments
         .get("steps")
         .cloned()
@@ -592,11 +622,207 @@ pub(super) fn parse_plan(arguments: &Value) -> Result<Vec<PlanStep>, String> {
     {
         return Err("mark at most one step `in_progress`.".to_string());
     }
-    Ok(steps
-        .into_iter()
-        .map(|s| PlanStep {
+    let mut normalized = Vec::with_capacity(steps.len());
+    for s in steps {
+        let reply_in = match s.reply_in {
+            Some(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    return Err("update_plan step `reply_in` must not be empty.".to_string());
+                }
+                if let Some(store) = store {
+                    let exists = store
+                        .thread_exists(trimmed)
+                        .map_err(|e| format!("update_plan failed to check `reply_in`: {e}"))?;
+                    if !exists {
+                        return Err(format!(
+                            "update_plan `reply_in` thread `{trimmed}` does not exist."
+                        ));
+                    }
+                }
+                Some(trimmed.to_string())
+            }
+            None => None,
+        };
+        let waiting_on = match s.waiting_on {
+            Some(raw) => {
+                let trimmed = raw.trim();
+                if !matches!(
+                    trimmed.split_once(':'),
+                    Some(("task" | "lane", id)) if !id.trim().is_empty()
+                ) {
+                    return Err(
+                        "update_plan step `waiting_on` must start with `task:` or `lane:` followed by an id."
+                            .to_string(),
+                    );
+                }
+                Some(trimmed.to_string())
+            }
+            None => None,
+        };
+        let wake_at = match s.wake_at {
+            Some(raw) => {
+                let trimmed = raw.trim();
+                let dt = chrono::DateTime::parse_from_rfc3339(trimmed)
+                    .map_err(|e| format!("update_plan step `wake_at` must be RFC 3339: {e}"))?;
+                if dt.with_timezone(&Utc) <= now {
+                    return Err("update_plan step `wake_at` must be in the future.".to_string());
+                }
+                Some(trimmed.to_string())
+            }
+            None => None,
+        };
+        normalized.push(PlanStep {
             step: s.step.trim().to_string(),
             status: s.status,
-        })
-        .collect())
+            reply_in,
+            waiting_on,
+            wake_at,
+        });
+    }
+    Ok(normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coordination::Task;
+
+    #[test]
+    fn parse_plan_accepts_and_validates_commitment_fields() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let mut extra = serde_json::Map::new();
+        extra.insert("kind".into(), "question".into());
+        let msg = store
+            .send_direct_message_typed(
+                ("agent", "x"),
+                ("human", "local"),
+                "hi",
+                "k1",
+                "2026-11-14T00:00:00Z",
+                None,
+                None,
+                None,
+                extra,
+            )
+            .unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-14T01:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let args = json!({
+            "steps": [
+                {
+                    "step": "Ship release",
+                    "status": "in_progress",
+                    "reply_in": msg.thread_id,
+                    "waiting_on": "task:t-123",
+                    "wake_at": "2026-11-14T09:00:00Z"
+                },
+                {
+                    "step": "Watch lane",
+                    "status": "pending",
+                    "waiting_on": "lane:l-9"
+                }
+            ]
+        });
+        let parsed = parse_plan_at(&args, Some(&store), now).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].reply_in.as_deref(), Some(msg.thread_id.as_str()));
+        assert_eq!(parsed[0].waiting_on.as_deref(), Some("task:t-123"));
+        assert_eq!(parsed[0].wake_at.as_deref(), Some("2026-11-14T09:00:00Z"));
+        assert_eq!(parsed[1].waiting_on.as_deref(), Some("lane:l-9"));
+
+        // Task room thread id is also accepted.
+        let task = Task::dispatched_to(
+            "t-1".into(),
+            "s1".into(),
+            "title".into(),
+            "scope".into(),
+            vec![],
+            crate::coordination::HandoffMode::Resume,
+            "agent",
+            "mc",
+            "2026-11-14T00:00:00Z".into(),
+        );
+        store.create_task(&task).unwrap();
+        let task_args = json!({
+            "steps": [{"step": "Post update", "status": "pending", "reply_in": task.thread_id}]
+        });
+        assert!(parse_plan_at(&task_args, Some(&store), now).is_ok());
+    }
+
+    #[test]
+    fn parse_plan_rejects_past_wake_at_unknown_reply_in_and_bad_waiting_on() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-14T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let past = json!({
+            "steps": [{"step": "Late", "status": "pending", "wake_at": "2026-11-14T09:00:00Z"}]
+        });
+        let err = parse_plan_at(&past, Some(&store), now).unwrap_err();
+        assert!(err.contains("future"), "{err}");
+
+        let unknown_thread = json!({
+            "steps": [{"step": "Reply", "status": "pending", "reply_in": "direct:missing"}]
+        });
+        let err = parse_plan_at(&unknown_thread, Some(&store), now).unwrap_err();
+        assert!(err.contains("does not exist"), "{err}");
+
+        let bad_wait = json!({
+            "steps": [{"step": "Wait", "status": "pending", "waiting_on": "goal:g1"}]
+        });
+        let err = parse_plan_at(&bad_wait, Some(&store), now).unwrap_err();
+        assert!(err.contains("task:` or `lane:"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_meta_update_plan_saves_and_session_load_hydrates() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("snippet.db");
+        let store = crate::store::Store::open(&db_path).unwrap();
+        let ctx = crate::tools::ToolContext::new(dir.path())
+            .unwrap()
+            .with_durable_session_id("sess-plan")
+            .with_agent_id("desk")
+            .with_store_path(&db_path);
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                state_path: Some(dir.path().join("sess-plan.state.json")),
+                resume: true,
+                memory_enabled: false,
+                ..HarnessConfig::default()
+            },
+            crate::tools::ToolRegistry::new(),
+            ctx,
+        );
+        let mut state = HarnessState::blank(dir.path().display().to_string(), None);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+        let mut lanes = harness.new_lane_manager(None, tx, ptx, &state);
+        let (wtx, _wrx) = tokio::sync::mpsc::unbounded_channel();
+        let mut watches = WatchManager::new(dir.path().to_path_buf(), wtx);
+
+        let (result, _) = harness.dispatch_meta(
+            &mut state,
+            &mut lanes,
+            &mut watches,
+            "update_plan",
+            &json!({
+                "steps": [
+                    {"step": "Verify hydration", "status": "in_progress", "waiting_on": "task:t-1"}
+                ]
+            }),
+        );
+        assert_eq!(result["status"], "success");
+        let saved = store.plan_for_session("sess-plan").unwrap().unwrap();
+        assert_eq!(saved.agent_id, "desk");
+        assert_eq!(saved.steps.len(), 1);
+        assert_eq!(saved.steps[0].waiting_on.as_deref(), Some("task:t-1"));
+
+        // Hydrate when loaded state has an empty plan.
+        let loaded = harness.load_or_initialize_state(None).await.unwrap();
+        assert_eq!(loaded.plan, saved.steps);
+    }
 }
