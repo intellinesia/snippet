@@ -616,7 +616,7 @@ impl Tool for SendAgentMessage {
                     "urgency":{"type":"string","enum":["normal","urgent"],"description":"default normal; `interrupt` is always urgent"},
                     "reply_to":{"type":"string"},
                     "reaction":{"type":"string","enum":["check","eyes","thumbs_up","question","thinking"]},
-                    "forward":{"type":"string"}
+                    "forward":{"type":"string","description":"event id of a chat message to quote under your body as context"}
                 }),
                 &["recipient_agent_id"],
             ),
