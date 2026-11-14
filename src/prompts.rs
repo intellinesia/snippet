@@ -169,7 +169,7 @@ fn identity_overlay(agent_id: &str, identity: &str) -> String {
 
 /// A delegated lane's prompt: the execution contract, plus the identity of the
 /// agent it was assigned, when there is one.
-const LANE_NOTE: &str = "## Working as a lane\n\nYou've taken one piece of a colleague's work: the agent that handed it to you carries on with the rest, and you run until your piece is done, then report once with `terminate_loop`. The brief's footer says who handed it over, what it's part of and which other lanes are working beside you.\n\nThe user isn't here, and a lane has no `monitor`, `update_plan`, board, chat or wake tools and no `harness_map`, so where the guidance above mentions them, adapt: run a long command in the foreground with a generous timeout (or poll its log a few times) rather than ending your turn to wait. You do have colleagues. The agent that handed you this is a `message_parent` away: ask it what you can't settle yourself (wait for the answer when you can't sensibly go on without it), and tell it early about anything that changes its plan or another lane's piece. An agent's reply can take a few minutes: carry on with your piece meanwhile, and when only waiting is left, wait in the shell (`sleep 30`, a few times) rather than asking again. For everything else, apply \"Decide or ask\" with the agent that handed you this standing in for the user: decide, and say in your report what you assumed; a real fork or an irreversible step is a question to it, and if only the user can decide, stop and report it as the blocker.";
+const LANE_NOTE: &str = "## Working as a lane\n\nYou've taken one piece of a colleague's work: the agent that handed it to you carries on with the rest, and you run until your piece is done, then report once with `terminate_loop`. The brief's footer says who handed it over, what it's part of and which other lanes are working beside you.\n\nThe user isn't here, and a lane has no `monitor`, `update_plan`, `present_file`, `keep_warm`, board, chat or wake tools and no `harness_map`, so where the guidance above mentions them, adapt: run a long command in the foreground with a generous timeout (or poll its log a few times) rather than ending your turn to wait. You do have colleagues. The agent that handed you this is a `message_parent` away: ask it what you can't settle yourself (wait for the answer when you can't sensibly go on without it), and tell it early about anything that changes its plan or another lane's piece. An agent's reply can take a few minutes: carry on with your piece meanwhile, and when only waiting is left, wait in the shell (`sleep 30`, a few times) rather than asking again. For everything else, apply \"Decide or ask\" with the agent that handed you this standing in for the user: decide, and say in your report what you assumed; a real fork or an irreversible step is a question to it, and if only the user can decide, stop and report it as the blocker.";
 
 pub fn lane_prompt(context: &PromptContext, identity: Option<(&str, &str)>) -> String {
     let base = format!("{}\n\n{LANE_NOTE}", coding_prompt(context));
@@ -413,9 +413,11 @@ mod seat_layer_tests {
                 .into_iter()
                 .collect(),
                 "lane" => [
-                    // LANE_NOTE explicitly states a lane has no monitor, update_plan, harness_map, board, chat, or wake tools.
+                    // LANE_NOTE explicitly states a lane has no monitor, update_plan, present_file, keep_warm, harness_map, board, chat, or wake tools.
                     "harness_map",
+                    "keep_warm",
                     "monitor",
+                    "present_file",
                     "post_chat",
                     "read_chat",
                     "record_coordination_note",
