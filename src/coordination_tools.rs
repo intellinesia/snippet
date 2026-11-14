@@ -2105,9 +2105,14 @@ fn check_group_post_chatter(body: &str) -> Result<(), &'static str> {
         "ok",
     ];
     let trimmed = body.trim();
-    if trimmed.chars().count() > 1500 {
+    let unquoted: usize = trimmed
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('>'))
+        .map(|l| l.chars().count())
+        .sum();
+    if unquoted > 700 || trimmed.chars().count() > 3000 {
         return Err(
-            "Too long for chat. Write it to a file, share it with share_artifact (path, to: the group), and post one to three lines that say what it is and what you need.",
+            "Too long for one post. Send several short posts, one point each: only your first after the user's post reaches the room, later ones wake only whom they name. Long material goes in a file shared with share_artifact (path, to: the group).",
         );
     }
     let stripped = strip_leading_mentions(trimmed).trim_end();
@@ -2134,7 +2139,7 @@ impl Tool for GroupThread {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "group_thread".into(),
-            description: "Group threads: several agents and the human taking turns like colleagues. A post wakes whom it names (mention or name in text); one naming nobody goes to the lead, then to all with any replies. An agent's first post after the human's reaches the other agents mid-turn (stop, or one line on what you're still doing); later ones only whom they name. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?, choices?, reaction? (with in_reply_to, no body)}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
+            description: "Group threads: several agents and the human taking turns like colleagues. A post wakes whom it names (mention or name in text); one naming nobody goes to the lead, then to all with any replies. An agent's first post after the human's reaches the other agents mid-turn (stop, or one line on what you're still doing); later ones only whom they name, so post points separately. Mention `human` only if the user must act: it pings their phone. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?, choices?, reaction? (with in_reply_to, no body)}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
             input_schema: schema(
                 json!({
                     "action": {"type": "string", "enum": ["create", "list", "read", "post", "set_lead", "add_member"]},
@@ -2303,6 +2308,10 @@ impl Tool for GroupThread {
                         extra,
                     )
                     .map_err(|e| ToolError::msg(format!("post to group: {e}")))?;
+                crate::session::emit_device_event(json!({
+                    "kind": "coordination_event",
+                    "event": event.clone(),
+                }));
                 Ok(ToolResult::success(json!(event)))
             }
             "set_lead" => {
@@ -4932,13 +4941,16 @@ mod tests {
         assert!(check_group_post_chatter("Ok, which draft should we send?").is_ok());
         assert!(check_group_post_chatter("Okayama office confirmed the booking.").is_ok());
         assert!(check_group_post_chatter("Copyright check passed.").is_ok());
-        assert!(check_group_post_chatter(&"a".repeat(1500)).is_ok());
-
-        let too_long = "a".repeat(1501);
-        assert_eq!(
-            check_group_post_chatter(&too_long).unwrap_err(),
-            "Too long for chat. Write it to a file, share it with share_artifact (path, to: the group), and post one to three lines that say what it is and what you need."
+        assert!(check_group_post_chatter(&"a".repeat(700)).is_ok());
+        let draft = format!("Draft for you:\n> {}", "word ".repeat(400));
+        assert!(check_group_post_chatter(&draft).is_ok());
+        let too_long = "a".repeat(701);
+        assert!(
+            check_group_post_chatter(&too_long)
+                .unwrap_err()
+                .starts_with("Too long for one post. Send several short posts")
         );
+        assert!(check_group_post_chatter(&format!("> {}", "a".repeat(3000))).is_err());
 
         let dir = tempfile::tempdir().unwrap();
         let db = migrate(dir.path());
@@ -4988,7 +5000,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(len_err.contains("Too long for chat"), "{len_err}");
+        assert!(len_err.contains("Too long for one post"), "{len_err}");
 
         // Reactions on the same post still succeed without a body.
         GroupThread

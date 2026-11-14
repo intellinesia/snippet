@@ -1572,6 +1572,25 @@ fn notification_candidate(event: &serde_json::Value) -> Option<serde_json::Value
     } else if matches!(kind, "call_prompt" | "call_state") {
         value["destination"] =
             serde_json::json!({"type": "session", "id": crate::mission_control::SESSION_ID});
+    } else if kind == "coordination_event" && event["event"]["event_type"] == "group_message" {
+        let source = &event["event"];
+        let payload = &source["payload"];
+        let mentioned = payload["mentions"]
+            .as_array()
+            .is_some_and(|m| m.iter().any(|v| v == "human"));
+        if payload["from_kind"] != "agent" || !mentioned {
+            return None;
+        }
+        let thread = source.get("thread_id")?.as_str()?;
+        value = serde_json::json!({
+            "kind": "group_mention",
+            "title": format!("{} mentioned you", payload["from_id"].as_str().unwrap_or("An agent")),
+            "body": payload["body"].as_str().unwrap_or_default(),
+            "destination": {"type": "conversation", "id": thread},
+            "thread_id": thread,
+            "source_key": source["event_id"],
+            "payload": payload
+        });
     } else if kind == "coordination_event" {
         let source = event.get("event")?;
         let event_type = source.get("event_type")?.as_str()?;
@@ -1638,7 +1657,10 @@ fn notification_allowed(
     event: &serde_json::Value,
 ) -> bool {
     // A call prompt needs an answer whatever the policy; unanswered it just expires.
-    if matches!(event["kind"].as_str(), Some("call_prompt" | "call_state")) {
+    if matches!(
+        event["kind"].as_str(),
+        Some("call_prompt" | "call_state" | "group_mention")
+    ) {
         return true;
     }
     let destination = &event["destination"];
