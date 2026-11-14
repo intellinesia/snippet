@@ -358,9 +358,13 @@ impl Store {
         origin_session: Option<&str>,
         origin_lane: Option<&str>,
         about_task: Option<&str>,
-        extra: serde_json::Map<String, serde_json::Value>,
+        mut extra: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CoordinationEvent, StoreError> {
-        let thread_id = direct_thread_id(sender, recipient);
+        let thread_id = extra
+            .remove("target_thread")
+            .and_then(|v| v.as_str().map(str::to_string))
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| direct_thread_id(sender, recipient));
         let title = format!("{} ↔ {}", recipient.1, actor_ref(sender.0, sender.1));
         let sender_ref = actor_ref(sender.0, sender.1);
         let recipient_ref = actor_ref(recipient.0, recipient.1);
@@ -416,10 +420,19 @@ impl Store {
         };
         let saved = self.append_event(&event)?;
 
-        let preview = match (sender.0, recipient.0) {
-            ("human", "agent") => Some((recipient.1, "user")),
-            ("agent", "human") => Some((sender.1, "agent")),
-            _ => None,
+        let is_system = saved
+            .payload
+            .get("system")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let preview = if is_system {
+            None
+        } else {
+            match (sender.0, recipient.0) {
+                ("human", "agent") => Some((recipient.1, "user")),
+                ("agent", "human") => Some((sender.1, "agent")),
+                _ => None,
+            }
         };
         if let Some((agent, from)) = preview {
             let _ = self.note_agent_last_message(agent, &envelope_text(body), created_at, from);
@@ -429,6 +442,7 @@ impl Store {
         let is_reaction = reaction.is_some()
             || saved.payload.get("kind").and_then(|k| k.as_str()) == Some("reaction");
         let owes_reply = (!is_reaction
+            && !is_system
             && matches!(
                 saved.payload.get("kind").and_then(|k| k.as_str()),
                 Some("question" | "blocker")
@@ -466,7 +480,7 @@ impl Store {
                         params![sender_ref, target_id, saved.thread_id],
                     )?;
                 }
-            } else {
+            } else if !is_system {
                 conn.execute(
                     "UPDATE message_deliveries SET awaiting_reply = NULL
                      WHERE awaiting_reply IS NOT NULL AND recipient = ?1 AND event_id IN (
@@ -982,6 +996,7 @@ impl Store {
                      WHERE thread_id = ?1 AND event_type = 'direct_message.sent'
                        AND actor_kind = 'agent' AND actor_id = ?2 AND created_at > ?3
                        AND json_extract(payload_json, '$.auto') IS NULL
+                       AND COALESCE(json_extract(payload_json, '$.system'), 0) = 0
                      LIMIT 1",
                     params![thread_id, agent_id, since],
                     |row| row.get(0),
@@ -1580,6 +1595,75 @@ mod tests {
             read.as_deref(),
             Some("2026-01-01T00:00:02Z"),
             "first read wins"
+        );
+    }
+
+    #[test]
+    fn system_notices_do_not_clear_awaiting_reply_or_count_as_replies() {
+        let db = Store::open_in_memory().unwrap();
+        db.create_agent(&worker("a")).unwrap();
+        let mut q_extra = serde_json::Map::new();
+        q_extra.insert("kind".into(), serde_json::json!("question"));
+        let question = db
+            .send_direct_message_typed(
+                ("human", LOCAL_HUMAN_ID),
+                ("agent", "a"),
+                "did it pass?",
+                "k-q",
+                "2026-01-01T00:00:00Z",
+                None,
+                None,
+                None,
+                q_extra,
+            )
+            .unwrap();
+
+        let mut sys_extra = serde_json::Map::new();
+        sys_extra.insert("system".into(), serde_json::json!(true));
+        sys_extra.insert("kind".into(), serde_json::json!("notice"));
+        db.send_direct_message_typed(
+            ("agent", "a"),
+            ("human", LOCAL_HUMAN_ID),
+            "a finished this turn without a reply; its last step was bash.",
+            "k-sys",
+            "2026-01-01T00:00:01Z",
+            None,
+            None,
+            None,
+            sys_extra,
+        )
+        .unwrap();
+
+        let owed = db
+            .owed_replies("2026-01-01T00:05:00Z", "2026-01-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(owed.len(), 1);
+        assert_eq!(owed[0].event_id, question.event_id);
+        assert!(
+            !db.agent_replied_on_thread_since(&question.thread_id, "a", "2026-01-01T00:00:00Z")
+                .unwrap()
+        );
+
+        db.send_direct_message_typed(
+            ("agent", "a"),
+            ("human", LOCAL_HUMAN_ID),
+            "yes, all green",
+            "k-real",
+            "2026-01-01T00:00:02Z",
+            None,
+            None,
+            None,
+            Default::default(),
+        )
+        .unwrap();
+        assert!(
+            db.owed_replies("2026-01-01T00:05:00Z", "2026-01-01T00:00:00Z")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.agent_replied_on_thread_since(&question.thread_id, "a", "2026-01-01T00:00:00Z")
+                .unwrap()
         );
     }
 }

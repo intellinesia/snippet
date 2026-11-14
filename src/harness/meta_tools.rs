@@ -348,10 +348,92 @@ impl CodingHarness {
                             Err(error) => (tool_error(error), MetaControl::Continue),
                         };
                     }
+                    let (description, read_only) = if let Some(ref target_id) = brief.review_of {
+                        let finished_list = || {
+                            let list: Vec<String> = lanes
+                                .records()
+                                .iter()
+                                .filter(|r| r.status == LaneStatus::Completed)
+                                .map(|r| format!("\"{}\" ({})", r.title, r.id))
+                                .collect();
+                            if list.is_empty() {
+                                "none".to_string()
+                            } else {
+                                list.join(", ")
+                            }
+                        };
+                        let Some(target) = lanes.records().iter().find(|r| r.id == *target_id)
+                        else {
+                            return (
+                                tool_error(format!(
+                                    "review_of lane `{target_id}` is not known. Completed lanes: [{}].",
+                                    finished_list()
+                                )),
+                                MetaControl::Continue,
+                            );
+                        };
+                        if target.status != LaneStatus::Completed {
+                            return (
+                                tool_error(format!(
+                                    "review_of lane `{target_id}` is not completed (status: {:?}). Completed lanes: [{}].",
+                                    target.status,
+                                    finished_list()
+                                )),
+                                MetaControl::Continue,
+                            );
+                        }
+                        let st = target.structured.as_ref();
+                        let summary = st
+                            .map(|s| s.summary.trim())
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| {
+                                target
+                                    .summary
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty())
+                            })
+                            .or_else(|| {
+                                target
+                                    .report
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty())
+                            })
+                            .unwrap_or("none reported");
+                        let changed = st
+                            .and_then(|s| s.changed.as_deref())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("not measured");
+                        let tests = st
+                            .and_then(|s| s.tests.as_deref())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("none reported");
+                        let open = st
+                            .and_then(|s| s.open.as_deref())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("none");
+                        let prefixed = format!(
+                            "Review of lane {} \"{}\". Judge the work, not the account of it; check claims against the files.\n\
+                             Its report: {summary}\n\
+                             Changed: {changed}\n\
+                             Tests: {tests}\n\
+                             Open: {open}\n\
+                             Read the diff yourself (`git diff -- <files>` or `git diff HEAD`) before forming a view.\n\n\
+                             {}",
+                            target.id, target.title, brief.description
+                        );
+                        (prefixed, true)
+                    } else {
+                        (brief.description.clone(), brief.read_only)
+                    };
                     match lanes.spawn_scoped(
                         &brief.title,
-                        &brief.description,
-                        brief.read_only,
+                        &description,
+                        read_only,
                         brief.agent.clone(),
                         brief.profile.clone(),
                         brief.paths.clone(),
@@ -365,7 +447,7 @@ impl CodingHarness {
                                 "delegated": true,
                                 "lane_id": id,
                                 "title": brief.title,
-                                "access": if brief.read_only { "read_only" } else { "full" },
+                                "access": if read_only { "read_only" } else { "full" },
                                 "note": "Lane runs in the background; its report will arrive as a [lane_report] message. Follow up later by re-calling delegate_task with this lane_id.",
                             });
                             if let Some(ref agent) = brief.agent {
@@ -599,4 +681,187 @@ pub(super) fn parse_plan(arguments: &Value) -> Result<Vec<PlanStep>, String> {
             status: s.status,
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lanes::LaneStructuredReport;
+    use crate::llm::{AgentModel, ModelOutput, NativeToolDefinition, StreamHandle};
+    use crate::tools::ToolError;
+    use std::sync::Arc;
+
+    struct IdleModel;
+
+    #[async_trait::async_trait]
+    impl AgentModel for IdleModel {
+        async fn generate(
+            &mut self,
+            _messages: &[HarnessMessage],
+            _tools: &[NativeToolDefinition],
+            _force_tool: bool,
+            _sink: Option<StreamHandle>,
+        ) -> Result<ModelOutput, ToolError> {
+            Ok(ModelOutput {
+                content_text: Some("done".to_string()),
+                ..ModelOutput::default()
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn delegate_task_review_of_requires_completed_lane_and_prefixes_read_only_brief() {
+        let dir = tempfile::tempdir().unwrap();
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                memory_enabled: false,
+                ..HarnessConfig::default()
+            },
+            ToolRegistry::new(),
+            ToolContext::new(dir.path()).unwrap(),
+        );
+        let mut state = HarnessState::blank(&dir.path().display().to_string(), None);
+        let (result_tx, _result_rx) = mpsc::unbounded_channel();
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let (watch_tx, _watch_rx) = mpsc::unbounded_channel();
+        let mut watches = WatchManager::new(dir.path().to_path_buf(), watch_tx);
+
+        let running_record = LaneRecord {
+            id: "lane-1".to_string(),
+            title: "implement feature".to_string(),
+            status: LaneStatus::Running,
+            handoff: Some("do work".to_string()),
+            summary: None,
+            report: None,
+            structured: None,
+            error: None,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: None,
+            activity: None,
+            activity_kind: None,
+            activity_at: None,
+            activity_log: Vec::new(),
+            read_only: false,
+            agent: None,
+            profile: None,
+            transcript: None,
+            paths: vec!["src/foo.rs".to_string()],
+        };
+        let completed_record = LaneRecord {
+            id: "lane-2".to_string(),
+            title: "implement parser".to_string(),
+            status: LaneStatus::Completed,
+            handoff: Some("build parser".to_string()),
+            summary: Some("Built parser.".to_string()),
+            report: Some("Full parser report.".to_string()),
+            structured: Some(LaneStructuredReport {
+                summary: "Implemented parser in src/parser.rs:10.".to_string(),
+                findings: Vec::new(),
+                changed: Some("src/parser.rs (+40 -2)".to_string()),
+                tests: Some("cargo test parser: 3 passed".to_string()),
+                open: None,
+                unverified_citations: None,
+                clipped: false,
+            }),
+            error: None,
+            started_at: Utc::now().to_rfc3339(),
+            finished_at: Some(Utc::now().to_rfc3339()),
+            activity: None,
+            activity_kind: None,
+            activity_at: None,
+            activity_log: Vec::new(),
+            read_only: false,
+            agent: None,
+            profile: None,
+            transcript: None,
+            paths: vec!["src/parser.rs".to_string()],
+        };
+
+        let factory: ModelFactory = Arc::new(|_profile, _session| Ok(Box::new(IdleModel)));
+        let mut lanes = LaneManager::new(
+            Some(factory),
+            dir.path().to_path_buf(),
+            dir.path().join("lanes"),
+            result_tx,
+            progress_tx,
+            None,
+        )
+        .with_records(vec![running_record, completed_record]);
+
+        // Unknown lane rejected.
+        let (unknown_out, _) = harness.dispatch_meta(
+            &mut state,
+            &mut lanes,
+            &mut watches,
+            "delegate_task",
+            &json!({
+                "title": "review unknown",
+                "description": "Check all edge cases and error handling in the parser implementation.",
+                "review_of": "lane-99"
+            }),
+        );
+        assert_eq!(unknown_out["status"], "error");
+        let err_msg = unknown_out["error"]["message"].as_str().unwrap_or_default();
+        assert!(err_msg.contains("lane-99"), "got: {err_msg}");
+        assert!(
+            err_msg.contains("lane-2"),
+            "should list known finished lanes: {err_msg}"
+        );
+
+        // Running lane rejected.
+        let (running_out, _) = harness.dispatch_meta(
+            &mut state,
+            &mut lanes,
+            &mut watches,
+            "delegate_task",
+            &json!({
+                "title": "review running",
+                "description": "Check all edge cases and error handling in the feature implementation.",
+                "review_of": "lane-1"
+            }),
+        );
+        assert_eq!(running_out["status"], "error");
+        let err_msg = running_out["error"]["message"].as_str().unwrap_or_default();
+        assert!(err_msg.contains("lane-1"), "got: {err_msg}");
+        assert!(
+            err_msg.contains("lane-2"),
+            "should list known finished lanes: {err_msg}"
+        );
+
+        // Completed lane spawns a read_only review lane with prefixed brief.
+        let (ok_out, _) = harness.dispatch_meta(
+            &mut state,
+            &mut lanes,
+            &mut watches,
+            "delegate_task",
+            &json!({
+                "title": "review parser",
+                "description": "Focus on UTF-8 boundary handling and error recovery.",
+                "access": "full",
+                "review_of": "lane-2"
+            }),
+        );
+        assert_eq!(ok_out["status"], "success", "got: {ok_out}");
+        assert_eq!(ok_out["data"]["access"], "read_only");
+        let spawned_id = ok_out["data"]["lane_id"].as_str().unwrap();
+        let spawned = lanes
+            .records()
+            .iter()
+            .find(|r| r.id == spawned_id)
+            .expect("spawned lane record");
+        assert!(spawned.read_only, "review_of must force read_only");
+        let handoff = spawned.handoff.as_deref().unwrap_or_default();
+        assert!(
+            handoff.starts_with(
+                "Review of lane lane-2 \"implement parser\". Judge the work, not the account of it; check claims against the files.\n\
+                 Its report: Implemented parser in src/parser.rs:10.\n\
+                 Changed: src/parser.rs (+40 -2)\n\
+                 Tests: cargo test parser: 3 passed\n\
+                 Open: none\n\
+                 Read the diff yourself (`git diff -- <files>` or `git diff HEAD`) before forming a view.\n\n\
+                 Focus on UTF-8 boundary handling and error recovery."
+            ),
+            "unexpected handoff: {handoff}"
+        );
+    }
 }

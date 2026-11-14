@@ -148,6 +148,7 @@ impl CodingHarness {
             return StepResult::TurnEnded {
                 kind: TurnEndKind::Complete,
                 final_text: progress_text,
+                closing: None,
             };
         }
 
@@ -175,6 +176,8 @@ impl CodingHarness {
             self.context.workspace_root(),
             &self.context.current_dir(),
             crate::coordination_tools::task_awareness(&self.context),
+            self.config.context_window_tokens,
+            self.config.compact_at_pct,
         ) {
             state
                 .messages
@@ -423,6 +426,7 @@ impl CodingHarness {
         StepResult::TurnEnded {
             kind: TurnEndKind::Complete,
             final_text: progress_text,
+            closing: None,
         }
     }
 
