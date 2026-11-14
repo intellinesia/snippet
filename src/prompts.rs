@@ -354,6 +354,7 @@ mod seat_layer_tests {
             "in_reply_to",
             "in_review",
             "include_hidden",
+            "in_progress",
             "interrupted_reply",
             "keep_awake",
             "lane_id",
@@ -362,8 +363,10 @@ mod seat_layer_tests {
             "other_party",
             "played_audio",
             "read_only",
+            "reply_in",
             "reply_to",
             "review_escalated",
+            "schedule_wake",
             "room_limit",
             "set_rule",
             "snooze_days",
@@ -372,6 +375,7 @@ mod seat_layer_tests {
             "updated_at",
             "verify_mode",
             "waiting_on",
+            "wake_at",
         ]
         .into_iter()
         .collect();
