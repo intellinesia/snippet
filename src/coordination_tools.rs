@@ -1999,7 +1999,7 @@ impl Tool for GroupThread {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "group_thread".into(),
-            description: "Group threads: a thread with several agents and the human where posting fans out and agents take turns like colleagues in a chat — a post that names agents wakes just them, and a post that names nobody goes to the lead while everyone else joins only when they add something relevant. An agent's post wakes only the agents it mentions. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
+            description: "Group threads: a thread with several agents and the human where posting fans out and agents take turns like colleagues in a chat — a post that names agents wakes just them, and a post that names nobody goes to the lead while everyone else joins only when they add something relevant. An agent's post wakes only the agents it mentions. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?, reaction? (with in_reply_to, no body)}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
             input_schema: schema(
                 json!({
                     "action": {"type": "string", "enum": ["create", "list", "read", "post", "set_lead", "add_member"]},
@@ -2011,6 +2011,7 @@ impl Tool for GroupThread {
                     "body": {"type": "string"},
                     "mentions": {"type": "array", "items": {"type": "string"}},
                     "in_reply_to": {"type": "string"},
+                    "reaction": {"type": "string"},
                     "after_sequence": {"type": "integer"},
                     "limit": {"type": "integer"}
                 }),
@@ -2114,20 +2115,40 @@ impl Tool for GroupThread {
                     .get("thread_id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| ToolError::msg("`thread_id` is required"))?;
+                let group = require_group(&db, thread_id)?;
+                require_group_member(&group, &agent_id)?;
+                let in_reply_to = arguments
+                    .get("in_reply_to")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty());
+                if let Some(reaction) = arguments
+                    .get("reaction")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                {
+                    let target = in_reply_to
+                        .ok_or_else(|| ToolError::msg("a reaction needs `in_reply_to`"))?;
+                    let event = db
+                        .post_group_reaction(
+                            thread_id,
+                            ("agent", agent_id.as_str()),
+                            target,
+                            reaction,
+                            &uuid::Uuid::new_v4().to_string(),
+                            &now_rfc3339(),
+                        )
+                        .map_err(|e| ToolError::msg(format!("react in group: {e}")))?;
+                    return Ok(ToolResult::success(json!(event)));
+                }
                 let body = arguments
                     .get("body")
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|b| !b.is_empty())
                     .ok_or_else(|| ToolError::msg("`body` is required"))?;
-                let group = require_group(&db, thread_id)?;
-                require_group_member(&group, &agent_id)?;
                 let mentions = string_list(&arguments, "mentions");
-                let in_reply_to = arguments
-                    .get("in_reply_to")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty());
                 let event = db
                     .post_group_message(
                         thread_id,
@@ -2682,7 +2703,7 @@ impl Tool for PostChat {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "post_chat".into(),
-            description: "Post to any chat thread by thread_id. Direct threads take send_agent_message's fields (a reaction with no body is a reaction); groups take mentions and in_reply_to; task rooms take mentions as the addressed agents plus kind and urgency.".into(),
+            description: "Post to any chat thread by thread_id. Direct threads take send_agent_message's fields (a reaction with no body is a reaction); groups take mentions, in_reply_to and reaction; task rooms take mentions as the addressed agents plus kind and urgency.".into(),
             input_schema: schema(
                 json!({
                     "thread_id": {"type": "string"},
@@ -2781,9 +2802,9 @@ impl Tool for PostChat {
                 Ok(tagged_post(result, thread_id, "direct"))
             }
             "group" => {
-                if args.kind.is_some() || args.urgency.is_some() || args.reaction.is_some() {
+                if args.kind.is_some() || args.urgency.is_some() {
                     return Err(ToolError::msg(
-                        "kind, urgency and reaction are not supported for group threads",
+                        "kind and urgency are not supported for group threads",
                     ));
                 }
                 let mut call = json!({
@@ -2794,6 +2815,9 @@ impl Tool for PostChat {
                 });
                 if let Some(post_id) = in_reply_to {
                     call["in_reply_to"] = json!(post_id);
+                }
+                if let Some(reaction) = args.reaction {
+                    call["reaction"] = json!(reaction);
                 }
                 let result = GroupThread.execute(ctx, call).await?;
                 Ok(tagged_post(result, thread_id, "group"))

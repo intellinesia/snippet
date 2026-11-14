@@ -58,9 +58,14 @@ struct GroupEventsQuery {
 
 #[derive(Deserialize)]
 struct GroupPostReq {
+    #[serde(default)]
     body: String,
     #[serde(default)]
     mentions: Vec<String>,
+    #[serde(default)]
+    in_reply_to: Option<String>,
+    #[serde(default)]
+    reaction: Option<String>,
 }
 
 fn store_error(status: StatusCode, error: crate::store::StoreError) -> Response {
@@ -308,33 +313,60 @@ async fn group_events(
     }
 }
 
-/// POST /groups/:id/post {body, mentions?} — the human posts to the group;
-/// turn-taking is scheduled by the store. Answers the created event.
+/// POST /groups/:id/post {body, mentions?, in_reply_to?, reaction?} — the human
+/// posts to the group; turn-taking is scheduled by the store. With `reaction`
+/// the body is empty and `in_reply_to` names the post reacted to. Answers the
+/// created event.
 async fn post_group(
     State(d): State<Shared>,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(req): Json<GroupPostReq>,
 ) -> Response {
     let body = req.body.trim();
-    if body.is_empty() {
-        return api_error(StatusCode::BAD_REQUEST, "body is required");
-    }
     let now = chrono::Utc::now().to_rfc3339();
-    let mentions: Vec<String> = req
-        .mentions
-        .iter()
-        .map(|m| m.trim().to_string())
-        .filter(|m| !m.is_empty())
-        .collect();
-    match d.store.post_group_message(
-        &id,
-        ("human", "human"),
-        body,
-        &mentions,
-        None,
-        &uuid::Uuid::new_v4().to_string(),
-        &now,
-    ) {
+    let in_reply_to = req
+        .in_reply_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    let reaction = req
+        .reaction
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty());
+    let posted = if let Some(reaction) = reaction {
+        let Some(target) = in_reply_to else {
+            return api_error(StatusCode::BAD_REQUEST, "a reaction needs in_reply_to");
+        };
+        d.store.post_group_reaction(
+            &id,
+            ("human", "human"),
+            target,
+            reaction,
+            &uuid::Uuid::new_v4().to_string(),
+            &now,
+        )
+    } else {
+        if body.is_empty() {
+            return api_error(StatusCode::BAD_REQUEST, "body is required");
+        }
+        let mentions: Vec<String> = req
+            .mentions
+            .iter()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .collect();
+        d.store.post_group_message(
+            &id,
+            ("human", "human"),
+            body,
+            &mentions,
+            in_reply_to,
+            &uuid::Uuid::new_v4().to_string(),
+            &now,
+        )
+    };
+    match posted {
         Ok(saved) => {
             let _ = d.coordination_events.send(saved.clone());
             crate::session::emit_device_event(serde_json::json!({
