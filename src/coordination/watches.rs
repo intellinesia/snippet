@@ -369,12 +369,14 @@ impl Store {
     }
 
     /// Runner-owned runtime columns; `None` fields stay untouched.
+    /// Runtime state only; leaves `updated_at` alone, since the runner reads a
+    /// changed `updated_at` as an edit and restarts the script.
     pub fn set_watch_runtime(&self, id: &str, runtime: &WatchRuntime) -> Result<(), StoreError> {
         self.with_connection(|conn| {
             let mut sets = Vec::new();
             let mut values: Vec<rusqlite::types::Value> = Vec::new();
             let mut bind = |column: &str, value: rusqlite::types::Value| {
-                sets.push(format!("{column} = ?{}", values.len() + 2));
+                sets.push(format!("{column} = ?{}", values.len() + 1));
                 values.push(value);
             };
             if let Some(status) = &runtime.status {
@@ -414,12 +416,11 @@ impl Store {
                 return Ok(());
             }
             let sql = format!(
-                "UPDATE agent_watches SET {}, updated_at = ?1 WHERE id = ?{}",
+                "UPDATE agent_watches SET {} WHERE id = ?{}",
                 sets.join(", "),
-                values.len() + 2
+                values.len() + 1
             );
-            let mut stmt_values: Vec<rusqlite::types::Value> = vec![now_rfc3339().into()];
-            stmt_values.extend(values);
+            let mut stmt_values = values;
             stmt_values.push(id.to_string().into());
             conn.execute(&sql, rusqlite::params_from_iter(stmt_values))?;
             Ok(())
@@ -587,6 +588,13 @@ mod tests {
     fn runtime_and_events_persist() {
         let db = Store::open_in_memory().unwrap();
         let watch = db.create_watch(&new_watch("a", "inbox")).unwrap();
+        db.with_connection(|c| {
+            c.execute(
+                "UPDATE agent_watches SET updated_at = '2000-01-01T00:00:00Z' WHERE id = ?1",
+                [&watch.id],
+            )
+        })
+        .unwrap();
         db.set_watch_runtime(
             &watch.id,
             &WatchRuntime {
@@ -601,6 +609,7 @@ mod tests {
         let watch = db.watch_by_id(&watch.id).unwrap().unwrap();
         assert_eq!(watch.status, "running");
         assert_eq!(watch.last_output.as_deref(), Some("one\ntwo"));
+        assert_eq!(watch.updated_at, "2000-01-01T00:00:00Z");
 
         db.record_watch_event(&watch.id, "fired", Some("hello"))
             .unwrap();

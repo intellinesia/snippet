@@ -227,6 +227,7 @@ async fn test_stream(
         name,
         &state_dir,
         script_text,
+        None,
     );
     cmd.current_dir(&cwd);
     let mut child = cmd

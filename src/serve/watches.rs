@@ -235,14 +235,45 @@ fn systemd_run_available() -> bool {
     })
 }
 
+/// Scope units are named `<prefix><watch id>-<nonce>` so a restarted daemon can
+/// stop the scripts its previous run left behind. The prefix hashes the data
+/// root, so a second daemon with its own root never stops this one's scripts.
+pub(crate) fn scope_prefix(mc_root: &Path) -> String {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in mc_root.to_string_lossy().bytes() {
+        hash = (hash ^ byte as u32).wrapping_mul(0x0100_0193);
+    }
+    format!("snippet-watch-{hash:08x}-")
+}
+
+/// Stop every scope a previous daemon run started; their stdout readers are
+/// gone, so they would otherwise linger until their next write.
+pub(crate) async fn stop_leftover_scopes(prefix: &str) {
+    if !systemd_run_available() {
+        return;
+    }
+    let pattern = format!("{prefix}*.scope");
+    let _ = Command::new("systemctl")
+        .args(["--user", "stop", &pattern])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+}
+
 pub(crate) fn watch_command(
     script: &Path,
     name: &str,
     state_dir: &Path,
     script_text: &str,
+    unit: Option<&str>,
 ) -> Command {
     let mut cmd = if systemd_run_available() {
         let mut cmd = Command::new("systemd-run");
+        if let Some(unit) = unit {
+            cmd.arg(format!("--unit={unit}"));
+        }
         cmd.args([
             "--user",
             "--scope",
@@ -378,6 +409,7 @@ pub struct WatchRunner {
     rx: mpsc::UnboundedReceiver<WatchMsg>,
     tasks: HashMap<String, TaskEntry>,
     restarts: HashMap<String, RestartState>,
+    scope_prefix: String,
 }
 
 impl WatchRunner {
@@ -385,12 +417,13 @@ impl WatchRunner {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
             store,
-            mc_root,
+            mc_root: mc_root.clone(),
             sink,
             tx,
             rx,
             tasks: HashMap::new(),
             restarts: HashMap::new(),
+            scope_prefix: scope_prefix(&mc_root),
         }
     }
 
@@ -429,7 +462,13 @@ impl WatchRunner {
         let _ = std::fs::create_dir_all(&state_dir);
         let script = PathBuf::from(&watch.script_path);
         let script_text = std::fs::read_to_string(&script).unwrap_or_default();
-        let mut cmd = watch_command(&script, &watch.name, &state_dir, &script_text);
+        let unit = format!(
+            "{}{}-{}",
+            self.scope_prefix,
+            watch.id,
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        );
+        let mut cmd = watch_command(&script, &watch.name, &state_dir, &script_text, Some(&unit));
         cmd.current_dir(&watches_dir);
         let child = match cmd.spawn() {
             Ok(child) => child,
@@ -482,6 +521,16 @@ impl WatchRunner {
         );
         if stream {
             let _ = self.store.record_watch_event(&watch.id, "started", None);
+            if watch.status != "error" {
+                let _ = self.store.set_watch_runtime(
+                    &watch.id,
+                    &cw::WatchRuntime {
+                        status: Some("running".into()),
+                        last_run_at: Some(cw::now_rfc3339()),
+                        ..cw::WatchRuntime::default()
+                    },
+                );
+            }
         }
     }
 
@@ -512,6 +561,7 @@ impl WatchRunner {
     }
 
     pub async fn run(&mut self) {
+        stop_leftover_scopes(&self.scope_prefix).await;
         loop {
             self.step().await;
             tokio::time::sleep(TICK).await;
@@ -923,6 +973,15 @@ impl WatchRunner {
                 self.deliver_error(&watch, &detail).await;
             }
         } else {
+            if watch.status == "running" {
+                let _ = self.store.set_watch_runtime(
+                    &watch.id,
+                    &cw::WatchRuntime {
+                        status: Some("idle".into()),
+                        ..cw::WatchRuntime::default()
+                    },
+                );
+            }
             let backoff = STREAM_BASE_BACKOFF
                 .saturating_mul(1u32 << attempts.saturating_sub(1).min(6) as u32)
                 .min(STREAM_MAX_BACKOFF);
@@ -995,7 +1054,7 @@ pub(crate) async fn run_script_once(
     timeout: Duration,
     stdout_cap: usize,
 ) -> ScriptCapture {
-    let mut cmd = watch_command(script, name, state_dir, script_text);
+    let mut cmd = watch_command(script, name, state_dir, script_text, None);
     cmd.current_dir(cwd);
     let child = match cmd.spawn() {
         Ok(child) => child,
@@ -1312,6 +1371,17 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    #[test]
+    fn scope_prefix_is_stable_and_root_specific() {
+        let a = scope_prefix(Path::new("/home/x/.snippet/mission-control"));
+        assert_eq!(
+            a,
+            scope_prefix(Path::new("/home/x/.snippet/mission-control"))
+        );
+        assert_ne!(a, scope_prefix(Path::new("/tmp/test-root")));
+        assert!(a.starts_with("snippet-watch-") && a.ends_with('-'));
+    }
+
     fn watch() -> cw::Watch {
         cw::Watch {
             id: "w1".into(),
@@ -1612,6 +1682,49 @@ mod tests {
         assert_eq!(got.len(), 1, "{got:?}");
         assert!(got[0].1.contains("first"));
         assert!(got[0].1.contains("second"));
+        drop(runner);
+    }
+
+    #[tokio::test]
+    async fn a_stream_keeps_running_across_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open_in_memory().unwrap();
+        db.create_agent(&agent("a")).unwrap();
+        let script = dir.path().join("watches").join("feed.sh");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(
+            &script,
+            "#!/bin/bash\necho one\nsleep 7\necho two\nsleep 30\n",
+        )
+        .unwrap();
+        let mut row = new_watch_row("a", "feed", "stream");
+        row.script_path = script.to_string_lossy().into_owned();
+        let watch = db.create_watch(&row).unwrap();
+        let sink = Arc::new(CollectSink::default());
+        let mut runner = WatchRunner::new(db.clone(), dir.path().join("mc"), sink.clone());
+        runner.step().await;
+        assert_eq!(
+            db.watch_by_id(&watch.id).unwrap().unwrap().status,
+            "running"
+        );
+        for _ in 0..200 {
+            runner.step().await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if sink.envelopes.lock().unwrap().len() >= 2 {
+                break;
+            }
+        }
+        let got = sink.envelopes.lock().unwrap().clone();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].1.contains("one") && !got[0].1.contains("two"));
+        assert!(got[1].1.contains("two") && !got[1].1.contains("one"));
+        let started = db
+            .list_watch_events(&watch.id, 50)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "started")
+            .count();
+        assert_eq!(started, 1);
         drop(runner);
     }
 }
