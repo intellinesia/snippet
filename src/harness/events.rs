@@ -832,59 +832,9 @@ impl CodingHarness {
         if !lanes.record_result(result) {
             return;
         }
-        let body = match result.status {
-            // Prefer the full report (actions + findings + summary); fall back to
-            // the concise summary so the parent agent sees what the lane actually did.
-            LaneStatus::Completed => result
-                .report
-                .clone()
-                .or_else(|| result.summary.clone())
-                .unwrap_or_else(|| "completed".to_string()),
-            // A failure is a decision point, not a dead end — spell the options
-            // out so the orchestrator recovers instead of stalling or re-briefing
-            // from scratch.
-            LaneStatus::Failed => format!(
-                "FAILED: {}\nRecover deliberately: follow up THIS lane (delegate_task with lane_id=\"{}\") \
-                 with a narrower or corrected brief — it keeps everything it learned — or do the slice \
-                 yourself if it's small. Don't silently drop this part of the work.",
-                result
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "unknown error".to_string()),
-                result.id,
-            ),
-            LaneStatus::Paused => format!(
-                "PAUSED: {}. Its context and partial work are saved. Check its activity, then decide: \
-                 continue it (delegate_task with lane_id=\"{}\" and a short instruction, narrower if it was \
-                 circling), take the slice over yourself, or cancel_delegated_task if it's no longer needed.",
-                result
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "hit the lane time limit".to_string()),
-                result.id,
-            ),
-            LaneStatus::Cancelled => "cancelled".to_string(),
-            LaneStatus::Running => "still running".to_string(),
-        };
-        // Orchestration cue: tell the agent whether it's still waiting on others
-        // or holding the complete picture — the difference between a progress
-        // note and the final synthesis.
         let outstanding = lanes.active_count();
-        let cue = if outstanding > 0 {
-            format!(
-                "{outstanding} lane(s) still out — fold this in (or note progress) and keep waiting; don't finalize yet."
-            )
-        } else {
-            "Every lane has reported, so you have the full picture: bring the results together into \
-             the deliverable now, checking the findings it rests on against their file:line first. If \
-             something is missing, follow up the lane that owns it rather than redoing the work."
-                .to_string()
-        };
         state.messages.push(HarnessMessage::User {
-            content: format!(
-                "[lane_report]\nsubject = \"{}\"\nstatus = {:?}\n{}\n[orchestration] {}\n[follow_up_id = \"{}\"]  # internal handle for a delegate_task follow-up; to the user, call this work by its subject\n[/lane_report]",
-                result.title, result.status, body, cue, result.id
-            ),
+            content: render_lane_report(result, outstanding),
         });
         state.events.push(HarnessEvent::LaneCompleted {
             id: result.id.clone(),
@@ -917,6 +867,101 @@ fn idle_goal_turns(messages: &[HarnessMessage]) -> usize {
         }
     }
     idle
+}
+
+pub(crate) fn render_lane_report(result: &LaneResult, outstanding: usize) -> String {
+    let status = match result.status {
+        LaneStatus::Completed => "completed",
+        LaneStatus::Failed => "failed",
+        LaneStatus::Paused => "paused",
+        LaneStatus::Cancelled => "cancelled",
+        LaneStatus::Running => "running",
+    };
+    let mut lines = vec![
+        "[lane_report]".to_string(),
+        format!(
+            "lane: {}  subject: {}  status: {status}",
+            result.id, result.title
+        ),
+    ];
+
+    match result.status {
+        LaneStatus::Completed => {
+            if let Some(s) = &result.structured {
+                if !s.summary.trim().is_empty() {
+                    lines.push(format!("summary: {}", s.summary.trim()));
+                }
+                if !s.findings.is_empty() {
+                    lines.push("findings:".to_string());
+                    for f in &s.findings {
+                        lines.push(format!("- {} ({})", f.claim, f.location));
+                    }
+                }
+                if let Some(changed) = s
+                    .changed
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                {
+                    lines.push(format!("changed: {changed}"));
+                }
+                if let Some(tests) = s.tests.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    lines.push(format!("tests: {tests}"));
+                }
+                if let Some(open) = s.open.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    lines.push(format!("open: {open}"));
+                }
+                if let Some(unverified) = s
+                    .unverified_citations
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                {
+                    lines.push(format!("unverified citations: {unverified}"));
+                }
+            } else {
+                let raw = result
+                    .report
+                    .as_deref()
+                    .or(result.summary.as_deref())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or("completed");
+                const PROSE_CAP: usize = 1500;
+                let summary = if raw.chars().count() > PROSE_CAP {
+                    let head: String = raw.chars().take(PROSE_CAP).collect();
+                    format!("{head} (clipped; full text on the lane record)")
+                } else {
+                    raw.to_string()
+                };
+                lines.push(format!("summary: {summary}"));
+            }
+        }
+        LaneStatus::Failed => {
+            let err = result.error.as_deref().unwrap_or("unknown error");
+            lines.push(format!(
+                "FAILED: {err}. Follow up this lane (`delegate_task` with `lane_id=\"{}\"`) with a narrower or corrected brief, or handle the slice yourself; do not drop it.",
+                result.id
+            ));
+        }
+        LaneStatus::Paused => {
+            let err = result.error.as_deref().unwrap_or("hit the lane time limit");
+            lines.push(format!(
+                "PAUSED: {err}. Context and partial work are saved; continue it (`delegate_task` with `lane_id=\"{}\"`), take the slice over, or call `cancel_delegated_task`.",
+                result.id
+            ));
+        }
+        LaneStatus::Cancelled | LaneStatus::Running => {}
+    }
+
+    let cue = if outstanding > 0 {
+        format!("{outstanding} lane(s) still out.")
+    } else {
+        "All lanes reported; integrate and check the findings you rely on.".to_string()
+    };
+    lines.push(cue);
+    lines.push("[/lane_report]".to_string());
+    lines.join("\n")
 }
 
 /// The `turn_changes` event for a turn's per-file numstat, or `None` when nothing changed.
@@ -1044,5 +1089,279 @@ mod keep_warm_tests {
             keep_warm_skip_reason(HarnessStatus::Running),
             "session was mid-turn"
         );
+    }
+}
+
+#[cfg(test)]
+mod lane_report_tests {
+    use super::*;
+    use crate::lanes::{LaneFinding, LaneStructuredReport};
+    use crate::llm::ModelOutput;
+
+    struct SingleCallModel(Option<ModelOutput>);
+
+    #[async_trait::async_trait]
+    impl AgentModel for SingleCallModel {
+        async fn generate(
+            &mut self,
+            _messages: &[HarnessMessage],
+            _tools: &[NativeToolDefinition],
+            _force_tool: bool,
+            _sink: Option<StreamHandle>,
+        ) -> Result<ModelOutput, ToolError> {
+            Ok(self.0.take().expect("called once"))
+        }
+    }
+
+    #[tokio::test]
+    async fn terminate_loop_with_and_without_structured_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                memory_enabled: false,
+                ..HarnessConfig::default()
+            },
+            ToolRegistry::new(),
+            ToolContext::new(dir.path()).unwrap(),
+        );
+
+        let mut structured_model = SingleCallModel(Some(ModelOutput {
+            calls: vec![GeneratedToolCall {
+                tool_name: "terminate_loop".into(),
+                arguments: json!({
+                    "summary": "Wired compact lane reports.",
+                    "findings": [
+                        {"claim": "Added structured fields", "where": "src/meta.rs:163"},
+                        {"claim": "Rendered compact envelope", "where": "src/harness/events.rs:826"}
+                    ],
+                    "tests": "cargo test --lib lanes:: passed",
+                    "open": "TUI untouched"
+                }),
+                id: Some("c1".into()),
+                origin_model: None,
+                signature: None,
+            }],
+            ..Default::default()
+        }));
+        let out = harness
+            .run(&mut structured_model, "do work")
+            .await
+            .expect("run succeeded");
+        assert_eq!(
+            out.final_text.as_deref(),
+            Some("Wired compact lane reports.")
+        );
+        let closing = out.closing.expect("closing structure captured");
+        assert_eq!(closing["summary"], "Wired compact lane reports.");
+        assert_eq!(closing["findings"].as_array().unwrap().len(), 2);
+        assert_eq!(closing["tests"], "cargo test --lib lanes:: passed");
+        assert_eq!(closing["open"], "TUI untouched");
+
+        let mut plain_model = SingleCallModel(Some(ModelOutput {
+            calls: vec![GeneratedToolCall {
+                tool_name: "terminate_loop".into(),
+                arguments: json!({
+                    "summary": "Plain summary only."
+                }),
+                id: Some("c2".into()),
+                origin_model: None,
+                signature: None,
+            }],
+            ..Default::default()
+        }));
+        let plain_out = harness
+            .run(&mut plain_model, "do plain work")
+            .await
+            .expect("plain run succeeded");
+        assert_eq!(plain_out.final_text.as_deref(), Some("Plain summary only."));
+        assert_eq!(
+            plain_out.closing,
+            Some(json!({"summary": "Plain summary only."}))
+        );
+    }
+
+    #[test]
+    fn envelope_renderer_completed_structured_clipped_and_recovery_states() {
+        let completed = LaneResult {
+            id: "lane-3".into(),
+            title: "lane report".into(),
+            status: LaneStatus::Completed,
+            summary: Some("Implemented compact lane reports.".into()),
+            report: Some("Full report body".into()),
+            error: None,
+            structured: Some(LaneStructuredReport {
+                summary: "Implemented compact lane reports.".into(),
+                findings: vec![
+                    LaneFinding {
+                        claim: "Added findings schema".into(),
+                        location: "src/meta.rs:163".into(),
+                    },
+                    LaneFinding {
+                        claim: "Updated envelope format".into(),
+                        location: "src/harness/events.rs:999".into(),
+                    },
+                ],
+                changed: Some(
+                    "3 files (+45/-12): src/lanes.rs (+30/-8), src/harness/events.rs (+10/-4), src/meta.rs (+5/-0)"
+                        .into(),
+                ),
+                tests: Some("3 targeted suites passed".into()),
+                open: None,
+                unverified_citations: Some("src/harness/events.rs:999 (file has 950 lines)".into()),
+                clipped: false,
+            }),
+        };
+        let rendered = render_lane_report(&completed, 0);
+        let expected = "\
+[lane_report]
+lane: lane-3  subject: lane report  status: completed
+summary: Implemented compact lane reports.
+findings:
+- Added findings schema (src/meta.rs:163)
+- Updated envelope format (src/harness/events.rs:999)
+changed: 3 files (+45/-12): src/lanes.rs (+30/-8), src/harness/events.rs (+10/-4), src/meta.rs (+5/-0)
+tests: 3 targeted suites passed
+unverified citations: src/harness/events.rs:999 (file has 950 lines)
+All lanes reported; integrate and check the findings you rely on.
+[/lane_report]";
+        assert_eq!(rendered, expected);
+
+        let long_prose = "x".repeat(1800);
+        let prose_outcome = crate::harness::HarnessOutcome {
+            final_text: Some(long_prose.clone()),
+            events: Vec::new(),
+            iterations: 1,
+            closing: None,
+        };
+        let prose_structured = crate::lanes::build_structured_report(
+            &prose_outcome,
+            Some("1 files (+2/-1): src/lib.rs (+2/-1)".into()),
+        );
+        let prose_result = LaneResult {
+            id: "lane-4".into(),
+            title: "cli lane".into(),
+            status: LaneStatus::Completed,
+            summary: Some(prose_structured.summary.clone()),
+            report: Some(long_prose),
+            error: None,
+            structured: Some(prose_structured),
+        };
+        let rendered_prose = render_lane_report(&prose_result, 2);
+        assert!(rendered_prose.contains(&format!(
+            "summary: {} (clipped; full text on the lane record)",
+            "x".repeat(1500)
+        )));
+        assert!(rendered_prose.contains("changed: 1 files (+2/-1): src/lib.rs (+2/-1)"));
+        assert!(rendered_prose.contains("\n2 lane(s) still out.\n[/lane_report]"));
+
+        let failed = render_lane_report(
+            &LaneResult {
+                id: "lane-5".into(),
+                title: "broken slice".into(),
+                status: LaneStatus::Failed,
+                summary: None,
+                report: None,
+                error: Some("compile error".into()),
+                structured: None,
+            },
+            1,
+        );
+        assert!(failed.contains("lane: lane-5  subject: broken slice  status: failed"));
+        assert!(failed.contains("FAILED: compile error."));
+        assert!(failed.contains("delegate_task"));
+
+        let paused = render_lane_report(
+            &LaneResult {
+                id: "lane-6".into(),
+                title: "slow slice".into(),
+                status: LaneStatus::Paused,
+                summary: None,
+                report: None,
+                error: Some("timed out".into()),
+                structured: None,
+            },
+            0,
+        );
+        assert!(paused.contains("lane: lane-6  subject: slow slice  status: paused"));
+        assert!(paused.contains("PAUSED: timed out."));
+        assert!(paused.contains("cancel_delegated_task"));
+    }
+
+    #[test]
+    fn typical_completed_lane_envelope_is_under_1200_bytes() {
+        let summary = "a".repeat(400);
+        let findings = vec![
+            LaneFinding {
+                claim: "Replaced change_files argument scan with git numstat across the lane write scope so bash and direct file mutations are measured.".into(),
+                location: "src/lanes.rs:1480".into(),
+            },
+            LaneFinding {
+                claim: "Added structured findings, tests, and open fields to terminate_loop and passed them out on HarnessOutcome.".into(),
+                location: "src/harness/dispatch.rs:481".into(),
+            },
+            LaneFinding {
+                claim: "Switched inject_lane_result to render the compact lane_report envelope without follow_up_id comments or verified boilerplate.".into(),
+                location: "src/harness/events.rs:826".into(),
+            },
+        ];
+        let changed = "3 files (+142/-68): src/lanes.rs (+95/-42), src/harness/events.rs (+32/-20), src/meta.rs (+15/-6)";
+        let tests = "cargo test --lib lanes::, harness::, meta:: (all passed)";
+
+        let legacy_closing = format!(
+            "{summary}\n\nFindings:\n- {} ({})\n- {} ({})\n- {} ({})\n\nTests: {tests}\n\n\
+             Detailed walkthrough of every file inspected and changed during the run:\n\
+             1. In `src/lanes.rs:1255-1554`, inspected `run_lane_once`, `verify_grounding`, and `summarize_lane_outcome`.\n\
+             2. In `src/harness/events.rs:826-900`, inspected `inject_lane_result` and the orchestration cue.\n\
+             3. In `src/meta.rs:163-183` and `src/harness/dispatch.rs:481-516`, inspected `terminate_loop`.",
+            findings[0].claim,
+            findings[0].location,
+            findings[1].claim,
+            findings[1].location,
+            findings[2].claim,
+            findings[2].location,
+        );
+        let legacy_body = format!(
+            "Summary:\n{legacy_closing}\n\nFiles changed/created (3):\n- src/lanes.rs\n- src/harness/events.rs\n- src/meta.rs\n\n\
+             [reference_check]\nall 6 file:line reference(s) verified against the workspace."
+        );
+        let legacy_cue = "Every lane has reported, so you have the full picture: bring the results together into \
+             the deliverable now, checking the findings it rests on against their file:line first. If \
+             something is missing, follow up the lane that owns it rather than redoing the work.";
+        let before_envelope = format!(
+            "[lane_report]\nsubject = \"lane report\"\nstatus = Completed\n{legacy_body}\n[orchestration] {legacy_cue}\n[follow_up_id = \"lane-7\"]  # internal handle for a delegate_task follow-up; to the user, call this work by its subject\n[/lane_report]"
+        );
+
+        let after_envelope = render_lane_report(
+            &LaneResult {
+                id: "lane-7".into(),
+                title: "lane report".into(),
+                status: LaneStatus::Completed,
+                summary: Some(summary.clone()),
+                report: Some(legacy_closing),
+                error: None,
+                structured: Some(LaneStructuredReport {
+                    summary,
+                    findings,
+                    changed: Some(changed.into()),
+                    tests: Some(tests.into()),
+                    open: None,
+                    unverified_citations: None,
+                    clipped: false,
+                }),
+            },
+            0,
+        );
+
+        println!(
+            "envelope bytes: before={}, after={}",
+            before_envelope.len(),
+            after_envelope.len()
+        );
+        assert!(
+            after_envelope.len() < 1200,
+            "expected under 1200 bytes, got {}",
+            after_envelope.len()
+        );
+        assert!(before_envelope.len() > after_envelope.len());
     }
 }

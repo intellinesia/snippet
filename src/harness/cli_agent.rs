@@ -1966,6 +1966,7 @@ impl CodingHarness {
             final_text: state.final_text,
             events: state.events,
             iterations: state.iterations,
+            closing: None,
         })
     }
 

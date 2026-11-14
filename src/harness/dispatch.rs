@@ -353,6 +353,7 @@ impl CodingHarness {
                 return Err(StepResult::TurnEnded {
                     kind: TurnEndKind::Complete,
                     final_text: None,
+                    closing: None,
                 });
             }
         }
@@ -485,10 +486,19 @@ impl CodingHarness {
                 .or_else(|| call.arguments.get("message"))
                 .and_then(Value::as_str)
                 .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let result = match summary {
-                Some(s) => {
-                    json!({"schema_version": 1, "status": "success", "data": {"summary": s}})
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let closing = summary.as_ref().map(|s| {
+                let mut data = match call.arguments.as_object() {
+                    Some(map) => map.clone(),
+                    None => serde_json::Map::new(),
+                };
+                data.insert("summary".to_string(), Value::String(s.clone()));
+                Value::Object(data)
+            });
+            let result = match &closing {
+                Some(data) => {
+                    json!({"schema_version": 1, "status": "success", "data": data})
                 }
                 None => tool_error(
                     "`terminate_loop` requires a non-empty `summary` of what you did and found.",
@@ -499,7 +509,7 @@ impl CodingHarness {
                 // A steered conversation model can call it anyway; its summary
                 // IS the answer — render it as one, or the turn ends silently.
                 if conversation_mode && !replied_since_last_user(&state.events) {
-                    record_assistant_text(state, s.to_string(), None);
+                    record_assistant_text(state, s.clone(), None);
                     if let Some(sink) = sink {
                         StreamBuffer::clear(sink);
                     }
@@ -507,7 +517,8 @@ impl CodingHarness {
                 let _ = self.persist(state, lanes).await;
                 return Some(StepResult::TurnEnded {
                     kind: TurnEndKind::Complete,
-                    final_text: Some(s.to_string()),
+                    final_text: Some(s),
+                    closing,
                 });
             }
             // Missing summary: the error result nudges a retry next turn.
@@ -553,7 +564,11 @@ impl CodingHarness {
             let _ = self.persist(state, lanes).await;
             // ask_user pauses the run here; nothing else ends a turn now.
             if let MetaControl::EndTurn { kind, final_text } = control {
-                return Some(StepResult::TurnEnded { kind, final_text });
+                return Some(StepResult::TurnEnded {
+                    kind,
+                    final_text,
+                    closing: None,
+                });
             }
             return None;
         }

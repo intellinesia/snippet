@@ -286,6 +286,8 @@ pub struct HarnessOutcome {
     pub final_text: Option<String>,
     pub events: Vec<HarnessEvent>,
     pub iterations: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closing: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -890,6 +892,7 @@ enum StepResult {
     TurnEnded {
         kind: TurnEndKind,
         final_text: Option<String>,
+        closing: Option<Value>,
     },
     /// The model request failed. `retryable` is false for fatal errors
     /// (auth/permission/not-found/bad-request) so the loop gives up at once

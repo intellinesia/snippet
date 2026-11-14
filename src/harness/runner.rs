@@ -29,6 +29,7 @@ impl CodingHarness {
                 final_text: state.final_text,
                 events: state.events,
                 iterations: state.iterations,
+                closing: None,
             });
         }
 
@@ -76,7 +77,11 @@ impl CodingHarness {
                 StepResult::Continue => {
                     consecutive_errors = 0;
                 }
-                StepResult::TurnEnded { final_text, .. } => {
+                StepResult::TurnEnded {
+                    final_text,
+                    closing,
+                    ..
+                } => {
                     state.status = HarnessStatus::Completed;
                     state.final_text = final_text.clone();
                     self.persist(&mut state, &lanes).await?;
@@ -84,6 +89,7 @@ impl CodingHarness {
                         final_text,
                         events: state.events,
                         iterations: iteration,
+                        closing,
                     });
                 }
                 StepResult::ModelError { message, retryable } => {
@@ -447,7 +453,9 @@ impl CodingHarness {
                         // before the next model call.
                         self.persist(&mut state, &lanes).await?;
                     }
-                    StepResult::TurnEnded { kind, final_text } => {
+                    StepResult::TurnEnded {
+                        kind, final_text, ..
+                    } => {
                         consecutive_errors = 0;
                         state.final_text = final_text;
                         state.status = match kind {
