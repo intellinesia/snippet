@@ -1947,7 +1947,7 @@ impl Tool for GroupThread {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "group_thread".into(),
-            description: "Group threads: a thread with several agents and the human where posting fans out and agents take turns like colleagues in a chat — a post that names agents wakes just them, and a post that names nobody goes to the lead while everyone else only speaks if it is a question in their field. An agent's post wakes only the agents it mentions. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '. To read any chat thread — direct, group or task — by id or peer, use read_chat.".into(),
+            description: "Group threads: a thread with several agents and the human where posting fans out and agents take turns like colleagues in a chat — a post that names agents wakes just them, and a post that names nobody goes to the lead while everyone else only speaks if it is a question in their field. An agent's post wakes only the agents it mentions. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
             input_schema: schema(
                 json!({
                     "action": {"type": "string", "enum": ["create", "list", "read", "post", "set_lead", "add_member"]},
@@ -2392,7 +2392,7 @@ impl Tool for Chats {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "chats".into(),
-            description: "List the chat threads you belong to, most recent first: direct conversations (including the one with the human), group threads you are a member of, and task rooms for open tasks you are seated on. `kind` narrows the list to direct, group or task. Each row has thread_id, kind, title, last_sequence, last_at and a `last` preview; direct rows also carry `peer` and `unread`. Open one with read_chat or post_chat.".into(),
+            description: "List your chat threads, most recent first: direct conversations (the human included), your groups, and the rooms of open tasks you sit on. Rows carry thread_id, kind, title, last_sequence, last_at and a `last` preview; direct rows add `peer` and `unread`. Open one with read_chat or post_chat.".into(),
             input_schema: schema(
                 json!({"kind": {"type": "string", "enum": ["direct", "group", "task"]}}),
                 &[],
@@ -2539,7 +2539,7 @@ impl Tool for ReadChat {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "read_chat".into(),
-            description: "Read one chat thread, oldest first — the general form of read_agent_thread and group_thread read. Pass exactly one of `thread_id` or `peer`: peer is an agent id, or `human` (also `local`) for your conversation with the user. Omit after_sequence for the most recent messages; pass it to page forward. The daemon's own acknowledgement events are hidden.".into(),
+            description: "Read one chat thread, oldest first, by `thread_id` or by `peer` (an agent id, or `human` for your conversation with the user). Omit after_sequence for the most recent messages; pass it to page forward.".into(),
             input_schema: schema(
                 json!({
                     "thread_id": {"type": "string"},
@@ -2640,7 +2640,7 @@ impl Tool for PostChat {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "post_chat".into(),
-            description: "Post to a chat thread by thread_id — the write side of chats and read_chat. Direct threads take send_agent_message's fields (in_reply_to acts as reply_to; a reaction with no body is a reaction); group threads take mentions and in_reply_to like group_thread post; task rooms take mentions as the addressed agents plus kind and urgency like post_task_coordination.".into(),
+            description: "Post to any chat thread by thread_id. Direct threads take send_agent_message's fields (a reaction with no body is a reaction); groups take mentions and in_reply_to; task rooms take mentions as the addressed agents plus kind and urgency.".into(),
             input_schema: schema(
                 json!({
                     "thread_id": {"type": "string"},
