@@ -163,17 +163,42 @@ fn complete_goal_tool() -> NativeToolDefinition {
 pub fn terminate_loop_tool() -> NativeToolDefinition {
     NativeToolDefinition {
         name: "terminate_loop".to_string(),
-        description: "End your run and hand back a summary of what you did and found. Call this \
-            once the task is finished: `summary` is a tight account of the outcome, key decisions, \
-            and any blockers — it is what the caller reads. Finish your actual work first, then \
-            call `terminate_loop`."
+        description: "End your run and hand back a structured report of what you did and found. \
+            Finish your actual work first, then call `terminate_loop`."
             .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "summary": {
                     "type": "string",
-                    "description": "Tight account of the outcome, key decisions, and any blockers — what the caller reads."
+                    "description": "Outcome in one to three sentences, under 600 characters; details go in `findings`."
+                },
+                "findings": {
+                    "type": "array",
+                    "description": "Findings or changes, each under 200 characters with a file:line or file:line-line location.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "claim": {
+                                "type": "string",
+                                "description": "What was found or changed, under 200 characters."
+                            },
+                            "where": {
+                                "type": "string",
+                                "description": "Exact location as file:line or file:line-line."
+                            }
+                        },
+                        "required": ["claim", "where"],
+                        "additionalProperties": false
+                    }
+                },
+                "tests": {
+                    "type": "string",
+                    "description": "What ran and the result, under 300 characters."
+                },
+                "open": {
+                    "type": "string",
+                    "description": "What could not be verified or was left out, under 300 characters."
                 }
             },
             "required": ["summary"],
@@ -603,5 +628,16 @@ mod tests {
         });
         let brief = parse_delegate_brief(&payload).expect("should parse");
         assert_eq!(brief.profile.as_deref(), Some("claude-haiku"));
+    }
+
+    #[test]
+    fn terminate_loop_schema_includes_structured_fields() {
+        let def = terminate_loop_tool();
+        let props = def.input_schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("summary"));
+        assert!(props.contains_key("findings"));
+        assert!(props.contains_key("tests"));
+        assert!(props.contains_key("open"));
+        assert_eq!(def.input_schema["required"], json!(["summary"]));
     }
 }

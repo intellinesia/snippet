@@ -44,6 +44,7 @@ pub(super) fn unproductive_stop(
     Some(StepResult::TurnEnded {
         kind: TurnEndKind::Complete,
         final_text: None,
+        closing: None,
     })
 }
 
@@ -63,6 +64,7 @@ pub(super) fn repeat_stop(state: &mut HarnessState, vars: &mut LoopVars) -> Opti
     Some(StepResult::TurnEnded {
         kind: TurnEndKind::Complete,
         final_text: None,
+        closing: None,
     })
 }
 

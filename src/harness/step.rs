@@ -148,6 +148,7 @@ impl CodingHarness {
             return StepResult::TurnEnded {
                 kind: TurnEndKind::Complete,
                 final_text: progress_text,
+                closing: None,
             };
         }
 
@@ -423,6 +424,7 @@ impl CodingHarness {
         StepResult::TurnEnded {
             kind: TurnEndKind::Complete,
             final_text: progress_text,
+            closing: None,
         }
     }
 
