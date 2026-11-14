@@ -52,7 +52,7 @@ impl CodingHarness {
             "update_plan" => {
                 let store = self.store();
                 match parse_plan(arguments, store.as_ref()) {
-                    Ok(steps) => {
+                    Ok((steps, cleared_wakes)) => {
                         let done = steps
                             .iter()
                             .filter(|s| s.status == PlanStatus::Done)
@@ -70,8 +70,12 @@ impl CodingHarness {
                         state
                             .events
                             .push(HarnessEvent::PlanUpdated { steps, explanation });
+                        let mut data = json!({"done": done, "total": total});
+                        if !cleared_wakes.is_empty() {
+                            data["cleared_wakes"] = json!(cleared_wakes);
+                        }
                         (
-                            json!({"schema_version": 1, "status": "success", "data": {"done": done, "total": total}}),
+                            json!({"schema_version": 1, "status": "success", "data": data}),
                             MetaControl::Continue,
                         )
                     }
@@ -589,10 +593,12 @@ impl CodingHarness {
 }
 
 /// Validate an `update_plan` call: 1–12 non-empty steps, at most one in progress.
+/// Returns normalized steps plus any step texts whose `wake_at` was in the past
+/// and dropped silently (already fired).
 pub(super) fn parse_plan(
     arguments: &Value,
     store: Option<&crate::store::Store>,
-) -> Result<Vec<PlanStep>, String> {
+) -> Result<(Vec<PlanStep>, Vec<String>), String> {
     parse_plan_at(arguments, store, Utc::now())
 }
 
@@ -600,7 +606,7 @@ pub(super) fn parse_plan_at(
     arguments: &Value,
     store: Option<&crate::store::Store>,
     now: chrono::DateTime<Utc>,
-) -> Result<Vec<PlanStep>, String> {
+) -> Result<(Vec<PlanStep>, Vec<String>), String> {
     let steps: Vec<PlanStep> = arguments
         .get("steps")
         .cloned()
@@ -623,7 +629,9 @@ pub(super) fn parse_plan_at(
         return Err("mark at most one step `in_progress`.".to_string());
     }
     let mut normalized = Vec::with_capacity(steps.len());
+    let mut cleared_wakes = Vec::new();
     for s in steps {
+        let step_text = s.step.trim().to_string();
         let reply_in = match s.reply_in {
             Some(raw) => {
                 let trimmed = raw.trim();
@@ -666,21 +674,23 @@ pub(super) fn parse_plan_at(
                 let dt = chrono::DateTime::parse_from_rfc3339(trimmed)
                     .map_err(|e| format!("update_plan step `wake_at` must be RFC 3339: {e}"))?;
                 if dt.with_timezone(&Utc) <= now {
-                    return Err("update_plan step `wake_at` must be in the future.".to_string());
+                    cleared_wakes.push(step_text.clone());
+                    None
+                } else {
+                    Some(trimmed.to_string())
                 }
-                Some(trimmed.to_string())
             }
             None => None,
         };
         normalized.push(PlanStep {
-            step: s.step.trim().to_string(),
+            step: step_text,
             status: s.status,
             reply_in,
             waiting_on,
             wake_at,
         });
     }
-    Ok(normalized)
+    Ok((normalized, cleared_wakes))
 }
 
 #[cfg(test)]
@@ -725,7 +735,8 @@ mod tests {
                 }
             ]
         });
-        let parsed = parse_plan_at(&args, Some(&store), now).unwrap();
+        let (parsed, cleared) = parse_plan_at(&args, Some(&store), now).unwrap();
+        assert!(cleared.is_empty());
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].reply_in.as_deref(), Some(msg.thread_id.as_str()));
         assert_eq!(parsed[0].waiting_on.as_deref(), Some("task:t-123"));
@@ -752,17 +763,24 @@ mod tests {
     }
 
     #[test]
-    fn parse_plan_rejects_past_wake_at_unknown_reply_in_and_bad_waiting_on() {
+    fn parse_plan_drops_past_wake_at_and_rejects_unparseable_or_unknown_refs() {
         let store = crate::store::Store::open_in_memory().unwrap();
         let now = chrono::DateTime::parse_from_rfc3339("2026-11-14T10:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
 
         let past = json!({
-            "steps": [{"step": "Late", "status": "pending", "wake_at": "2026-11-14T09:00:00Z"}]
+            "steps": [{"step": "Already woken", "status": "pending", "wake_at": "2026-11-14T09:00:00Z"}]
         });
-        let err = parse_plan_at(&past, Some(&store), now).unwrap_err();
-        assert!(err.contains("future"), "{err}");
+        let (parsed, cleared) = parse_plan_at(&past, Some(&store), now).unwrap();
+        assert_eq!(parsed[0].wake_at, None);
+        assert_eq!(cleared, vec!["Already woken"]);
+
+        let bad_wake = json!({
+            "steps": [{"step": "Bad time", "status": "pending", "wake_at": "not-rfc3339"}]
+        });
+        let err = parse_plan_at(&bad_wake, Some(&store), now).unwrap_err();
+        assert!(err.contains("RFC 3339"), "{err}");
 
         let unknown_thread = json!({
             "steps": [{"step": "Reply", "status": "pending", "reply_in": "direct:missing"}]
@@ -824,5 +842,24 @@ mod tests {
         // Hydrate when loaded state has an empty plan.
         let loaded = harness.load_or_initialize_state(None).await.unwrap();
         assert_eq!(loaded.plan, saved.steps);
+
+        // Echoing a past wake_at succeeds, drops wake_at, and reports cleared_wakes.
+        let (echo_res, _) = harness.dispatch_meta(
+            &mut state,
+            &mut lanes,
+            &mut watches,
+            "update_plan",
+            &json!({
+                "steps": [
+                    {"step": "Verify hydration", "status": "done", "wake_at": "2020-01-01T00:00:00Z"}
+                ]
+            }),
+        );
+        assert_eq!(echo_res["status"], "success");
+        assert_eq!(
+            echo_res["data"]["cleared_wakes"],
+            json!(["Verify hydration"])
+        );
+        assert_eq!(state.plan[0].wake_at, None);
     }
 }

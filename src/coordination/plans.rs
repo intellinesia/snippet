@@ -483,6 +483,14 @@ mod tests {
         store
             .save_plan("sess-1", "agent-a", &next_steps, "2026-11-14T03:10:00Z")
             .unwrap();
+        assert_eq!(
+            store
+                .plan_for_session("sess-1")
+                .unwrap()
+                .unwrap()
+                .stalled_flagged_at,
+            None
+        );
         let t4 = rfc3339_utc("2026-11-14T05:15:00Z").unwrap();
         let second = store.stale_in_progress(t4, 7200).unwrap();
         assert_eq!(second.len(), 1);
