@@ -522,8 +522,8 @@ enum GroupWake {
 
 /// How long after a post the deferred members keep waiting for the first
 /// responder to finish; past this the wake goes out regardless.
-const GROUP_CLAIM_WAIT_MAX_SECS: i64 = 300;
-const GROUP_CLAIM_RECHECK_SECS: i64 = 15;
+const GROUP_CLAIM_WAIT_MAX_SECS: i64 = 60;
+const GROUP_CLAIM_RECHECK_SECS: i64 = 10;
 
 /// Whether any agent woken first for this post is still running its turn.
 async fn first_responder_busy(d: &Shared, event_id: &str) -> bool {
@@ -538,7 +538,8 @@ async fn first_responder_busy(d: &Shared, event_id: &str) -> bool {
             .get_session_row(&session_id)
             .ok()
             .flatten()
-            .is_some_and(|row| matches!(row.status.as_str(), "running" | "waiting_for_input"));
+            // A responder waiting on the human (an approval) must not hold the others.
+            .is_some_and(|row| row.status == "running");
         if busy {
             return true;
         }
