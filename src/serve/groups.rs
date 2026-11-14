@@ -416,13 +416,14 @@ async fn deliver_group(
         .unwrap_or_default();
     // The wake carries the same bounded history a DM wake does, minus the post
     // being delivered and the daemon's own acknowledgements.
-    let history: Vec<_> = d
+    let history = d
         .store
-        .recent_events_for_thread(&event.thread_id, super::direct::DIRECT_HISTORY_ON_WAKE + 1)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|prior| prior.sequence < event.sequence && prior.payload.get("auto").is_none())
-        .collect();
+        .events_before(
+            &event.thread_id,
+            event.sequence,
+            super::direct::DIRECT_HISTORY_ON_WAKE,
+        )
+        .unwrap_or_default();
     let envelope =
         group_message_envelope(event, &title, pending.recipient_kind == "group", &history);
     if agent_id != crate::mission_control::SESSION_ID {
@@ -766,5 +767,64 @@ mod tests {
         let env = group_message_envelope(&event, "build", true, &[]);
         assert!(env.contains("history: (first message in this conversation)"));
         assert!(env.find("history:").unwrap() < env.find("body: wake body").unwrap());
+    }
+
+    #[test]
+    fn events_before_returns_prior_non_auto_events_even_after_many_newer_posts() {
+        let (db, id) = group();
+        let p1 = db
+            .post_group_message(&id, ("human", "human"), "first", &[], None, "k1", T0)
+            .unwrap();
+        let p2 = db
+            .post_group_message(&id, ("agent", "a"), "second", &[], None, "k2", T1)
+            .unwrap();
+        db.append_event(&crate::coordination::types::CoordinationEvent {
+            event_id: "auto-1".into(),
+            thread_id: id.clone(),
+            partition_key: format!("thread:{id}"),
+            sequence: 0,
+            event_type: "group_message".into(),
+            actor_kind: "agent".into(),
+            actor_id: "a".into(),
+            payload_version: 1,
+            payload: serde_json::json!({"body": "ack", "auto": true}),
+            causation_id: None,
+            correlation_id: None,
+            idempotency_key: "k-auto".into(),
+            created_at: T1.into(),
+        })
+        .unwrap();
+        let target = db
+            .post_group_message(
+                &id,
+                ("human", "human"),
+                "wake post",
+                &["b".into()],
+                None,
+                "k3",
+                T2,
+            )
+            .unwrap();
+        for i in 0..15 {
+            db.post_group_message(
+                &id,
+                ("agent", "c"),
+                &format!("later-{i}"),
+                &[],
+                None,
+                &format!("kl-{i}"),
+                T2,
+            )
+            .unwrap();
+        }
+        let history = db
+            .events_before(
+                &id,
+                target.sequence,
+                super::super::direct::DIRECT_HISTORY_ON_WAKE,
+            )
+            .unwrap();
+        let seqs: Vec<u64> = history.iter().map(|e| e.sequence).collect();
+        assert_eq!(seqs, vec![p1.sequence, p2.sequence]);
     }
 }

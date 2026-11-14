@@ -113,15 +113,12 @@ fn require_thread_access(
     if !db.thread_exists(thread_id).map_err(lookup)? {
         return Err(ToolError::msg(format!("no thread `{thread_id}`")));
     }
-    let direct = thread_id.starts_with("direct:");
     if actor_id == crate::mission_control::SESSION_ID
         || db
             .list_thread_participants(thread_id)
             .map_err(lookup)?
             .iter()
-            .any(|(member, kind)| {
-                member.as_str() == actor_id && (!direct || kind.as_str() == actor_kind)
-            })
+            .any(|(member, kind)| member.as_str() == actor_id && kind.as_str() == actor_kind)
     {
         return Ok(());
     }
@@ -2357,9 +2354,9 @@ fn chat_thread_kind(db: &Store, thread_id: &str) -> Option<&'static str> {
 /// start of its body, plus the event's sequence and time for sorting.
 fn chat_preview(db: &Store, thread_id: &str) -> (u64, Option<String>, Option<Value>) {
     let event = db
-        .recent_events_for_thread(thread_id, 1)
+        .events_before(thread_id, i64::MAX as u64, 1)
         .ok()
-        .and_then(|mut events| (!events.is_empty()).then(|| events.remove(0)));
+        .and_then(|mut events| events.pop());
     match event {
         Some(event) => {
             let body: String = event
@@ -2482,19 +2479,9 @@ impl Tool for Chats {
 
         if only.is_none() || only == Some("task") {
             let tasks = db
-                .list_tasks_page(
-                    &crate::coordination::TaskFilter {
-                        status: None,
-                        agent_id: (!mission_control).then_some(actor_id.as_str()),
-                    },
-                    None,
-                    500,
-                )
+                .list_open_tasks((!mission_control).then_some(actor_id.as_str()))
                 .map_err(|e| ToolError::msg(format!("list tasks: {e}")))?;
             for task in tasks {
-                if task.status.is_terminal() {
-                    continue;
-                }
                 let (sequence, at, last) = chat_preview(&db, &task.thread_id);
                 let last_at = at.unwrap_or_else(|| task.created_at.clone());
                 rows.push((
@@ -2689,6 +2676,7 @@ impl Tool for PostChat {
                     ));
                 }
                 let (actor_kind, actor_id) = actor(ctx)?;
+                require_thread_access(&db, ctx, (actor_kind, actor_id.as_str()), thread_id)?;
                 let participants = db
                     .list_thread_participants(thread_id)
                     .map_err(|e| ToolError::msg(format!("look up thread: {e}")))?;
@@ -3599,6 +3587,34 @@ mod tests {
             CHAT_T0,
         )
         .unwrap();
+        let human_thread_for_auto = crate::coordination::direct_thread_id(
+            ("agent", "w"),
+            ("human", crate::coordination::LOCAL_HUMAN_ID),
+        );
+        db.append_event(&CoordinationEvent {
+            event_id: "auto-ack".into(),
+            thread_id: human_thread_for_auto.clone(),
+            partition_key: format!("thread:{human_thread_for_auto}"),
+            sequence: 0,
+            event_type: "direct_message.sent".into(),
+            actor_kind: "agent".into(),
+            actor_id: "w".into(),
+            payload_version: 1,
+            payload: json!({"body": "auto ack", "auto": "ack"}),
+            causation_id: None,
+            correlation_id: None,
+            idempotency_key: "k-auto".into(),
+            created_at: "2026-01-01T00:00:05Z".into(),
+        })
+        .unwrap();
+        db.send_direct_message(
+            ("agent", "other"),
+            ("human", crate::coordination::LOCAL_HUMAN_ID),
+            "other human dm",
+            "k-other-dm",
+            CHAT_T0,
+        )
+        .unwrap();
         let mine = db
             .create_group(
                 "mine",
@@ -3640,6 +3656,17 @@ mod tests {
         db.create_task(&done).unwrap();
         db.add_task_agent_full("t2", "w", "implementer", None, "", "active", CHAT_T0)
             .unwrap();
+        db.create_task(&crate::coordination::Task::filed_by_human(
+            "t3".into(),
+            "Other Open".into(),
+            "work".into(),
+            "work-2".into(),
+            0,
+            "2026-01-01T00:00:05Z".into(),
+        ))
+        .unwrap();
+        db.add_task_agent_full("t3", "other", "implementer", None, "", "active", CHAT_T0)
+            .unwrap();
 
         let ctx = context(dir.path(), "s-w").with_agent_id("w");
         let result = Chats.execute(&ctx, json!({})).await.unwrap();
@@ -3652,11 +3679,17 @@ mod tests {
             ("agent", "w"),
             ("human", crate::coordination::LOCAL_HUMAN_ID),
         );
+        let other_human_thread = crate::coordination::direct_thread_id(
+            ("agent", "other"),
+            ("human", crate::coordination::LOCAL_HUMAN_ID),
+        );
         assert!(ids.contains(&human_thread.as_str()), "{ids:?}");
+        assert!(!ids.contains(&other_human_thread.as_str()), "{ids:?}");
         assert!(ids.contains(&mine.id.as_str()), "{ids:?}");
         assert!(!ids.contains(&theirs.id.as_str()), "{ids:?}");
         assert!(ids.contains(&crate::coordination::Task::thread_for("t1").as_str()));
         assert!(!ids.contains(&crate::coordination::Task::thread_for("t2").as_str()));
+        assert!(!ids.contains(&crate::coordination::Task::thread_for("t3").as_str()));
 
         let direct = chats
             .iter()
@@ -3805,6 +3838,85 @@ mod tests {
                 .await
                 .is_err()
         );
+
+        // Refused on another pair's direct thread and on a group the actor is not in.
+        db.send_direct_message(
+            ("agent", "other"),
+            ("human", crate::coordination::LOCAL_HUMAN_ID),
+            "private dm",
+            "k-priv",
+            CHAT_T0,
+        )
+        .unwrap();
+        let other_dm = crate::coordination::direct_thread_id(
+            ("agent", "other"),
+            ("human", crate::coordination::LOCAL_HUMAN_ID),
+        );
+        assert!(
+            ReadChat
+                .execute(&ctx, json!({"thread_id": other_dm}))
+                .await
+                .is_err()
+        );
+        let foreign_group = db
+            .create_group(
+                "foreign",
+                ("agent", "other"),
+                &["other".into()],
+                None,
+                "2026-01-01T00:00:05Z",
+            )
+            .unwrap();
+        assert!(
+            ReadChat
+                .execute(&ctx, json!({"thread_id": foreign_group.id}))
+                .await
+                .is_err()
+        );
+
+        // Plain session whose id equals a member agent id is refused on non-direct threads too.
+        let spoof_session = context(dir.path(), "other");
+        assert!(
+            ReadChat
+                .execute(&spoof_session, json!({"thread_id": foreign_group.id}))
+                .await
+                .is_err()
+        );
+        assert!(
+            ReadChat
+                .execute(&spoof_session, json!({"thread_id": room}))
+                .await
+                .is_err()
+        );
+
+        // `read_chat` hides events with `payload.auto`.
+        db.append_event(&CoordinationEvent {
+            event_id: "auto-1".into(),
+            thread_id: human_thread.clone(),
+            partition_key: format!("thread:{human_thread}"),
+            sequence: 0,
+            event_type: "direct_message.sent".into(),
+            actor_kind: "agent".into(),
+            actor_id: "w".into(),
+            payload_version: 1,
+            payload: json!({"body": "auto ack", "auto": "ack"}),
+            causation_id: None,
+            correlation_id: None,
+            idempotency_key: "k-auto-1".into(),
+            created_at: "2026-01-01T00:00:06Z".into(),
+        })
+        .unwrap();
+        let after_auto = ReadChat
+            .execute(&ctx, json!({"peer": "human"}))
+            .await
+            .unwrap();
+        let bodies_after: Vec<&str> = after_auto.value["data"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(bodies_after, ["hello human", "yo agent"]);
     }
 
     /// `post_chat` produces the same event `post_task_coordination` and
@@ -3935,6 +4047,45 @@ mod tests {
         assert_eq!(direct.value["data"]["to"], "human:local");
         let events = db.direct_thread_events(&human_thread, 0, 10).unwrap();
         assert_eq!(events.last().unwrap().payload["body"], "back to you");
+
+        // `post_chat` refuses a non-member on direct, group and task threads.
+        let outsider = context(dir.path(), "s-b").with_agent_id("b");
+        assert!(
+            PostChat
+                .execute(
+                    &outsider,
+                    json!({"thread_id": human_thread, "body": "intrude dm"})
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            PostChat
+                .execute(
+                    &outsider,
+                    json!({"thread_id": "task:t1", "body": "intrude task"})
+                )
+                .await
+                .is_err()
+        );
+        let foreign_group = db
+            .create_group(
+                "only-other",
+                ("agent", "other"),
+                &["other".into()],
+                None,
+                "2026-01-01T00:00:02Z",
+            )
+            .unwrap();
+        assert!(
+            PostChat
+                .execute(
+                    &ctx,
+                    json!({"thread_id": foreign_group.id, "body": "intrude group"})
+                )
+                .await
+                .is_err()
+        );
     }
 
     /// `read_agent_thread` with `peer_agent_id: "human"` reads the same thread

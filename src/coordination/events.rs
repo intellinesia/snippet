@@ -127,6 +127,32 @@ impl Store {
         })
     }
 
+    /// The newest `limit` non-auto events on `thread_id` with `sequence < sequence`,
+    /// returned oldest→newest.
+    pub fn events_before(
+        &self,
+        thread_id: &str,
+        sequence: u64,
+        limit: u32,
+    ) -> Result<Vec<CoordinationEvent>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT event_id, thread_id, partition_key, sequence, event_type,
+                        actor_kind, actor_id, payload_version, payload_json,
+                        causation_id, correlation_id, idempotency_key, created_at
+                 FROM board_events
+                 WHERE thread_id = ?1
+                   AND sequence < ?2
+                   AND json_extract(payload_json, '$.auto') IS NULL
+                 ORDER BY sequence DESC LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![thread_id, sequence, limit], event_from_row)?;
+            let mut events = rows.collect::<Result<Vec<_>, _>>()?;
+            events.reverse();
+            Ok(events)
+        })
+    }
+
     pub fn events_after(
         &self,
         partition_key: &str,
