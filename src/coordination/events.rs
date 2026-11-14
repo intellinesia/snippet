@@ -85,6 +85,21 @@ impl Store {
         })
     }
 
+    pub fn event_by_id(&self, event_id: &str) -> Result<Option<CoordinationEvent>, StoreError> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT event_id, thread_id, partition_key, sequence, event_type,
+                        actor_kind, actor_id, payload_version, payload_json,
+                        causation_id, correlation_id, idempotency_key, created_at
+                 FROM board_events
+                 WHERE event_id = ?1",
+                params![event_id],
+                event_from_row,
+            )
+            .optional()
+        })
+    }
+
     pub fn events_for_thread(
         &self,
         thread_id: &str,

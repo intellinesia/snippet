@@ -555,6 +555,8 @@ struct SendAgentMessageArgs {
     reply_to: Option<String>,
     #[serde(default)]
     reaction: Option<String>,
+    #[serde(default)]
+    forward: Option<String>,
 }
 
 /// The session id named by the most recent human message in a direct thread.
@@ -613,7 +615,8 @@ impl Tool for SendAgentMessage {
                     "kind":{"type":"string","enum":["note","question","status","handoff_note","blocker","result","interrupt"]},
                     "urgency":{"type":"string","enum":["normal","urgent"],"description":"default normal; `interrupt` is always urgent"},
                     "reply_to":{"type":"string"},
-                    "reaction":{"type":"string","enum":["check","eyes","thumbs_up","question","thinking"]}
+                    "reaction":{"type":"string","enum":["check","eyes","thumbs_up","question","thinking"]},
+                    "forward":{"type":"string"}
                 }),
                 &["recipient_agent_id"],
             ),
@@ -632,7 +635,12 @@ impl Tool for SendAgentMessage {
             args.reaction.as_deref(),
         )
         .map_err(ToolError::msg)?;
-        if reaction.is_none() && args.body.trim().is_empty() {
+        let forward_id = args
+            .forward
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        if reaction.is_none() && forward_id.is_none() && args.body.trim().is_empty() {
             return Err(ToolError::msg("body must not be empty"));
         }
         // `human` (or `local`) addresses the operator who is talking to this
@@ -687,7 +695,7 @@ impl Tool for SendAgentMessage {
                         s.review_started_at.clear();
                     });
                 }
-                if reaction.is_none() {
+                if reaction.is_none() && forward_id.is_none() {
                     body = format!("[about task {}: {}]\n{body}", task.id, task.title);
                 }
                 about_task = Some(task.id.clone());
@@ -742,9 +750,10 @@ impl Tool for SendAgentMessage {
             // and a model read that as guidance: every later reply went to
             // `human`, so the asker's session never saw one. Point back at the
             // value it was given — that is the correct target — and nothing else.
-            let resolves = crate::session::state_path_for_id(to_id)
-                .map(|path| crate::session::read_session_meta(&path).is_some())
-                .unwrap_or(false);
+            let resolves = db.has_conversation(to_id).unwrap_or(false)
+                || crate::session::state_path_for_id(to_id)
+                    .map(|path| crate::session::read_session_meta(&path).is_some())
+                    .unwrap_or(false);
             if !resolves {
                 return Err(ToolError::msg(format!(
                     "unknown session `{to_id}`. Copy the `reply_to` value from the envelope as written, in full: it names the session the sender is reading."
@@ -787,6 +796,48 @@ impl Tool for SendAgentMessage {
             reply_to.as_deref(),
             reaction.as_deref(),
         );
+        if let Some(forward_id) = forward_id {
+            let orig = db
+                .event_by_id(forward_id)
+                .map_err(|e| ToolError::msg(format!("look up event: {e}")))?
+                .ok_or_else(|| ToolError::msg(format!("no event `{forward_id}`")))?;
+            require_thread_access(&db, ctx, &sender_id, &orig.thread_id)?;
+            if reaction.is_none() {
+                let orig_body = orig
+                    .payload
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let clipped: String = orig_body
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(1500)
+                    .collect();
+                let quoted = format!(
+                    "[forwarded from {}:{} in {}, {}]\n{clipped}\n[/forwarded]",
+                    orig.actor_kind, orig.actor_id, orig.thread_id, orig.created_at
+                );
+                body = if body.is_empty() {
+                    quoted
+                } else {
+                    format!("{quoted}\n{body}")
+                };
+            }
+            extra.insert(
+                "forwarded_from".into(),
+                json!({
+                    "event_id": orig.event_id,
+                    "thread_id": orig.thread_id,
+                    "actor_kind": orig.actor_kind,
+                    "actor_id": orig.actor_id,
+                }),
+            );
+            if orig.actor_kind == "human" && requested_kind == "session" {
+                extra.insert("about_thread".into(), json!(orig.thread_id));
+            }
+        }
         if to_kind == "human" {
             extra.insert("channel".into(), json!("chat"));
             if sender_kind == "agent"
@@ -2962,6 +3013,134 @@ mod tests {
         assert_eq!(events[1].payload["reply_to"], target_id);
         assert_eq!(events[2].payload["body"], "all set");
         assert_eq!(events[2].payload["reply_to"], target_id);
+    }
+
+    #[tokio::test]
+    async fn send_agent_message_forward_quotes_body_sets_payload_and_checks_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = migrate(dir.path());
+        for id in ["a", "b", "outsider"] {
+            db.create_agent(&Agent {
+                id: id.into(),
+                display_name: id.into(),
+                handle: id.into(),
+                kind: AgentKind::Worker,
+                status: AgentStatus::Active,
+                capabilities: vec![],
+            })
+            .unwrap();
+        }
+        let long_tail = "x".repeat(1600);
+        let raw_body = format!("first   line\n\nsecond\tline {long_tail}");
+        let orig = db
+            .send_direct_message_typed(
+                ("human", crate::coordination::LOCAL_HUMAN_ID),
+                ("agent", "a"),
+                &raw_body,
+                "k-orig",
+                "2026-01-01T00:00:00Z",
+                None,
+                None,
+                None,
+                Default::default(),
+            )
+            .unwrap();
+
+        // An agent not on the thread cannot forward the event.
+        let outsider_ctx = context(dir.path(), "s-outsider").with_agent_id("outsider");
+        let denied = SendAgentMessage
+            .execute(
+                &outsider_ctx,
+                json!({
+                    "recipient_agent_id": "b",
+                    "forward": orig.event_id,
+                    "body": "leak",
+                }),
+            )
+            .await;
+        assert!(denied.is_err());
+
+        // Agent `a` can forward to peer `b`.
+        let a_ctx = context(dir.path(), "inbox-a").with_agent_id("a");
+        SendAgentMessage
+            .execute(
+                &a_ctx,
+                json!({
+                    "recipient_agent_id": "b",
+                    "forward": orig.event_id,
+                    "body": "please check",
+                }),
+            )
+            .await
+            .unwrap();
+
+        let ab_thread = crate::coordination::direct_thread_id(("agent", "a"), ("agent", "b"));
+        let ab_events = db.direct_thread_events(&ab_thread, 0, 10).unwrap();
+        assert_eq!(ab_events.len(), 1);
+        let fwd = &ab_events[0];
+        let expected_clipped: String = raw_body
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(1500)
+            .collect();
+        assert_eq!(expected_clipped.chars().count(), 1500);
+        let expected_body = format!(
+            "[forwarded from human:local in {}, 2026-01-01T00:00:00Z]\n{expected_clipped}\n[/forwarded]\nplease check",
+            orig.thread_id
+        );
+        assert_eq!(fwd.payload["body"], expected_body);
+        assert_eq!(
+            fwd.payload["forwarded_from"],
+            json!({
+                "event_id": orig.event_id,
+                "thread_id": orig.thread_id,
+                "actor_kind": "human",
+                "actor_id": "local",
+            })
+        );
+        assert!(fwd.payload.get("about_thread").is_none());
+
+        // Forwarding a human message to a task sets about_thread to the original thread.
+        let mut task = crate::coordination::Task::filed_by_human(
+            "t-fwd".into(),
+            "Forward task".into(),
+            "desc".into(),
+            "s1".into(),
+            0,
+            "2026-01-01T00:00:00Z".into(),
+        );
+        task.status = TaskStatus::InProgress;
+        task.session_id = "task-sess-fwd".into();
+        db.create_task(&task).unwrap();
+        db.import_session(
+            "task-sess-fwd",
+            "wk",
+            &crate::harness::HarnessState::blank("/tmp", None),
+            &crate::conversations::SessionExtras::default(),
+        )
+        .unwrap();
+        SendAgentMessage
+            .execute(
+                &a_ctx,
+                json!({
+                    "recipient_agent_id": "task:t-fwd",
+                    "forward": orig.event_id,
+                    "body": "on your task",
+                }),
+            )
+            .await
+            .unwrap();
+        let task_thread =
+            crate::coordination::direct_thread_id(("agent", "a"), ("session", "task-sess-fwd"));
+        let task_events = db.direct_thread_events(&task_thread, 0, 10).unwrap();
+        assert_eq!(task_events.len(), 1);
+        assert_eq!(task_events[0].payload["about_thread"], orig.thread_id);
+        assert_eq!(
+            task_events[0].payload["forwarded_from"]["event_id"],
+            orig.event_id
+        );
     }
 
     #[tokio::test]

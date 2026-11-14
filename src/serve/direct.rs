@@ -96,6 +96,36 @@ fn direct_message_envelope(
             reply_lines.push_str(&format!("quoted: {quoted}\n"));
         }
     }
+    if let Some(ff) = event.payload.get("forwarded_from") {
+        let actor_kind = ff
+            .get("actor_kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let actor_id = ff
+            .get("actor_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let thread_id = ff
+            .get("thread_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let event_id = ff
+            .get("event_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        reply_lines.push_str(&format!(
+            "forwarded_from: {actor_kind}:{actor_id} in {thread_id} ({event_id})\n"
+        ));
+    }
+    if let Some(about_thread) = event
+        .payload
+        .get("about_thread")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        reply_lines.push_str(&format!("about_thread: {about_thread}\n"));
+    }
     // When the message came from a SESSION, the reply belongs back in that
     // session — that is where the human is reading and where the exchange is
     // recorded. Stated as a `reply_to` line so the agent never has to infer it.
@@ -181,11 +211,24 @@ fn direct_message_envelope(
 
 const HUMAN_DM_MARKER: &str = "[direct_message]";
 
+pub(crate) fn envelope_about_thread(text: &str) -> Option<String> {
+    if !text.starts_with(HUMAN_DM_MARKER) {
+        return None;
+    }
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix("about_thread:"))
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
 /// The thread id of a `[direct_message]` envelope that came from the human and
 /// expects its answer back in the human's DM thread.
 pub(crate) fn human_dm_thread(text: &str) -> Option<String> {
     if !text.starts_with(HUMAN_DM_MARKER) {
         return None;
+    }
+    if let Some(about) = envelope_about_thread(text) {
+        return Some(about);
     }
     let has = |wanted: &str| text.lines().any(|line| line.trim() == wanted);
     if !(has("from_kind: human") && has("reply_to: human")) {
@@ -244,6 +287,14 @@ pub(crate) fn turn_end_relay(
     who: &str,
     events: &[crate::harness::HarnessEvent],
 ) -> Option<(usize, String)> {
+    turn_end_relay_with_notice(waiting, who, events).map(|(start, line, _)| (start, line))
+}
+
+fn turn_end_relay_with_notice(
+    waiting: usize,
+    who: &str,
+    events: &[crate::harness::HarnessEvent],
+) -> Option<(usize, String, bool)> {
     use crate::harness::HarnessEvent as E;
     if waiting == 0 {
         return None;
@@ -266,8 +317,8 @@ pub(crate) fn turn_end_relay(
         E::AssistantText { text, .. } if !text.trim().is_empty() => Some(text.trim().to_string()),
         _ => None,
     });
-    let line = match text {
-        Some(text) => text,
+    let (line, is_system_notice) = match text {
+        Some(text) => (text, false),
         None => {
             eprintln!("[relay] no reply from {who}");
             let last_tool = turn
@@ -278,7 +329,10 @@ pub(crate) fn turn_end_relay(
                     _ => None,
                 })
                 .unwrap_or("none");
-            format!("{who} finished this turn without a reply; its last step was {last_tool}.")
+            (
+                format!("{who} finished this turn without a reply; its last step was {last_tool}."),
+                true,
+            )
         }
     };
     let line = if waiting >= 2 {
@@ -286,7 +340,39 @@ pub(crate) fn turn_end_relay(
     } else {
         line
     };
-    Some((start, line))
+    Some((start, line, is_system_notice))
+}
+
+fn turn_about_thread(events: &[crate::harness::HarnessEvent]) -> Option<String> {
+    use crate::harness::HarnessEvent as E;
+    let start = events
+        .iter()
+        .rposition(|e| matches!(e, E::UserInput { .. }))
+        .unwrap_or(0);
+    let slice = events.get(start..).unwrap_or(events);
+    let latest_human_input = slice.iter().rev().find_map(|e| match e {
+        E::UserInput { text } | E::Steer { text } if human_dm_thread(text).is_some() => Some(text),
+        _ => None,
+    })?;
+    envelope_about_thread(latest_human_input)
+}
+
+fn agent_from_thread_id(store: &crate::store::Store, thread_id: &str) -> Option<String> {
+    if let Some(rest) = thread_id.strip_prefix("direct:") {
+        for part in rest.split('|') {
+            if let Some(agent_id) = part.strip_prefix("agent:")
+                && !agent_id.is_empty()
+            {
+                return Some(agent_id.to_string());
+            }
+        }
+    }
+    store
+        .list_thread_participants(thread_id)
+        .ok()?
+        .into_iter()
+        .find(|(_, kind)| kind == "agent")
+        .map(|(id, _)| id)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -373,17 +459,45 @@ pub(crate) fn relay_desk_reply(
     session_id: &str,
     state: &mut crate::harness::HarnessState,
 ) {
-    if state.human_waiting.is_empty() {
+    let about_thread = turn_about_thread(&state.events);
+    if state.human_waiting.is_empty() && about_thread.is_none() {
         return;
     }
-    let (agent_id, name) = relay_identity(store, session_id);
-    let relay = turn_end_relay(state.human_waiting.len(), &name, &state.events);
+    let waiting = state
+        .human_waiting
+        .len()
+        .max(usize::from(about_thread.is_some()));
+    let (agent_id, name) = match about_thread
+        .as_deref()
+        .and_then(|t| agent_from_thread_id(store, t))
+    {
+        Some(agent_id) => {
+            let name = relay_agent_name(store, &agent_id, session_id);
+            (agent_id, name)
+        }
+        None => relay_identity(store, session_id),
+    };
+    let relay = turn_end_relay_with_notice(waiting, &name, &state.events);
     state.human_waiting.clear();
-    let Some((start, text)) = relay else { return };
+    let Some((start, text, is_system_notice)) = relay else {
+        return;
+    };
     let key = format!("desk-relay:{session_id}:{start}");
     let origin = session_id.starts_with("inbox-").then_some(session_id);
     let task = store.open_task_of_session(session_id).ok().flatten();
     let about_task = task.as_ref().map(|t| t.id.as_str());
+    let mut extra = serde_json::Map::new();
+    if let Some(thread) = about_thread {
+        extra.insert("target_thread".into(), json!(thread));
+    }
+    if is_system_notice {
+        extra.insert("system".into(), json!(true));
+        extra.insert("kind".into(), json!("notice"));
+        post_to_human(
+            store, &agent_id, session_id, origin, about_task, &key, &text, extra,
+        );
+        return;
+    }
     let kind = crate::coordination::reach::Kind::from_reply(&text, None, false);
     crate::coordination::reach::reach_with_key(
         store,
@@ -395,7 +509,7 @@ pub(crate) fn relay_desk_reply(
         origin,
         about_task,
         Some(&key),
-        Default::default(),
+        extra,
     );
 }
 
@@ -571,15 +685,11 @@ pub(crate) fn relay_restart(
     let text = format!("Snippet restarted while {name} was answering; it will pick this up.");
     let key = format!("restart-relay:{session_id}:{}", state.events.len());
     let origin = session_id.starts_with("inbox-").then_some(session_id);
+    let mut extra = serde_json::Map::new();
+    extra.insert("system".into(), json!(true));
+    extra.insert("kind".into(), json!("notice"));
     post_to_human(
-        store,
-        &agent_id,
-        session_id,
-        origin,
-        None,
-        &key,
-        &text,
-        Default::default(),
+        store, &agent_id, session_id, origin, None, &key, &text, extra,
     );
 }
 
@@ -856,6 +966,12 @@ async fn deliver_direct(
             .get("about_task")
             .and_then(|v| v.as_str())
             .is_some()
+            || event
+                .payload
+                .get("about_thread")
+                .and_then(|v| v.as_str())
+                .is_some()
+            || event.payload.get("forwarded_from").is_some()
         {
             let Some((tx, _path, _stream)) = d.ensure_live(&session_id).await else {
                 return Err(format!("could not start session `{session_id}`"));
@@ -873,7 +989,12 @@ async fn deliver_direct(
                 &session_id,
                 direct_message_envelope(event, &history),
                 &event.payload,
-                event.actor_kind == "human",
+                event.actor_kind == "human"
+                    || event
+                        .payload
+                        .get("about_thread")
+                        .and_then(|v| v.as_str())
+                        .is_some(),
             )
             .await;
             return Ok(());
@@ -962,10 +1083,12 @@ async fn deliver_direct(
         return Ok(());
     }
     let agent_id = pending.recipient_id.as_str();
-    if agent_id != crate::mission_control::SESSION_ID {
+    let session_id = recipient_session_id(agent_id);
+    if agent_id != crate::mission_control::SESSION_ID
+        && !d.sessions.lock().await.contains_key(&session_id)
+    {
         ensure_agent_inbox(d, agent_id).await?;
     }
-    let session_id = recipient_session_id(agent_id);
     let Some((tx, _path, _stream)) = d.ensure_live(&session_id).await else {
         return Err(format!("could not start inbox session `{session_id}`"));
     };
@@ -989,12 +1112,42 @@ async fn deliver_direct(
     // wait behind it, as an agent's reply already does.
     if event.actor_kind == "human" {
         if !route_to_working_task(d, event, &history, agent_id, &session_id).await {
+            let envelope = desk_open_tasks_envelope(&d.store, agent_id, envelope);
             deliver_by_urgency(d, &session_id, envelope, &event.payload, true).await;
         }
     } else {
         deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
     }
     Ok(())
+}
+
+fn desk_open_tasks_envelope(
+    store: &crate::store::Store,
+    agent_id: &str,
+    envelope: String,
+) -> String {
+    let tasks = store.open_tasks_of_agent(agent_id, 8).unwrap_or_default();
+    let tasks_block = if tasks.is_empty() {
+        "your open tasks: none\n".to_string()
+    } else {
+        let mut block = String::from("your open tasks:\n");
+        for task in tasks {
+            block.push_str(&format!(
+                "  {}  {}  {}  session:{}\n",
+                task.id,
+                task.status.as_str(),
+                task.title,
+                task.session_id
+            ));
+        }
+        block
+    };
+    let envelope = envelope.replacen(
+        "\nnote: ",
+        "\nnote: forward with send_agent_message to task:<id> and forward: <event_id> when it is about running work. ",
+        1,
+    );
+    envelope.replacen("\nbody: ", &format!("\n{tasks_block}body: "), 1)
 }
 
 /// The lane that sent the latest message from this session on the thread, when
@@ -2057,9 +2210,187 @@ mod tests {
         working_task(&d.store, "t1", "s-one");
         working_task(&d.store, "t2", "s-two");
         let mut rx = fake_session(&d, "s-one").await;
+        let mut desk_rx = fake_session(&d, "inbox-a").await;
         let event = human_says(&d.store, "hello", "k1");
-        assert!(!super::route_to_working_task(&d, &event, &[], "a", "inbox-a").await);
+        super::deliver_direct(
+            &d,
+            &crate::coordination::PendingDirectMessage {
+                event: event.clone(),
+                recipient_kind: "agent".into(),
+                recipient_id: "a".into(),
+            },
+        )
+        .await
+        .unwrap();
         assert!(rx.try_recv().is_err());
+        match desk_rx.try_recv().expect("desk got the message") {
+            LoopInput::UserMessage(text) => {
+                assert!(
+                    text.contains("note: forward with send_agent_message to task:<id> and forward: <event_id> when it is about running work."),
+                    "{text}"
+                );
+                assert!(text.contains("your open tasks:\n"), "{text}");
+                assert!(
+                    text.contains("  t1  in_progress  Task t1  session:s-one\n"),
+                    "{text}"
+                );
+                assert!(
+                    text.contains("  t2  in_progress  Task t2  session:s-two\n"),
+                    "{text}"
+                );
+                let tasks_pos = text.find("your open tasks:").unwrap();
+                let body_pos = text.find("\nbody: hello").unwrap();
+                assert!(tasks_pos < body_pos, "{text}");
+            }
+            other => panic!("unexpected desk input: {other:?}"),
+        }
+
+        // Desk forwards the human message to s-one with about_thread; turn-end reply lands in event.thread_id.
+        let mut extra = serde_json::Map::new();
+        extra.insert("about_task".into(), json!("t1"));
+        extra.insert("about_thread".into(), json!(event.thread_id));
+        extra.insert(
+            "forwarded_from".into(),
+            json!({
+                "event_id": event.event_id,
+                "thread_id": event.thread_id,
+                "actor_kind": "human",
+                "actor_id": "local",
+            }),
+        );
+        let forwarded = d
+            .store
+            .send_direct_message_typed(
+                ("agent", "a"),
+                ("session", "unindexed-task-session"),
+                "[forwarded from human:local in direct:agent:a|human:local, 2026-01-01T00:00:00Z]\nhello\n[/forwarded]\nhandle this",
+                "k-fwd",
+                "2026-01-01T00:00:01Z",
+                Some("inbox-a"),
+                None,
+                Some("t1"),
+                extra,
+            )
+            .unwrap();
+        let fwd_env = direct_message_envelope(&forwarded, &[]);
+        let note_pos = fwd_env.find("\nnote: ").expect("note present");
+        let ff_pos = fwd_env
+            .find("forwarded_from: human:local in direct:agent:a|human:local")
+            .expect("forwarded_from line present");
+        let at_pos = fwd_env
+            .find("about_thread: direct:agent:a|human:local\n")
+            .expect("about_thread line present");
+        assert!(ff_pos < note_pos && at_pos < note_pos, "{fwd_env}");
+        assert_eq!(
+            super::human_dm_thread(&fwd_env),
+            Some(event.thread_id.clone())
+        );
+
+        let mut task_state = crate::harness::HarnessState::blank("/tmp", None);
+        task_state.human_waiting.push(crate::harness::HumanWait {
+            thread_id: event.thread_id.clone(),
+            since: "s".into(),
+            steered: false,
+            event_index: 0,
+        });
+        task_state.events.push(E::UserInput { text: fwd_env });
+        task_state.events.push(E::AssistantText {
+            text: "Handled in task t1.".into(),
+            quiet: false,
+        });
+        // Even on an unindexed session where relay_identity would fall back to `snippet`,
+        // about_thread routes the reply back to the original human↔agent thread.
+        super::relay_desk_reply(&d.store, "unindexed-task-session", &mut task_state);
+        let thread_events = d
+            .store
+            .recent_direct_thread_events(&event.thread_id, 10)
+            .unwrap();
+        assert_eq!(thread_events.len(), 2);
+        assert_eq!(thread_events[1].actor_id, "a");
+        assert_eq!(thread_events[1].payload["body"], "Handled in task t1.");
+    }
+
+    #[tokio::test]
+    async fn desk_envelope_reports_none_when_agent_has_no_open_tasks() {
+        let d = test_daemon();
+        d.store.create_agent(&agent("a")).unwrap();
+        let mut desk_rx = fake_session(&d, "inbox-a").await;
+        let event = human_says(&d.store, "anyone there?", "k-none");
+        super::deliver_direct(
+            &d,
+            &crate::coordination::PendingDirectMessage {
+                event,
+                recipient_kind: "agent".into(),
+                recipient_id: "a".into(),
+            },
+        )
+        .await
+        .unwrap();
+        match desk_rx.try_recv().expect("desk got the message") {
+            LoopInput::UserMessage(text) => {
+                assert!(
+                    text.contains("\nyour open tasks: none\nbody: anyone there?\n"),
+                    "{text}"
+                );
+            }
+            other => panic!("unexpected desk input: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn harness_notices_carry_system_flag_and_do_not_update_agent_last_dm() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store.create_agent(&agent("a")).unwrap();
+        let human = human_says(&store, "real human message", "k-real");
+        assert_eq!(
+            store.agent_last_messages().unwrap()["a"].text,
+            "real human message"
+        );
+
+        let mut state = crate::harness::HarnessState::blank("/tmp", None);
+        state.human_waiting.push(crate::harness::HumanWait {
+            thread_id: human.thread_id.clone(),
+            since: "s".into(),
+            steered: false,
+            event_index: 0,
+        });
+        state.events.push(E::UserInput {
+            text: "[direct_message]\nthread_id: direct:agent:a|human:local\nfrom_kind: human\nreply_to: human\nbody: real human message\n[/direct_message]".into(),
+        });
+        state.events.push(E::ToolCall {
+            tool_name: "bash".into(),
+            arguments: json!({}),
+        });
+        super::relay_desk_reply(&store, "inbox-a", &mut state);
+
+        state.human_waiting.push(crate::harness::HumanWait {
+            thread_id: human.thread_id.clone(),
+            since: "s2".into(),
+            steered: false,
+            event_index: 0,
+        });
+        super::relay_restart(&store, "inbox-a", &state);
+
+        let events = store
+            .recent_direct_thread_events(&human.thread_id, 10)
+            .unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events[1].payload["body"],
+            "Scout finished this turn without a reply; its last step was bash."
+        );
+        assert_eq!(events[1].payload["system"], json!(true));
+        assert_eq!(events[1].payload["kind"], json!("notice"));
+        assert_eq!(
+            events[2].payload["body"],
+            "Snippet restarted while Scout was answering; it will pick this up."
+        );
+        assert_eq!(events[2].payload["system"], json!(true));
+        assert_eq!(events[2].payload["kind"], json!("notice"));
+        assert_eq!(
+            store.agent_last_messages().unwrap()["a"].text,
+            "real human message"
+        );
     }
 
     #[test]

@@ -358,9 +358,13 @@ impl Store {
         origin_session: Option<&str>,
         origin_lane: Option<&str>,
         about_task: Option<&str>,
-        extra: serde_json::Map<String, serde_json::Value>,
+        mut extra: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CoordinationEvent, StoreError> {
-        let thread_id = direct_thread_id(sender, recipient);
+        let thread_id = extra
+            .remove("target_thread")
+            .and_then(|v| v.as_str().map(str::to_string))
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| direct_thread_id(sender, recipient));
         let title = format!("{} ↔ {}", recipient.1, actor_ref(sender.0, sender.1));
         let sender_ref = actor_ref(sender.0, sender.1);
         let recipient_ref = actor_ref(recipient.0, recipient.1);
@@ -416,10 +420,19 @@ impl Store {
         };
         let saved = self.append_event(&event)?;
 
-        let preview = match (sender.0, recipient.0) {
-            ("human", "agent") => Some((recipient.1, "user")),
-            ("agent", "human") => Some((sender.1, "agent")),
-            _ => None,
+        let is_system = saved
+            .payload
+            .get("system")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let preview = if is_system {
+            None
+        } else {
+            match (sender.0, recipient.0) {
+                ("human", "agent") => Some((recipient.1, "user")),
+                ("agent", "human") => Some((sender.1, "agent")),
+                _ => None,
+            }
         };
         if let Some((agent, from)) = preview {
             let _ = self.note_agent_last_message(agent, &envelope_text(body), created_at, from);

@@ -1560,6 +1560,24 @@ impl Store {
         })
     }
 
+    /// Open (non-terminal) tasks an agent is on, most recently updated first.
+    pub fn open_tasks_of_agent(&self, agent_id: &str, limit: u32) -> Result<Vec<Task>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks
+                 WHERE status IN ('todo', 'in_progress', 'blocked', 'in_review')
+                   AND EXISTS (
+                        SELECT 1 FROM task_agents ta
+                        WHERE ta.task_id = tasks.id AND ta.agent_id = ?1
+                          AND ta.removed_at IS NULL)
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT ?2"
+            ))?;
+            let rows = stmt.query_map(params![agent_id, limit], task_from_row)?;
+            rows.collect()
+        })
+    }
+
     /// The open task whose work session is `session_id`.
     pub fn open_task_of_session(&self, session_id: &str) -> Result<Option<Task>, StoreError> {
         self.with_connection(|conn| {
