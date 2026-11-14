@@ -66,6 +66,8 @@ pub struct LaneRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured: Option<LaneStructuredReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub started_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -618,6 +620,7 @@ impl LaneManager {
             handoff: Some(brief.to_string()),
             summary: None,
             report: None,
+            structured: None,
             error: None,
             started_at: Utc::now().to_rfc3339(),
             finished_at: None,
@@ -696,6 +699,7 @@ impl LaneManager {
         record.handoff = Some(brief.to_string());
         record.summary = None;
         record.report = None;
+        record.structured = None;
         record.error = None;
         if profile.is_some() {
             record.profile = profile;
@@ -909,6 +913,7 @@ impl LaneManager {
             record.status = result.status;
             record.summary = result.summary.clone();
             record.report = result.report.clone();
+            record.structured = result.structured.clone();
             record.error = result.error.clone();
             record.finished_at = Some(Utc::now().to_rfc3339());
             let text = match result.status {
@@ -1972,6 +1977,7 @@ mod tests {
             handoff: Some("inspect the service".to_string()),
             summary: None,
             report: None,
+            structured: None,
             error: None,
             started_at: "2025-01-01T00:00:00Z".to_string(),
             finished_at: None,
