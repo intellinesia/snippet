@@ -232,8 +232,7 @@ mod self_improvement_tests {
 #[cfg(test)]
 mod seat_layer_tests {
     use super::*;
-    use std::collections::BTreeSet;
-    use std::path::Path;
+    use std::collections::{BTreeMap, BTreeSet};
 
     const HARNESS_CORE_MAX_BYTES: usize = 7_500;
     const COORDINATION_LAYER_MAX_BYTES: usize = 3_000;
@@ -317,44 +316,36 @@ mod seat_layer_tests {
 
     #[test]
     fn backticked_tool_names_in_prompts_are_known_or_allowlisted() {
-        let mut known = BTreeSet::new();
+        let mut role_tools: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+        let mut all_known: BTreeSet<String> = BTreeSet::new();
         for role in ["work", "mission_control", "desk", "lane"] {
-            if let Some((defs, _)) = crate::lanes::role_tool_definitions(role, None) {
-                for def in defs {
-                    known.insert(def.name);
-                }
+            let (defs, _) = crate::lanes::role_tool_definitions(role, None)
+                .unwrap_or_else(|| panic!("missing role_tool_definitions for {role}"));
+            let mut names: BTreeSet<String> = defs.into_iter().map(|d| d.name).collect();
+            if role == "lane" {
+                // CodingHarness::definitions_for(false, ..) injects terminate_loop for headless lanes.
+                names.insert(crate::meta::terminate_loop_tool().name);
             }
+            all_known.extend(names.iter().cloned());
+            role_tools.insert(role, names);
         }
         for name in crate::meta::META_TOOL_NAMES {
-            known.insert(name.to_string());
-        }
-        known.insert(crate::meta::terminate_loop_tool().name);
-
-        let mut reg = crate::tools::ToolRegistry::new();
-        crate::coordination_tools::add_coordination_tools(&mut reg);
-        crate::mission_tools::add_mission_control_tools(&mut reg);
-        crate::mission_tools::add_worker_report_tool(&mut reg);
-        crate::mission_tools::add_coordination_session_tools(&mut reg);
-        for def in reg.definitions() {
-            known.insert(def.name);
+            all_known.insert(name.to_string());
         }
 
-        // Sibling-branch chat tools plus non-tool snake_case parameters, enums and reactions.
-        let allow: BTreeSet<&str> = [
-            "chats",
-            "read_chat",
-            "post_chat",
+        // Non-tool snake_case parameters, enums, fields, reactions, and agent ids.
+        let arg_allow: BTreeSet<&str> = [
             "agent_id",
             "artifact_id",
             "blocked_by",
             "continuation_of",
             "handoff_mode",
             "heard_none",
+            "in_minutes",
+            "in_progress",
             "in_reply_to",
             "in_review",
             "include_hidden",
-            "in_minutes",
-            "in_progress",
             "interrupted_reply",
             "keep_awake",
             "lane_id",
@@ -364,10 +355,9 @@ mod seat_layer_tests {
             "played_audio",
             "read_only",
             "reply_in",
-            "review_of",
             "reply_to",
             "review_escalated",
-            "schedule_wake",
+            "review_of",
             "room_limit",
             "set_rule",
             "snooze_days",
@@ -381,33 +371,141 @@ mod seat_layer_tests {
         .into_iter()
         .collect();
 
-        let prompts_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("prompts");
-        let mut unknown = Vec::new();
-        for entry in std::fs::read_dir(&prompts_dir).expect("read prompts dir") {
-            let path = entry.expect("prompt entry").path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
+        let exemptions_for = |role: &str| -> BTreeSet<&'static str> {
+            match role {
+                "work" => [
+                    // coding_agent_layer scopes terminate_loop to delegated lanes and one-shot jobs.
+                    "terminate_loop",
+                    // harness_core / task_layer describe sibling-branch chat and MC one-shot wake tools.
+                    "read_chat",
+                    "post_chat",
+                    "schedule_wake",
+                ]
+                .into_iter()
+                .collect(),
+                "desk" => [
+                    // coordination_layer explicitly states ask_user and present_file are refused here.
+                    "ask_user",
+                    "present_file",
+                    // harness_core describes tools of work sessions and MC (desk hides update_plan).
+                    "file_follow_up_task",
+                    "invite_task_agent",
+                    "monitor",
+                    "pass_turn",
+                    "post_chat",
+                    "read_chat",
+                    "report_progress",
+                    "schedule_wake",
+                    "update_plan",
+                ]
+                .into_iter()
+                .collect(),
+                "mission_control" => [
+                    // harness_core / mission_control_layer describe worker, room, and desk tools MC lacks.
+                    "file_follow_up_task",
+                    "invite_task_agent",
+                    "pass_turn",
+                    "post_chat",
+                    "read_chat",
+                    "record_coordination_note",
+                    "report_progress",
+                ]
+                .into_iter()
+                .collect(),
+                "lane" => [
+                    // LANE_NOTE explicitly states a lane has no monitor, update_plan, harness_map, board, chat, or wake tools.
+                    "harness_map",
+                    "monitor",
+                    "post_chat",
+                    "read_chat",
+                    "record_coordination_note",
+                    "report_progress",
+                    "schedule_wake",
+                    "update_plan",
+                    "wake_schedule",
+                    // harness_core describes task-session tools a lane lacks.
+                    "file_follow_up_task",
+                    "invite_task_agent",
+                    "pass_turn",
+                ]
+                .into_iter()
+                .collect(),
+                _ => BTreeSet::new(),
             }
-            let text = std::fs::read_to_string(&path).expect("read prompt file");
+        };
+
+        let default_ctx = PromptContext::default();
+        let has_skills = !crate::skills::discover().is_empty();
+        let work_full_ctx = PromptContext {
+            worktree: true,
+            memory: true,
+            memory_writable: true,
+            skills: has_skills,
+            vault: true,
+            coordination: false,
+            images: true,
+        };
+        let lane_full_ctx = PromptContext {
+            memory_writable: false,
+            ..work_full_ctx
+        };
+
+        let seats = [
+            ("work", "coding_system_prompt", coding_system_prompt()),
+            (
+                "work",
+                "conversation_prompt",
+                conversation_prompt(&default_ctx),
+            ),
+            (
+                "work",
+                "conversation_prompt(all_caps)",
+                conversation_prompt(&work_full_ctx),
+            ),
+            (
+                "desk",
+                "coordination_prompt",
+                coordination_prompt(&default_ctx),
+            ),
+            (
+                "mission_control",
+                "mission_control_system_prompt",
+                mission_control_system_prompt(),
+            ),
+            ("lane", "lane_prompt", lane_prompt(&default_ctx, None)),
+            (
+                "lane",
+                "lane_prompt(all_caps)",
+                lane_prompt(&lane_full_ctx, None),
+            ),
+        ];
+
+        let mut unknown = Vec::new();
+        for (role, label, text) in seats {
+            let tools = &role_tools[role];
+            let exempt = exemptions_for(role);
             let mut parts = text.split('`');
             let _ = parts.next();
             while let Some(span) = parts.next() {
                 if parts.next().is_none() {
                     break;
                 }
-                if span.contains('_')
+                let looks_like_tool = (span.contains('_')
                     && !span.is_empty()
-                    && span.bytes().all(|b| matches!(b, b'a'..=b'z' | b'_'))
-                    && !known.contains(span)
-                    && !allow.contains(span)
+                    && span.bytes().all(|b| matches!(b, b'a'..=b'z' | b'_')))
+                    || all_known.contains(span);
+                if looks_like_tool
+                    && !tools.contains(span)
+                    && !arg_allow.contains(span)
+                    && !exempt.contains(span)
                 {
-                    unknown.push(format!("{}: `{span}`", path.display()));
+                    unknown.push(format!("{label} ({role}): `{span}`"));
                 }
             }
         }
         assert!(
             unknown.is_empty(),
-            "unknown backticked tool-like identifiers in prompts/*.md: {unknown:?}"
+            "seat prompts name tools absent from that seat's tool set: {unknown:?}"
         );
     }
 }
