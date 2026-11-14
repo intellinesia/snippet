@@ -418,6 +418,7 @@ mod seat_layer_tests {
                     "keep_warm",
                     "monitor",
                     "present_file",
+                    "chats",
                     "post_chat",
                     "read_chat",
                     "record_coordination_note",

@@ -142,6 +142,7 @@ impl Store {
             conn.query_row(
                 "SELECT payload_json, actor_kind, created_at FROM board_events
                  WHERE thread_id = ?1 AND event_type = 'direct_message.sent'
+                   AND COALESCE(json_extract(payload_json, '$.system'), 0) = 0
                  ORDER BY rowid DESC LIMIT 1",
                 params![thread],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -277,6 +278,47 @@ mod tests {
         let got = db.agent_last_messages().unwrap();
         assert_eq!(got["a"].text, "Anything else?");
         assert_eq!(got["a"].from, "agent");
+    }
+
+    #[test]
+    fn system_notices_are_ignored_by_live_and_backfill_previews() {
+        let db = Store::open_in_memory().unwrap();
+        db.create_agent(&worker("a")).unwrap();
+        db.send_direct_message(
+            ("human", LOCAL_HUMAN_ID),
+            ("agent", "a"),
+            "check status",
+            "k1",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        let mut extra = serde_json::Map::new();
+        extra.insert("system".into(), serde_json::json!(true));
+        extra.insert("kind".into(), serde_json::json!("notice"));
+        db.send_direct_message_typed(
+            ("agent", "a"),
+            ("human", LOCAL_HUMAN_ID),
+            "a finished this turn without a reply; its last step was bash.",
+            "k2",
+            "2026-01-01T00:01:00Z",
+            None,
+            None,
+            None,
+            extra,
+        )
+        .unwrap();
+        let got = db.agent_last_messages().unwrap();
+        assert_eq!(got["a"].text, "check status");
+        assert_eq!(got["a"].from, "user");
+
+        db.with_connection(|c| {
+            c.execute("DELETE FROM agent_last_dm", [])?;
+            Ok(())
+        })
+        .unwrap();
+        let backfilled = db.agent_last_message_or_backfill("a").unwrap().unwrap();
+        assert_eq!(backfilled.text, "check status");
+        assert_eq!(backfilled.from, "user");
     }
 
     #[test]
