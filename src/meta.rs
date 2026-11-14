@@ -309,7 +309,7 @@ fn ask_user_tool() -> NativeToolDefinition {
 fn delegate_task_tool() -> NativeToolDefinition {
     NativeToolDefinition {
         name: "delegate_task".to_string(),
-        description: "Delegate independent work to a background lane; its report includes file:line evidence. State scope and a concrete deliverable. Continue your work in parallel; end your turn when only waiting remains. Use `lane_id` to message a running lane or continue a finished one. Set `read_only` for investigation or review."
+        description: "Delegate independent work to a background lane. State scope and deliverable; end your turn when only waiting remains. Use `lane_id` to message a running lane or continue a finished one."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -325,6 +325,10 @@ fn delegate_task_tool() -> NativeToolDefinition {
                 "lane_id": {
                     "type": "string",
                     "description": "Talk to this lane instead of starting a new one: a running lane gets the description as a message; a finished one continues with it as a follow-up, context intact."
+                },
+                "review_of": {
+                    "type": "string",
+                    "description": "Finished lane id whose work this lane reviews; the lane runs read_only and gets that lane's report and changed files in its brief."
                 },
                 "access": {
                     "type": "string",
@@ -355,11 +359,14 @@ fn delegate_task_tool() -> NativeToolDefinition {
 
 const MIN_DELEGATE_DESCRIPTION_CHARS: usize = 40;
 
+#[derive(Debug)]
 pub struct DelegateBrief {
     pub title: String,
     pub description: String,
     /// Continue this existing lane with `description` as a follow-up.
     pub lane_id: Option<String>,
+    /// Review a finished lane's work in a new read-only lane.
+    pub review_of: Option<String>,
     /// Strip the lane's file-mutation tools (investigation lanes).
     pub read_only: bool,
     /// Specialized agent identity.
@@ -381,6 +388,15 @@ pub fn parse_delegate_brief(arguments: &Value) -> Result<DelegateBrief, String> 
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    let review_of = arguments
+        .get("review_of")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if review_of.is_some() && lane_id.is_some() {
+        return Err("review_of starts a new lane; omit lane_id".to_string());
+    }
     let agent = arguments
         .get("agent")
         .and_then(Value::as_str)
@@ -451,6 +467,7 @@ pub fn parse_delegate_brief(arguments: &Value) -> Result<DelegateBrief, String> 
         title,
         description,
         lane_id,
+        review_of,
         read_only,
         agent,
         profile,
@@ -639,5 +656,28 @@ mod tests {
         assert!(props.contains_key("tests"));
         assert!(props.contains_key("open"));
         assert_eq!(def.input_schema["required"], json!(["summary"]));
+    }
+
+    #[test]
+    fn parse_delegate_brief_rejects_review_of_with_lane_id() {
+        let err = parse_delegate_brief(&json!({
+            "title": "review auth",
+            "description": "Verify the auth changes and edge-case handling against the spec.",
+            "lane_id": "lane-1",
+            "review_of": "lane-1"
+        }))
+        .unwrap_err();
+        assert!(
+            err.contains("review_of starts a new lane; omit lane_id"),
+            "{err}"
+        );
+
+        let ok = parse_delegate_brief(&json!({
+            "title": "review auth",
+            "description": "Verify the auth changes and edge-case handling against the spec.",
+            "review_of": "  lane-1  "
+        }))
+        .expect("valid review_of");
+        assert_eq!(ok.review_of.as_deref(), Some("lane-1"));
     }
 }

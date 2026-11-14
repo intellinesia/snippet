@@ -50,6 +50,7 @@ impl CodingHarness {
             vars.edits_since_check = 0;
             vars.rewrites.clear();
             vars.turns_this_request = 0;
+            vars.capacity_nudged = false;
             vars.consecutive_failed_turns = 0;
         }
         state.pending_question = None;

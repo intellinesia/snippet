@@ -16,13 +16,16 @@ pub(super) fn build_reminder(
     workspace: &std::path::Path,
     cwd: &std::path::Path,
     tasks: String,
+    context_window_tokens: u64,
+    compact_at_pct: u8,
 ) -> Option<String> {
     if vars.reminded_compactions != state.compactions {
         vars.reminded.clear();
         vars.reminded_compactions = state.compactions;
     }
+    let used = (state.last_prompt_tokens * 100 / context_window_tokens.max(1)).min(100);
     let mut lines: Vec<String> = Vec::new();
-    for (key, current, cleared) in sections(state, workspace, cwd, tasks) {
+    for (key, current, cleared) in sections(state, workspace, cwd, tasks, used, compact_at_pct) {
         let previous = vars.reminded.get(key).cloned().unwrap_or_default();
         if current == previous {
             continue;
@@ -54,6 +57,18 @@ pub(super) fn build_reminder(
             ));
         }
     }
+    let open_steps = state
+        .plan
+        .iter()
+        .filter(|s| s.status != PlanStatus::Done)
+        .count();
+    let lane_running = state.lanes.iter().any(|l| l.status == LaneStatus::Running);
+    if used >= 60 && open_steps >= 2 && !lane_running && !vars.capacity_nudged {
+        signals.push(format!(
+            "Context is {used}% used with {open_steps} plan steps left and no lane running. A step you can brief in a paragraph with file references is lane work (delegate_task); keep your own context for judgement."
+        ));
+        vars.capacity_nudged = true;
+    }
     lines.extend(signals);
 
     if lines.is_empty() {
@@ -68,6 +83,8 @@ fn sections(
     workspace: &std::path::Path,
     cwd: &std::path::Path,
     tasks: String,
+    used: u64,
+    compact_at_pct: u8,
 ) -> Vec<(&'static str, String, Option<&'static str>)> {
     let mut out = Vec::new();
     out.push((
@@ -87,6 +104,17 @@ fn sections(
             "This session has no title yet.".to_string()
         } else {
             String::new()
+        },
+        None,
+    ));
+
+    out.push((
+        "capacity",
+        if used < 40 {
+            String::new()
+        } else {
+            let bucket = (used / 10) * 10;
+            format!("Context: {bucket}% of the window used; compaction at {compact_at_pct}%.")
         },
         None,
     ));
@@ -339,4 +367,124 @@ pub(super) fn first_question_text(rendered: &Value) -> Option<String> {
         .and_then(|question| question.get("text"))
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capacity_section_buckets_by_ten_starting_at_forty() {
+        let cwd = std::path::Path::new("/tmp/ws");
+        let mut state = HarnessState::blank("/tmp/ws", None);
+        state.title = Some("work".to_string());
+        let mut vars = LoopVars::default();
+
+        state.last_prompt_tokens = 39_000;
+        let first = build_reminder(&state, &mut vars, cwd, cwd, String::new(), 100_000, 90)
+            .unwrap_or_default();
+        assert!(
+            !first.contains("Context:"),
+            "unexpected capacity line: {first}"
+        );
+
+        state.last_prompt_tokens = 47_000;
+        let r47 = build_reminder(&state, &mut vars, cwd, cwd, String::new(), 100_000, 90)
+            .expect("47% emits capacity");
+        assert!(
+            r47.contains("Context: 40% of the window used; compaction at 90%."),
+            "got: {r47}"
+        );
+
+        state.last_prompt_tokens = 49_000;
+        let r49 = build_reminder(&state, &mut vars, cwd, cwd, String::new(), 100_000, 90);
+        assert!(
+            r49.is_none(),
+            "same bucket should emit nothing new, got: {r49:?}"
+        );
+
+        state.last_prompt_tokens = 61_000;
+        let r61 = build_reminder(&state, &mut vars, cwd, cwd, String::new(), 100_000, 90)
+            .expect("61% emits new bucket");
+        assert!(
+            r61.contains("Context: 60% of the window used; compaction at 90%."),
+            "got: {r61}"
+        );
+    }
+
+    #[test]
+    fn capacity_nudge_fires_once_when_overdue_and_respects_lanes_and_plan() {
+        let cwd = std::path::Path::new("/tmp/ws");
+        let mut state = HarnessState::blank("/tmp/ws", None);
+        state.title = Some("work".to_string());
+        state.last_prompt_tokens = 65_000;
+
+        // Only one open step: no nudge.
+        state.plan = vec![
+            PlanStep {
+                step: "done step".to_string(),
+                status: PlanStatus::Done,
+            },
+            PlanStep {
+                step: "only open step".to_string(),
+                status: PlanStatus::InProgress,
+            },
+        ];
+        let mut vars = LoopVars::default();
+        let r = build_reminder(&state, &mut vars, cwd, cwd, String::new(), 100_000, 90)
+            .unwrap_or_default();
+        assert!(!r.contains("plan steps left"), "got: {r}");
+        assert!(!vars.capacity_nudged);
+
+        // Two open steps, but a lane is running: no nudge.
+        state.plan.push(PlanStep {
+            step: "second open step".to_string(),
+            status: PlanStatus::Pending,
+        });
+        state.lanes.push(LaneRecord {
+            id: "lane-1".to_string(),
+            title: "worker".to_string(),
+            status: LaneStatus::Running,
+            handoff: None,
+            summary: None,
+            report: None,
+            structured: None,
+            error: None,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: None,
+            activity: None,
+            activity_kind: None,
+            activity_at: None,
+            activity_log: Vec::new(),
+            read_only: false,
+            agent: None,
+            profile: None,
+            transcript: None,
+            paths: Vec::new(),
+        });
+        let mut vars = LoopVars::default();
+        let r = build_reminder(&state, &mut vars, cwd, cwd, String::new(), 100_000, 90)
+            .unwrap_or_default();
+        assert!(!r.contains("plan steps left"), "got: {r}");
+        assert!(!vars.capacity_nudged);
+
+        // No lane running, two open steps, 65% used: nudges once across two builds.
+        state.lanes.clear();
+        let mut vars = LoopVars::default();
+        let first = build_reminder(&state, &mut vars, cwd, cwd, String::new(), 100_000, 90)
+            .expect("first build emits reminder");
+        assert!(
+            first.contains(
+                "Context is 65% used with 2 plan steps left and no lane running. A step you can brief in a paragraph with file references is lane work (delegate_task); keep your own context for judgement."
+            ),
+            "got: {first}"
+        );
+        assert!(vars.capacity_nudged);
+
+        let second = build_reminder(&state, &mut vars, cwd, cwd, String::new(), 100_000, 90);
+        assert!(
+            second.is_none(),
+            "second build at 65% must not nudge again, got: {second:?}"
+        );
+    }
 }

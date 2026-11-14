@@ -861,6 +861,8 @@ struct LoopVars {
     /// Turns spent on the CURRENT request (a soft budget surfaced each turn so the
     /// agent converges instead of sprawling). Reset on a new user request.
     turns_this_request: u64,
+    /// Whether the context-capacity split nudge has been emitted this request.
+    capacity_nudged: bool,
     /// Consecutive failed edits on the same file.
     consecutive_failed_edits: usize,
     /// Path of the file whose edit recently failed.
