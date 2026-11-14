@@ -58,7 +58,8 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              created_at INTEGER NOT NULL,
              updated_at INTEGER NOT NULL,
              wake_json TEXT,
-             last_result TEXT
+             last_result TEXT,
+             report_group TEXT
          );
 
          -- Durable notification feed, shared by `/notifications` and its replay alias.

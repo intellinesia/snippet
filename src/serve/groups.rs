@@ -408,6 +408,7 @@ fn group_message_envelope(
     history: &[crate::coordination::types::CoordinationEvent],
     members: &[(String, String)],
     replies: &[crate::coordination::types::CoordinationEvent],
+    lead: Option<(&str, bool)>,
 ) -> String {
     let reply_expected = wake == GroupWakeKind::Asked;
     let body = event
@@ -446,6 +447,17 @@ fn group_message_envelope(
     }
     if let Some(post_id) = event.payload.get("in_reply_to").and_then(|v| v.as_str()) {
         envelope.push_str(&format!("in_reply_to: {post_id}\n"));
+    }
+    match lead {
+        Some((_, true)) => envelope.push_str(
+            "lead: you. You lead this round: you own what it commits to (a schedule, a \
+             follow-up, the summary the user gets). Say so in your post when you take one on, \
+             and see it through.\n",
+        ),
+        Some((lead, false)) => envelope.push_str(&format!(
+            "lead: {lead} (owns this round's follow-ups and the summary to the user)\n"
+        )),
+        None => {}
     }
     let digest = super::direct::history_digest(history);
     let mut answered = String::new();
@@ -637,7 +649,9 @@ async fn deliver_group(
         "group_peer" => GroupWakeKind::Peer,
         _ => GroupWakeKind::Optional,
     };
-    let envelope = group_message_envelope(event, &title, wake, &history, &members, &replies);
+    let lead = d.store.group_round_lead(&event.thread_id).ok().flatten();
+    let lead = lead.as_deref().map(|lead| (lead, lead == agent_id));
+    let envelope = group_message_envelope(event, &title, wake, &history, &members, &replies, lead);
     if agent_id != crate::mission_control::SESSION_ID {
         super::direct::ensure_agent_inbox(d, agent_id).await?;
     }
@@ -913,10 +927,11 @@ mod tests {
             &[],
             &[],
             std::slice::from_ref(&reply),
+            None,
         );
         assert!(env.contains("already been answered"));
         assert!(env.contains("- snippet: I'll take the scripts"));
-        let peer = group_message_envelope(&reply, "t", GroupWakeKind::Peer, &[], &[], &[]);
+        let peer = group_message_envelope(&reply, "t", GroupWakeKind::Peer, &[], &[], &[], None);
         assert!(peer.contains("reply_expected: false"));
         assert!(peer.contains("heartbeat"));
     }
@@ -948,8 +963,15 @@ mod tests {
             ("a".to_string(), "Reviews Rust PRs.".to_string()),
             ("b".to_string(), String::new()),
         ];
-        let expected =
-            group_message_envelope(&event, "build", GroupWakeKind::Asked, &[], &members, &[]);
+        let expected = group_message_envelope(
+            &event,
+            "build",
+            GroupWakeKind::Asked,
+            &[],
+            &members,
+            &[],
+            None,
+        );
         for field in [
             "thread_id: group:x",
             "title: build",
@@ -963,11 +985,39 @@ mod tests {
         ] {
             assert!(expected.contains(field), "missing {field} in {expected}");
         }
-        let deferred =
-            group_message_envelope(&event, "build", GroupWakeKind::Optional, &[], &[], &[]);
+        let deferred = group_message_envelope(
+            &event,
+            "build",
+            GroupWakeKind::Optional,
+            &[],
+            &[],
+            &[],
+            None,
+        );
         assert!(!deferred.contains("members:"));
         assert!(deferred.contains("do not redo it"));
         assert!(deferred.contains("reply_expected: false"));
+        assert!(!deferred.contains("lead:"));
+        let led = group_message_envelope(
+            &event,
+            "build",
+            GroupWakeKind::Asked,
+            &[],
+            &[],
+            &[],
+            Some(("b", true)),
+        );
+        assert!(led.contains("lead: you. You lead this round"));
+        let other = group_message_envelope(
+            &event,
+            "build",
+            GroupWakeKind::Optional,
+            &[],
+            &[],
+            &[],
+            Some(("b", false)),
+        );
+        assert!(other.contains("lead: b (owns this round's follow-ups"));
         assert!(
             deferred.contains(
                 "join only if you add something: an answer, a relevant view, a correction."
@@ -1021,7 +1071,15 @@ mod tests {
             prior(3, "agent", "a", "auto ack", true),
         ];
         // The digest hides the `auto` event, so two messages render.
-        let env = group_message_envelope(&event, "build", GroupWakeKind::Asked, &history, &[], &[]);
+        let env = group_message_envelope(
+            &event,
+            "build",
+            GroupWakeKind::Asked,
+            &history,
+            &[],
+            &[],
+            None,
+        );
         assert!(env.contains("history: last 2 message(s), oldest first"));
         assert!(env.contains("  1 [agent] a: first post"));
         assert!(env.contains("  2 [human] human: second post"));
@@ -1032,7 +1090,8 @@ mod tests {
         assert!(digest_at < body_at, "body must stay last: {env}");
         assert!(env.ends_with("[/group_message]"));
 
-        let env = group_message_envelope(&event, "build", GroupWakeKind::Asked, &[], &[], &[]);
+        let env =
+            group_message_envelope(&event, "build", GroupWakeKind::Asked, &[], &[], &[], None);
         assert!(env.contains("history: (first message in this conversation)"));
         assert!(env.find("history:").unwrap() < env.find("body: wake body").unwrap());
     }

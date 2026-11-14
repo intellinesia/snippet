@@ -227,6 +227,10 @@ async fn watch_run(daemon: Shared, job: recurring::RecurringJob, run_id: Option<
             .await
             .to_string(),
         };
+        let reported = match report_run_to_group(&daemon, &job, &status, &summary) {
+            Some(group) => format!("{reported}; {group}"),
+            None => reported,
+        };
         finish(&status, Some(&summary), Some(&reported));
         return;
     }
@@ -341,6 +345,45 @@ fn post_to_task_room(
 
 /// A plain recurring run's outcome for Mission Control. Completed runs are
 /// noted for the next wake; others open a turn. Only while automated wakes are on.
+/// Posts the run's outcome to the job's group, waking nobody: the run itself
+/// names whoever it hands work to.
+fn report_run_to_group(
+    daemon: &Shared,
+    job: &recurring::RecurringJob,
+    status: &str,
+    summary: &str,
+) -> Option<String> {
+    let thread = job.report_group.as_deref()?;
+    let poster = recurring::group_poster(&daemon.store, &job.session_id);
+    let label = if job.title.trim().is_empty() {
+        "Scheduled run"
+    } else {
+        job.title.trim()
+    };
+    let body = if status == "completed" {
+        format!("{label}: {summary}")
+    } else {
+        format!("{label} ({status}): {summary}")
+    };
+    match daemon.store.post_group_card(
+        thread,
+        ("agent", poster.as_str()),
+        &body,
+        None,
+        &uuid::Uuid::new_v4().to_string(),
+        &chrono::Utc::now().to_rfc3339(),
+    ) {
+        Ok(event) => {
+            crate::session::emit_device_event(serde_json::json!({
+                "kind": "coordination_event",
+                "event": event,
+            }));
+            Some(format!("group: {thread}"))
+        }
+        Err(error) => Some(format!("group: failed: {error}")),
+    }
+}
+
 async fn report_run_to_mission_control(
     daemon: &Shared,
     title: &str,
@@ -423,6 +466,9 @@ struct RecurringUpdateReq {
     schedule: Option<String>,
     #[serde(default)]
     enabled: Option<bool>,
+    /// A group thread id; empty clears it.
+    #[serde(default)]
+    report_group: Option<String>,
 }
 
 async fn create_recurring(
@@ -466,7 +512,24 @@ async fn update_recurring(
         },
         _ => None,
     };
+    let report_group = req.report_group.as_deref().map(str::trim);
+    if let Some(group) = report_group.filter(|g| !g.is_empty()) {
+        let session = match recurring::list_jobs(&d.recurring_root)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|j| j.id == id)
+        {
+            Some(job) => req.session_id.clone().unwrap_or(job.session_id),
+            None => return mission_error(format!("no recurring job `{id}`")),
+        };
+        if let Err(error) = recurring::check_report_group(&d.recurring_root, &session, group) {
+            return mission_error(error);
+        }
+    }
     match recurring::update_job(&d.recurring_root, &id, |job| {
+        if let Some(group) = report_group {
+            job.report_group = Some(group.to_string()).filter(|g| !g.is_empty());
+        }
         if let Some(title) = req.title.as_deref() {
             let title = title.trim();
             if !title.is_empty() {
