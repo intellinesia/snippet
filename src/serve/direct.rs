@@ -71,7 +71,11 @@ pub(super) fn history_digest(history: &[crate::coordination::types::Coordination
                     .get("reply_to")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
-                format!("[reacted {r} to {target}]")
+                if crate::coordination::direct::is_removed_reaction(&prior.payload) {
+                    format!("[removed reaction {r} from {target}]")
+                } else {
+                    format!("[reacted {r} to {target}]")
+                }
             } else {
                 prior
                     .payload
@@ -799,7 +803,9 @@ fn reaction_answers_question(
     store: &crate::coordination::Store,
     event: &crate::coordination::types::CoordinationEvent,
 ) -> bool {
-    if event.actor_kind != "human" {
+    if event.actor_kind != "human"
+        || crate::coordination::direct::is_removed_reaction(&event.payload)
+    {
         return false;
     }
     let settles = event
@@ -1021,6 +1027,9 @@ async fn deliver_direct(
             }
             None => {}
         }
+        if crate::coordination::direct::is_removed_reaction(&event.payload) {
+            return Ok(());
+        }
         if event.payload.get("reaction").is_some() {
             let envelope = direct_message_envelope(event, &[]);
             if let Some(lane) = reply_lane(d, event, &session_id).as_deref()
@@ -1163,6 +1172,9 @@ async fn deliver_direct(
             .is_some_and(|s| !s.join.is_finished())
     {
         ensure_agent_inbox(d, agent_id).await?;
+    }
+    if crate::coordination::direct::is_removed_reaction(&event.payload) {
+        return Ok(());
     }
     let Some((tx, _path, _stream)) = d.ensure_live(&session_id).await else {
         return Err(format!("could not start inbox session `{session_id}`"));
@@ -1360,6 +1372,8 @@ pub(super) struct DirectSendReq {
     #[serde(default)]
     reaction: Option<String>,
     #[serde(default)]
+    remove: bool,
+    #[serde(default)]
     kind: Option<String>,
 }
 
@@ -1390,7 +1404,13 @@ pub(super) async fn direct_send_message(
             reply_to.as_deref(),
             Some(reaction_name.as_str()),
         );
+        if req.remove {
+            extra.insert("removed".into(), json!(true));
+        }
     } else {
+        if req.remove {
+            return api_error(StatusCode::BAD_REQUEST, "remove needs a reaction");
+        }
         if req.body.trim().is_empty() {
             return api_error(StatusCode::BAD_REQUEST, "body is required");
         }
@@ -2011,6 +2031,7 @@ mod tests {
                 idempotency_key: "k-empty".into(),
                 reply_to: None,
                 reaction: None,
+                remove: false,
                 kind: None,
             }),
         )
@@ -2029,6 +2050,7 @@ mod tests {
                 idempotency_key: "k-no-target".into(),
                 reply_to: None,
                 reaction: Some("check".into()),
+                remove: false,
                 kind: Some("reaction".into()),
             }),
         )
@@ -2047,6 +2069,7 @@ mod tests {
                 idempotency_key: "k-react".into(),
                 reply_to: Some(target.event_id.clone()),
                 reaction: Some("check".into()),
+                remove: false,
                 kind: Some("reaction".into()),
             }),
         )

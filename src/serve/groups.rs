@@ -66,6 +66,8 @@ struct GroupPostReq {
     in_reply_to: Option<String>,
     #[serde(default)]
     reaction: Option<String>,
+    #[serde(default)]
+    remove: bool,
 }
 
 fn store_error(status: StatusCode, error: crate::store::StoreError) -> Response {
@@ -338,11 +340,12 @@ async fn post_group(
         let Some(target) = in_reply_to else {
             return api_error(StatusCode::BAD_REQUEST, "a reaction needs in_reply_to");
         };
-        d.store.post_group_reaction(
+        d.store.post_group_reaction_ex(
             &id,
             ("human", "human"),
             target,
             reaction,
+            req.remove,
             &uuid::Uuid::new_v4().to_string(),
             &now,
         )

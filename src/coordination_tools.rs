@@ -483,6 +483,9 @@ fn flatten_event(event: &CoordinationEvent) -> Value {
     }
     if let Some(reaction) = event.payload.get("reaction").and_then(|v| v.as_str()) {
         out["reaction"] = json!(reaction);
+        if crate::coordination::direct::is_removed_reaction(&event.payload) {
+            out["removed"] = json!(true);
+        }
     }
     out
 }
