@@ -18,6 +18,7 @@ pub mod last_message;
 pub mod typed;
 pub use last_message::LastMessage;
 pub mod turns;
+pub mod watches;
 pub use turns::SessionMember;
 mod identity;
 pub mod leases;

@@ -46,6 +46,11 @@ impl AgentHome {
         self.root.join("tools")
     }
 
+    /// Where this agent's watch scripts and per-watch state dirs live.
+    pub fn watches_path(&self) -> PathBuf {
+        self.root.join("watches")
+    }
+
     /// Create the home if absent: the tools directory and `identity.md`.
     ///
     /// Idempotent — an existing identity is never overwritten, so a researched

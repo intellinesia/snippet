@@ -78,6 +78,7 @@ mod routing_routes;
 pub mod session_routes;
 mod settle_routes;
 mod stall;
+pub(crate) mod watches;
 use crate::term::SessionTerms;
 pub(crate) use session_routes::*;
 pub mod sidecar;
@@ -1015,8 +1016,10 @@ pub async fn run_serve(
     {
         let d = daemon.clone();
         let groups_d = d.clone();
+        let watches_d = d.clone();
         tokio::spawn(async move { direct::direct_dispatch_loop(d).await });
         tokio::spawn(async move { groups::group_dispatch_loop(groups_d).await });
+        tokio::spawn(async move { watches::watch_loop(watches_d).await });
         tokio::spawn(crate::bg::watch_loop());
     }
     {
@@ -1099,6 +1102,7 @@ pub async fn run_serve(
         .route("/notifications", get(notification_replay))
         .merge(recurring::router())
         .merge(agent_wakes::router())
+        .merge(watches::router())
         .merge(keep_warm::router())
         .merge(memory_routes::router())
         .merge(artifact_routes::router())

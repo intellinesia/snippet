@@ -322,6 +322,41 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              claimed_at TEXT NOT NULL,
              PRIMARY KEY (post_event_id, agent_id)
          );
+
+         -- Agent watches: shell scripts the daemon runs for an owner; new
+         -- output wakes the owner's desk with a [watch] envelope.
+         CREATE TABLE IF NOT EXISTS agent_watches (
+             id TEXT PRIMARY KEY,
+             owner TEXT NOT NULL,
+             name TEXT NOT NULL,
+             mode TEXT NOT NULL,
+             script_path TEXT NOT NULL,
+             interval_secs INTEGER NOT NULL DEFAULT 300,
+             filter TEXT,
+             max_wakes_per_day INTEGER NOT NULL DEFAULT 48,
+             quiet_start TEXT,
+             quiet_end TEXT,
+             enabled INTEGER NOT NULL DEFAULT 1,
+             status TEXT NOT NULL DEFAULT 'idle',
+             last_error TEXT,
+             last_run_at TEXT,
+             last_fired_at TEXT,
+             last_output TEXT,
+             pending TEXT,
+             consecutive_failures INTEGER NOT NULL DEFAULT 0,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             UNIQUE(owner, name)
+         );
+         CREATE TABLE IF NOT EXISTS agent_watch_events (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             watch_id TEXT NOT NULL REFERENCES agent_watches(id) ON DELETE CASCADE,
+             kind TEXT NOT NULL,
+             at TEXT NOT NULL,
+             excerpt TEXT
+         );
+         CREATE INDEX IF NOT EXISTS agent_watch_events_by_watch
+             ON agent_watch_events(watch_id, at);
 "#,
     )
 }

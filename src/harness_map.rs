@@ -13,9 +13,12 @@ use crate::memory::{ENTRY_FILE, ENTRY_PROMPT_CHARS, MAX_ENTRY_CHARS, MemoryRepo,
 use crate::store::Store;
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 
-pub const SECTIONS: [&str; 9] = [
-    "sessions", "desk", "board", "reach", "memory", "wakes", "tools", "profiles", "limits",
+pub const SECTIONS: [&str; 10] = [
+    "sessions", "desk", "board", "reach", "memory", "wakes", "tools", "profiles", "limits", "guide",
 ];
+
+/// The engineering guide returned by the `guide` section.
+pub const GUIDE: &str = include_str!("../prompts/harness_engineering.md");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HarnessMap {
@@ -28,6 +31,7 @@ pub struct HarnessMap {
     pub tools: ToolsInfo,
     pub profiles: Vec<ProfileInfo>,
     pub limits: LimitsInfo,
+    pub guide: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +121,7 @@ pub struct KeepWarmInfo {
 pub struct WakesInfo {
     pub schedule: Option<WakeScheduleInfo>,
     pub keep_warm: Option<KeepWarmInfo>,
+    pub watches: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -357,9 +362,18 @@ pub(crate) fn build_with(
             skipped_reason: kw.skipped_reason,
             provider_reason: kw.provider_reason,
         });
+    let watches: Vec<Value> = store
+        .as_ref()
+        .and_then(|db| {
+            db.list_watches(Some(agent_id))
+                .ok()
+                .map(|rows| rows.iter().filter_map(|w| db.watch_view(w).ok()).collect())
+        })
+        .unwrap_or_default();
     let wakes = WakesInfo {
         schedule,
         keep_warm,
+        watches,
     };
 
     let mut role_budgets = BTreeMap::new();
@@ -427,6 +441,7 @@ pub(crate) fn build_with(
         tools,
         profiles,
         limits,
+        guide: GUIDE.to_string(),
     }
 }
 
@@ -568,7 +583,7 @@ pub fn schema() -> Value {
             },
             "wakes": {
                 "type": "object",
-                "required": ["schedule", "keep_warm"],
+                "required": ["schedule", "keep_warm", "watches"],
                 "additionalProperties": false,
                 "properties": {
                     "schedule": {
@@ -621,9 +636,14 @@ pub fn schema() -> Value {
                                 }
                             }
                         ]
+                    },
+                    "watches": {
+                        "type": "array",
+                        "items": {"type": "object"}
                     }
                 }
             },
+            "guide": {"type": "string"},
             "tools": {
                 "type": "object",
                 "required": ["role", "cap_bytes", "measured_bytes", "tool_count", "names", "role_budgets"],
