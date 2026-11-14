@@ -88,9 +88,18 @@ fn devin_main_logged_in(data_dir: Option<&Path>) -> bool {
     data_dir.is_some_and(|dir| dir.join("credentials.toml").is_file())
 }
 
+fn claude_main_logged_in(home: Option<&Path>) -> bool {
+    home.is_some_and(|home| home.join(".claude").join(".credentials.json").is_file())
+}
+
 fn exists(provider: &str, id: &str) -> bool {
     if provider == "devin" && id == MAIN {
         return devin_main_logged_in(crate::devin::real_data_dir().as_deref());
+    }
+    // Listed only while the `claude` CLI is signed in, so a signed-out login
+    // drops out of the list and the rotation.
+    if provider == "claude-code" && id == MAIN {
+        return claude_main_logged_in(crate::devin::real_home().as_deref());
     }
     match credential_path(provider, id) {
         Some(path) => path.is_file(),
@@ -355,6 +364,11 @@ mod tests {
     fn devin_is_pooled_with_cli_managed_main_account() {
         assert!(is_pooled("devin"));
         assert_eq!(credential_path("devin", MAIN), None);
+        let home = tempfile::tempdir().unwrap();
+        assert!(!claude_main_logged_in(Some(home.path())));
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::write(home.path().join(".claude/.credentials.json"), "{}").unwrap();
+        assert!(claude_main_logged_in(Some(home.path())));
         assert!(
             credential_path("devin", "slot1")
                 .unwrap()
