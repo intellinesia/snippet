@@ -290,9 +290,7 @@ impl Tool for ReadOnlyBashTool {
         if let Err(why) = read_only_verdict(command) {
             return Ok(ToolResult::error(why));
         }
-        // A desk must never hold a vault secret: the moment it runs a command
-        // that expands one, the secret — and any approval it raises — leaves
-        // the vault's sight. Work that needs secrets is filed as a task.
+        // Secret approvals raised from a desk have no chat to land in; secret work belongs in a task.
         let session = ctx
             .durable_session_id()
             .or(ctx.lane_origin().map(|(session, _)| session));
