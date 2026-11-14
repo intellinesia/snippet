@@ -194,6 +194,12 @@ impl ToolContext {
         self.mission_control_root.clone()
     }
 
+    /// Bind the Mission Control root used to locate agent homes.
+    pub fn with_mission_control_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.mission_control_root = Some(root.into());
+        self
+    }
+
     /// Bind the store path for this session's tools.
     pub fn with_store_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.store_path = Some(path.into());

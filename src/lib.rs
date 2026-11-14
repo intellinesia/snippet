@@ -79,6 +79,8 @@ pub mod update;
 pub mod usage_ledger;
 pub mod vault;
 pub mod voiceprint;
+pub mod watch_tool;
+pub mod followup_tool;
 pub mod watches;
 pub mod xai;
 pub mod xai_auth;

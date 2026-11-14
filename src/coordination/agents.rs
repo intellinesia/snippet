@@ -181,6 +181,7 @@ impl Store {
                 "DELETE FROM agent_reach_policy WHERE agent_id = ?1",
                 params![id],
             )?;
+            tx.execute("DELETE FROM agent_watches WHERE owner = ?1", params![id])?;
             tx.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
             tx.commit()?;
             Ok(AgentRemoval::Removed)

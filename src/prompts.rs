@@ -379,7 +379,6 @@ mod seat_layer_tests {
                     // harness_core / task_layer describe sibling-branch chat and MC one-shot wake tools.
                     "read_chat",
                     "post_chat",
-                    "schedule_wake",
                 ]
                 .into_iter()
                 .collect(),
@@ -395,7 +394,6 @@ mod seat_layer_tests {
                     "post_chat",
                     "read_chat",
                     "report_progress",
-                    "schedule_wake",
                     "update_plan",
                 ]
                 .into_iter()
@@ -426,6 +424,7 @@ mod seat_layer_tests {
                     "schedule_wake",
                     "update_plan",
                     "wake_schedule",
+                    "watch",
                     // harness_core describes task-session tools a lane lacks.
                     "file_follow_up_task",
                     "invite_task_agent",
