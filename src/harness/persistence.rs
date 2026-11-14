@@ -363,12 +363,8 @@ impl CodingHarness {
             if let Some(text) = turn_text
                 && id == crate::mission_control::SESSION_ID
             {
-                let _ = store.note_agent_last_message(
-                    &id,
-                    &text,
-                    &Utc::now().to_rfc3339(),
-                    "agent",
-                );
+                let _ =
+                    store.note_agent_last_message(&id, &text, &Utc::now().to_rfc3339(), "agent");
             }
             Ok::<(), String>(())
         }
@@ -386,9 +382,30 @@ impl CodingHarness {
                 // so the parked state never contradicts what the store holds.
                 crate::session::park_failed_session_work(&id, &prev_status, state);
                 if prev_status == "running" && status != "running" {
+                    let had_waiting = !state.human_waiting.is_empty();
                     crate::serve::relay_desk_reply(&store, &id, state);
                     if status == "waiting_for_input" && state.pending_question.is_some() {
                         crate::serve::relay_question(&store, &id, state);
+                    }
+                    // The scalar written above still carries the wait; left there, a
+                    // restart reads it and announces a reply that already went out.
+                    if had_waiting
+                        && state.human_waiting.is_empty()
+                        && let Ok(scalar) = scalar_json_in_place(state)
+                    {
+                        let _ = on_busy(|| {
+                            store.save_session_scalar(
+                                &id,
+                                &key,
+                                &workspace,
+                                title.as_deref(),
+                                &status,
+                                &scalar,
+                                &state.created_at,
+                                &now,
+                            )
+                        })
+                        .await;
                     }
                 }
                 crate::session::emit_status_transition(

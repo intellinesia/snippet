@@ -49,6 +49,51 @@ async fn tool_persistence_updates_store_without_activity_signal() {
     );
 }
 
+#[tokio::test]
+async fn turn_end_persists_the_cleared_human_wait() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = CodingHarness::new(
+        HarnessConfig {
+            state_path: Some(dir.path().join("state.json")),
+            memory_enabled: false,
+            ..HarnessConfig::default()
+        },
+        ToolRegistry::new(),
+        ToolContext::new(dir.path())
+            .unwrap()
+            .with_store_path(dir.path().join("store.db")),
+    );
+    let mut state = harness
+        .load_or_initialize_state(Some("test".into()))
+        .await
+        .unwrap();
+    let id = harness.session_id().unwrap();
+    let store = harness.store().unwrap();
+    state.status = HarnessStatus::Running;
+    harness.persist_state(&mut state).await.unwrap();
+
+    state.human_waiting.push(HumanWait {
+        thread_id: "direct:agent:a|human:local".into(),
+        since: "s".into(),
+        steered: true,
+        event_index: 0,
+    });
+    state.events.push(HarnessEvent::AssistantText {
+        text: "Done.".into(),
+        quiet: false,
+    });
+    state.status = HarnessStatus::Idle;
+    harness.persist_state(&mut state).await.unwrap();
+
+    assert!(state.human_waiting.is_empty(), "the relay clears the wait");
+    let scalar = store.load_session_scalar(&id).unwrap().unwrap();
+    let saved = crate::harness::state_from_scalar(&scalar, Vec::new(), Vec::new()).unwrap();
+    assert!(
+        saved.human_waiting.is_empty(),
+        "the persisted state must not keep a wait the turn already answered"
+    );
+}
+
 #[cfg(test)]
 mod assistant_dedup_tests {
     use super::*;
