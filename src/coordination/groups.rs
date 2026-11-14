@@ -17,6 +17,10 @@ use super::{Store, StoreError};
 /// How long a deferred group wake waits for someone else to answer first.
 pub const GROUP_DEFER_SECONDS: i64 = 10;
 
+/// How long a human's post may go unanswered before the lead is woken once
+/// with an `[owed_reply]` nudge: the backstop when every member stays quiet.
+pub const GROUP_UNANSWERED_SECONDS: i64 = 600;
+
 /// Failed deliveries after which a group wake is given up on.
 const MAX_GROUP_DELIVERY_ATTEMPTS: u32 = 12;
 
@@ -380,9 +384,13 @@ impl Store {
         created_at: &str,
     ) -> Result<CoordinationEvent, StoreError> {
         let event_id = uuid::Uuid::new_v4().to_string();
-        let defer_at = chrono::DateTime::parse_from_rfc3339(created_at)
-            .map(|at| (at + chrono::Duration::seconds(GROUP_DEFER_SECONDS)).to_rfc3339())
-            .unwrap_or_else(|_| created_at.to_string());
+        let after = |secs: i64| {
+            chrono::DateTime::parse_from_rfc3339(created_at)
+                .map(|at| (at + chrono::Duration::seconds(secs)).to_rfc3339())
+                .unwrap_or_else(|_| created_at.to_string())
+        };
+        let defer_at = after(GROUP_DEFER_SECONDS);
+        let nudge_at = after(GROUP_UNANSWERED_SECONDS);
 
         group_store_result(self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
@@ -472,11 +480,12 @@ impl Store {
                 }
             }
             // An agent's post wakes only whom it names; a lead or deferred fallback would let agents wake each other forever.
+            let lead = resolve_lead(&tx, thread_id, &agents)?;
             let immediate: Vec<String> = if !mentioned.is_empty() || poster_agent.is_some() {
                 mentioned
             } else {
-                match resolve_lead(&tx, thread_id, &agents)? {
-                    Some(lead) if poster_agent != Some(lead.as_str()) => vec![lead],
+                match lead.as_deref() {
+                    Some(lead) if poster_agent != Some(lead) => vec![lead.to_string()],
                     _ => Vec::new(),
                 }
             };
@@ -500,6 +509,14 @@ impl Store {
                      (event_id, recipient_kind, recipient_id, recipient, queued_at, retry_at)
                      VALUES (?1, 'group_deferred', ?2, ?3, ?4, ?5)",
                     params![event_id, agent, actor_ref("group_deferred", agent), created_at, defer_at],
+                )?;
+            }
+            if let (None, Some(lead)) = (poster_agent, lead.as_deref()) {
+                tx.execute(
+                    "INSERT OR IGNORE INTO message_deliveries
+                     (event_id, recipient_kind, recipient_id, recipient, queued_at, retry_at)
+                     VALUES (?1, 'group_unanswered', ?2, ?3, ?4, ?5)",
+                    params![event_id, lead, actor_ref("group_unanswered", lead), created_at, nudge_at],
                 )?;
             }
             let own_read = (actor.0 == "human").then_some(created_at);
@@ -657,6 +674,42 @@ impl Store {
         })
     }
 
+    /// Agents woken at once for `post_event_id` (the named ones, or the lead).
+    pub fn group_immediate_recipients(
+        &self,
+        post_event_id: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT recipient_id FROM message_deliveries
+                 WHERE event_id = ?1 AND recipient_kind = 'group' ORDER BY recipient_id",
+            )?;
+            let rows = stmt
+                .query_map(params![post_event_id], |row| row.get(0))?
+                .collect::<Result<Vec<String>, _>>()?;
+            Ok(rows)
+        })
+    }
+
+    /// Push one agent's deferred wake for a post to `retry_at`, while whoever
+    /// was woken first is still working on it.
+    pub fn postpone_group_delivery(
+        &self,
+        post_event_id: &str,
+        agent_id: &str,
+        retry_at: &str,
+    ) -> Result<(), StoreError> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE message_deliveries SET retry_at = ?3
+                 WHERE event_id = ?1 AND recipient_kind = 'group_deferred'
+                   AND recipient_id = ?2 AND delivered_at IS NULL",
+                params![post_event_id, agent_id, retry_at],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Whether anyone has claimed a reply to `post_event_id`. The deferred
     /// wake checks this when it fires: one answer closes the window for all.
     pub fn group_has_replies(&self, post_event_id: &str) -> Result<bool, StoreError> {
@@ -669,8 +722,9 @@ impl Store {
         })
     }
 
-    /// Group wakes due for delivery, oldest first: immediate `group` rows and
-    /// `group_deferred` rows whose claim window has opened.
+    /// Group wakes due for delivery, oldest first: immediate `group` rows,
+    /// `group_deferred` rows whose claim window has opened, and
+    /// `group_unanswered` lead nudges whose grace period has run out.
     pub fn list_pending_group_deliveries(
         &self,
         limit: u32,
@@ -682,7 +736,7 @@ impl Store {
                  FROM message_deliveries d
                  JOIN board_events e ON e.event_id = d.event_id
                  JOIN board_threads t ON t.id = e.thread_id AND t.scope = 'group'
-                 WHERE d.recipient_kind IN ('group', 'group_deferred')
+                 WHERE d.recipient_kind IN ('group', 'group_deferred', 'group_unanswered')
                    AND d.delivered_at IS NULL
                    AND d.attempts < ?2
                    AND (d.retry_at IS NULL OR d.retry_at <= ?3)
@@ -914,6 +968,36 @@ mod tests {
             .map(|p| p.recipient_id)
             .collect();
         assert_eq!(immediate, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn an_unanswered_human_post_nudges_the_lead_after_the_grace_period() {
+        let (db, id) = three_agent_group();
+        let post = db
+            .post_group_message(&id, ("human", "human"), "anyone?", &[], None, "k1", T0)
+            .unwrap();
+        let later = (chrono::DateTime::parse_from_rfc3339(T0).unwrap()
+            + chrono::Duration::seconds(GROUP_UNANSWERED_SECONDS + 1))
+        .to_rfc3339();
+        let nudges = |at: &str| {
+            pending(&db, at)
+                .into_iter()
+                .filter(|p| p.recipient_kind == "group_unanswered")
+                .map(|p| (p.event.event_id.clone(), p.recipient_id))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            nudges(T1).is_empty(),
+            "nudge must wait out the grace period"
+        );
+        assert_eq!(
+            nudges(&later),
+            vec![(post.event_id.clone(), "a".to_string())]
+        );
+        // An agent's own post never queues a nudge: agents must not wake each other forever.
+        db.post_group_message(&id, ("agent", "b"), "fyi", &[], None, "k2", T0)
+            .unwrap();
+        assert_eq!(nudges(&later).len(), 1);
     }
 
     #[test]

@@ -369,7 +369,7 @@ impl Tool for ListCoordinationAgents {
     }
 }
 
-fn identity_summary(identity: &str) -> String {
+pub(crate) fn identity_summary(identity: &str) -> String {
     let para = identity
         .split("\n\n")
         .map(str::trim)
