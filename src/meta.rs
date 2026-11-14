@@ -185,14 +185,12 @@ pub fn terminate_loop_tool() -> NativeToolDefinition {
 fn update_plan_tool() -> NativeToolDefinition {
     NativeToolDefinition {
         name: "update_plan".to_string(),
-        description: "Keep a short, visible plan for work with several distinct steps; the user \
-            sees it as a checklist. Send the whole list every time: short concrete steps, each \
-            `pending`, `in_progress` or `done`, with exactly one `in_progress` while you work. Mark \
-            a step done as soon as it is, in the same batch as the work, and finish with every \
-            step done or removed. Reshape the list when you learn something that \
-            changes the work (say why in `explanation`). Skip it for small tasks. Updating the \
-            plan is not progress by itself: after updating it, do the work."
-            .to_string(),
+        description:
+            "Your visible plan of commitments for work with several steps. Send the whole \
+            list every time, at most one step `in_progress`; mark steps done in the same batch as \
+            the work and finish with every step done or removed. Reshape it when the work changes \
+            (say why in `explanation`). Skip it for small tasks; updating it is not progress."
+                .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -205,9 +203,9 @@ fn update_plan_tool() -> NativeToolDefinition {
                         "properties": {
                             "step": { "type": "string", "description": "A short, concrete step." },
                             "status": { "type": "string", "enum": ["pending", "in_progress", "done"] },
-                            "reply_in": { "type": "string", "description": "Optional thread id (direct, group or task room) where the result of this step is owed." },
-                            "waiting_on": { "type": "string", "description": "Optional task (`task:<id>`) or lane (`lane:<id>`) reference this step waits for." },
-                            "wake_at": { "type": "string", "description": "Optional RFC 3339 timestamp at which to wake this seat for this step." }
+                            "reply_in": { "type": "string", "description": "Thread id where this step's result is owed." },
+                            "waiting_on": { "type": "string", "description": "`task:<id>` or `lane:<id>` this step waits for; you are woken when it finishes." },
+                            "wake_at": { "type": "string", "description": "RFC 3339 time to wake you for this step." }
                         },
                         "required": ["step", "status"],
                         "additionalProperties": false

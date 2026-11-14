@@ -302,15 +302,15 @@ impl Tool for ScheduleFollowup {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "schedule_wake".into(),
-            description: "Schedule a one-shot wake for this seat: pass in_minutes (1 to 10080) or at (RFC 3339), note, and optional reply_in thread id. Mission Control also accepts in_seconds (5 to 3600) for quick ambient checks, unless_user_speaks, and next_wake.".into(),
+            description: "Wake this seat once, after in_minutes (1 to 10080) or at an RFC 3339 time, with a note on what to do. Mission Control only: in_seconds (5 to 3600) for a quick ambient check, unless_user_speaks, next_wake.".into(),
             input_schema: schema(json!({
-                "in_minutes": {"type": "integer", "description": "How many minutes from now (1 to 10080)."},
-                "at": {"type": "string", "description": "RFC 3339 timestamp at which to wake this seat."},
+                "in_minutes": {"type": "integer"},
+                "at": {"type": "string", "description": "RFC 3339."},
                 "note": {"type": "string", "description": "What to check or do when woken."},
-                "reply_in": {"type": "string", "description": "Optional thread id where the result is owed."},
-                "in_seconds": {"type": "integer", "description": "Mission Control only: seconds from now (5 to 3600) for a quick ambient check."},
-                "unless_user_speaks": {"type": "boolean", "description": "Mission Control only: cancel the wake if the user speaks or messages first."},
-                "next_wake": {"type": "boolean", "description": "Mission Control only: this is your next general check-in; replaces any earlier one."}
+                "reply_in": {"type": "string", "description": "Thread id where the result is owed."},
+                "in_seconds": {"type": "integer"},
+                "unless_user_speaks": {"type": "boolean", "description": "Cancel if the user speaks first."},
+                "next_wake": {"type": "boolean", "description": "Replaces the earlier general check-in."}
             }), &["note"]),
         }
     }
