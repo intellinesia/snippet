@@ -83,14 +83,21 @@ fn text_lines(path: &Path) -> u64 {
     newlines + u64::from(bytes.last().is_some_and(|b| *b != b'\n'))
 }
 
-/// What a linked worktree adds to the repository's default branch, counting uncommitted and
-/// untracked work. `None` leaves the stored total alone: not a linked worktree, git failed, or a
-/// clean branch with nothing ahead, which is also how a merged branch looks.
+/// What a linked worktree, or a checkout of a non-default branch, adds to the repository's
+/// default branch, counting uncommitted and untracked work. `None` leaves the stored total alone:
+/// neither of those, git failed, or a clean branch with nothing ahead, which is also how a merged
+/// branch looks.
 pub fn worktree_changes(workspace: &Path) -> Option<Changes> {
-    crate::session::worktree::worktree_origin(workspace)?;
     let root = git_out(workspace, &["rev-parse", "--show-toplevel"])?;
     let root = Path::new(root.trim());
     let base = default_branch(root)?;
+    if crate::session::worktree::worktree_origin(workspace).is_none() {
+        let branch = git_out(root, &["symbolic-ref", "--short", "HEAD"])?;
+        let default = base.rsplit('/').next().unwrap_or(&base);
+        if branch.trim() == default {
+            return None;
+        }
+    }
     let merge_base = git_out(root, &["merge-base", "HEAD", &base])?;
     let fork =
         branch_start(root, merge_base.trim()).unwrap_or_else(|| merge_base.trim().to_string());
@@ -383,6 +390,41 @@ mod tests {
         if git_branch(root).is_none() {
             assert_eq!(git_branch(&root.join("plain")), None);
         }
+    }
+
+    #[test]
+    fn branch_checked_out_in_the_main_checkout_counts_its_real_diff() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        write(&dir.join("keep.txt"), "a\nb\nc\n");
+        write(&dir.join(".gitignore"), "target/\n");
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        assert_eq!(
+            worktree_changes(dir),
+            None,
+            "default branch is not measured"
+        );
+
+        git(&["checkout", "-qb", "feature"]);
+        write(&dir.join("target/junk.rs"), &"x\n".repeat(1000));
+        write(&dir.join("new.txt"), "1\n2\n");
+        git(&["add", "new.txt"]);
+        git(&["commit", "-qm", "feature"]);
+        let got = worktree_changes(dir).expect("feature branch measured");
+        assert_eq!((got.files, got.added, got.removed), (1, 2, 0));
     }
 
     #[test]
