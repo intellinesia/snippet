@@ -154,7 +154,14 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              superseded_by TEXT,
              goal_id TEXT,
              last_progress_at TEXT,
-             expected_minutes INTEGER
+             expected_minutes INTEGER,
+             -- The chat the task reports back to (`group:<id>` or a
+             -- `direct:<thread>` id), captured at claim time. NULL keeps the
+             -- old behaviour: nothing mirrors into a chat.
+             origin_thread TEXT,
+             -- The last approval/question attention id already mirrored to
+             -- origin_thread, so each request posts once.
+             origin_attention TEXT
          );
          CREATE INDEX IF NOT EXISTS tasks_status_priority
              ON tasks(status, priority DESC, created_at);

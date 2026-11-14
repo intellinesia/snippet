@@ -770,6 +770,7 @@ fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, Str
                         kind: "offer_resent".into(),
                         message: now.to_string(),
                         delivered: true,
+                        origin_reported: false,
                     });
             })
             .map(Some)
@@ -792,6 +793,7 @@ fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, Str
                     kind: "offered".into(),
                     message: now.to_string(),
                     delivered: true,
+                    origin_reported: false,
                 })
         })
         .map(Some)
@@ -944,6 +946,7 @@ fn release_failed_claim(d: &Daemon, task: &Task, error: &str) -> Result<(), Stri
                     kind: "blocked".to_string(),
                     message: format!("dispatch failed {} times: {error}", t.dispatch_failures),
                     delivered: false,
+                    origin_reported: false,
                 });
             } else {
                 t.status = TaskStatus::Todo;
@@ -1406,6 +1409,7 @@ pub async fn dispatch_loop(daemon: Shared) {
                 .await;
         }
         deliver_mission_control_reports(&daemon).await;
+        crate::coordination::origin::sweep(&daemon.store);
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }

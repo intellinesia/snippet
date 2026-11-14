@@ -202,6 +202,22 @@ pub struct SessionExtras {
     pub agent_id: Option<String>,
 }
 
+/// A session's live approval/question request in raw form — what
+/// [`Store::current_attention_request`] returns for origin-chat cards.
+#[derive(Debug, Clone)]
+pub struct AttentionRequest {
+    /// `"{ordinal}:{created_at}"`, the same id `current_attention` reports.
+    pub id: String,
+    /// `approval_request` or `user_question` (the stored event kind).
+    pub kind: String,
+    /// The raw event payload: `tool_name`/`summary`/`index`/`total` for an
+    /// approval, `questions` for a question.
+    pub payload: serde_json::Value,
+    /// `state_json.pending_question`, exactly as stored.
+    pub pending_question: Option<serde_json::Value>,
+    pub session_title: Option<String>,
+}
+
 /// A stored message, with its position so ordering survives a round trip.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredMessage {
@@ -891,6 +907,56 @@ impl Store {
                 attention_detail(&mut attention, &payload);
                 approval_call_detail(conn, id, ordinal, &payload, &mut attention);
                 attention
+            }))
+        })
+    }
+
+    /// The session's live approval/question request in raw form: the event
+    /// payload (tool, summary, index/total for approvals; the question list
+    /// for questions), the `pending_question` state value, and the session
+    /// title — everything an origin-chat card needs. `id` matches the id
+    /// [`Self::current_attention`] reports.
+    pub fn current_attention_request(
+        &self,
+        id: &str,
+    ) -> Result<Option<AttentionRequest>, StoreError> {
+        self.with_connection(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT e.ordinal, e.created_at, json_extract(e.payload_json, '$.kind'), e.payload_json,
+                            json_extract(s.state_json, '$.pending_question'), s.title
+                     FROM sessions s JOIN session_events e ON e.session_id = s.id
+                     WHERE s.id = ?1 AND s.status = 'waiting_for_input'
+                       AND json_extract(e.payload_json, '$.kind') IN ('user_question', 'approval_request')
+                       AND e.ordinal = (SELECT MAX(ordinal) FROM session_events
+                           WHERE session_id = s.id AND json_extract(payload_json, '$.kind')
+                               IN ('user_question', 'approval_request'))
+                       AND ((json_extract(e.payload_json, '$.kind') = 'user_question'
+                             AND json_extract(s.state_json, '$.pending_question') IS NOT NULL
+                             AND json_extract(s.state_json, '$.pending_question') = json_extract(e.payload_json, '$.questions'))
+                            OR (json_extract(e.payload_json, '$.kind') = 'approval_request'
+                                AND json_extract(s.state_json, '$.pending_question') IS NULL))",
+                    params![id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            Ok(row.map(|(ordinal, created_at, kind, payload, pending, title)| {
+                AttentionRequest {
+                    id: format!("{ordinal}:{created_at}"),
+                    kind,
+                    payload: serde_json::from_str(&payload).unwrap_or_default(),
+                    pending_question: pending.and_then(|raw| serde_json::from_str(&raw).ok()),
+                    session_title: title,
+                }
             }))
         })
     }
