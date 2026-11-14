@@ -1346,6 +1346,7 @@ impl Tool for MessageMissionControl {
                 kind: "message".into(),
                 message: format!("{actor_id}: {message}"),
                 delivered: false,
+                origin_reported: false,
             });
         });
         crate::session::emit_device_event(json!({
@@ -1723,6 +1724,8 @@ struct ClaimAndDispatchArgs {
     task_id: String,
     #[serde(default)]
     profile: Option<String>,
+    #[serde(default)]
+    report_to: Option<String>,
 }
 
 pub struct ClaimAndDispatchTask;
@@ -1731,11 +1734,12 @@ impl Tool for ClaimAndDispatchTask {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "claim_and_dispatch_task".into(),
-            description: "Claim an offered task to start it in its target session under your identity. Pass `profile` only to move it to another model; otherwise the session keeps its model and prompt cache. Finished or running tasks are refused.".into(),
+            description: "Claim an offered task to start it in its target session under your identity. Pass `profile` only to move it to another model; otherwise the session keeps its model and prompt cache. `report_to` (`group:<id>` or a `direct:` thread) sends the task's questions, approvals, files and result back to that chat; a desk defaults to the chat that woke it. Finished or running tasks are refused.".into(),
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string", "description": "The task ID to claim"},
-                    "profile": {"type": "string", "description": "Optional inference profile name. Omit to preserve prompt cache affinity."}
+                    "profile": {"type": "string", "description": "Optional inference profile name. Omit to preserve prompt cache affinity."},
+                    "report_to": {"type": "string", "description": "Optional `group:<id>` or `direct:<thread>` chat the task reports back to."}
                 }),
                 &["task_id"],
             ),
@@ -1781,7 +1785,31 @@ impl Tool for ClaimAndDispatchTask {
             ));
         }
         crate::mission_tools::require_working_agent(&db, &actor_id)?;
+        let report_to = args
+            .report_to
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+        if let Some(thread) = report_to.as_deref() {
+            crate::coordination::origin::validate_report_to(&db, thread, Some(&actor_id))
+                .map_err(ToolError::msg)?;
+        }
         let now = now_rfc3339();
+        // A desk defaults its report-back chat to the thread of the most
+        // recent human-facing delivery that woke it; an existing origin
+        // (filed by Mission Control) is kept unless `report_to` overrides.
+        let desk_session = ctx
+            .durable_session_id()
+            .or(ctx.lane_origin().map(|(session, _)| session));
+        let default_origin = if report_to.is_none()
+            && task.origin_thread.is_none()
+            && desk_session.is_some_and(crate::session::is_inbox_session_id)
+        {
+            crate::coordination::origin::default_origin_thread(&db, &actor_id, &now)
+        } else {
+            None
+        };
         db.add_task_agent_full(task_id, &actor_id, "implementer", None, "", "active", &now)
             .map_err(|e| ToolError::msg(format!("take the lease: {e}")))?;
         db.retry_task(task_id, &now)
@@ -1790,6 +1818,14 @@ impl Tool for ClaimAndDispatchTask {
             .update_task_in(task_id, &now, |t| {
                 if profile.is_some() {
                     t.profile = profile.clone();
+                }
+                if let Some(thread) = report_to.as_deref() {
+                    t.origin_thread = Some(thread.to_string());
+                    t.origin_attention = None;
+                } else if t.origin_thread.is_none()
+                    && let Some(thread) = default_origin.as_deref()
+                {
+                    t.origin_thread = Some(thread.to_string());
                 }
             })
             .map_err(|e| ToolError::msg(format!("queue task: {e}")))?;
@@ -2000,7 +2036,7 @@ impl Tool for GroupThread {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "group_thread".into(),
-            description: "Group threads: several agents and the human taking turns like colleagues. A post wakes whom it names (mention or name in text); one naming nobody goes to the lead, then to all with any replies. An agent's first post after the human's reaches the other agents mid-turn (stop, or one line on what you're still doing); later ones only whom they name. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?, reaction? (with in_reply_to, no body)}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
+            description: "Group threads: several agents and the human taking turns like colleagues. A post wakes whom it names (mention or name in text); one naming nobody goes to the lead, then to all with any replies. An agent's first post after the human's reaches the other agents mid-turn (stop, or one line on what you're still doing); later ones only whom they name. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?, reaction? (with in_reply_to, no body)}, set_lead {thread_id, agent}, add_member {thread_id, agent}. A task claimed from a group reports its questions, approvals, files and result back there by itself — never relay them by hand, and end a round with one consolidated answer instead of a reaction. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
             input_schema: schema(
                 json!({
                     "action": {"type": "string", "enum": ["create", "list", "read", "post", "set_lead", "add_member"]},
@@ -2215,8 +2251,69 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// Mirror a freshly presented artifact into the origin chat of the
+/// InProgress task this session works — human-delivery only, so no agent is
+/// woken by the card.
+pub(crate) fn mirror_origin_artifact(
+    ctx: &ToolContext,
+    session: &str,
+    artifact: &crate::artifacts::Artifact,
+) {
+    let Ok(db) = db(ctx) else { return };
+    let Ok(tasks) = db.tasks_worked_in(session, Some(&crate::coordination::TaskStatus::InProgress))
+    else {
+        return;
+    };
+    let Some(task) = tasks.into_iter().find(|t| {
+        t.origin_thread
+            .as_deref()
+            .is_some_and(|thread| !thread.trim().is_empty())
+            && t.reporting_session.as_deref() == Some(session)
+    }) else {
+        return;
+    };
+    let Some(card) = artifact_payload(session, artifact) else {
+        return;
+    };
+    let body = format!("Artifact: {}", artifact.title);
+    if let Err(error) =
+        crate::coordination::origin::post_origin_event(&db, &task, "artifact", card, &body, false)
+    {
+        eprintln!(
+            "[origin] artifact mirror failed for task {}: {error}",
+            task.id
+        );
+    }
+}
+
 /// Record the session an event was posted from, so the room's wake-up skips it.
 const SHARE_ARTIFACT_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// The `payload.artifact` object `share_artifact` builds and origin mirrors
+/// post: the latest version's signed link, valid for
+/// [`SHARE_ARTIFACT_TTL_SECS`].
+pub(crate) fn artifact_payload(
+    session: &str,
+    artifact: &crate::artifacts::Artifact,
+) -> Option<Value> {
+    let version = artifact.latest()?;
+    let secret = artifact_signing_secret();
+    let url = crate::artifacts::signed_path(
+        &secret,
+        session,
+        &artifact.id,
+        version,
+        SHARE_ARTIFACT_TTL_SECS,
+    );
+    Some(json!({
+        "session": session,
+        "id": artifact.id,
+        "title": artifact.title,
+        "version": version.n,
+        "url": url,
+        "kind": artifact.kind,
+    }))
+}
 
 fn artifact_signing_secret() -> String {
     let home = crate::config::snippet_home();
@@ -2251,11 +2348,11 @@ impl Tool for ShareArtifactTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "share_artifact".into(),
-            description: "Share an artifact from this session (latest version, 30-day signed link) with `human`, an agent id, or `channel:<id>` (`channel:chat` or `channel:push`).".into(),
+            description: "Share an artifact from this session (latest version, 30-day signed link) with `human`, an agent id, a `group:<id>` you belong to, or `channel:<id>` (`channel:chat` or `channel:push`).".into(),
             input_schema: schema(
                 json!({
                     "artifact_id": {"type": "string"},
-                    "to": {"type": "string", "description": "`human`, an agent id, or `channel:<id>`"},
+                    "to": {"type": "string", "description": "`human`, an agent id, `group:<id>`, or `channel:<id>`"},
                     "note": {"type": "string"}
                 }),
                 &["artifact_id", "to"],
@@ -2283,18 +2380,8 @@ impl Tool for ShareArtifactTool {
                 "unknown artifact `{artifact_id}` in session `{session}`"
             ))
         })?;
-        let version = artifact
-            .latest()
+        let artifact_payload = artifact_payload(session, &artifact)
             .ok_or_else(|| ToolError::msg(format!("artifact `{artifact_id}` has no versions")))?;
-
-        let secret = artifact_signing_secret();
-        let url = crate::artifacts::signed_path(
-            &secret,
-            session,
-            &artifact.id,
-            version,
-            SHARE_ARTIFACT_TTL_SECS,
-        );
         let body = args
             .note
             .as_deref()
@@ -2302,14 +2389,6 @@ impl Tool for ShareArtifactTool {
             .filter(|s| !s.is_empty())
             .unwrap_or(&artifact.title)
             .to_string();
-        let artifact_payload = json!({
-            "session": session,
-            "id": artifact.id,
-            "title": artifact.title,
-            "version": version.n,
-            "url": url,
-            "kind": artifact.kind,
-        });
 
         let db = db(ctx)?;
         let (sender_kind, sender_id) = actor(ctx)?;
@@ -2321,7 +2400,30 @@ impl Tool for ShareArtifactTool {
         );
         extra.insert("artifact".into(), artifact_payload.clone());
 
-        let saved = if let Some(raw_ch) = target.strip_prefix("channel:") {
+        let saved = if target.starts_with("group:") {
+            let now = chrono::Utc::now().to_rfc3339();
+            let ev = db
+                .post_group_message_ex(
+                    target,
+                    (sender_kind, sender_id.as_str()),
+                    &body,
+                    &[],
+                    None,
+                    &Uuid::new_v4().to_string(),
+                    &now,
+                    Some(json!({"artifact": artifact_payload})),
+                )
+                .map_err(|e| {
+                    ToolError::msg(format!(
+                        "share artifact to group: {e}; `to` must name a group you belong to"
+                    ))
+                })?;
+            crate::session::emit_device_event(json!({
+                "kind": "coordination_event",
+                "event": ev.clone(),
+            }));
+            ev
+        } else if let Some(raw_ch) = target.strip_prefix("channel:") {
             crate::coordination::reach::deliver_channel(
                 &db,
                 (sender_kind, &sender_id),
@@ -3808,6 +3910,72 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(bad_chan.contains("supported targets"), "{bad_chan}");
+
+        crate::artifacts::delete_session(&session);
+    }
+
+    #[tokio::test]
+    async fn share_artifact_to_group_posts_the_artifact_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = migrate(dir.path());
+        db.create_agent(&Agent {
+            id: "sender".into(),
+            display_name: "sender".into(),
+            handle: "sender".into(),
+            kind: AgentKind::Worker,
+            status: AgentStatus::Active,
+            capabilities: vec![],
+        })
+        .unwrap();
+        let group = db
+            .create_group(
+                "launch",
+                ("agent", "sender"),
+                &["sender".into()],
+                None,
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+        let session = format!("test-share-group-{}", Uuid::new_v4());
+        let ctx = context(dir.path(), &session).with_agent_id("sender");
+        let page = dir.path().join("report.html");
+        std::fs::write(&page, "<html><body>hi</body></html>").unwrap();
+        let presented =
+            crate::artifacts::present(&session, &page, Some("Report"), None, None).unwrap();
+        let aid = presented.artifact.id.clone();
+
+        ShareArtifactTool
+            .execute(&ctx, json!({"artifact_id": aid, "to": group.id.clone()}))
+            .await
+            .unwrap();
+        let events = db.events_for_thread(&group.id, 0, 10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["artifact"]["id"], aid);
+        assert_eq!(events[0].payload["artifact"]["session"], session);
+        assert!(
+            events[0].payload["artifact"]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("/a/")
+        );
+
+        // A group the caller is not in is refused.
+        let other = db
+            .create_group(
+                "other",
+                ("agent", "sender"),
+                &["sender".into()],
+                None,
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+        db.remove_group_member(&other.id, "sender").unwrap();
+        let err = ShareArtifactTool
+            .execute(&ctx, json!({"artifact_id": aid, "to": other.id}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a member"), "{err}");
 
         crate::artifacts::delete_session(&session);
     }

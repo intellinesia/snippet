@@ -1929,6 +1929,10 @@ struct CreateTaskArgs {
     goal: Option<String>,
     #[serde(default)]
     expected_minutes: Option<u32>,
+    /// Optional `group:<id>` or `direct:<thread>` chat the task's questions,
+    /// approvals, files and result report back to.
+    #[serde(default)]
+    report_to: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1941,7 +1945,7 @@ pub struct CreateMissionTask;
 #[async_trait]
 impl Tool for CreateMissionTask {
     fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition { name: "create_mission_task".into(), description: "Create a task for project work requested by the user or an agent. File dependent steps together and link prerequisites with `blocked_by`. The description is the worker's full brief and scope. Choose `resume` if the target has context, otherwise `fresh`. Use `agent_id` for a matching specialist; use `crew` to seat reviewers or advisors before work starts.".into(), input_schema: schema(json!({"title":{"type":"string"}, "description":{"type":"string"}, "session":{"type":"string","description":"Session id, title fragment or workspace path; `latest` selects the most recent match."}, "supersedes":{"type":"string","description":"optional; id of the cancelled task this one replaces"}, "handoff_mode":{"type":"string","enum":["resume","fresh"]}, "owned_paths":{"type":"array","items":{"type":"string"}}, "agent_id":{"type":"string","description":"Specialist agent id from list_coordination_agents."}, "crew":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"role":{"type":"string","description":"reviewer (default), advisor or tester"}},"required":["agent_id"]},"description":"Agents seated beside the worker; they wait until called."}, "profile":{"type":"string","description":"Profile from list_profiles. Overrides the session model and restarts it, losing its prompt cache; use only to rescue a rate-limited session."}, "reply_to":{"type":"string","description":"Exact `reply_to` value from the request message, such as `session:<id>` or `agent:<id>`."}, "blocked_by":{"type":"array","items":{"type":"string"},"description":"Task ids that must finish first."}, "read_only":{"type":"boolean","description":"investigation that changes nothing"}, "verify_mode":{"type":"string","enum":["self","reviewer","mission_control","user"],"description":"Who confirms completion. `self` skips review; `reviewer` uses a read-only agent; `mission_control` or `user` leaves the verdict with you. Defaults to reviewer (self when read_only)."}, "reviewer":{"type":"string","description":"Agent id for the reviewer; defaults to the worker in a fresh lane."}, "revises_task_id":{"type":"string","description":"optional; the finished task this one revises"}, "audience":{"type":"string","description":"Intended audience for content work."}, "definition_of_good":{"type":"string","description":"Quality bar for content work."}, "goal":{"type":"string","description":"Open goal id this task serves."}, "expected_minutes":{"type":"integer","description":"Expected duration in minutes; flagged stalled after twice this (minimum 20). Defaults by verify_mode."}}), &["title","description","session"]) }
+        NativeToolDefinition { name: "create_mission_task".into(), description: "Create a task for project work requested by the user or an agent. File dependent steps together and link prerequisites with `blocked_by`. The description is the worker's full brief and scope. Choose `resume` if the target has context, otherwise `fresh`. Use `agent_id` for a matching specialist; use `crew` to seat reviewers or advisors before work starts. `report_to` names the chat the task reports back to.".into(), input_schema: schema(json!({"title":{"type":"string"}, "description":{"type":"string"}, "session":{"type":"string","description":"Session id, title fragment or workspace path; `latest` selects the most recent match."}, "supersedes":{"type":"string","description":"optional; id of the cancelled task this one replaces"}, "handoff_mode":{"type":"string","enum":["resume","fresh"]}, "owned_paths":{"type":"array","items":{"type":"string"}}, "agent_id":{"type":"string","description":"Specialist agent id from list_coordination_agents."}, "crew":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"role":{"type":"string","description":"reviewer (default), advisor or tester"}},"required":["agent_id"]},"description":"Agents seated beside the worker; they wait until called."}, "profile":{"type":"string","description":"Profile from list_profiles. Overrides the session model and restarts it, losing its prompt cache; use only to rescue a rate-limited session."}, "reply_to":{"type":"string","description":"Exact `reply_to` value from the request message, such as `session:<id>` or `agent:<id>`."}, "blocked_by":{"type":"array","items":{"type":"string"},"description":"Task ids that must finish first."}, "read_only":{"type":"boolean","description":"investigation that changes nothing"}, "verify_mode":{"type":"string","enum":["self","reviewer","mission_control","user"],"description":"Who confirms completion. `self` skips review; `reviewer` uses a read-only agent; `mission_control` or `user` leaves the verdict with you. Defaults to reviewer (self when read_only)."}, "reviewer":{"type":"string","description":"Agent id for the reviewer; defaults to the worker in a fresh lane."}, "revises_task_id":{"type":"string","description":"optional; the finished task this one revises"}, "audience":{"type":"string","description":"Intended audience for content work."}, "definition_of_good":{"type":"string","description":"Quality bar for content work."}, "goal":{"type":"string","description":"Open goal id this task serves."}, "expected_minutes":{"type":"integer","description":"Expected duration in minutes; flagged stalled after twice this (minimum 20). Defaults by verify_mode."}, "report_to":{"type":"string","description":"Optional `group:<id>` or `direct:<thread>` chat the task reports back to."}}), &["title","description","session"]) }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let mut args: CreateTaskArgs = serde_json::from_value(arguments)?;
@@ -2221,6 +2225,16 @@ async fn create_task(
         );
         task.profile = profile.clone();
         task.goal_id = goal_id;
+        if let Some(thread) = args
+            .report_to
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            crate::coordination::origin::validate_report_to(&store, thread, None)
+                .map_err(ToolError::msg)?;
+            task.origin_thread = Some(thread.to_string());
+        }
         task.expected_minutes = Some(args.expected_minutes.filter(|m| *m > 0).unwrap_or(
             match verify_mode {
                 crate::coordination::VerifyMode::SelfCheck => 10,
@@ -2733,6 +2747,7 @@ impl Tool for FileFollowUpTask {
             definition_of_good: None,
             goal: None,
             expected_minutes: None,
+            report_to: None,
         };
         create_task(ctx, args, (kind, &who)).await
     }
@@ -4239,6 +4254,7 @@ impl Tool for ReportMissionTask {
                         kind: "blocked".into(),
                         message: summary,
                         delivered: false,
+                        origin_reported: false,
                     });
                 })
                 .map_err(|e| ToolError::msg(format!("update task: {e}")))?

@@ -290,6 +290,21 @@ impl Tool for ReadOnlyBashTool {
         if let Err(why) = read_only_verdict(command) {
             return Ok(ToolResult::error(why));
         }
+        // A desk must never hold a vault secret: the moment it runs a command
+        // that expands one, the secret — and any approval it raises — leaves
+        // the vault's sight. Work that needs secrets is filed as a task.
+        let session = ctx
+            .durable_session_id()
+            .or(ctx.lane_origin().map(|(session, _)| session));
+        if session.is_some_and(crate::session::is_inbox_session_id)
+            && !crate::vault::Vault::load()
+                .referenced_names(command)
+                .is_empty()
+        {
+            return Ok(ToolResult::error(
+                "Desks can't use vault secrets. File the work as a task so a work session runs it.",
+            ));
+        }
         let mut forwarded = arguments.clone();
         if let Some(map) = forwarded.as_object_mut() {
             map.remove("background");
@@ -301,6 +316,57 @@ impl Tool for ReadOnlyBashTool {
 #[cfg(test)]
 mod tests {
     use super::read_only_verdict;
+
+    #[tokio::test]
+    async fn desk_shell_refuses_vault_secrets() {
+        use crate::tools::Tool;
+        // A vault with one secret, under a scratch HOME.
+        let home = tempfile::tempdir().unwrap();
+        let vault_dir = home.path().join(".snippet");
+        std::fs::create_dir_all(&vault_dir).unwrap();
+        std::fs::write(
+            vault_dir.join("vault.json"),
+            r#"{"DESK_TEST_SECRET":"s3cr3t-value"}"#,
+        )
+        .unwrap();
+        let old_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let workspace = tempfile::tempdir().unwrap();
+        let desk = crate::tools::ToolContext::new(workspace.path())
+            .unwrap()
+            .with_durable_session_id("inbox-desk-agent");
+        let worker = crate::tools::ToolContext::new(workspace.path())
+            .unwrap()
+            .with_durable_session_id("work-session-1");
+        let result = super::ReadOnlyBashTool
+            .execute(
+                &desk,
+                serde_json::json!({"command": "echo $DESK_TEST_SECRET", "label": "t"}),
+            )
+            .await
+            .unwrap();
+        let message = result.value["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            message.contains("Desks can't use vault secrets"),
+            "{result:?}"
+        );
+        // A plain read still passes the vault check in a desk.
+        let result = super::ReadOnlyBashTool
+            .execute(
+                &desk,
+                serde_json::json!({"command": "ls -la", "label": "t"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.value["status"], "success", "{result:?}");
+        // Work sessions are unchanged: the vault check only guards desks.
+        drop(worker);
+        if let Some(old) = old_home {
+            unsafe { std::env::set_var("HOME", old) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+    }
 
     #[test]
     fn readers_pass_and_writers_are_refused() {

@@ -420,6 +420,85 @@ impl Store {
         idempotency_key: &str,
         created_at: &str,
     ) -> Result<CoordinationEvent, StoreError> {
+        self.post_group_message_inner(
+            thread_id,
+            actor,
+            body,
+            mentions,
+            in_reply_to,
+            idempotency_key,
+            created_at,
+            None,
+            true,
+        )
+    }
+
+    /// [`Self::post_group_message`] carrying extra payload keys (approval,
+    /// question, task_result, artifact cards) merged into the event payload.
+    #[allow(clippy::too_many_arguments)]
+    pub fn post_group_message_ex(
+        &self,
+        thread_id: &str,
+        actor: (&str, &str),
+        body: &str,
+        mentions: &[String],
+        in_reply_to: Option<&str>,
+        idempotency_key: &str,
+        created_at: &str,
+        extra: Option<serde_json::Value>,
+    ) -> Result<CoordinationEvent, StoreError> {
+        self.post_group_message_inner(
+            thread_id,
+            actor,
+            body,
+            mentions,
+            in_reply_to,
+            idempotency_key,
+            created_at,
+            extra,
+            true,
+        )
+    }
+
+    /// A card post that wakes nobody: the event lands on the thread with only
+    /// the human delivery row, so the app renders it live without any agent
+    /// turn. Used for approval/question/artifact mirrors.
+    #[allow(clippy::too_many_arguments)]
+    pub fn post_group_card(
+        &self,
+        thread_id: &str,
+        actor: (&str, &str),
+        body: &str,
+        extra: Option<serde_json::Value>,
+        idempotency_key: &str,
+        created_at: &str,
+    ) -> Result<CoordinationEvent, StoreError> {
+        self.post_group_message_inner(
+            thread_id,
+            actor,
+            body,
+            &[],
+            None,
+            idempotency_key,
+            created_at,
+            extra,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn post_group_message_inner(
+        &self,
+        thread_id: &str,
+        actor: (&str, &str),
+        body: &str,
+        mentions: &[String],
+        in_reply_to: Option<&str>,
+        idempotency_key: &str,
+        created_at: &str,
+        extra: Option<serde_json::Value>,
+        wake_agents: bool,
+    ) -> Result<CoordinationEvent, StoreError> {
         let event_id = uuid::Uuid::new_v4().to_string();
         let after = |secs: i64| {
             chrono::DateTime::parse_from_rfc3339(created_at)
@@ -579,6 +658,7 @@ impl Store {
                 .cloned()
                 .collect();
 
+            if wake_agents {
             for agent in &immediate {
                 tx.execute(
                     "INSERT OR IGNORE INTO message_deliveries
@@ -611,6 +691,7 @@ impl Store {
                     params![event_id, lead, actor_ref("group_unanswered", lead), created_at, nudge_at],
                 )?;
             }
+            }
             let own_read = (actor.0 == "human").then_some(created_at);
             tx.execute(
                 "INSERT OR IGNORE INTO message_deliveries
@@ -630,6 +711,13 @@ impl Store {
         });
         if let Some(post_id) = in_reply_to {
             payload["in_reply_to"] = serde_json::json!(post_id);
+        }
+        if let Some(extra) = extra
+            && let (Some(dst), Some(src)) = (payload.as_object_mut(), extra.as_object())
+        {
+            for (key, value) in src {
+                dst.insert(key.clone(), value.clone());
+            }
         }
         let event = CoordinationEvent {
             event_id,

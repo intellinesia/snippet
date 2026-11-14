@@ -159,6 +159,13 @@ impl CodingHarness {
                             MetaControl::Continue,
                         ),
                         Ok(presented) => {
+                            if !presented.unchanged {
+                                crate::coordination_tools::mirror_origin_artifact(
+                                    &self.context,
+                                    &session,
+                                    &presented.artifact,
+                                );
+                            }
                             state.events.push(HarnessEvent::ArtifactPresented {
                                 id: presented.artifact.id.clone(),
                                 version: presented.version,

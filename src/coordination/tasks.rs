@@ -125,6 +125,15 @@ pub struct Task {
     /// How long the work should take, in minutes; the stall threshold scales with it.
     #[serde(default)]
     pub expected_minutes: Option<u32>,
+    /// The chat this task reports back to (`group:<id>` or a `direct:<thread>`
+    /// id), captured when the work was claimed or filed. `None` keeps the old
+    /// behaviour: nothing mirrors into a chat.
+    #[serde(default)]
+    pub origin_thread: Option<String>,
+    /// The last approval/question attention id already mirrored to
+    /// `origin_thread`, so each request posts there once.
+    #[serde(default)]
+    pub origin_attention: Option<String>,
 }
 
 /// One step of a task's working plan.
@@ -188,6 +197,10 @@ pub struct NotificationMarker {
     pub kind: String,
     pub message: String,
     pub delivered: bool,
+    /// Set once the outcome was mirrored to the task's origin chat, so the
+    /// result card posts exactly once per marker.
+    #[serde(default)]
+    pub origin_reported: bool,
 }
 
 /// Why an open task is where it is, derived for the board so a reader does not
@@ -339,6 +352,7 @@ impl Task {
             kind: kind.into(),
             message: message.into(),
             delivered: false,
+            origin_reported: false,
         });
     }
 
@@ -395,6 +409,8 @@ impl Task {
             goal_id: None,
             last_progress_at: None,
             expected_minutes: None,
+            origin_thread: None,
+            origin_attention: None,
         }
     }
 
@@ -440,6 +456,8 @@ impl Task {
             goal_id: None,
             last_progress_at: None,
             expected_minutes: None,
+            origin_thread: None,
+            origin_attention: None,
         }
     }
 }
@@ -568,6 +586,8 @@ pub(super) fn task_from_row(row: &rusqlite::Row<'_>) -> Result<Task, rusqlite::E
         goal_id: row.get(23)?,
         last_progress_at: row.get(24)?,
         expected_minutes: row.get::<_, Option<i64>>(25)?.map(|m| m.max(0) as u32),
+        origin_thread: row.get(26)?,
+        origin_attention: row.get(27)?,
     })
 }
 
@@ -588,7 +608,7 @@ pub(super) const TASK_COLUMNS: &str = "id, title, description, status, priority,
      created_by_id, created_at, updated_at, completed_at, thread_id, session_id,
      handoff_json, handoff_mode, reporting_session, dispatch_failures, result_json,
      notifications_json, owned_paths_json, profile, plan, work_plan_json, superseded_by, goal_id,
-     last_progress_at, expected_minutes";
+     last_progress_at, expected_minutes, origin_thread, origin_attention";
 
 /// Persist every mutable column of a task. Takes the connection so it composes
 /// into the read-modify-write transaction in `update_task_in` — a separate
@@ -618,7 +638,9 @@ fn write_task(conn: &rusqlite::Connection, task: &Task) -> Result<(), rusqlite::
             superseded_by = ?18,
             goal_id = ?19,
             last_progress_at = ?20,
-            expected_minutes = ?21
+            expected_minutes = ?21,
+            origin_thread = ?22,
+            origin_attention = ?23
          WHERE id = ?1",
         params![
             task.id,
@@ -642,6 +664,8 @@ fn write_task(conn: &rusqlite::Connection, task: &Task) -> Result<(), rusqlite::
             task.goal_id,
             task.last_progress_at,
             task.expected_minutes,
+            task.origin_thread,
+            task.origin_attention,
         ],
     )?;
     Ok(())
@@ -671,8 +695,8 @@ impl Store {
                     completed_at, thread_id, session_id, handoff_json, handoff_mode,
                     reporting_session, dispatch_failures, result_json,
                     notifications_json, owned_paths_json, profile, plan, superseded_by, goal_id,
-                    last_progress_at, expected_minutes)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)",
+                    last_progress_at, expected_minutes, origin_thread, origin_attention)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
                 params![
                     task.id,
                     task.title,
@@ -699,6 +723,8 @@ impl Store {
                     task.goal_id,
                     task.last_progress_at,
                     task.expected_minutes,
+                    task.origin_thread,
+                    task.origin_attention,
                 ],
             )?;
             tx.execute(
@@ -768,6 +794,20 @@ impl Store {
                  ORDER BY priority DESC, created_at, id"
             ))?;
             let rows = stmt.query_map(params![session_id, status], task_from_row)?;
+            rows.collect()
+        })
+    }
+
+    /// Every task with an origin chat, any status — the set the origin mirror
+    /// sweep scans for approvals, questions and outcomes to post.
+    pub fn tasks_with_origin(&self) -> Result<Vec<Task>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks
+                 WHERE origin_thread IS NOT NULL AND origin_thread != ''
+                 ORDER BY created_at, id"
+            ))?;
+            let rows = stmt.query_map([], task_from_row)?;
             rows.collect()
         })
     }
@@ -860,6 +900,7 @@ impl Store {
                 kind: kind.into(),
                 message: result.summary.clone(),
                 delivered: false,
+                origin_reported: false,
             });
         })?;
         if let Some(existing) = already_terminal {
@@ -1056,6 +1097,7 @@ impl Store {
                     kind: "plan".into(),
                     message: summary,
                     delivered: false,
+                    origin_reported: false,
                 });
                 tx.execute(
                     "UPDATE tasks SET work_plan_json = ?2, notifications_json = ?3, last_progress_at = ?4 WHERE id = ?1",
@@ -1887,6 +1929,7 @@ impl Store {
                         kind: "blocked".into(),
                         message: message.clone(),
                         delivered: false,
+                        origin_reported: false,
                     });
                 })
                 .is_ok()
