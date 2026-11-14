@@ -2034,12 +2034,107 @@ fn string_list(arguments: &Value, key: &str) -> Vec<String> {
         .collect()
 }
 
+fn parse_group_choices(arguments: &Value) -> Result<Option<Vec<String>>, ToolError> {
+    let Some(raw) = arguments.get("choices").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let items = raw
+        .as_array()
+        .ok_or_else(|| ToolError::msg("`choices` must be an array of strings"))?;
+    let mut choices = Vec::with_capacity(items.len());
+    for item in items {
+        let s = item
+            .as_str()
+            .ok_or_else(|| ToolError::msg("each entry in `choices` must be a string"))?
+            .trim();
+        if s.is_empty() {
+            return Err(ToolError::msg("each option in `choices` must be non-empty"));
+        }
+        if s.chars().count() > 40 {
+            return Err(ToolError::msg(
+                "each option in `choices` must be at most 40 characters",
+            ));
+        }
+        choices.push(s.to_string());
+    }
+    if !(2..=5).contains(&choices.len()) {
+        return Err(ToolError::msg(
+            "`choices` must contain between 2 and 5 options",
+        ));
+    }
+    Ok(Some(choices))
+}
+
+fn strip_leading_mentions(mut s: &str) -> &str {
+    loop {
+        s = s.trim_start();
+        let Some(rest) = s.strip_prefix('@') else {
+            return s;
+        };
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+            .unwrap_or(rest.len());
+        if end == 0 {
+            return s;
+        }
+        s = rest[end..].trim_start_matches([',', ':']);
+    }
+}
+
+fn check_group_post_chatter(body: &str) -> Result<(), &'static str> {
+    const ACK_PREFIXES: &[&str] = &[
+        "thank you",
+        "sounds good",
+        "standing by",
+        "understood",
+        "confirmed",
+        "will do",
+        "got it",
+        "on it",
+        "agreed",
+        "copied",
+        "acked",
+        "noted",
+        "roger",
+        "thanks",
+        "holding",
+        "copy",
+        "seen",
+        "okay",
+        "ack",
+        "ok",
+    ];
+    let trimmed = body.trim();
+    if trimmed.chars().count() > 1500 {
+        return Err(
+            "Too long for chat. Write it to a file, share it with share_artifact (path, to: the group), and post one to three lines that say what it is and what you need.",
+        );
+    }
+    let stripped = strip_leading_mentions(trimmed).trim_end();
+    if stripped.chars().count() <= 80 && !stripped.contains('?') {
+        let lower = stripped.to_ascii_lowercase();
+        for prefix in ACK_PREFIXES {
+            if let Some(after) = lower.strip_prefix(prefix)
+                && after
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+            {
+                return Err(
+                    "That only acknowledges. React to the post instead: reaction \"check\" with in_reply_to.",
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl Tool for GroupThread {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "group_thread".into(),
-            description: "Group threads: several agents and the human taking turns like colleagues. A post wakes whom it names (mention or name in text); one naming nobody goes to the lead, then to all with any replies. An agent's first post after the human's reaches the other agents mid-turn (stop, or one line on what you're still doing); later ones only whom they name. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?, reaction? (with in_reply_to, no body)}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
+            description: "Group threads: several agents and the human taking turns like colleagues. A post wakes whom it names (mention or name in text); one naming nobody goes to the lead, then to all with any replies. An agent's first post after the human's reaches the other agents mid-turn (stop, or one line on what you're still doing); later ones only whom they name. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?, choices?, reaction? (with in_reply_to, no body)}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
             input_schema: schema(
                 json!({
                     "action": {"type": "string", "enum": ["create", "list", "read", "post", "set_lead", "add_member"]},
@@ -2051,6 +2146,7 @@ impl Tool for GroupThread {
                     "body": {"type": "string"},
                     "mentions": {"type": "array", "items": {"type": "string"}},
                     "in_reply_to": {"type": "string"},
+                    "choices": {"type": "array", "items": {"type": "string"}},
                     "reaction": {"type": "string"},
                     "after_sequence": {"type": "integer"},
                     "limit": {"type": "integer"}
@@ -2168,6 +2264,9 @@ impl Tool for GroupThread {
                     .map(str::trim)
                     .filter(|r| !r.is_empty())
                 {
+                    if arguments.get("choices").is_some_and(|v| !v.is_null()) {
+                        return Err(ToolError::msg("a reaction cannot include `choices`"));
+                    }
                     let target = in_reply_to
                         .ok_or_else(|| ToolError::msg("a reaction needs `in_reply_to`"))?;
                     let event = db
@@ -2188,9 +2287,12 @@ impl Tool for GroupThread {
                     .map(str::trim)
                     .filter(|b| !b.is_empty())
                     .ok_or_else(|| ToolError::msg("`body` is required"))?;
+                check_group_post_chatter(body).map_err(ToolError::msg)?;
+                let choices = parse_group_choices(&arguments)?;
                 let mentions = string_list(&arguments, "mentions");
+                let extra = choices.map(|c| json!({ "choices": c }));
                 let event = db
-                    .post_group_message(
+                    .post_group_message_ex(
                         thread_id,
                         ("agent", agent_id.as_str()),
                         body,
@@ -2198,6 +2300,7 @@ impl Tool for GroupThread {
                         in_reply_to,
                         &uuid::Uuid::new_v4().to_string(),
                         &now_rfc3339(),
+                        extra,
                     )
                     .map_err(|e| ToolError::msg(format!("post to group: {e}")))?;
                 Ok(ToolResult::success(json!(event)))
@@ -2338,7 +2441,12 @@ fn artifact_signing_secret() -> String {
 
 #[derive(Deserialize)]
 struct ShareArtifactArgs {
-    artifact_id: String,
+    #[serde(default)]
+    artifact_id: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
     to: String,
     #[serde(default)]
     note: Option<String>,
@@ -2351,14 +2459,16 @@ impl Tool for ShareArtifactTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "share_artifact".into(),
-            description: "Share an artifact from this session (latest version, 30-day signed link) with `human`, an agent id, a `group:<id>`, or `channel:<id>` (`channel:chat` or `channel:push`).".into(),
+            description: "Share an artifact (`artifact_id`) or file (`path`, optional `title`) with `human`, agent id, `group:<id>`, or `channel:<id>` (`channel:chat`/`channel:push`).".into(),
             input_schema: schema(
                 json!({
                     "artifact_id": {"type": "string"},
-                    "to": {"type": "string", "description": "`human`, an agent id, `group:<id>`, or `channel:<id>`"},
+                    "path": {"type": "string"},
+                    "title": {"type": "string"},
+                    "to": {"type": "string", "description": "`human`, agent id, `group:<id>`, or `channel:<id>`"},
                     "note": {"type": "string"}
                 }),
-                &["artifact_id", "to"],
+                &["to"],
             ),
         }
     }
@@ -2366,11 +2476,22 @@ impl Tool for ShareArtifactTool {
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: ShareArtifactArgs =
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let artifact_id = args.artifact_id.trim();
+        let artifact_id = args
+            .artifact_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let path = args
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let title = args
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         let target = args.to.trim();
-        if artifact_id.is_empty() {
-            return Err(ToolError::msg("artifact_id must not be empty"));
-        }
         if target.is_empty() {
             return Err(ToolError::msg("to must not be empty"));
         }
@@ -2378,13 +2499,34 @@ impl Tool for ShareArtifactTool {
             .durable_session_id()
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| ToolError::msg("share_artifact requires a durable session"))?;
-        let artifact = crate::artifacts::get(session, artifact_id).ok_or_else(|| {
-            ToolError::msg(format!(
-                "unknown artifact `{artifact_id}` in session `{session}`"
-            ))
-        })?;
+        let artifact = match (artifact_id, path) {
+            (Some(_), Some(_)) => {
+                return Err(ToolError::msg(
+                    "provide either `artifact_id` or `path`, not both",
+                ));
+            }
+            (None, None) => {
+                return Err(ToolError::msg("provide `artifact_id` or `path`"));
+            }
+            (Some(id), None) => crate::artifacts::get(session, id).ok_or_else(|| {
+                ToolError::msg(format!("unknown artifact `{id}` in session `{session}`"))
+            })?,
+            (None, Some(raw_path)) => {
+                let resolved = if std::path::Path::new(raw_path).is_absolute() {
+                    std::path::PathBuf::from(raw_path)
+                } else {
+                    ctx.workspace_root().join(raw_path)
+                };
+                if !resolved.exists() {
+                    return Err(ToolError::msg(format!("file `{raw_path}` does not exist")));
+                }
+                crate::artifacts::present(session, &resolved, title, None, None)
+                    .map_err(ToolError::msg)?
+                    .artifact
+            }
+        };
         let artifact_payload = artifact_payload(session, &artifact)
-            .ok_or_else(|| ToolError::msg(format!("artifact `{artifact_id}` has no versions")))?;
+            .ok_or_else(|| ToolError::msg(format!("artifact `{}` has no versions", artifact.id)))?;
         let body = args
             .note
             .as_deref()
@@ -4547,5 +4689,319 @@ mod tests {
             via_chat.value["data"]["messages"]
         );
         assert_eq!(via_agent.value["data"]["peer"], "human");
+    }
+
+    #[tokio::test]
+    async fn share_artifact_from_path_creates_and_shares_and_is_available_on_desks() {
+        let (desk_defs, _) = crate::lanes::role_tool_definitions("desk", None).unwrap();
+        assert!(
+            desk_defs.iter().any(|d| d.name == "share_artifact"),
+            "desk tool definitions must include share_artifact"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir_all(workspace.join("notes")).unwrap();
+        std::fs::write(workspace.join("notes/brief.md"), "# Launch Brief\nReady.\n").unwrap();
+
+        let outside = tempfile::tempdir().unwrap();
+        let abs_file = outside.path().join("summary.html");
+        std::fs::write(&abs_file, "<html><body>Summary</body></html>").unwrap();
+
+        let db = migrate(dir.path());
+        db.create_agent(&chat_agent("desk-agent")).unwrap();
+        let group = db
+            .create_group(
+                "launch",
+                ("agent", "desk-agent"),
+                &["desk-agent".into()],
+                None,
+                CHAT_T0,
+            )
+            .unwrap();
+
+        let session = format!("inbox-test-share-path-{}", Uuid::new_v4());
+        let ctx = ToolContext::new(&workspace)
+            .unwrap()
+            .with_durable_session_id(&session)
+            .with_store_path(dir.path().join("snippet.db"))
+            .with_agent_id("desk-agent");
+
+        let both_err = ShareArtifactTool
+            .execute(
+                &ctx,
+                json!({"artifact_id": "a1", "path": "notes/brief.md", "to": "human"}),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(both_err.contains("not both"), "{both_err}");
+
+        let neither_err = ShareArtifactTool
+            .execute(&ctx, json!({"to": "human"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(neither_err.contains("artifact_id"), "{neither_err}");
+
+        let missing_err = ShareArtifactTool
+            .execute(&ctx, json!({"path": "notes/missing.md", "to": "human"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(missing_err.contains("does not exist"), "{missing_err}");
+
+        let rel_shared = ShareArtifactTool
+            .execute(
+                &ctx,
+                json!({
+                    "path": "notes/brief.md",
+                    "title": "Launch Brief",
+                    "to": group.id.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+        let rel_art = &rel_shared.value["data"]["artifact"];
+        assert_eq!(rel_art["session"], session);
+        assert_eq!(rel_art["title"], "Launch Brief");
+        assert_eq!(rel_art["kind"], "markdown");
+        assert!(rel_art["url"].as_str().unwrap().starts_with("/a/"));
+
+        let abs_shared = ShareArtifactTool
+            .execute(
+                &ctx,
+                json!({
+                    "path": abs_file.to_string_lossy(),
+                    "to": group.id.clone(),
+                    "note": "Read this HTML summary.",
+                }),
+            )
+            .await
+            .unwrap();
+        let abs_art = &abs_shared.value["data"]["artifact"];
+        assert_eq!(abs_art["title"], "summary");
+        assert_eq!(abs_art["kind"], "html");
+
+        let events = db.events_for_thread(&group.id, 0, 10).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].payload["body"], "Launch Brief");
+        assert_eq!(events[0].payload["artifact"], *rel_art);
+        assert_eq!(events[1].payload["body"], "Read this HTML summary.");
+        assert_eq!(events[1].payload["artifact"], *abs_art);
+
+        crate::artifacts::delete_session(&session);
+    }
+
+    #[tokio::test]
+    async fn group_thread_post_validates_and_stores_choices() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = migrate(dir.path());
+        db.create_agent(&chat_agent("lead")).unwrap();
+        let group = db
+            .create_group(
+                "decisions",
+                ("agent", "lead"),
+                &["lead".into()],
+                Some("lead"),
+                CHAT_T0,
+            )
+            .unwrap();
+        let ctx = context(dir.path(), "s-lead").with_agent_id("lead");
+
+        for bad in [
+            json!("not-an-array"),
+            json!([]),
+            json!(["Only one"]),
+            json!(["1", "2", "3", "4", "5", "6"]),
+            json!(["Valid", 42]),
+            json!(["Valid", "   "]),
+            json!(["Valid", "a".repeat(41)]),
+        ] {
+            let err = GroupThread
+                .execute(
+                    &ctx,
+                    json!({
+                        "action": "post",
+                        "thread_id": group.id,
+                        "body": "Which option should we pick?",
+                        "choices": bad,
+                    }),
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(!err.is_empty());
+        }
+
+        let exact_40 = "x".repeat(40);
+        let posted = GroupThread
+            .execute(
+                &ctx,
+                json!({
+                    "action": "post",
+                    "thread_id": group.id,
+                    "body": "Pick a release track.",
+                    "choices": ["  Ship today  ", exact_40.clone()],
+                }),
+            )
+            .await
+            .unwrap();
+        let event_id = posted.value["data"]["event_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            posted.value["data"]["payload"]["choices"],
+            json!(["Ship today", exact_40])
+        );
+
+        let react_err = GroupThread
+            .execute(
+                &ctx,
+                json!({
+                    "action": "post",
+                    "thread_id": group.id,
+                    "in_reply_to": event_id,
+                    "reaction": "check",
+                    "choices": ["A", "B"],
+                }),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(react_err.contains("choices"), "{react_err}");
+
+        let answer = db
+            .post_group_message(
+                &group.id,
+                ("human", "human"),
+                "Ship today",
+                &[],
+                Some(&event_id),
+                "k-human-choice",
+                "2026-01-01T00:00:05Z",
+            )
+            .unwrap();
+        assert_eq!(answer.payload["body"], "Ship today");
+        assert_eq!(answer.payload["in_reply_to"], event_id);
+    }
+
+    #[tokio::test]
+    async fn group_post_chatter_rules_refuse_bare_acks_and_oversized_posts() {
+        for ack in [
+            "ack",
+            "Acked.",
+            "COPY",
+            "copied!",
+            "seen",
+            "Noted.",
+            "agreed",
+            "Got it",
+            "on it",
+            "ok",
+            "Okay.",
+            "thanks",
+            "Thank you!",
+            "sounds good",
+            "will do",
+            "Understood",
+            "roger",
+            "confirmed",
+            "holding",
+            "standing by",
+            "@sanjay ok",
+            "  @lead, @peer: noted, standing by  ",
+        ] {
+            let err = check_group_post_chatter(ack).unwrap_err();
+            assert_eq!(
+                err,
+                "That only acknowledges. React to the post instead: reaction \"check\" with in_reply_to.",
+                "expected refusal for `{ack}`"
+            );
+        }
+
+        let long_ok = format!(
+            "Ok, Sujith's draft is below: {}",
+            "please review the wording for the partner note. ".repeat(2)
+        );
+        assert!(long_ok.chars().count() > 80);
+        assert!(check_group_post_chatter(&long_ok).is_ok());
+
+        assert!(check_group_post_chatter("Should we ship today?").is_ok());
+        assert!(check_group_post_chatter("Ok, which draft should we send?").is_ok());
+        assert!(check_group_post_chatter("Okayama office confirmed the booking.").is_ok());
+        assert!(check_group_post_chatter("Copyright check passed.").is_ok());
+        assert!(check_group_post_chatter(&"a".repeat(1500)).is_ok());
+
+        let too_long = "a".repeat(1501);
+        assert_eq!(
+            check_group_post_chatter(&too_long).unwrap_err(),
+            "Too long for chat. Write it to a file, share it with share_artifact (path, to: the group), and post one to three lines that say what it is and what you need."
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = migrate(dir.path());
+        db.create_agent(&chat_agent("a")).unwrap();
+        let group = db
+            .create_group("ops", ("agent", "a"), &["a".into()], Some("a"), CHAT_T0)
+            .unwrap();
+        let ctx = context(dir.path(), "s-a").with_agent_id("a");
+
+        let seed = GroupThread
+            .execute(
+                &ctx,
+                json!({
+                    "action": "post",
+                    "thread_id": group.id,
+                    "body": "Build passed; ready to tag?",
+                }),
+            )
+            .await
+            .unwrap();
+        let seed_id = seed.value["data"]["event_id"].as_str().unwrap().to_string();
+
+        let ack_err = GroupThread
+            .execute(
+                &ctx,
+                json!({
+                    "action": "post",
+                    "thread_id": group.id,
+                    "body": "@a Noted.",
+                    "in_reply_to": seed_id,
+                }),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(ack_err.contains("React to the post instead"), "{ack_err}");
+
+        let len_err = GroupThread
+            .execute(
+                &ctx,
+                json!({
+                    "action": "post",
+                    "thread_id": group.id,
+                    "body": "x".repeat(1501),
+                }),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(len_err.contains("Too long for chat"), "{len_err}");
+
+        // Reactions on the same post still succeed without a body.
+        GroupThread
+            .execute(
+                &ctx,
+                json!({
+                    "action": "post",
+                    "thread_id": group.id,
+                    "in_reply_to": seed_id,
+                    "reaction": "check",
+                }),
+            )
+            .await
+            .unwrap();
     }
 }
