@@ -86,6 +86,7 @@ fn group_from_row(
         .query_row(
             "SELECT actor_kind, actor_id, payload_json, created_at FROM board_events
              WHERE thread_id = ?1 AND event_type = 'group_message'
+               AND json_extract(payload_json, '$.reaction') IS NULL
              ORDER BY sequence DESC LIMIT 1",
             params![id],
             |r| {
@@ -545,6 +546,101 @@ impl Store {
         }
     }
 
+    /// React to a post in a group. The reaction is an event on the thread with
+    /// no body, visible to everyone who reads it, and it wakes nobody: a group
+    /// post is not an awaited question, so a reaction there only acknowledges.
+    pub fn post_group_reaction(
+        &self,
+        thread_id: &str,
+        actor: (&str, &str),
+        target_event_id: &str,
+        reaction: &str,
+        idempotency_key: &str,
+        created_at: &str,
+    ) -> Result<CoordinationEvent, StoreError> {
+        let reaction = reaction.trim();
+        if reaction.is_empty() {
+            return Err(StoreError::InvalidInput("`reaction` is required".into()));
+        }
+        let event_id = uuid::Uuid::new_v4().to_string();
+        group_store_result(self.with_connection(|conn| {
+            let scope: Option<String> = conn
+                .query_row(
+                    "SELECT scope FROM board_threads WHERE id = ?1",
+                    params![thread_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if scope.as_deref() != Some("group") {
+                return Err(invalid_input(format!(
+                    "`{thread_id}` is not a group thread"
+                )));
+            }
+            let member: Option<i64> = conn
+                .query_row(
+                    "SELECT 1 FROM board_participants
+                     WHERE thread_id = ?1 AND actor_kind = ?2 AND actor_id = ?3",
+                    params![thread_id, actor.0, actor.1],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if member.is_none() {
+                return Err(invalid_input(format!(
+                    "{}:{} is not a member of this group",
+                    actor.0, actor.1
+                )));
+            }
+            let target: Option<(String, Option<String>)> = conn
+                .query_row(
+                    "SELECT event_type, json_extract(payload_json, '$.reaction') FROM board_events
+                     WHERE event_id = ?1 AND thread_id = ?2",
+                    params![target_event_id, thread_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if !matches!(target, Some((ref kind, None)) if kind == "group_message") {
+                return Err(invalid_input(format!(
+                    "`{target_event_id}` is not a post in this group"
+                )));
+            }
+            if actor.0 == "human" {
+                conn.execute(
+                    "INSERT OR IGNORE INTO message_deliveries
+                     (event_id, recipient_kind, recipient_id, recipient, queued_at, delivered_at, read_at)
+                     VALUES (?1, 'human', 'human', ?2, ?3, ?3, ?3)",
+                    params![event_id, actor_ref("human", "human"), created_at],
+                )?;
+            }
+            Ok(())
+        }))?;
+
+        let event = CoordinationEvent {
+            event_id,
+            thread_id: thread_id.to_string(),
+            partition_key: format!("thread:{thread_id}"),
+            sequence: 0,
+            event_type: "group_message".into(),
+            actor_kind: actor.0.to_string(),
+            actor_id: actor.1.to_string(),
+            payload_version: 1,
+            payload: serde_json::json!({
+                "body": "",
+                "kind": "reaction",
+                "reaction": reaction,
+                "reply_to": target_event_id,
+                "in_reply_to": target_event_id,
+                "mentions": [],
+                "from_kind": actor.0,
+                "from_id": actor.1,
+            }),
+            causation_id: None,
+            correlation_id: None,
+            idempotency_key: idempotency_key.to_string(),
+            created_at: created_at.to_string(),
+        };
+        self.append_event(&event)
+    }
+
     /// Drop the scheduled wakes and reply claim of a post that never landed.
     fn discard_group_wakes(&self, event_id: &str) -> Result<(), StoreError> {
         self.with_connection(|conn| {
@@ -693,6 +789,47 @@ mod tests {
         assert!(db.is_group_member(&id, "agent", "a").unwrap());
         assert_eq!(db.list_groups().unwrap().len(), 1);
         assert!(db.get_group("direct:x").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_group_reaction_lands_on_the_thread_and_wakes_nobody() {
+        let (db, id) = three_agent_group();
+        let post = db
+            .post_group_message(&id, ("agent", "a"), "shipped", &[], None, "k1", T0)
+            .unwrap();
+        let before = db.list_pending_group_deliveries(50, T2).unwrap().len();
+        let reaction = db
+            .post_group_reaction(
+                &id,
+                ("human", "human"),
+                &post.event_id,
+                "thumbs_up",
+                "r1",
+                T2,
+            )
+            .unwrap();
+        assert_eq!(reaction.payload["reaction"], "thumbs_up");
+        assert_eq!(reaction.payload["reply_to"], post.event_id);
+        assert_eq!(reaction.payload["body"], "");
+        assert_eq!(
+            db.list_pending_group_deliveries(50, T2).unwrap().len(),
+            before,
+            "a reaction schedules no group wake"
+        );
+        let last = db.list_groups().unwrap()[0].last_message.clone().unwrap();
+        assert_eq!(last.body, "shipped", "the preview skips reactions");
+        let events = db.events_for_thread(&id, 0, 10).unwrap();
+        assert_eq!(events.len(), 2, "the reaction is an event on the thread");
+
+        let on_reaction =
+            db.post_group_reaction(&id, ("agent", "b"), &reaction.event_id, "check", "r2", T2);
+        assert!(
+            on_reaction.is_err(),
+            "reactions target posts, not other reactions"
+        );
+        let outsider =
+            db.post_group_reaction(&id, ("agent", "ghost"), &post.event_id, "check", "r3", T2);
+        assert!(outsider.is_err(), "only members react");
     }
 
     #[test]
