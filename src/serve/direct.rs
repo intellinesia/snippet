@@ -40,6 +40,50 @@ pub(super) fn recipient_session_id(agent_id: &str) -> String {
     }
 }
 
+/// The `history:` digest shared by the direct- and group-message envelopes:
+/// the prior messages, oldest first, with the daemon's own `auto` events
+/// hidden. Empty history reads as the start of the conversation.
+pub(super) fn history_digest(history: &[crate::coordination::types::CoordinationEvent]) -> String {
+    let history: Vec<_> = history
+        .iter()
+        .filter(|prior| prior.payload.get("auto").is_none())
+        .collect();
+    let mut digest = String::new();
+    if history.is_empty() {
+        digest.push_str("history: (first message in this conversation)\n");
+    } else {
+        digest.push_str(&format!(
+            "history: last {} message(s), oldest first\n",
+            history.len()
+        ));
+        for prior in history {
+            let prior_body = if let Some(r) = prior.payload.get("reaction").and_then(|v| v.as_str())
+            {
+                let target = prior
+                    .payload
+                    .get("reply_to")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                format!("[reacted {r} to {target}]")
+            } else {
+                prior
+                    .payload
+                    .get("body")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            digest.push_str(&format!(
+                "  {} [{}] {}: {}\n",
+                prior.sequence, prior.actor_kind, prior.actor_id, prior_body
+            ));
+        }
+    }
+    digest
+}
+
 /// The envelope handed to a recipient when a direct message arrives.
 ///
 /// Field order matters: `body` is last, so a client or reader can take
@@ -107,43 +151,7 @@ fn direct_message_envelope(
         .filter(|session| !session.is_empty())
         .map(|session| format!("session:{session}"))
         .unwrap_or_else(|| "human".to_string());
-    let history: Vec<_> = history
-        .iter()
-        .filter(|prior| prior.payload.get("auto").is_none())
-        .collect();
-    let mut digest = String::new();
-    if history.is_empty() {
-        digest.push_str("history: (first message in this conversation)\n");
-    } else {
-        digest.push_str(&format!(
-            "history: last {} message(s), oldest first\n",
-            history.len()
-        ));
-        for prior in history {
-            let prior_body = if let Some(r) = prior.payload.get("reaction").and_then(|v| v.as_str())
-            {
-                let target = prior
-                    .payload
-                    .get("reply_to")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                format!("[reacted {r} to {target}]")
-            } else {
-                prior
-                    .payload
-                    .get("body")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default()
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            };
-            digest.push_str(&format!(
-                "  {} [{}] {}: {}\n",
-                prior.sequence, prior.actor_kind, prior.actor_id, prior_body
-            ));
-        }
-    }
+    let digest = history_digest(history);
     format!(
         "[direct_message]\n{event_id_line}thread_id: {thread}\nfrom: {sender}\nfrom_kind: {kind}\nto: {to}\n\
          reply_to: {reply_to}\n{reply_lines}{tags}\

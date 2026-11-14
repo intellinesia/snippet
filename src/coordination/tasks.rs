@@ -1214,6 +1214,24 @@ impl Store {
         })
     }
 
+    /// Non-terminal tasks, or those `agent_id` is seated on, in board order.
+    pub fn list_open_tasks(&self, agent_id: Option<&str>) -> Result<Vec<Task>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks
+                 WHERE status IN ('todo', 'in_progress', 'blocked', 'in_review')
+                   AND (?1 IS NULL OR EXISTS (
+                        SELECT 1 FROM task_agents ta
+                        WHERE ta.task_id = tasks.id
+                          AND ta.agent_id = ?1
+                          AND ta.removed_at IS NULL))
+                 ORDER BY priority DESC, created_at, id"
+            ))?;
+            let rows = stmt.query_map(params![agent_id], task_from_row)?;
+            rows.collect()
+        })
+    }
+
     /// Task counts per agent and status. Open work counts whatever its age;
     /// finished work counts only when it changed at or after `finished_since`.
     pub fn agent_task_counts(
@@ -2768,5 +2786,82 @@ mod tests {
         let a2 = roster.iter().find(|a| a.agent_id == "a2").unwrap();
         assert_eq!(a1.status, "waiting");
         assert_eq!(a2.status, "active");
+    }
+
+    #[test]
+    fn list_open_tasks_filters_terminal_and_agent_in_sql() {
+        let db = Store::open_in_memory().unwrap();
+        for id in ["a1", "a2"] {
+            db.create_agent(&crate::coordination::types::Agent {
+                id: id.into(),
+                display_name: id.into(),
+                handle: id.into(),
+                kind: crate::coordination::types::AgentKind::Worker,
+                status: crate::coordination::types::AgentStatus::Active,
+                capabilities: vec![],
+            })
+            .unwrap();
+        }
+        let make = |id: &str, status: TaskStatus| {
+            let mut t = Task::filed_by_human(
+                id.into(),
+                id.into(),
+                "d".into(),
+                "s".into(),
+                0,
+                "2026-01-01T00:00:00Z".into(),
+            );
+            t.status = status;
+            db.create_task(&t).unwrap();
+        };
+        make("open-a1", TaskStatus::InProgress);
+        make("done-a1", TaskStatus::Done);
+        make("open-a2", TaskStatus::Blocked);
+        db.add_task_agent_full(
+            "open-a1",
+            "a1",
+            "impl",
+            None,
+            "",
+            "active",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        db.add_task_agent_full(
+            "done-a1",
+            "a1",
+            "impl",
+            None,
+            "",
+            "active",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        db.add_task_agent_full(
+            "open-a2",
+            "a2",
+            "impl",
+            None,
+            "",
+            "active",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+
+        let a1_open: Vec<_> = db
+            .list_open_tasks(Some("a1"))
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(a1_open, vec!["open-a1"]);
+
+        let all_open: Vec<_> = db
+            .list_open_tasks(None)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(all_open, vec!["open-a1", "open-a2"]);
     }
 }

@@ -94,6 +94,8 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              actor_kind TEXT NOT NULL,
              PRIMARY KEY (thread_id, actor_id)
          );
+         CREATE INDEX IF NOT EXISTS board_participants_actor
+             ON board_participants(actor_id, actor_kind, thread_id);
 
          CREATE TABLE IF NOT EXISTS board_events (
              event_id TEXT PRIMARY KEY NOT NULL,

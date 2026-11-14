@@ -347,11 +347,13 @@ async fn post_group(
     }
 }
 
-/// The `[group_message]` envelope handed to a woken agent.
+/// The `[group_message]` envelope handed to a woken agent. `history` is the
+/// prior slice of the thread, rendered by the same digest the DM envelope uses.
 fn group_message_envelope(
     event: &crate::coordination::types::CoordinationEvent,
     title: &str,
     reply_expected: bool,
+    history: &[crate::coordination::types::CoordinationEvent],
 ) -> String {
     let body = event
         .payload
@@ -376,8 +378,10 @@ fn group_message_envelope(
     if let Some(post_id) = event.payload.get("in_reply_to").and_then(|v| v.as_str()) {
         envelope.push_str(&format!("in_reply_to: {post_id}\n"));
     }
+    let digest = super::direct::history_digest(history);
     envelope.push_str(&format!(
-        "reply_expected: {}\nnote: {}\nbody: {body}\n[/group_message]",
+        "reply_expected: {}\nnote: {} Recent history only; use read_chat for more.\n\
+         {digest}body: {body}\n[/group_message]",
         if reply_expected { "true" } else { "false" },
         if reply_expected {
             "this post is waiting on the group; answer in the thread with \
@@ -410,7 +414,18 @@ async fn deliver_group(
         .flatten()
         .map(|group| group.title)
         .unwrap_or_default();
-    let envelope = group_message_envelope(event, &title, pending.recipient_kind == "group");
+    // The wake carries the same bounded history a DM wake does, minus the post
+    // being delivered and the daemon's own acknowledgements.
+    let history = d
+        .store
+        .events_before(
+            &event.thread_id,
+            event.sequence,
+            super::direct::DIRECT_HISTORY_ON_WAKE,
+        )
+        .unwrap_or_default();
+    let envelope =
+        group_message_envelope(event, &title, pending.recipient_kind == "group", &history);
     if agent_id != crate::mission_control::SESSION_ID {
         super::direct::ensure_agent_inbox(d, agent_id).await?;
     }
@@ -672,7 +687,7 @@ mod tests {
             idempotency_key: "k".into(),
             created_at: T0.into(),
         };
-        let expected = group_message_envelope(&event, "build", true);
+        let expected = group_message_envelope(&event, "build", true, &[]);
         for field in [
             "thread_id: group:x",
             "title: build",
@@ -684,11 +699,132 @@ mod tests {
         ] {
             assert!(expected.contains(field), "missing {field} in {expected}");
         }
-        let deferred = group_message_envelope(&event, "build", false);
+        let deferred = group_message_envelope(&event, "build", false, &[]);
         assert!(deferred.contains("reply_expected: false"));
         assert!(
             deferred
                 .contains("reply only if this is a question in your field; otherwise do nothing.")
         );
+    }
+
+    /// The wake carries the thread's recent history like a DM wake does, with
+    /// `body` still last so nothing runs into the sender's text.
+    #[test]
+    fn envelope_renders_the_history_digest_and_keeps_body_last() {
+        let event = crate::coordination::types::CoordinationEvent {
+            event_id: "e3".into(),
+            thread_id: "group:x".into(),
+            partition_key: "thread:group:x".into(),
+            sequence: 3,
+            event_type: "group_message".into(),
+            actor_kind: "human".into(),
+            actor_id: "human".into(),
+            payload_version: 1,
+            payload: serde_json::json!({"body": "wake body"}),
+            causation_id: None,
+            correlation_id: None,
+            idempotency_key: "k".into(),
+            created_at: T2.into(),
+        };
+        let prior = |sequence: u64, actor_kind: &str, actor_id: &str, body: &str, auto: bool| {
+            let mut payload = serde_json::json!({"body": body});
+            if auto {
+                payload["auto"] = serde_json::json!(true);
+            }
+            crate::coordination::types::CoordinationEvent {
+                event_id: format!("e{sequence}"),
+                thread_id: "group:x".into(),
+                partition_key: "thread:group:x".into(),
+                sequence,
+                event_type: "group_message".into(),
+                actor_kind: actor_kind.into(),
+                actor_id: actor_id.into(),
+                payload_version: 1,
+                payload,
+                causation_id: None,
+                correlation_id: None,
+                idempotency_key: format!("k{sequence}"),
+                created_at: T0.into(),
+            }
+        };
+        let history = vec![
+            prior(1, "agent", "a", "first post", false),
+            prior(2, "human", "human", "second post", false),
+            prior(3, "agent", "a", "auto ack", true),
+        ];
+        // The digest hides the `auto` event, so two messages render.
+        let env = group_message_envelope(&event, "build", true, &history);
+        assert!(env.contains("history: last 2 message(s), oldest first"));
+        assert!(env.contains("  1 [agent] a: first post"));
+        assert!(env.contains("  2 [human] human: second post"));
+        assert!(!env.contains("auto ack"));
+        assert!(env.contains("Recent history only; use read_chat for more."));
+        let digest_at = env.find("history:").expect("digest present");
+        let body_at = env.find("body: wake body").expect("body present");
+        assert!(digest_at < body_at, "body must stay last: {env}");
+        assert!(env.ends_with("[/group_message]"));
+
+        let env = group_message_envelope(&event, "build", true, &[]);
+        assert!(env.contains("history: (first message in this conversation)"));
+        assert!(env.find("history:").unwrap() < env.find("body: wake body").unwrap());
+    }
+
+    #[test]
+    fn events_before_returns_prior_non_auto_events_even_after_many_newer_posts() {
+        let (db, id) = group();
+        let p1 = db
+            .post_group_message(&id, ("human", "human"), "first", &[], None, "k1", T0)
+            .unwrap();
+        let p2 = db
+            .post_group_message(&id, ("agent", "a"), "second", &[], None, "k2", T1)
+            .unwrap();
+        db.append_event(&crate::coordination::types::CoordinationEvent {
+            event_id: "auto-1".into(),
+            thread_id: id.clone(),
+            partition_key: format!("thread:{id}"),
+            sequence: 0,
+            event_type: "group_message".into(),
+            actor_kind: "agent".into(),
+            actor_id: "a".into(),
+            payload_version: 1,
+            payload: serde_json::json!({"body": "ack", "auto": true}),
+            causation_id: None,
+            correlation_id: None,
+            idempotency_key: "k-auto".into(),
+            created_at: T1.into(),
+        })
+        .unwrap();
+        let target = db
+            .post_group_message(
+                &id,
+                ("human", "human"),
+                "wake post",
+                &["b".into()],
+                None,
+                "k3",
+                T2,
+            )
+            .unwrap();
+        for i in 0..15 {
+            db.post_group_message(
+                &id,
+                ("agent", "c"),
+                &format!("later-{i}"),
+                &[],
+                None,
+                &format!("kl-{i}"),
+                T2,
+            )
+            .unwrap();
+        }
+        let history = db
+            .events_before(
+                &id,
+                target.sequence,
+                super::super::direct::DIRECT_HISTORY_ON_WAKE,
+            )
+            .unwrap();
+        let seqs: Vec<u64> = history.iter().map(|e| e.sequence).collect();
+        assert_eq!(seqs, vec![p1.sequence, p2.sequence]);
     }
 }
