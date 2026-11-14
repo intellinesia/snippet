@@ -6,6 +6,11 @@
 //! the immediate wakes, `group_deferred` rows carry a `retry_at` ten seconds
 //! out and are skipped at fire time once anyone has replied to the post
 //! (`group_replies` is the claim ledger, one reply per agent per post).
+//! A deferred wake that finds a reply is still delivered, with the replies,
+//! as context. Naming a member in the body (id, handle or display name) wakes
+//! it like a mention. An agent's first post after the latest human post also
+//! reaches the other agents as a `group_peer` wake; later posts in that round
+//! reach only whom they name, which bounds agents waking each other.
 
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
@@ -56,6 +61,38 @@ pub struct GroupLastMessage {
 
 /// Validation failures cross `with_connection` as `InvalidParameterName`
 /// and are mapped back to [`StoreError::InvalidInput`] at the boundary.
+/// Members named in `body` by id, handle or display name, as whole words.
+pub(crate) fn named_in_body(body: &str, members: &[(String, String, String)]) -> Vec<String> {
+    let text = body.to_lowercase();
+    let joined = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '/');
+    let found = |term: &str| {
+        let term = term.trim().to_lowercase();
+        if term.chars().count() < 3 {
+            return false;
+        }
+        text.match_indices(&term).any(|(at, m)| {
+            let mut before = text[..at].chars().rev();
+            let mut after = text[at + m.len()..].chars();
+            let open = match before.next() {
+                Some(c) => !(joined(c) || c == '.'),
+                None => true,
+            };
+            // A trailing `.` ends a sentence unless a file extension follows.
+            let close = match after.next() {
+                Some('.') => !after.next().is_some_and(|c| c.is_alphanumeric()),
+                Some(c) => !joined(c),
+                None => true,
+            };
+            open && close
+        })
+    };
+    members
+        .iter()
+        .filter(|(id, display, handle)| found(id) || found(handle) || found(display))
+        .map(|(id, _, _)| id.clone())
+        .collect()
+}
+
 fn invalid_input(message: String) -> rusqlite::Error {
     rusqlite::Error::InvalidParameterName(message)
 }
@@ -479,7 +516,54 @@ impl Store {
                     }
                 }
             }
-            // An agent's post wakes only whom it names; a lead or deferred fallback would let agents wake each other forever.
+            let names: Vec<(String, String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id, display_name, handle FROM agents WHERE id = ?1",
+                )?;
+                let mut out = Vec::new();
+                for agent in &agents {
+                    if let Some(row) = stmt
+                        .query_row(params![agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                        .optional()?
+                    {
+                        out.push(row);
+                    }
+                }
+                out
+            };
+            for agent in named_in_body(body, &names) {
+                if poster_agent != Some(agent.as_str()) && !mentioned.contains(&agent) {
+                    mentioned.push(agent);
+                }
+            }
+            // An agent's first post in a round (since the latest human post)
+            // reaches the other agents; later ones only whom they name, so
+            // agents cannot keep waking each other.
+            let peers: Vec<String> = match poster_agent {
+                Some(poster) => {
+                    let earlier: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM board_events
+                         WHERE thread_id = ?1 AND event_type = 'group_message'
+                           AND actor_kind = 'agent' AND actor_id = ?2
+                           AND sequence > COALESCE((
+                               SELECT MAX(sequence) FROM board_events
+                               WHERE thread_id = ?1 AND event_type = 'group_message'
+                                 AND actor_kind = 'human'), 0)",
+                        params![thread_id, poster],
+                        |row| row.get(0),
+                    )?;
+                    if earlier == 0 {
+                        agents
+                            .iter()
+                            .filter(|a| a.as_str() != poster && !mentioned.contains(a))
+                            .cloned()
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                }
+                None => Vec::new(),
+            };
             let lead = resolve_lead(&tx, thread_id, &agents)?;
             let immediate: Vec<String> = if !mentioned.is_empty() || poster_agent.is_some() {
                 mentioned
@@ -501,6 +585,14 @@ impl Store {
                      (event_id, recipient_kind, recipient_id, recipient, queued_at)
                      VALUES (?1, 'group', ?2, ?3, ?4)",
                     params![event_id, agent, actor_ref("group", agent), created_at],
+                )?;
+            }
+            for agent in &peers {
+                tx.execute(
+                    "INSERT OR IGNORE INTO message_deliveries
+                     (event_id, recipient_kind, recipient_id, recipient, queued_at)
+                     VALUES (?1, 'group_peer', ?2, ?3, ?4)",
+                    params![event_id, agent, actor_ref("group_peer", agent), created_at],
                 )?;
             }
             for agent in &deferred {
@@ -663,7 +755,8 @@ impl Store {
         self.with_connection(|conn| {
             conn.execute(
                 "DELETE FROM message_deliveries WHERE event_id = ?1
-                 AND recipient_kind IN ('group', 'group_deferred', 'human')",
+                 AND recipient_kind IN ('group', 'group_deferred', 'group_peer',
+                                        'group_unanswered', 'human')",
                 params![event_id],
             )?;
             conn.execute(
@@ -722,6 +815,22 @@ impl Store {
         })
     }
 
+    /// Replies claimed for a post so far, oldest first.
+    pub fn group_post_replies(
+        &self,
+        post_event_id: &str,
+    ) -> Result<Vec<CoordinationEvent>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {EVENT_COLUMNS_QUALIFIED} FROM group_replies r
+                 JOIN board_events e ON e.event_id = r.reply_event_id
+                 WHERE r.post_event_id = ?1 ORDER BY e.sequence"
+            ))?;
+            let rows = stmt.query_map(params![post_event_id], event_from_row)?;
+            rows.collect()
+        })
+    }
+
     /// Group wakes due for delivery, oldest first: immediate `group` rows,
     /// `group_deferred` rows whose claim window has opened, and
     /// `group_unanswered` lead nudges whose grace period has run out.
@@ -736,7 +845,7 @@ impl Store {
                  FROM message_deliveries d
                  JOIN board_events e ON e.event_id = d.event_id
                  JOIN board_threads t ON t.id = e.thread_id AND t.scope = 'group'
-                 WHERE d.recipient_kind IN ('group', 'group_deferred', 'group_unanswered')
+                 WHERE d.recipient_kind IN ('group', 'group_deferred', 'group_peer', 'group_unanswered')
                    AND d.delivered_at IS NULL
                    AND d.attempts < ?2
                    AND (d.retry_at IS NULL OR d.retry_at <= ?3)
@@ -1037,13 +1146,22 @@ mod tests {
     }
 
     #[test]
-    fn an_agents_unmentioned_post_wakes_nobody() {
+    fn an_agents_first_post_in_a_round_reaches_peers_then_only_named() {
         let (db, id) = three_agent_group();
         db.set_group_lead(&id, "b").unwrap();
         db.post_group_message(&id, ("agent", "a"), "taking this", &[], None, "k1", T0)
             .unwrap();
-        assert!(pending(&db, T0).is_empty());
-        assert!(pending(&db, T2).is_empty());
+        assert_eq!(
+            kinds(&pending(&db, T0)),
+            vec![
+                ("group_peer".into(), "b".into()),
+                ("group_peer".into(), "c".into())
+            ]
+        );
+        for p in pending(&db, T0) {
+            db.mark_direct_delivered(&p.event.event_id, &p.recipient_kind, &p.recipient_id, T0)
+                .unwrap();
+        }
         db.post_group_message(
             &id,
             ("agent", "a"),
@@ -1065,10 +1183,14 @@ mod tests {
             T2,
         )
         .unwrap();
-        assert_eq!(
-            kinds(&pending(&db, T2)),
-            vec![("group".into(), "c".into())],
-            "an agent never wakes itself"
+        let after = kinds(&pending(&db, T2));
+        assert!(
+            !after.iter().any(|(_, a)| a == "b"),
+            "an agent never wakes itself: {after:?}"
+        );
+        assert!(
+            after.contains(&("group_peer".into(), "a".into())),
+            "{after:?}"
         );
     }
 
@@ -1139,14 +1261,36 @@ mod tests {
     /// the wake list; delivery marks them done, and a deferred wake is
     /// skipped once the post has a reply.
     #[test]
+    fn naming_a_member_in_the_body_counts_as_a_mention() {
+        let m = vec![
+            (
+                "x-scout".to_string(),
+                "X Scout".to_string(),
+                "x_scout".to_string(),
+            ),
+            (
+                "snippet".to_string(),
+                "Snippet".to_string(),
+                "snippet".to_string(),
+            ),
+        ];
+        assert_eq!(
+            named_in_body("`x-scout` can take triage", &m),
+            vec!["x-scout"]
+        );
+        assert_eq!(named_in_body("Ask X Scout.", &m), vec!["x-scout"]);
+        assert_eq!(named_in_body("@x_scout over to you", &m), vec!["x-scout"]);
+        assert!(named_in_body("see ~/code/snippet-service and snippet.db", &m).is_empty());
+        assert!(named_in_body("the x-scouting job", &m).is_empty());
+    }
+
+    #[test]
     fn scripted_three_agent_turn_taking() {
         let (db, id) = three_agent_group();
         let mut delivered: Vec<(String, String, String)> = Vec::new();
         fn deliver(db: &Store, now: &str, delivered: &mut Vec<(String, String, String)>) {
             for pending in pending(db, now) {
-                let skip = pending.recipient_kind == "group_deferred"
-                    && db.group_has_replies(&pending.event.event_id).unwrap();
-                if !skip {
+                {
                     delivered.push((
                         pending.event.event_id.clone(),
                         pending.recipient_kind.clone(),
@@ -1228,11 +1372,17 @@ mod tests {
         )
         .unwrap();
         deliver(&db, "2026-01-01T00:00:31+00:00", &mut delivered);
-        assert!(
-            !delivered
-                .iter()
-                .any(|(e, k, _)| e == &p2.event_id && k == "group_deferred"),
-            "deferred wakes for the follow-up skipped once b replied: {delivered:?}"
+        let mut deferred: Vec<&str> = delivered
+            .iter()
+            .filter(|(e, k, _)| e == &p2.event_id && k == "group_deferred")
+            .map(|(_, _, a)| a.as_str())
+            .collect();
+        deferred.sort();
+        assert_eq!(
+            deferred,
+            vec!["a", "c"],
+            "a and c still get the follow-up, as context, once b replied: {delivered:?}"
         );
+        assert_eq!(db.group_post_replies(&p2.event_id).unwrap().len(), 1);
     }
 }

@@ -387,13 +387,26 @@ async fn post_group(
 /// prior slice of the thread, rendered by the same digest the DM envelope uses.
 /// `members` pairs each agent in the group with the one-line summary of what
 /// it is for, so a woken agent can tell who is better placed for what.
+/// Why a member is getting a group post.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupWakeKind {
+    /// Named, or the lead of an unnamed human post: an answer is owed.
+    Asked,
+    /// Another member got it first; join only if you add something.
+    Optional,
+    /// Another agent's post, steered into a running turn.
+    Peer,
+}
+
 fn group_message_envelope(
     event: &crate::coordination::types::CoordinationEvent,
     title: &str,
-    reply_expected: bool,
+    wake: GroupWakeKind,
     history: &[crate::coordination::types::CoordinationEvent],
     members: &[(String, String)],
+    replies: &[crate::coordination::types::CoordinationEvent],
 ) -> String {
+    let reply_expected = wake == GroupWakeKind::Asked;
     let body = event
         .payload
         .get("body")
@@ -432,11 +445,38 @@ fn group_message_envelope(
         envelope.push_str(&format!("in_reply_to: {post_id}\n"));
     }
     let digest = super::direct::history_digest(history);
+    let mut answered = String::new();
+    if !replies.is_empty() {
+        answered.push_str("replies so far:\n");
+        for reply in replies {
+            let text = reply
+                .payload
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let text: String = text.chars().take(400).collect();
+            answered.push_str(&format!(
+                "- {}: {}\n",
+                reply.actor_id,
+                text.replace('\n', " ")
+            ));
+        }
+    }
     envelope.push_str(&format!(
         "reply_expected: {}\nnote: {} Recent history only; use read_chat for more.\n\
-         {digest}body: {body}\n[/group_message]",
+         {digest}body: {body}\n{answered}[/group_message]",
         if reply_expected { "true" } else { "false" },
-        if reply_expected {
+        if wake == GroupWakeKind::Peer {
+            "another member just posted this. You are not asked to answer. If it covers \
+             what you were doing or about to say, stop and end your turn quietly. If you \
+             are still working on something it does not cover, you may post one line saying \
+             what (a heartbeat), or add what only you know. Otherwise end your turn without \
+             writing anything."
+        } else if !replies.is_empty() {
+            "this post has already been answered (replies below). Read them; post only if \
+             you add something they do not cover, and do not redo work someone has taken. \
+             Otherwise end your turn without writing anything, not even that you are staying quiet."
+        } else if reply_expected {
             "this post is waiting on the group; answer in the thread with \
              group_thread post, setting in_reply_to to the event you answer. \
              One reply per agent per post. Before doing work from it, say in one line \
@@ -533,10 +573,14 @@ async fn deliver_group(
         super::direct::deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
         return Ok(GroupWake::Delivered);
     }
-    if pending.recipient_kind == "group_deferred" {
-        if d.store.group_has_replies(&event.event_id).unwrap_or(false) {
-            return Ok(GroupWake::Skipped);
-        }
+    let replies = if pending.recipient_kind == "group_deferred" {
+        d.store
+            .group_post_replies(&event.event_id)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if pending.recipient_kind == "group_deferred" && replies.is_empty() {
         let age = chrono::DateTime::parse_from_rfc3339(&event.created_at)
             .map(|at| (chrono::Utc::now() - at.with_timezone(&chrono::Utc)).num_seconds())
             .unwrap_or(i64::MAX);
@@ -584,13 +628,12 @@ async fn deliver_group(
             super::direct::DIRECT_HISTORY_ON_WAKE,
         )
         .unwrap_or_default();
-    let envelope = group_message_envelope(
-        event,
-        &title,
-        pending.recipient_kind == "group",
-        &history,
-        &members,
-    );
+    let wake = match pending.recipient_kind.as_str() {
+        "group" => GroupWakeKind::Asked,
+        "group_peer" => GroupWakeKind::Peer,
+        _ => GroupWakeKind::Optional,
+    };
+    let envelope = group_message_envelope(event, &title, wake, &history, &members, &replies);
     if agent_id != crate::mission_control::SESSION_ID {
         super::direct::ensure_agent_inbox(d, agent_id).await?;
     }
@@ -599,14 +642,18 @@ async fn deliver_group(
         return Err(format!("could not start inbox session `{session_id}`"));
     };
     drop(tx);
-    super::direct::deliver_by_urgency(
-        d,
-        &session_id,
-        envelope,
-        &event.payload,
-        event.actor_kind == "human",
-    )
-    .await;
+    if wake == GroupWakeKind::Peer {
+        super::direct::deliver_steer(d, &session_id, envelope).await;
+    } else {
+        super::direct::deliver_by_urgency(
+            d,
+            &session_id,
+            envelope,
+            &event.payload,
+            event.actor_kind == "human",
+        )
+        .await;
+    }
     Ok(GroupWake::Delivered)
 }
 
@@ -738,9 +785,7 @@ mod tests {
             delivered: &mut Vec<(String, String, String)>,
         ) {
             for pending in db.list_pending_group_deliveries(50, now).unwrap() {
-                let skip = pending.recipient_kind == "group_deferred"
-                    && db.group_has_replies(&pending.event.event_id).unwrap();
-                if !skip {
+                {
                     delivered.push((
                         pending.event.event_id.clone(),
                         pending.recipient_kind.clone(),
@@ -787,9 +832,16 @@ mod tests {
             .unwrap();
         deliver(&db, T1, &mut delivered);
         deliver(&db, "2026-01-01T00:00:15+00:00", &mut delivered);
-        assert!(
-            !delivered.iter().any(|(e, _, _)| e == &green.event_id),
-            "an agent's unmentioned reply wakes nobody: {delivered:?}"
+        let mut green_to: Vec<(&str, &str)> = delivered
+            .iter()
+            .filter(|(e, _, _)| e == &green.event_id)
+            .map(|(_, k, a)| (k.as_str(), a.as_str()))
+            .collect();
+        green_to.sort();
+        assert_eq!(
+            green_to,
+            vec![("group_peer", "a"), ("group_peer", "c")],
+            "an agent's first reply in a round reaches the other agents: {delivered:?}"
         );
 
         let p2 = db
@@ -823,11 +875,46 @@ mod tests {
         .unwrap();
         deliver(&db, "2026-01-01T00:00:31+00:00", &mut delivered);
         assert!(
-            !delivered
+            delivered
                 .iter()
                 .any(|(e, k, _)| e == &p2.event_id && k == "group_deferred"),
-            "deferred wakes for the follow-up skipped once b replied: {delivered:?}"
+            "the other members still get the follow-up once b replied: {delivered:?}"
         );
+    }
+
+    #[test]
+    fn answered_and_peer_envelopes_say_so() {
+        let mk =
+            |id: &str, actor: &str, body: &str| crate::coordination::types::CoordinationEvent {
+                event_id: id.into(),
+                thread_id: "group:x".into(),
+                partition_key: "thread:group:x".into(),
+                sequence: 1,
+                event_type: "group_message".into(),
+                actor_kind: "agent".into(),
+                actor_id: actor.into(),
+                payload_version: 1,
+                payload: serde_json::json!({ "body": body }),
+                causation_id: None,
+                correlation_id: None,
+                idempotency_key: id.into(),
+                created_at: "2026-01-01T00:00:00+00:00".into(),
+            };
+        let post = mk("p", "human", "we have tasks");
+        let reply = mk("r", "snippet", "I'll take the scripts");
+        let env = group_message_envelope(
+            &post,
+            "t",
+            GroupWakeKind::Optional,
+            &[],
+            &[],
+            std::slice::from_ref(&reply),
+        );
+        assert!(env.contains("already been answered"));
+        assert!(env.contains("- snippet: I'll take the scripts"));
+        let peer = group_message_envelope(&reply, "t", GroupWakeKind::Peer, &[], &[], &[]);
+        assert!(peer.contains("reply_expected: false"));
+        assert!(peer.contains("heartbeat"));
     }
 
     #[test]
@@ -857,7 +944,8 @@ mod tests {
             ("a".to_string(), "Reviews Rust PRs.".to_string()),
             ("b".to_string(), String::new()),
         ];
-        let expected = group_message_envelope(&event, "build", true, &[], &members);
+        let expected =
+            group_message_envelope(&event, "build", GroupWakeKind::Asked, &[], &members, &[]);
         for field in [
             "thread_id: group:x",
             "title: build",
@@ -871,7 +959,8 @@ mod tests {
         ] {
             assert!(expected.contains(field), "missing {field} in {expected}");
         }
-        let deferred = group_message_envelope(&event, "build", false, &[], &[]);
+        let deferred =
+            group_message_envelope(&event, "build", GroupWakeKind::Optional, &[], &[], &[]);
         assert!(!deferred.contains("members:"));
         assert!(deferred.contains("do not redo it"));
         assert!(deferred.contains("reply_expected: false"));
@@ -928,7 +1017,7 @@ mod tests {
             prior(3, "agent", "a", "auto ack", true),
         ];
         // The digest hides the `auto` event, so two messages render.
-        let env = group_message_envelope(&event, "build", true, &history, &[]);
+        let env = group_message_envelope(&event, "build", GroupWakeKind::Asked, &history, &[], &[]);
         assert!(env.contains("history: last 2 message(s), oldest first"));
         assert!(env.contains("  1 [agent] a: first post"));
         assert!(env.contains("  2 [human] human: second post"));
@@ -939,7 +1028,7 @@ mod tests {
         assert!(digest_at < body_at, "body must stay last: {env}");
         assert!(env.ends_with("[/group_message]"));
 
-        let env = group_message_envelope(&event, "build", true, &[], &[]);
+        let env = group_message_envelope(&event, "build", GroupWakeKind::Asked, &[], &[], &[]);
         assert!(env.contains("history: (first message in this conversation)"));
         assert!(env.find("history:").unwrap() < env.find("body: wake body").unwrap());
     }
