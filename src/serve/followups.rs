@@ -18,10 +18,10 @@ pub fn wake_envelope(f: &Followup) -> String {
 }
 
 async fn deliver(d: &Shared, f: &Followup) -> Result<(), String> {
-    if crate::session::is_inbox_session_id(&f.session_id) {
-        if let Some(agent) = f.owner.as_deref() {
-            super::direct::ensure_agent_inbox(d, agent).await?;
-        }
+    if crate::session::is_inbox_session_id(&f.session_id)
+        && let Some(agent) = f.owner.as_deref()
+    {
+        super::direct::ensure_agent_inbox(d, agent).await?;
     }
     let Some((tx, _path, _stream)) = d.ensure_live(&f.session_id).await else {
         return Err(format!("session `{}` could not be opened", f.session_id));

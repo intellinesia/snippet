@@ -47,12 +47,12 @@ impl Store {
             ));
         }
         let pending: i64 = self.with_connection(|conn| {
-            Ok(conn.query_row(
+            conn.query_row(
                 "SELECT COUNT(*) FROM session_followups
                  WHERE session_id = ?1 AND delivered_at IS NULL",
                 params![session_id],
                 |r| r.get(0),
-            )?)
+            )
         })?;
         if pending >= MAX_PENDING_PER_SESSION {
             return Err(StoreError::InvalidInput(format!(
@@ -139,13 +139,12 @@ impl Store {
 
     pub fn get_followup(&self, id: &str) -> Result<Option<Followup>, StoreError> {
         self.with_connection(|conn| {
-            Ok(conn
-                .query_row(
-                    &format!("SELECT {COLUMNS} FROM session_followups WHERE id = ?1"),
-                    params![id],
-                    row,
-                )
-                .optional()?)
+            conn.query_row(
+                &format!("SELECT {COLUMNS} FROM session_followups WHERE id = ?1"),
+                params![id],
+                row,
+            )
+            .optional()
         })
     }
 }
