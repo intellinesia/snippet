@@ -339,16 +339,17 @@ impl Tool for ScheduleFollowup {
                     "note": "Quick check-in timer started; cancels automatically if the user speaks to you first.",
                 })));
             }
-            let due_at = if let Some(at_raw) = args.at.as_deref() {
+            let (due_at, due_at_rfc3339) = if let Some(at_raw) = args.at.as_deref() {
                 let dt = chrono::DateTime::parse_from_rfc3339(at_raw.trim())
                     .map_err(|e| ToolError::msg(format!("at must be RFC 3339: {e}")))?;
-                if dt.with_timezone(&chrono::Utc) <= chrono::Utc::now() {
+                let utc = dt.with_timezone(&chrono::Utc);
+                if utc <= chrono::Utc::now() {
                     return Err(ToolError::msg("at must be in the future"));
                 }
-                dt.timestamp()
+                (utc.timestamp(), Some(utc.to_rfc3339()))
             } else {
                 let minutes = args.in_minutes.unwrap_or(1).clamp(1, 10080);
-                chrono::Utc::now().timestamp() + minutes * 60
+                (chrono::Utc::now().timestamp() + minutes * 60, None)
             };
             let store = db(ctx)?;
             let followup = crate::mission_autonomy::schedule_followup_in(
@@ -359,12 +360,22 @@ impl Tool for ScheduleFollowup {
             )
             .map_err(ToolError::msg)?;
             let on = crate::mission_autonomy::load_from(&store).settings.on;
-            return Ok(ToolResult::success(json!({
+            let note = if on {
+                "You'll be woken with this note when it's due."
+            } else {
+                "Saved, but automated wakes are off: it fires only once the user turns them on."
+            };
+            let mut body = json!({
                 "scheduled": true,
                 "id": followup.id,
-                "in_minutes": args.in_minutes.unwrap_or(1).clamp(1, 10080),
-                "note": if on { "You'll be woken with this note when it's due." } else { "Saved, but automated wakes are off: it fires only once the user turns them on." },
-            })));
+                "note": note,
+            });
+            if let Some(due_at) = due_at_rfc3339 {
+                body["due_at"] = json!(due_at);
+            } else {
+                body["in_minutes"] = json!(args.in_minutes.unwrap_or(1).clamp(1, 10080));
+            }
+            return Ok(ToolResult::success(body));
         }
 
         if args.in_seconds.is_some() {
@@ -5246,6 +5257,20 @@ mod schedule_wake_tests {
         assert_eq!(state.followups[0].note, "mc check-in");
         assert!(state.followups[0].next_wake);
         assert_eq!(store.list_seat_wakes(None).unwrap().len(), 1);
+
+        let future_at = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        let mc_at = ScheduleFollowup
+            .execute(
+                &mc_ctx,
+                json!({
+                    "at": future_at,
+                    "note": "mc at check-in",
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(mc_at.value["data"]["due_at"].is_string());
+        assert!(mc_at.value["data"].get("in_minutes").is_none());
     }
 }
 

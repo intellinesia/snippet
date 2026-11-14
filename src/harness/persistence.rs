@@ -76,13 +76,13 @@ impl CodingHarness {
             } else {
                 ApprovalMode::Auto
             };
+            self.hydrate_seat_plan(&mut state);
             let mut state = self
                 .resume_loaded_state(state, seeded_system, initial_request)
                 .await?;
             if let Some(title) = self.config.session_title.clone() {
                 state.title = Some(title);
             }
-            self.hydrate_seat_plan(&mut state);
             return Ok(state);
         }
 
@@ -148,7 +148,6 @@ impl CodingHarness {
             compactions: 0,
             reflected_events: Some(0),
         };
-        self.hydrate_seat_plan(&mut state);
         self.persist_state(&mut state).await?;
         if request.is_some() {
             self.bump_activity();
@@ -157,9 +156,6 @@ impl CodingHarness {
     }
 
     fn hydrate_seat_plan(&self, state: &mut HarnessState) {
-        if !state.plan.is_empty() {
-            return;
-        }
         let Some(session_id) = self.session_id() else {
             return;
         };
@@ -168,6 +164,7 @@ impl CodingHarness {
         };
         if let Ok(Some(saved)) = store.plan_for_session(&session_id)
             && !saved.steps.is_empty()
+            && (state.plan.is_empty() || saved.updated_at >= state.updated_at)
         {
             state.plan = saved.steps;
         }

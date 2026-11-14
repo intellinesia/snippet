@@ -1455,7 +1455,7 @@ pub(super) fn plan_wakes_due(
         .map(|(session_id, _agent_id, step)| {
             let reply_in = step.reply_in.as_deref().unwrap_or("none");
             let envelope = format!(
-                "[plan_wake]\nstep: {}\nreply_in: {reply_in}\nnote: you asked to be woken for this step. Do it, update your plan, and post the result where it is owed.\n[/plan_wake]",
+                "[plan_wake]\nstep: {}\nreply_in: {reply_in}\npost there with post_chat (thread_id); plain text written here is not delivered to anyone.\nnote: you asked to be woken for this step. Do it, update your plan, and post the result where it is owed.\n[/plan_wake]",
                 step.step
             );
             (session_id, envelope)
@@ -1475,13 +1475,13 @@ pub(super) fn plan_wakes_for_task(
         .map(|r| format!("\nreport: {}", clip_chars(r, 1500)))
         .unwrap_or_default();
     store
-        .steps_waiting_on(&format!("task:{task_id}"))
+        .take_steps_waiting_on(&format!("task:{task_id}"))
         .unwrap_or_default()
         .into_iter()
         .map(|(session_id, _agent_id, step)| {
             let reply_in = step.reply_in.as_deref().unwrap_or("none");
             let envelope = format!(
-                "[plan_wake]\nstep: {}\nreply_in: {reply_in}\nwaiting_on: task:{task_id} {status}{report_line}\nnote: the task you were waiting on finished. Update your plan and post the result where it is owed.\n[/plan_wake]",
+                "[plan_wake]\nstep: {}\nreply_in: {reply_in}\npost there with post_chat (thread_id); plain text written here is not delivered to anyone.\nwaiting_on: task:{task_id} {status}{report_line}\nnote: the task you were waiting on finished. Update your plan and post the result where it is owed.\n[/plan_wake]",
                 step.step
             );
             (session_id, envelope)
@@ -1504,7 +1504,7 @@ pub(super) fn plan_wakes_stalled(
         .map(|(session_id, _agent_id, step)| {
             let reply_in = step.reply_in.as_deref().unwrap_or("none");
             let envelope = format!(
-                "[plan_stalled]\nstep: {}\nreply_in: {reply_in}\nnote: this step has been in_progress for over 2 hours with no plan update. Finish it, update your plan, or ask for help.\n[/plan_stalled]",
+                "[plan_stalled]\nstep: {}\nreply_in: {reply_in}\npost there with post_chat (thread_id); plain text written here is not delivered to anyone.\nnote: this step has been in_progress for over 2 hours with no plan update. Finish it, update your plan, or ask for help.\n[/plan_stalled]",
                 step.step
             );
             (session_id, envelope)
@@ -1522,7 +1522,10 @@ pub(super) fn seat_wakes_due(
         .into_iter()
         .map(|wake| {
             let reply_in = wake.reply_in.as_deref().unwrap_or("none");
-            let envelope = format!("[wake]\nnote: {}\nreply_in: {reply_in}\n[/wake]", wake.note);
+            let envelope = format!(
+                "[wake]\nnote: {}\nreply_in: {reply_in}\npost there with post_chat (thread_id); plain text written here is not delivered to anyone.\n[/wake]",
+                wake.note
+            );
             (wake.session_id, envelope)
         })
         .collect()
@@ -1601,6 +1604,7 @@ fn is_outcome_report(kind: &str) -> bool {
         kind,
         "done"
             | "failed"
+            | "cancelled"
             | "stalled"
             | "blocked"
             | "review_escalated"
@@ -1806,12 +1810,18 @@ mod tests {
         assert!(wakes[0].1.contains("[plan_wake]"));
         assert!(wakes[0].1.contains("step: Check release health"));
         assert!(wakes[0].1.contains("reply_in: direct:agent:a|human:local"));
+        assert!(
+            wakes[0]
+                .1
+                .contains("post there with post_chat (thread_id); plain text written here is not delivered to anyone.")
+        );
         assert!(wakes[0].1.contains("[/plan_wake]"));
         assert!(plan_wakes_due(&store, utc("2026-11-14T08:06:00Z")).is_empty());
     }
 
     #[test]
     fn plan_wakes_for_task_builds_envelope_and_clips_report() {
+        assert!(is_outcome_report("cancelled"));
         let store = Store::open_in_memory().unwrap();
         let step = PlanStep {
             step: "Relay test results".into(),
@@ -1831,6 +1841,11 @@ mod tests {
         assert!(wakes[0].1.contains("[plan_wake]"));
         assert!(wakes[0].1.contains("waiting_on: task:t-77 done"));
         assert!(wakes[0].1.contains("reply_in: group:123"));
+        assert!(
+            wakes[0]
+                .1
+                .contains("post there with post_chat (thread_id); plain text written here is not delivered to anyone.")
+        );
         let report_line = wakes[0]
             .1
             .lines()
@@ -1844,6 +1859,11 @@ mod tests {
                 .count(),
             1500
         );
+
+        // Consuming waiting_on clears it in seat_plans so a second pass does not wake again.
+        assert!(plan_wakes_for_task(&store, "t-77", "done", None).is_empty());
+        let saved = store.plan_for_session("sess-desk").unwrap().unwrap();
+        assert_eq!(saved.steps[0].waiting_on, None);
     }
 
     #[test]
@@ -1866,6 +1886,11 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert!(first[0].1.contains("[plan_stalled]"));
         assert!(first[0].1.contains("step: Debug CI"));
+        assert!(
+            first[0]
+                .1
+                .contains("post there with post_chat (thread_id); plain text written here is not delivered to anyone.")
+        );
         assert!(plan_wakes_stalled(&store, utc("2026-11-14T04:00:00Z"), false).is_empty());
     }
 
@@ -1892,6 +1917,11 @@ mod tests {
             due[0]
                 .1
                 .contains("reply_in: direct:agent:agent-1|human:local")
+        );
+        assert!(
+            due[0]
+                .1
+                .contains("post there with post_chat (thread_id); plain text written here is not delivered to anyone.")
         );
         assert!(seat_wakes_due(&store, utc("2026-11-14T08:05:00Z")).is_empty());
     }

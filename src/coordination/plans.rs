@@ -148,6 +148,7 @@ impl Store {
         &self,
         now: DateTime<Utc>,
     ) -> Result<Vec<(String, String, PlanStep)>, StoreError> {
+        let stamp = now.to_rfc3339();
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let rows: Vec<(String, String, String)> = {
@@ -183,8 +184,8 @@ impl Store {
                     let updated_json = serde_json::to_string(&steps)
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                     tx.execute(
-                        "UPDATE seat_plans SET steps_json = ?2 WHERE session_id = ?1",
-                        params![session_id, updated_json],
+                        "UPDATE seat_plans SET steps_json = ?2, updated_at = ?3 WHERE session_id = ?1",
+                        params![session_id, updated_json, stamp],
                     )?;
                 }
             }
@@ -225,6 +226,52 @@ impl Store {
         })
     }
 
+    /// Non-done steps waiting on `task_or_lane_ref`. Clears `waiting_on` on each
+    /// matched step so it wakes once.
+    pub fn take_steps_waiting_on(
+        &self,
+        task_or_lane_ref: &str,
+    ) -> Result<Vec<(String, String, PlanStep)>, StoreError> {
+        let stamp = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let rows: Vec<(String, String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT session_id, agent_id, steps_json
+                     FROM seat_plans
+                     ORDER BY updated_at, session_id",
+                )?;
+                let mapped =
+                    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+                mapped.collect::<Result<Vec<_>, _>>()?
+            };
+            let mut matches = Vec::new();
+            for (session_id, agent_id, steps_json) in rows {
+                let mut steps = decode_steps(&steps_json);
+                let mut changed = false;
+                for step in &mut steps {
+                    if step.status != PlanStatus::Done
+                        && step.waiting_on.as_deref() == Some(task_or_lane_ref)
+                    {
+                        matches.push((session_id.clone(), agent_id.clone(), step.clone()));
+                        step.waiting_on = None;
+                        changed = true;
+                    }
+                }
+                if changed {
+                    let updated_json = serde_json::to_string(&steps)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    tx.execute(
+                        "UPDATE seat_plans SET steps_json = ?2, updated_at = ?3 WHERE session_id = ?1",
+                        params![session_id, updated_json, stamp],
+                    )?;
+                }
+            }
+            tx.commit()?;
+            Ok(matches)
+        })
+    }
+
     /// Plans with an `in_progress` step and `last_change_at` older than
     /// `threshold_secs`, not yet flagged for this quiet spell.
     pub fn stale_in_progress(
@@ -255,10 +302,15 @@ impl Store {
                 if (now - changed_at).num_seconds() < threshold_secs {
                     continue;
                 }
-                let Some(step) = decode_steps(&steps_json)
-                    .into_iter()
-                    .find(|s| s.status == PlanStatus::InProgress)
-                else {
+                let Some(step) = decode_steps(&steps_json).into_iter().find(|s| {
+                    s.status == PlanStatus::InProgress
+                        && s.waiting_on.is_none()
+                        && !s
+                            .wake_at
+                            .as_deref()
+                            .and_then(rfc3339_utc)
+                            .is_some_and(|at| at > now)
+                }) else {
                     continue;
                 };
                 tx.execute(
@@ -495,5 +547,29 @@ mod tests {
         let second = store.stale_in_progress(t4, 7200).unwrap();
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].2.step, "new step");
+    }
+
+    #[test]
+    fn stale_in_progress_skips_waiting_on_and_future_wake_at() {
+        let store = Store::open_in_memory().unwrap();
+        let mut waiting = step("waiting on task", PlanStatus::InProgress);
+        waiting.waiting_on = Some("task:t-1".into());
+        store
+            .save_plan("sess-wait", "agent-a", &[waiting], "2026-11-14T00:00:00Z")
+            .unwrap();
+
+        let mut scheduled = step("scheduled later", PlanStatus::InProgress);
+        scheduled.wake_at = Some("2026-11-14T06:00:00Z".into());
+        store
+            .save_plan("sess-wake", "agent-b", &[scheduled], "2026-11-14T00:00:00Z")
+            .unwrap();
+
+        let t1 = rfc3339_utc("2026-11-14T03:00:00Z").unwrap();
+        assert!(store.stale_in_progress(t1, 7200).unwrap().is_empty());
+
+        let t2 = rfc3339_utc("2026-11-14T06:30:00Z").unwrap();
+        let stale = store.stale_in_progress(t2, 7200).unwrap();
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].0, "sess-wake");
     }
 }

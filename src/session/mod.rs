@@ -1323,9 +1323,9 @@ pub fn read_session_state(state_path: &Path) -> Option<HarnessState> {
 /// The store-backed read: resolve the id from the path, then load the scalar
 /// plus both logs.
 fn hydrate_plan_from_store(store: &crate::store::Store, id: &str, state: &mut HarnessState) {
-    if state.plan.is_empty()
-        && let Ok(Some(saved)) = store.plan_for_session(id)
+    if let Ok(Some(saved)) = store.plan_for_session(id)
         && !saved.steps.is_empty()
+        && (state.plan.is_empty() || saved.updated_at >= state.updated_at)
     {
         state.plan = saved.steps;
     }
