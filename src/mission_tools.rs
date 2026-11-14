@@ -1829,54 +1829,75 @@ impl Tool for CreateMissionSession {
         if args.folder.trim().is_empty() {
             return Err(ToolError::msg("folder must be a non-empty path"));
         }
-        let (folder, moved) =
-            session_folder_outside_mission_control(args.folder.trim(), &args.title)
-                .map_err(ToolError::msg)?;
-        if !moved && !args.force_new {
-            let candidates = crate::session_resolve::routable_candidates();
-            let recent = crate::session_resolve::recent_in_folder(
-                &folder.display().to_string(),
-                &candidates,
-                chrono::Utc::now().timestamp(),
-                7,
-            );
-            if !recent.is_empty() {
-                let nearest: Vec<_> = recent.into_iter().take(3).cloned().collect();
-                return Err(ToolError::msg(format!(
-                    "a session in this folder was active in the last 7 days: {}. Route work there (create_mission_task or deliver_to_session), or pass force_new.",
-                    candidate_list(&nearest)
-                )));
-            }
-        }
         let profile = args
             .profile
             .as_deref()
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .map(str::to_string);
-        if let Some(name) = profile.as_deref() {
-            check_profile(name).await?;
-        }
-        let mut session =
-            create_blank_session(&folder, &args.title, args.new_conversation, args.workspace)
-                .map_err(ToolError::msg)?;
-        if let (Some(name), Some(path)) = (profile.as_deref(), state_path_for_id(&session.id)) {
-            crate::session::write_session_profile(&path, name);
-            session.profile = Some(name.to_string());
-        }
-        let note = if moved {
-            format!(
-                "Created idle in {} — sessions never run in Mission Control's own folder. Give it work with create_mission_task(session, handoff_mode=fresh); the work itself happens in that session.",
-                folder.display()
-            )
-        } else {
-            "Created idle. Give it work with create_mission_task(session, handoff_mode=fresh); the work itself happens in that session.".to_string()
-        };
+        let (session, note) = open_folder_session(
+            args.folder.trim(),
+            &args.title,
+            args.new_conversation,
+            args.force_new,
+            args.workspace,
+            profile,
+        )
+        .await?;
         Ok(ToolResult::success(json!({
             "session": session,
             "note": note,
         })))
     }
+}
+
+/// The session-creating half of `create_mission_session`, shared with the
+/// desk's `start_task`: folder guard, the recent-session check, then a blank
+/// session. `new_conversation` always mints a fresh conversation id.
+async fn open_folder_session(
+    folder: &str,
+    title: &str,
+    new_conversation: bool,
+    force_new: bool,
+    workspace: crate::session::WorkspaceMode,
+    profile: Option<String>,
+) -> Result<(crate::session::SessionInfo, String), ToolError> {
+    let (folder, moved) =
+        session_folder_outside_mission_control(folder, title).map_err(ToolError::msg)?;
+    if !moved && !force_new {
+        let candidates = crate::session_resolve::routable_candidates();
+        let recent = crate::session_resolve::recent_in_folder(
+            &folder.display().to_string(),
+            &candidates,
+            chrono::Utc::now().timestamp(),
+            7,
+        );
+        if !recent.is_empty() {
+            let nearest: Vec<_> = recent.into_iter().take(3).cloned().collect();
+            return Err(ToolError::msg(format!(
+                "a session in this folder was active in the last 7 days: {}. Continue one instead (pass `session`), or pass force_new.",
+                candidate_list(&nearest)
+            )));
+        }
+    }
+    if let Some(name) = profile.as_deref() {
+        check_profile(name).await?;
+    }
+    let mut session = create_blank_session(&folder, title, new_conversation, workspace)
+        .map_err(ToolError::msg)?;
+    if let (Some(name), Some(path)) = (profile.as_deref(), state_path_for_id(&session.id)) {
+        crate::session::write_session_profile(&path, name);
+        session.profile = Some(name.to_string());
+    }
+    let note = if moved {
+        format!(
+            "Created idle in {} — sessions never run in Mission Control's own folder. Give it work with create_mission_task(session, handoff_mode=fresh); the work itself happens in that session.",
+            folder.display()
+        )
+    } else {
+        "Created idle. Give it work with create_mission_task(session, handoff_mode=fresh); the work itself happens in that session.".to_string()
+    };
+    Ok((session, note))
 }
 
 #[derive(Deserialize)]
@@ -1933,6 +1954,11 @@ struct CreateTaskArgs {
     /// approvals, files and result report back to.
     #[serde(default)]
     report_to: Option<String>,
+    /// `start_task` desks claim their own task at filing: the roster seat is
+    /// `active` in the same transaction, so the offer loop can never offer it
+    /// back. Never set from tool arguments.
+    #[serde(skip)]
+    self_claim: bool,
 }
 
 #[derive(Deserialize)]
@@ -1952,6 +1978,187 @@ impl Tool for CreateMissionTask {
         args.description
             .push_str(&crate::mission_autonomy::standing_rules_note());
         create_task(ctx, args, ("agent", crate::mission_control::SESSION_ID)).await
+    }
+}
+
+#[derive(Deserialize)]
+struct StartTaskArgs {
+    title: String,
+    /// The worker's full brief: what, where, why, done criteria, what is ruled out.
+    description: String,
+    /// An existing session to continue in (id, title fragment or path).
+    #[serde(default)]
+    session: Option<String>,
+    /// A new session's folder; required with `workspace` when `session` is absent.
+    #[serde(default)]
+    folder: Option<String>,
+    #[serde(default)]
+    workspace: Option<crate::session::WorkspaceMode>,
+    #[serde(default)]
+    force_new: bool,
+    #[serde(default)]
+    blocked_by: Vec<String>,
+    #[serde(default)]
+    read_only: bool,
+    #[serde(default)]
+    report_to: Option<String>,
+    #[serde(default)]
+    expected_minutes: Option<u32>,
+    #[serde(default)]
+    verify_mode: Option<String>,
+}
+
+/// A desk's one-call task start: file AND claim, so the offer loop never
+/// offers the task back to the desk that started it. Registered only in the
+/// desk (inbox) registry.
+pub struct StartTask;
+#[async_trait]
+impl Tool for StartTask {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "start_task".into(),
+            description: "Start your own task in one call: continue a warm `session` that already holds the context, or open a fresh one in `folder` (`workspace`: worktree|folder). Big or multi-step work always goes to a session. `blocked_by` queues it behind other tasks; it starts by itself when they finish.".into(),
+            input_schema: schema(
+                json!({
+                    "title": {"type": "string"},
+                    "description": {"type": "string", "description": "the worker's full brief"},
+                    "session": {"type": "string", "description": "existing session id, title fragment or path"},
+                    "folder": {"type": "string"},
+                    "workspace": {"type": "string", "enum": ["worktree", "folder"]},
+                    "force_new": {"type": "boolean"},
+                    "blocked_by": {"type": "array", "items": {"type": "string"}},
+                    "read_only": {"type": "boolean"},
+                    "report_to": {"type": "string", "description": "`group:<id>`/`direct:` chat; default is the chat that woke you"},
+                    "expected_minutes": {"type": "integer"},
+                    "verify_mode": {"type": "string", "enum": ["self", "reviewer", "mission_control", "user"], "description": "default self"}
+                }),
+                &["title", "description"],
+            ),
+        }
+    }
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let args: StartTaskArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let Some(("agent", agent_id)) = crate::coordination_tools::speaks_as(ctx) else {
+            return Err(ToolError::msg(
+                "start_task needs an agent identity; this session has none",
+            ));
+        };
+        if agent_id == crate::mission_control::SESSION_ID {
+            return Err(ToolError::msg(
+                "Mission Control routes work and never starts tasks itself; use create_mission_task",
+            ));
+        }
+        let session_query = args
+            .session
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let (session_ref, fresh) = match session_query {
+            Some(query) => (query.to_string(), false),
+            None => {
+                let folder = args
+                    .folder
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|f| !f.is_empty())
+                    .ok_or_else(|| {
+                        ToolError::msg(
+                            "start_task needs `session`, or `folder` + `workspace` for a new session",
+                        )
+                    })?;
+                let workspace = args
+                    .workspace
+                    .ok_or_else(|| ToolError::msg("`workspace` must be `worktree` or `folder`"))?;
+                let (session, _) =
+                    open_folder_session(folder, &args.title, true, args.force_new, workspace, None)
+                        .await?;
+                (session.id, true)
+            }
+        };
+        let db = db(ctx)?;
+        let report_to = match args
+            .report_to
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            Some(thread) => {
+                crate::coordination::origin::validate_report_to(&db, thread, Some(&agent_id))
+                    .map_err(ToolError::msg)?;
+                Some(thread.to_string())
+            }
+            None => {
+                let desk_session = ctx
+                    .durable_session_id()
+                    .or(ctx.lane_origin().map(|(session, _)| session));
+                if desk_session.is_some_and(crate::session::is_inbox_session_id) {
+                    crate::coordination::origin::default_origin_thread(
+                        &db,
+                        &agent_id,
+                        &now_rfc3339(),
+                    )
+                } else {
+                    None
+                }
+            }
+        };
+        let mut description = args.description;
+        description.push_str(&crate::mission_autonomy::standing_rules_note());
+        let mut task_args: CreateTaskArgs = serde_json::from_value(json!({
+            "title": args.title,
+            "description": description,
+            "session": session_ref,
+            "handoff_mode": if fresh { "fresh" } else { "resume" },
+            "agent_id": agent_id,
+            "blocked_by": args.blocked_by,
+            "read_only": args.read_only,
+            "report_to": report_to,
+            "expected_minutes": args.expected_minutes,
+            "verify_mode": args.verify_mode.or_else(|| Some("self".to_string())),
+        }))
+        .map_err(|e| ToolError::msg(format!("start_task arguments: {e}")))?;
+        task_args.self_claim = true;
+        let out = create_task(ctx, task_args, ("agent", &agent_id)).await?;
+        let data = out.value.get("data").cloned().unwrap_or(Value::Null);
+        let task_id = data["task"]["id"].as_str().unwrap_or_default().to_string();
+        let title = data["task"]["title"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let session_id = data["task"]["session_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let waiting_on: Vec<String> =
+            serde_json::from_value(data["waiting_on"].clone()).unwrap_or_default();
+        // One line to Mission Control: it did not file this, the desk did.
+        let note = if waiting_on.is_empty() {
+            format!("Started task {task_id} \"{title}\" in {session_id}")
+        } else {
+            format!(
+                "Queued task {task_id} \"{title}\" after {}",
+                waiting_on.join(", ")
+            )
+        };
+        if let Ok(saved) = db.send_direct_message(
+            ("agent", agent_id.as_str()),
+            ("agent", crate::mission_control::SESSION_ID),
+            &note,
+            &uuid::Uuid::new_v4().to_string(),
+            &now_rfc3339(),
+        ) {
+            crate::session::emit_device_event(json!({
+                "kind": "coordination_event",
+                "event": saved,
+            }));
+        }
+        Ok(ToolResult::success(json!({
+            "task_id": task_id,
+            "session_id": session_id,
+            "status": data["task"]["status"],
+            "waiting_on": waiting_on,
+        })))
     }
 }
 
@@ -2254,7 +2461,11 @@ async fn create_task(
             agent_id: agent_id.clone(),
             work_session_id: None,
             scope: String::new(),
-            status: "offered".into(),
+            status: if args.self_claim {
+                "active".into()
+            } else {
+                "offered".into()
+            },
             role: "implementer".into(),
             added_at: task.created_at.clone(),
             removed_at: None,
@@ -2332,6 +2543,51 @@ async fn create_task(
             store
                 .set_task_requester(&task.id, reply_to)
                 .map_err(|e| ToolError::msg(format!("record requester: {e}")))?;
+        }
+        if args.self_claim {
+            // The desk filed and claimed in one step: record the claim the
+            // offer loop would otherwise wait for. The roster seat is already
+            // `active`, so `await_claim` never offers this task back.
+            let event = CoordinationEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                thread_id: task.thread_id.clone(),
+                partition_key: format!("thread:{}", task.thread_id),
+                sequence: 0,
+                event_type: "task.dispatched".into(),
+                actor_kind: created_by.0.to_string(),
+                actor_id: created_by.1.to_string(),
+                payload_version: 1,
+                payload: crate::coordination_tools::stamp_origin(
+                    ctx,
+                    json!({
+                        "body": format!("{} claimed the task", created_by.1),
+                        "task_id": task.id,
+                        "agent_id": created_by.1,
+                        "profile": task.profile,
+                    }),
+                ),
+                causation_id: None,
+                correlation_id: Some(task.id.clone()),
+                idempotency_key: uuid::Uuid::new_v4().to_string(),
+                created_at: now_rfc3339(),
+            };
+            if let Ok(saved) = store.append_event(&event) {
+                crate::session::emit_device_event(json!({
+                    "kind": "coordination_event",
+                    "event": saved,
+                }));
+            }
+            let _ = store.record_board_entry(
+                created_by.1,
+                crate::coordination::BoardEntryKind::Dispatched,
+                &crate::coordination::NewBoardEntry {
+                    session_id: Some(&task.session_id),
+                    workspace: None,
+                    summary: &format!("{} — claimed: {}", task.id, task.title),
+                    correlation_id: Some(task.id.as_str()),
+                    created_at: &event.created_at,
+                },
+            );
         }
         let note = if blockers.is_empty() {
             format!(
@@ -2748,6 +3004,7 @@ impl Tool for FileFollowUpTask {
             goal: None,
             expected_minutes: None,
             report_to: None,
+            self_claim: false,
         };
         create_task(ctx, args, (kind, &who)).await
     }
@@ -4523,6 +4780,189 @@ mod tests {
             status: AgentStatus::Active,
             capabilities: vec![],
         }
+    }
+
+    fn desk_ctx(dir: &std::path::Path, agent: &str) -> ToolContext {
+        ToolContext::new(dir)
+            .unwrap()
+            .with_durable_session_id(crate::session::inbox_session_id(agent))
+            .with_store_path(dir.join("snippet.db"))
+            .with_agent_id(agent)
+            .with_mission_control_root(dir.join("mc"))
+    }
+
+    /// `start_task` files AND claims in one call: the roster seat is `active`
+    /// at creation, so the offer loop can never offer the task back to the
+    /// desk that started it.
+    #[tokio::test]
+    async fn start_task_claims_in_an_existing_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open(dir.path().join("snippet.db")).unwrap();
+        db.create_agent(&worker("desk-agent")).unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let session = crate::session::create_blank_session(
+            folder.path(),
+            "Warm",
+            true,
+            crate::session::WorkspaceMode::Folder,
+        )
+        .unwrap();
+        let ctx = desk_ctx(dir.path(), "desk-agent");
+
+        let res = StartTask
+            .execute(
+                &ctx,
+                json!({
+                    "title": "Fix the flaky test",
+                    "description": "the full brief",
+                    "session": session.id,
+                }),
+            )
+            .await
+            .unwrap();
+        let data = &res.value["data"];
+        assert_eq!(data["session_id"], session.id);
+        let task_id = data["task_id"].as_str().unwrap().to_string();
+        assert!(!task_id.is_empty());
+
+        let task = db.get_task(&task_id).unwrap().unwrap();
+        assert_eq!(task.status, TaskStatus::Todo);
+        assert_eq!(task.created_by_id, "desk-agent");
+        let roster = db.list_task_agents(&task_id).unwrap();
+        assert_eq!(roster.len(), 1);
+        assert_eq!(roster[0].agent_id, "desk-agent");
+        assert_eq!(roster[0].status, "active", "claimed at filing, not offered");
+
+        // Mission Control got the one-line note.
+        let thread = crate::coordination::direct_thread_id(
+            ("agent", "mission-control"),
+            ("agent", "desk-agent"),
+        );
+        let events = db.direct_thread_events(&thread, 0, 10).unwrap();
+        assert!(events.iter().any(|e| {
+            e.payload["body"]
+                .as_str()
+                .is_some_and(|b| b.contains("Started task") && b.contains(&task_id))
+        }));
+    }
+
+    /// With no `session`, `start_task` opens a fresh session in `folder`.
+    #[tokio::test]
+    async fn start_task_opens_a_folder_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open(dir.path().join("snippet.db")).unwrap();
+        db.create_agent(&worker("desk-agent")).unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let ctx = desk_ctx(dir.path(), "desk-agent");
+
+        let res = StartTask
+            .execute(
+                &ctx,
+                json!({
+                    "title": "Port the endpoint",
+                    "description": "the full brief",
+                    "folder": folder.path().display().to_string(),
+                    "workspace": "folder",
+                }),
+            )
+            .await
+            .unwrap();
+        let data = &res.value["data"];
+        let session_id = data["session_id"].as_str().unwrap().to_string();
+        assert!(!session_id.is_empty());
+        let task = db
+            .get_task(data["task_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.session_id, session_id);
+        assert_eq!(task.handoff_mode, HandoffMode::Fresh);
+        assert!(
+            crate::session::store_for_sessions()
+                .and_then(|s| s.get_session_row(&session_id).ok().flatten())
+                .is_some(),
+            "the new session has a store row"
+        );
+    }
+
+    /// A blocked `start_task` waits as blocked with the desk's seat already
+    /// active; when the blocker finishes, the store flips it back to todo and
+    /// the (active) roster is what dispatch sees — no offer round trip.
+    #[tokio::test]
+    async fn start_task_blocked_waits_then_releases_under_the_desk() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open(dir.path().join("snippet.db")).unwrap();
+        db.create_agent(&worker("desk-agent")).unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let session = crate::session::create_blank_session(
+            folder.path(),
+            "Warm",
+            true,
+            crate::session::WorkspaceMode::Folder,
+        )
+        .unwrap();
+        let blocker = Task::dispatched_to(
+            "blk-1".into(),
+            session.id.clone(),
+            "first things first".into(),
+            "d".into(),
+            vec![],
+            HandoffMode::Resume,
+            "agent",
+            "mission-control",
+            "2026-01-01T00:00:00Z".into(),
+        );
+        db.create_task(&blocker).unwrap();
+        let ctx = desk_ctx(dir.path(), "desk-agent");
+
+        let res = StartTask
+            .execute(
+                &ctx,
+                json!({
+                    "title": "After the blocker",
+                    "description": "the full brief",
+                    "session": session.id,
+                    "blocked_by": ["blk-1"],
+                }),
+            )
+            .await
+            .unwrap();
+        let data = &res.value["data"];
+        assert_eq!(data["status"], "blocked");
+        assert_eq!(data["waiting_on"], json!(["blk-1"]));
+        let task_id = data["task_id"].as_str().unwrap().to_string();
+        let task = db.get_task(&task_id).unwrap().unwrap();
+        assert_eq!(task.status, TaskStatus::Blocked);
+        assert_eq!(db.list_task_agents(&task_id).unwrap()[0].status, "active");
+
+        let thread = crate::coordination::direct_thread_id(
+            ("agent", "mission-control"),
+            ("agent", "desk-agent"),
+        );
+        let events = db.direct_thread_events(&thread, 0, 10).unwrap();
+        assert!(events.iter().any(|e| {
+            e.payload["body"]
+                .as_str()
+                .is_some_and(|b| b.contains("Queued task") && b.contains("blk-1"))
+        }));
+
+        db.complete_task(
+            "blk-1",
+            TaskStatus::Done,
+            TaskResult::default(),
+            "2026-01-01T00:00:01Z",
+        )
+        .unwrap();
+        assert_eq!(
+            db.unblock_ready_tasks("2026-01-01T00:00:02Z").unwrap(),
+            vec![task_id.clone()]
+        );
+        let task = db.get_task(&task_id).unwrap().unwrap();
+        assert_eq!(task.status, TaskStatus::Todo);
+        assert_eq!(
+            db.list_task_agents(&task_id).unwrap()[0].status,
+            "active",
+            "still the desk's own claim — dispatch will not offer it"
+        );
     }
 
     /// Completion must reach BOTH boards from a single call.

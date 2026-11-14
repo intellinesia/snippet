@@ -852,6 +852,202 @@ fn identity_overlay_is_only_for_a_foreign_agent() {
     assert!(coordination::identity_overlay(&d, "snippet", "unowned-session").is_empty());
 }
 
+/// A task a desk started itself is already claimed on its roster, so the
+/// offer loop (`await_claim`) can never send it a `[task_offer]` — not even
+/// in the window between filing and dispatch.
+#[tokio::test]
+async fn a_self_started_task_is_never_offered_back() {
+    use crate::tools::Tool as _;
+    let mut d = test_daemon();
+    let dir = tempfile::tempdir().unwrap();
+    d.store = crate::store::Store::open(dir.path().join("snippet.db")).unwrap();
+    d.store
+        .create_agent(&crate::coordination::types::Agent {
+            id: "desk-agent".into(),
+            display_name: "Desk".into(),
+            handle: "desk-agent".into(),
+            kind: crate::coordination::types::AgentKind::Worker,
+            status: crate::coordination::types::AgentStatus::Active,
+            capabilities: vec![],
+        })
+        .unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let session = crate::session::create_blank_session(
+        folder.path(),
+        "Warm",
+        true,
+        crate::session::WorkspaceMode::Folder,
+    )
+    .unwrap();
+    // The tool files under its own mission-control root, so the daemon's
+    // dispatch stops at the unknown session AFTER await_claim has run —
+    // exactly where an offer would have been sent.
+    let tool_root = tempfile::tempdir().unwrap();
+    let ctx = crate::tools::ToolContext::new(dir.path())
+        .unwrap()
+        .with_durable_session_id(crate::session::inbox_session_id("desk-agent"))
+        .with_store_path(dir.path().join("snippet.db"))
+        .with_agent_id("desk-agent")
+        .with_mission_control_root(tool_root.path());
+    let res = crate::mission_tools::StartTask
+        .execute(
+            &ctx,
+            serde_json::json!({
+                "title": "desk task",
+                "description": "brief",
+                "session": session.id,
+            }),
+        )
+        .await
+        .unwrap();
+    let task_id = res.value["data"]["task_id"].as_str().unwrap().to_string();
+
+    let _ = mission_control::dispatch_mission_task(&d, &task_id).await;
+
+    let thread = crate::coordination::direct_thread_id(
+        ("agent", "mission-control"),
+        ("agent", "desk-agent"),
+    );
+    let offers = |events: &[crate::coordination::types::CoordinationEvent]| {
+        events
+            .iter()
+            .filter(|e| {
+                e.payload["body"]
+                    .as_str()
+                    .is_some_and(|b| b.contains("[task_offer]"))
+            })
+            .count()
+    };
+    let events = d.store.direct_thread_events(&thread, 0, 50).unwrap();
+    assert_eq!(offers(&events), 0, "the desk was offered its own task");
+
+    // Contrast: a task filed the old way (offered roster) IS offered back.
+    let mc_ctx = crate::tools::ToolContext::mission_control(dir.path())
+        .unwrap()
+        .with_store_path(dir.path().join("snippet.db"))
+        .with_mission_control_root(tool_root.path());
+    let filed = crate::mission_tools::create_task_value(
+        &mc_ctx,
+        serde_json::json!({
+            "title": "routed task",
+            "description": "brief",
+            "session": session.id,
+            "agent_id": "desk-agent",
+        }),
+    )
+    .await
+    .unwrap();
+    let other_id = filed["task"]["id"].as_str().unwrap().to_string();
+    let _ = mission_control::dispatch_mission_task(&d, &other_id).await;
+    let events = d.store.direct_thread_events(&thread, 0, 50).unwrap();
+    assert_eq!(offers(&events), 1, "an offered task still gets its offer");
+    assert!(events.iter().any(|e| {
+        e.payload["body"]
+            .as_str()
+            .is_some_and(|b| b.contains("[task_offer]") && b.contains(&other_id))
+    }));
+}
+
+/// A blocked self-start waits as blocked; once its blocker finishes it is
+/// todo again with the desk's seat still `active`, so dispatch starts it
+/// under the desk's agent with no offer round trip.
+#[tokio::test]
+async fn a_blocked_self_started_task_starts_without_an_offer() {
+    use crate::tools::Tool as _;
+    let mut d = test_daemon();
+    let dir = tempfile::tempdir().unwrap();
+    d.store = crate::store::Store::open(dir.path().join("snippet.db")).unwrap();
+    d.store
+        .create_agent(&crate::coordination::types::Agent {
+            id: "desk-agent".into(),
+            display_name: "Desk".into(),
+            handle: "desk-agent".into(),
+            kind: crate::coordination::types::AgentKind::Worker,
+            status: crate::coordination::types::AgentStatus::Active,
+            capabilities: vec![],
+        })
+        .unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let session = crate::session::create_blank_session(
+        folder.path(),
+        "Warm",
+        true,
+        crate::session::WorkspaceMode::Folder,
+    )
+    .unwrap();
+    let blocker = crate::coordination::Task::dispatched_to(
+        "blk".into(),
+        session.id.clone(),
+        "blocker".into(),
+        "d".into(),
+        vec![],
+        crate::coordination::HandoffMode::Resume,
+        "agent",
+        "mission-control",
+        "2026-01-01T00:00:00Z".into(),
+    );
+    d.store.create_task(&blocker).unwrap();
+    let tool_root = tempfile::tempdir().unwrap();
+    let ctx = crate::tools::ToolContext::new(dir.path())
+        .unwrap()
+        .with_durable_session_id(crate::session::inbox_session_id("desk-agent"))
+        .with_store_path(dir.path().join("snippet.db"))
+        .with_agent_id("desk-agent")
+        .with_mission_control_root(tool_root.path());
+    let res = crate::mission_tools::StartTask
+        .execute(
+            &ctx,
+            serde_json::json!({
+                "title": "blocked desk task",
+                "description": "brief",
+                "session": session.id,
+                "blocked_by": ["blk"],
+            }),
+        )
+        .await
+        .unwrap();
+    let task_id = res.value["data"]["task_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        d.store.get_task(&task_id).unwrap().unwrap().status,
+        crate::coordination::TaskStatus::Blocked
+    );
+
+    d.store
+        .complete_task(
+            "blk",
+            crate::coordination::TaskStatus::Done,
+            crate::coordination::TaskResult::default(),
+            "2026-01-01T00:00:01Z",
+        )
+        .unwrap();
+    assert_eq!(
+        d.store.unblock_ready_tasks("2026-01-01T00:00:02Z").unwrap(),
+        vec![task_id.clone()]
+    );
+
+    let _ = mission_control::dispatch_mission_task(&d, &task_id).await;
+
+    let thread = crate::coordination::direct_thread_id(
+        ("agent", "mission-control"),
+        ("agent", "desk-agent"),
+    );
+    let events = d.store.direct_thread_events(&thread, 0, 50).unwrap();
+    assert!(
+        events.iter().all(|e| {
+            !e.payload["body"]
+                .as_str()
+                .is_some_and(|b| b.contains("[task_offer]"))
+        }),
+        "a blocked self-start was offered back to its desk"
+    );
+    let task = d.store.get_task(&task_id).unwrap().unwrap();
+    assert_eq!(task.status, crate::coordination::TaskStatus::Todo);
+    assert_eq!(
+        d.store.list_task_agents(&task_id).unwrap()[0].status,
+        "active"
+    );
+}
+
 /// A task whose worker is paused waits in the queue, reported once.
 #[tokio::test]
 async fn a_paused_worker_holds_its_task_in_the_queue() {

@@ -62,30 +62,27 @@ pub struct GroupLastMessage {
 /// Validation failures cross `with_connection` as `InvalidParameterName`
 /// and are mapped back to [`StoreError::InvalidInput`] at the boundary.
 /// Members named in `body` by id, handle or display name, as whole words.
-/// Whether an agent's post mentions the user: `human` or `boss` in
-/// `mentions`, or `@human` / `@boss` in the text.
+/// Whether an agent's post mentions the user: `human` in `mentions` (with or
+/// without a leading @), or `@human` in the text.
 pub(crate) fn mentions_human(body: &str, mentions: &[String]) -> bool {
-    const ALIASES: &[&str] = &["human", "boss"];
-    if mentions
-        .iter()
-        .any(|m| ALIASES.contains(&m.trim().trim_start_matches('@').to_lowercase().as_str()))
-    {
+    if mentions.iter().any(|m| {
+        m.trim()
+            .trim_start_matches('@')
+            .eq_ignore_ascii_case("human")
+    }) {
         return true;
     }
     let text = body.to_lowercase();
-    ALIASES.iter().any(|alias| {
-        let token = format!("@{alias}");
-        text.match_indices(&token).any(|(at, m)| {
-            let open = text[..at]
-                .chars()
-                .next_back()
-                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
-            let close = text[at + m.len()..]
-                .chars()
-                .next()
-                .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '_' | '-')));
-            open && close
-        })
+    text.match_indices("@human").any(|(at, m)| {
+        let open = text[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        let close = text[at + m.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '_' | '-')));
+        open && close
     })
 }
 
@@ -733,10 +730,9 @@ impl Store {
         let mut stored: Vec<String> = mentions
             .iter()
             .filter(|m| {
-                !matches!(
-                    m.trim().trim_start_matches('@').to_lowercase().as_str(),
-                    "human" | "boss"
-                )
+                !m.trim()
+                    .trim_start_matches('@')
+                    .eq_ignore_ascii_case("human")
             })
             .cloned()
             .collect();
@@ -1051,12 +1047,14 @@ mod tests {
     fn human_mentions_by_field_or_text() {
         let none: Vec<String> = Vec::new();
         assert!(mentions_human("", &["human".into()]));
-        assert!(mentions_human("", &["@Boss".into()]));
-        assert!(mentions_human("@boss which one?", &none));
+        assert!(mentions_human("", &["@Human".into()]));
+        assert!(mentions_human("@human which one?", &none));
         assert!(mentions_human("Need you, @human.", &none));
-        assert!(!mentions_human("the boss wants it", &none));
-        assert!(!mentions_human("mail me@bossco.com", &none));
-        assert!(!mentions_human("@bossy", &none));
+        assert!(!mentions_human("", &["@boss".into()]));
+        assert!(!mentions_human("@boss which one?", &none));
+        assert!(!mentions_human("@humans assemble", &none));
+        assert!(!mentions_human("mail me@human.com", &none));
+        assert!(!mentions_human("the humanist view", &none));
     }
 
     fn worker(id: &str) -> Agent {

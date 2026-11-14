@@ -81,7 +81,7 @@ fn actionable_candidates_do_not_include_ui_only_events() {
     );
     assert_eq!(direct["source_key"], "source");
     assert!(notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":"direct_message.sent","thread_id":"thread","payload":{"recipient":"human:local"}}})).is_none());
-    let mention = notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":"group_message","event_id":"g1","thread_id":"group:x","payload":{"from_kind":"agent","from_id":"scout","body":"@boss pick one","mentions":["human"]}}})).unwrap();
+    let mention = notification_candidate(&json!({"kind":"coordination_event","event":{"event_type":"group_message","event_id":"g1","thread_id":"group:x","payload":{"from_kind":"agent","from_id":"scout","body":"@human pick one","mentions":["human"]}}})).unwrap();
     assert_eq!(mention["kind"], "group_mention");
     assert_eq!(
         mention["destination"],
