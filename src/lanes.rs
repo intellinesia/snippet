@@ -1312,7 +1312,11 @@ async fn run_lane_once(
     let mut grounding_roots = vec![workspace_root.clone()];
     grounding_roots.extend(link.write_scope.iter().filter(|p| p.is_dir()).cloned());
     let workspace_for_grounding = workspace_root.clone();
-    let start_snapshots = snapshot_lane_roots(&workspace_for_grounding, &link.write_scope);
+    let start_snapshots = if read_only {
+        Vec::new()
+    } else {
+        snapshot_lane_roots(&workspace_for_grounding, &link.write_scope)
+    };
     let context = match ToolContext::with_owner(workspace_root, &owner) {
         Ok(context) => {
             let context = context
@@ -1429,12 +1433,16 @@ async fn run_lane_once(
             let _ = log.write_event(event);
         }
     }
-    let changed = summarize_lane_outcome_with_snapshots(
-        &outcome,
-        &workspace_for_grounding,
-        &link.write_scope,
-        &start_snapshots,
-    );
+    let changed = if read_only {
+        None
+    } else {
+        summarize_lane_outcome_with_snapshots(
+            &outcome,
+            &workspace_for_grounding,
+            &link.write_scope,
+            &start_snapshots,
+        )
+    };
     let mut structured = build_structured_report(&outcome, changed);
     let mut grounding_text = structured.summary.clone();
     for f in &structured.findings {
@@ -1686,8 +1694,28 @@ pub(crate) fn summarize_lane_outcome(
     scan_change_files_events(outcome)
 }
 
-fn clip_chars(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
+pub(crate) fn clip_at_boundary(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let Some((cut_byte, _)) = s.char_indices().nth(max) else {
+        return s.to_string();
+    };
+    let head = &s[..cut_byte];
+    if s[cut_byte..]
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+    {
+        return head.trim_end().to_string();
+    }
+    if let Some(ws_idx) = head.rfind(char::is_whitespace) {
+        let trimmed = head[..ws_idx].trim_end();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    head.to_string()
 }
 
 pub(crate) fn build_structured_report(
@@ -1695,20 +1723,7 @@ pub(crate) fn build_structured_report(
     changed: Option<String>,
 ) -> LaneStructuredReport {
     if let Some(closing) = &outcome.closing {
-        let summary = closing
-            .get("summary")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| clip_chars(s, 600))
-            .unwrap_or_else(|| {
-                outcome
-                    .final_text
-                    .as_deref()
-                    .map(|s| clip_chars(s.trim(), 600))
-                    .unwrap_or_else(|| "completed".to_string())
-            });
-        let findings = closing
+        let findings: Vec<LaneFinding> = closing
             .get("findings")
             .and_then(|v| v.as_array())
             .map(|arr| {
@@ -1724,7 +1739,7 @@ pub(crate) fn build_structured_report(
                             return None;
                         }
                         Some(LaneFinding {
-                            claim: clip_chars(claim, 200),
+                            claim: clip_at_boundary(claim, 200),
                             location: location.to_string(),
                         })
                     })
@@ -1736,13 +1751,37 @@ pub(crate) fn build_structured_report(
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(|s| clip_chars(s, 300));
+            .map(|s| clip_at_boundary(s, 300));
         let open = closing
             .get("open")
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(|s| clip_chars(s, 300));
+            .map(|s| clip_at_boundary(s, 300));
+        let summary_only = findings.is_empty() && tests.is_none() && open.is_none();
+        let raw_summary = closing
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                outcome
+                    .final_text
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            });
+        let (summary, clipped) = match raw_summary {
+            Some(s) if summary_only && s.chars().count() > 600 => (
+                format!(
+                    "{} (clipped; full text on the lane record)",
+                    clip_at_boundary(s, 600)
+                ),
+                true,
+            ),
+            Some(s) => (clip_at_boundary(s, 600), false),
+            None => ("completed".to_string(), false),
+        };
         return LaneStructuredReport {
             summary,
             findings,
@@ -1750,7 +1789,7 @@ pub(crate) fn build_structured_report(
             tests,
             open,
             unverified_citations: None,
-            clipped: false,
+            clipped,
         };
     }
 
@@ -1767,11 +1806,12 @@ pub(crate) fn build_structured_report(
     }
 
     const PROSE_CAP: usize = 1500;
-    let char_count = raw.chars().count();
-    let (summary, clipped) = if char_count > PROSE_CAP {
-        let head: String = raw.chars().take(PROSE_CAP).collect();
+    let (summary, clipped) = if raw.chars().count() > PROSE_CAP {
         (
-            format!("{head} (clipped; full text on the lane record)"),
+            format!(
+                "{} (clipped; full text on the lane record)",
+                clip_at_boundary(raw, PROSE_CAP)
+            ),
             true,
         )
     } else {
@@ -1788,6 +1828,39 @@ pub(crate) fn build_structured_report(
     }
 }
 
+fn match_section_name(name: &str) -> Option<&'static str> {
+    match name.to_ascii_lowercase().as_str() {
+        "summary" => Some("summary"),
+        "findings" => Some("findings"),
+        "tests" => Some("tests"),
+        "open" => Some("open"),
+        _ => None,
+    }
+}
+
+fn parse_heading_line(trimmed: &str) -> Option<(&'static str, Option<&str>)> {
+    if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+        return None;
+    }
+    let stripped = trimmed
+        .trim_start_matches('#')
+        .trim_start_matches('*')
+        .trim();
+    if let Some((head, rest)) = stripped.split_once(':') {
+        let name = head.trim_end_matches('*').trim();
+        let sec = match_section_name(name)?;
+        let inline = rest.trim_start_matches('*').trim();
+        return Some((sec, (!inline.is_empty()).then_some(inline)));
+    }
+    let name = stripped.trim_end_matches('*').trim();
+    let is_marker =
+        trimmed.starts_with('#') || trimmed.starts_with("**") || match_section_name(name).is_some();
+    if is_marker {
+        return match_section_name(name).map(|sec| (sec, None));
+    }
+    None
+}
+
 pub(crate) fn parse_cli_headings(text: &str) -> Option<LaneStructuredReport> {
     let mut section: Option<&str> = None;
     let mut summary_lines = Vec::new();
@@ -1798,44 +1871,32 @@ pub(crate) fn parse_cli_headings(text: &str) -> Option<LaneStructuredReport> {
 
     for line in text.lines() {
         let trimmed = line.trim();
-        let heading = trimmed
-            .trim_start_matches('#')
-            .trim_start_matches('*')
-            .trim_end_matches('*')
-            .trim_end_matches(':')
-            .trim();
-        let lower = heading.to_ascii_lowercase();
-        let is_marker = trimmed.starts_with('#')
-            || trimmed.starts_with("**")
-            || trimmed.ends_with(':')
-            || matches!(lower.as_str(), "summary" | "findings" | "tests" | "open");
-        if is_marker && matches!(lower.as_str(), "summary" | "findings" | "tests" | "open") {
+        let content = if let Some((sec, inline)) = parse_heading_line(trimmed) {
             saw_heading = true;
-            section = match lower.as_str() {
-                "summary" => Some("summary"),
-                "findings" => Some("findings"),
-                "tests" => Some("tests"),
-                "open" => Some("open"),
-                _ => None,
-            };
-            continue;
-        }
+            section = Some(sec);
+            match inline {
+                Some(text) => text,
+                None => continue,
+            }
+        } else {
+            trimmed
+        };
         match section {
-            Some("summary") => summary_lines.push(trimmed),
+            Some("summary") => summary_lines.push(content),
             Some("findings") => {
-                let item = trimmed.trim_start_matches(['-', '*']).trim();
+                let item = content.trim_start_matches(['-', '*']).trim();
                 if item.is_empty() {
                     continue;
                 }
                 if let Some((claim, loc)) = split_finding_bullet(item) {
                     findings.push(LaneFinding {
-                        claim: clip_chars(claim, 200),
+                        claim: clip_at_boundary(claim, 200),
                         location: loc.to_string(),
                     });
                 }
             }
-            Some("tests") => tests_lines.push(trimmed),
-            Some("open") => open_lines.push(trimmed),
+            Some("tests") => tests_lines.push(content),
+            Some("open") => open_lines.push(content),
             _ => {}
         }
     }
@@ -1849,10 +1910,10 @@ pub(crate) fn parse_cli_headings(text: &str) -> Option<LaneStructuredReport> {
     }
     let join_opt = |lines: Vec<&str>, cap: usize| {
         let s = lines.join(" ").trim().to_string();
-        (!s.is_empty() && !s.eq_ignore_ascii_case("none")).then(|| clip_chars(&s, cap))
+        (!s.is_empty() && !s.eq_ignore_ascii_case("none")).then(|| clip_at_boundary(&s, cap))
     };
     Some(LaneStructuredReport {
-        summary: clip_chars(&summary, 600),
+        summary: clip_at_boundary(&summary, 600),
         findings,
         changed: None,
         tests: join_opt(tests_lines, 300),
@@ -1862,17 +1923,57 @@ pub(crate) fn parse_cli_headings(text: &str) -> Option<LaneStructuredReport> {
     })
 }
 
+static CITATION_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"([A-Za-z0-9_~./+\-]+\.[A-Za-z0-9_]+):(\d{1,7})(?:-\d{1,7})?\b")
+        .expect("valid citation regex")
+});
+
+fn valid_citation_cap(cap: &regex::Captures<'_>) -> bool {
+    let path = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
+    let line: usize = cap
+        .get(2)
+        .and_then(|m| m.as_str().parse().ok())
+        .unwrap_or(0);
+    line > 0 && path.chars().any(|c| c.is_ascii_alphabetic())
+}
+
 fn split_finding_bullet(item: &str) -> Option<(&str, &str)> {
     if let Some(open) = item.rfind('(')
+        && item.trim_end().ends_with(')')
         && let Some(close) = item[open + 1..].find(')')
     {
-        let loc = item[open + 1..open + 1 + close].trim().trim_matches('`');
+        let inner = item[open + 1..open + 1 + close].trim().trim_matches('`');
         let claim = item[..open].trim();
-        if !claim.is_empty() && loc.contains(':') {
+        if !claim.is_empty()
+            && let Some(cap) = CITATION_RE.captures(inner)
+            && let Some(m) = cap.get(0)
+            && m.start() == 0
+            && m.end() == inner.len()
+            && valid_citation_cap(&cap)
+        {
+            let offset = item[open + 1..open + 1 + close].find(inner).unwrap_or(0);
+            let loc = &item[open + 1 + offset..open + 1 + offset + inner.len()];
             return Some((claim, loc));
         }
     }
-    None
+
+    let last = CITATION_RE
+        .captures_iter(item)
+        .filter(valid_citation_cap)
+        .last()?;
+    let m = last.get(0)?;
+    let loc = m.as_str();
+
+    let prefix = item[..m.start()].trim();
+    if prefix.is_empty() || prefix == "`" {
+        let rest = item[m.end()..]
+            .trim_start_matches('`')
+            .trim_start_matches([':', '-', ' ']);
+        if !rest.is_empty() {
+            return Some((rest, loc));
+        }
+    }
+    Some((item, loc))
 }
 
 fn lane_context(model: &dyn AgentModel, defaults: &HarnessConfig) -> (u64, u8) {
@@ -2366,5 +2467,163 @@ None
         assert_eq!(parsed.findings[1].location, "src/harness/events.rs:826");
         assert_eq!(parsed.tests.as_deref(), Some("cargo test --lib lanes:: ok"));
         assert!(parsed.open.is_none());
+    }
+
+    #[test]
+    fn parse_cli_headings_handles_inline_headings_and_non_trailing_citations() {
+        let text = "\
+Summary: Tightened lane reporting.
+Findings: - src/foo.rs:10: claim at start
+- Kept trailing note (`src/bar.rs:20`) (needs follow-up)
+- Picked last citation in src/first.rs:1 and src/second.rs:42 (context)
+Tests: cargo test --lib lanes:: passed
+Open: docs pending
+";
+        let parsed = super::parse_cli_headings(text).expect("inline headings parsed");
+        assert_eq!(parsed.summary, "Tightened lane reporting.");
+        assert_eq!(parsed.findings.len(), 3);
+        assert_eq!(parsed.findings[0].claim, "claim at start");
+        assert_eq!(parsed.findings[0].location, "src/foo.rs:10");
+        assert_eq!(
+            parsed.findings[1].claim,
+            "Kept trailing note (`src/bar.rs:20`) (needs follow-up)"
+        );
+        assert_eq!(parsed.findings[1].location, "src/bar.rs:20");
+        assert_eq!(parsed.findings[2].location, "src/second.rs:42");
+        assert_eq!(
+            parsed.tests.as_deref(),
+            Some("cargo test --lib lanes:: passed")
+        );
+        assert_eq!(parsed.open.as_deref(), Some("docs pending"));
+    }
+
+    #[test]
+    fn clip_at_boundary_preserves_or_drops_citation_never_truncates() {
+        let citation = "src/a.rs:1234";
+        let prefix = format!("{} ", "w".repeat(592));
+        let full = format!("{prefix}{citation} trailing words here");
+        let summary_only = crate::harness::HarnessOutcome {
+            final_text: Some(full.clone()),
+            events: Vec::new(),
+            iterations: 1,
+            closing: Some(serde_json::json!({ "summary": full })),
+        };
+        let report = super::build_structured_report(&summary_only, None);
+        assert!(report.clipped);
+        assert!(
+            report
+                .summary
+                .ends_with(" (clipped; full text on the lane record)")
+        );
+        assert!(!report.summary.contains("src/a.rs:12 "));
+        assert!(!report.summary.contains("src/a.rs:123 "));
+        assert!(
+            report.summary.contains(citation) || !report.summary.contains("src/a.rs"),
+            "unexpected summary: {}",
+            report.summary
+        );
+
+        let exact_fit = format!("{} {}", "w".repeat(586), citation);
+        let kept = super::clip_at_boundary(&format!("{exact_fit} tail"), 600);
+        assert!(kept.ends_with(citation), "kept={kept}");
+    }
+
+    #[tokio::test]
+    async fn read_only_lane_with_dirty_workspace_yields_no_changed_line() {
+        use crate::llm::{GeneratedToolCall, HarnessMessage, ModelOutput};
+
+        struct StubModel(Option<ModelOutput>);
+
+        #[async_trait::async_trait]
+        impl AgentModel for StubModel {
+            async fn generate(
+                &mut self,
+                _messages: &[HarnessMessage],
+                _tools: &[NativeToolDefinition],
+                _force_tool: bool,
+                _sink: Option<crate::llm::StreamHandle>,
+            ) -> Result<ModelOutput, ToolError> {
+                Ok(self.0.take().expect("called once"))
+            }
+        }
+
+        let tmp =
+            std::env::temp_dir().join(format!("lane-ro-dirty-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        let run_git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&tmp)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{:?}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run_git(&["init", "-q"]);
+        std::fs::write(tmp.join("src/a.rs"), "fn main() {}\n").unwrap();
+        run_git(&["add", "."]);
+        run_git(&["commit", "-q", "-m", "init"]);
+        std::fs::write(tmp.join("src/a.rs"), "fn main() { println!(\"dirty\"); }\n").unwrap();
+
+        let owner = format!("lane-ro-test-{}", uuid::Uuid::new_v4().simple());
+        let factory: ModelFactory = Arc::new(|_, _| {
+            Ok(Box::new(StubModel(Some(ModelOutput {
+                calls: vec![GeneratedToolCall {
+                    tool_name: "terminate_loop".into(),
+                    arguments: serde_json::json!({ "summary": "Inspected dirty workspace." }),
+                    id: Some("c1".into()),
+                    origin_model: None,
+                    signature: None,
+                }],
+                ..Default::default()
+            }))))
+        });
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let link = LaneLink {
+            origin_session: None,
+            agent_id: None,
+            store_path: Some(tmp.join("store.db")),
+            context: "ctx".into(),
+            mailbox: Arc::new(LaneMailbox::default()),
+            title: "ro check".into(),
+            write_scope: Vec::new(),
+            lease_token: None,
+        };
+        let (summary, _full, structured) = super::run_lane_once(
+            factory,
+            tmp.clone(),
+            tmp.join("state.json"),
+            "inspect".into(),
+            owner.clone(),
+            None,
+            false,
+            true,
+            None,
+            None,
+            progress_tx,
+            None,
+            link,
+        )
+        .await
+        .expect("read-only lane succeeds");
+
+        assert_eq!(summary, "Inspected dirty workspace.");
+        assert!(structured.changed.is_none());
+
+        let _ = std::fs::remove_file(
+            std::env::temp_dir()
+                .join("snippet-lane-logs")
+                .join(format!("{owner}-{}.jsonl", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(crate::checkpoint::shadow_dir(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

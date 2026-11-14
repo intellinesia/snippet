@@ -930,8 +930,10 @@ pub(crate) fn render_lane_report(result: &LaneResult, outstanding: usize) -> Str
                     .unwrap_or("completed");
                 const PROSE_CAP: usize = 1500;
                 let summary = if raw.chars().count() > PROSE_CAP {
-                    let head: String = raw.chars().take(PROSE_CAP).collect();
-                    format!("{head} (clipped; full text on the lane record)")
+                    format!(
+                        "{} (clipped; full text on the lane record)",
+                        crate::lanes::clip_at_boundary(raw, PROSE_CAP)
+                    )
                 } else {
                     raw.to_string()
                 };
@@ -957,6 +959,12 @@ pub(crate) fn render_lane_report(result: &LaneResult, outstanding: usize) -> Str
 
     let cue = if outstanding > 0 {
         format!("{outstanding} lane(s) still out.")
+    } else if matches!(
+        result.status,
+        LaneStatus::Failed | LaneStatus::Paused | LaneStatus::Cancelled
+    ) {
+        "No lane still out. Follow this one up with its lane_id, or do the part yourself."
+            .to_string()
     } else {
         "All lanes reported; integrate and check the findings you rely on.".to_string()
     };
@@ -1364,5 +1372,67 @@ All lanes reported; integrate and check the findings you rely on.
             after_envelope.len()
         );
         assert!(before_envelope.len() > after_envelope.len());
+    }
+
+    #[test]
+    fn failed_lane_footer_cue_and_prose_citation_boundary_clip() {
+        let failed_last = render_lane_report(
+            &LaneResult {
+                id: "lane-8".into(),
+                title: "broken slice".into(),
+                status: LaneStatus::Failed,
+                summary: None,
+                report: None,
+                error: Some("compile error".into()),
+                structured: None,
+            },
+            0,
+        );
+        assert!(
+            failed_last.contains(
+                "No lane still out. Follow this one up with its lane_id, or do the part yourself."
+            ),
+            "{failed_last}"
+        );
+        assert!(!failed_last.contains("All lanes reported"), "{failed_last}");
+
+        let citation = "src/a.rs:1234";
+        let prose = format!("{} {} trailing text", "w".repeat(1492), citation);
+        let clipped_prose = render_lane_report(
+            &LaneResult {
+                id: "lane-9".into(),
+                title: "prose".into(),
+                status: LaneStatus::Completed,
+                summary: None,
+                report: Some(prose),
+                error: None,
+                structured: None,
+            },
+            0,
+        );
+        assert!(clipped_prose.contains("(clipped; full text on the lane record)"));
+        assert!(!clipped_prose.contains("src/a.rs:12 "), "{clipped_prose}");
+        assert!(
+            clipped_prose.contains(citation) || !clipped_prose.contains("src/a.rs"),
+            "{clipped_prose}"
+        );
+
+        let no_changed = render_lane_report(
+            &LaneResult {
+                id: "lane-10".into(),
+                title: "ro check".into(),
+                status: LaneStatus::Completed,
+                summary: Some("Inspected dirty workspace.".into()),
+                report: None,
+                error: None,
+                structured: Some(LaneStructuredReport {
+                    summary: "Inspected dirty workspace.".into(),
+                    changed: None,
+                    ..Default::default()
+                }),
+            },
+            0,
+        );
+        assert!(!no_changed.contains("changed:"), "{no_changed}");
     }
 }
