@@ -1,7 +1,7 @@
 ## The session's other tools
 
 - `set_session_title` names the session once its goal is clear.
-- Work the user wants repeated on a schedule belongs to Mission Control (`send_agent_message` to `mission-control`).
+- Work the user asks you to repeat is yours: set it with `wake_schedule`, a `name` per job, reporting where it was asked (`report_to: group` for a group). Mission Control schedules only work nobody owns.
 
 ## Orchestrating inside a session
 

@@ -4,7 +4,7 @@
 //! supplies the schedule, the brief (its prompt), the target session and
 //! next/last run, and the serve tick fires it like any other job. The policy
 //! adds who owns it, quiet hours, a daily run cap and where the result is
-//! reported. One schedule per owner.
+//! reported. An owner may hold several, told apart by name.
 
 use std::path::Path;
 
@@ -23,6 +23,8 @@ pub const MAX_RUNS_PER_DAY_CEILING: u32 = 288;
 /// Schedules Mission Control may hold on other agents at once.
 pub const MAX_SET_BY_MISSION_CONTROL: usize = 12;
 pub const NO_CHANGE: &str = "NO_CHANGE";
+/// Named wakes one owner may hold.
+pub const MAX_WAKES_PER_OWNER: usize = 8;
 const BRIEF_MAX_CHARS: usize = 4000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +43,7 @@ pub enum ReportTo {
     MissionControl,
     User,
     TaskRoom,
+    Group,
     None,
 }
 
@@ -50,6 +53,8 @@ pub struct ReportPolicy {
     pub to: ReportTo,
     #[serde(default)]
     pub task_id: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
     #[serde(default = "yes")]
     pub only_on_change: bool,
 }
@@ -63,6 +68,7 @@ impl Default for ReportPolicy {
         Self {
             to: ReportTo::MissionControl,
             task_id: None,
+            group: None,
             only_on_change: true,
         }
     }
@@ -71,6 +77,9 @@ impl Default for ReportPolicy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WakePolicy {
     pub owner: String,
+    /// Tells one owner's wakes apart; None is the owner's default wake.
+    #[serde(default)]
+    pub name: Option<String>,
     pub owner_kind: OwnerKind,
     pub set_by: Setter,
     #[serde(default)]
@@ -102,6 +111,8 @@ pub enum OwnerKind {
 /// the current value on an update; an empty quiet clock clears quiet hours.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct WakeSpec {
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub schedule: Option<String>,
     #[serde(default)]
@@ -155,16 +166,63 @@ pub fn list(root: &Path) -> Result<Vec<RecurringJob>, String> {
         .collect())
 }
 
-pub fn get(root: &Path, owner: &str) -> Result<Option<RecurringJob>, String> {
-    Ok(list(root)?
+/// A wake name as stored: lowercase words joined by `-`; empty is None.
+pub fn wake_name(raw: Option<&str>) -> Option<String> {
+    let mut out = String::new();
+    for c in raw?.trim().chars().take(60) {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_end_matches('-').to_string();
+    (!out.is_empty()).then_some(out)
+}
+
+/// Every wake the owner holds, its default (unnamed) one first.
+pub fn list_for(root: &Path, owner: &str) -> Result<Vec<RecurringJob>, String> {
+    let mut jobs: Vec<RecurringJob> = list(root)?
         .into_iter()
-        .find(|j| j.wake.as_ref().is_some_and(|w| w.owner == owner.trim())))
+        .filter(|j| j.wake.as_ref().is_some_and(|w| w.owner == owner.trim()))
+        .collect();
+    jobs.sort_by_key(|j| j.wake.as_ref().and_then(|w| w.name.clone()));
+    Ok(jobs)
+}
+
+pub fn get_named(
+    root: &Path,
+    owner: &str,
+    name: Option<&str>,
+) -> Result<Option<RecurringJob>, String> {
+    let name = wake_name(name);
+    Ok(list_for(root, owner)?
+        .into_iter()
+        .find(|j| j.wake.as_ref().is_some_and(|w| w.name == name)))
+}
+
+/// The owner's default wake, else its first named one.
+pub fn get(root: &Path, owner: &str) -> Result<Option<RecurringJob>, String> {
+    Ok(list_for(root, owner)?.into_iter().next())
 }
 
 pub fn clear(root: &Path, owner: &str) -> Result<bool, String> {
-    match get(root, owner)? {
+    clear_named(root, owner, None)
+}
+
+pub fn clear_named(root: &Path, owner: &str, name: Option<&str>) -> Result<bool, String> {
+    match get_named(root, owner, name)? {
         Some(job) => recurring::delete_job(root, &job.id).map(|_| true),
         None => Ok(false),
+    }
+}
+
+/// Who posts a wake's report in a group: the agent, or a session's agent.
+pub fn group_poster(root: &Path, owner: &str, kind: OwnerKind) -> Result<String, String> {
+    match kind {
+        OwnerKind::Agent => Ok(owner.to_string()),
+        OwnerKind::Session => Ok(recurring::group_poster(&recurring::store_at(root)?, owner)),
+        OwnerKind::MissionControl => Err("Mission Control's wakes can't report to a group".into()),
     }
 }
 
@@ -199,7 +257,13 @@ pub fn set(
     now: u64,
 ) -> Result<RecurringJob, String> {
     let owner = owner.trim().to_string();
-    let existing = get(root, &owner)?;
+    let name = wake_name(spec.name.as_deref());
+    let existing = get_named(root, &owner, name.as_deref())?;
+    if existing.is_none() && list_for(root, &owner)?.len() >= MAX_WAKES_PER_OWNER {
+        return Err(format!(
+            "`{owner}` already holds {MAX_WAKES_PER_OWNER} wakes; clear one first"
+        ));
+    }
     if let (Some(job), Setter::MissionControl) = (&existing, setter)
         && job.wake.as_ref().is_some_and(|w| w.set_by == Setter::User)
     {
@@ -252,6 +316,27 @@ pub fn set(
     {
         return Err("report to task_room needs task_id".into());
     }
+    if report.to == ReportTo::Group {
+        let group = report
+            .group
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .ok_or("report to group needs group (a group thread id)")?;
+        let poster = group_poster(root, &owner, kind)?;
+        let store = recurring::store_at(root)?;
+        if store.get_group(group).map_err(|e| e.to_string())?.is_none() {
+            return Err(format!("`{group}` is not a group thread id"));
+        }
+        if !store
+            .is_group_member(group, "agent", &poster)
+            .map_err(|e| e.to_string())?
+        {
+            return Err(format!(
+                "`{poster}` is not in group `{group}`; add it first"
+            ));
+        }
+    }
     let cap = spec
         .max_runs_per_day
         .or(current.as_ref().map(|w| w.max_runs_per_day))
@@ -271,6 +356,7 @@ pub fn set(
     }
     let policy = WakePolicy {
         owner: owner.clone(),
+        name: name.clone(),
         owner_kind: kind,
         set_by: setter,
         quiet_start: clean_clock(
@@ -332,7 +418,10 @@ pub fn set(
                 .title
                 .map(|t| t.trim().to_string())
                 .filter(|t| !t.is_empty())
-                .unwrap_or_else(|| format!("Wake: {owner}"));
+                .unwrap_or_else(|| match &name {
+                    Some(name) => format!("{owner}: {name}"),
+                    None => format!("Wake: {owner}"),
+                });
             let job = recurring::create_job_with(
                 root,
                 &title,
@@ -437,6 +526,10 @@ pub fn goal_addendum(
             "task room {}",
             policy.report.task_id.as_deref().unwrap_or("?")
         ),
+        ReportTo::Group => format!(
+            "group {} (posted for you, so don't post it there yourself)",
+            policy.report.group.as_deref().unwrap_or("?")
+        ),
         ReportTo::None => "the run log only".to_string(),
     };
     let mut out = format!(
@@ -465,6 +558,7 @@ pub fn view(job: &RecurringJob, runs_last_day: u32, last_status: Option<&str>) -
     let wake = job.wake.as_ref();
     json!({
         "owner": wake.map(|w| w.owner.as_str()),
+        "name": wake.and_then(|w| w.name.as_deref()),
         "owner_kind": wake.map(|w| w.owner_kind),
         "job_id": job.id,
         "session_id": job.session_id,
@@ -523,6 +617,10 @@ struct WakeToolArgs {
     action: String,
     #[serde(default)]
     agent_id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    group: Option<String>,
     #[serde(default)]
     schedule: Option<String>,
     #[serde(default)]
@@ -632,19 +730,21 @@ impl Tool for WakeScheduleTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "wake_schedule".into(),
-            description: "Show, set or clear a recurring wake: on each one you get the brief as a goal and your complete_goal summary is reported (to Mission Control by default, only when something changed). Schedule: `every 30m` (15m minimum), `daily 09:00`, `weekdays 09:00`, `mon,thu 18:00`, in the user's time. Mission Control may pass agent_id to manage another agent's.".into(),
+            description: "Show, set or clear a recurring wake: on each one you get the brief as a goal and your complete_goal summary is reported (to Mission Control by default, only when something changed). Work you're asked to repeat is yours: name each job and report where it was asked. Schedule: `every 30m` (15m minimum), `daily 09:00`, `weekdays 09:00`, `mon,thu 18:00`, in the user's local time, not UTC. Mission Control may pass agent_id to manage another agent's.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["show", "set", "clear"]},
                     "agent_id": {"type": "string", "description": "Mission Control: the agent or session to manage. Omitted, Mission Control manages its own automated wakes: schedule `every 60m` or `hourly` sets the interval (10m minimum), quiet_start and quiet_end set quiet hours, enabled turns them on or off, clear turns them off."},
+                    "name": {"type": "string", "description": "Which of your wakes, e.g. `linkedin-sync`. show without it lists them all."},
                     "schedule": {"type": "string"},
                     "brief": {"type": "string", "description": "What to do on each wake."},
                     "enabled": {"type": "boolean"},
                     "quiet_start": {"type": "string", "description": "HH:MM; empty clears."},
                     "quiet_end": {"type": "string", "description": "HH:MM; empty clears."},
-                    "report_to": {"type": "string", "enum": ["mission_control", "user", "task_room", "none"]},
+                    "report_to": {"type": "string", "enum": ["mission_control", "user", "task_room", "group", "none"]},
                     "task_id": {"type": "string", "description": "For report_to task_room."},
+                    "group": {"type": "string", "description": "For report_to group: its thread id."},
                     "only_on_change": {"type": "boolean", "description": "Default true."}
                 },
                 "required": ["action"],
@@ -670,9 +770,13 @@ impl Tool for WakeScheduleTool {
                 ));
             }
             (false, None) => {
-                let own = ctx
-                    .agent_id()
-                    .filter(|a| *a != crate::coordination::SNIPPET_AGENT_ID)
+                let at_desk = ctx.agent_id().filter(|a| {
+                    ctx.durable_session_id() == Some(crate::session::inbox_session_id(a).as_str())
+                });
+                let own = at_desk
+                    .or(ctx
+                        .agent_id()
+                        .filter(|a| *a != crate::coordination::SNIPPET_AGENT_ID))
                     .or(ctx.durable_session_id())
                     .ok_or_else(|| {
                         ToolError::msg("this session has no durable identity to wake")
@@ -683,15 +787,23 @@ impl Tool for WakeScheduleTool {
         let root = recurring::default_root();
         let now = chrono::Utc::now().timestamp() as u64;
         match args.action.as_str() {
-            "show" => Ok(ToolResult::success(
-                match get(&root, &owner).map_err(ToolError::msg)? {
+            "show" if args.name.is_some() => Ok(ToolResult::success(
+                match get_named(&root, &owner, args.name.as_deref()).map_err(ToolError::msg)? {
                     Some(job) => view_with_runs(&root, &job, now),
-                    None => json!({"owner": owner, "schedule": null}),
+                    None => json!({"owner": owner, "name": args.name, "schedule": null}),
                 },
             )),
+            "show" => {
+                let wakes: Vec<Value> = list_for(&root, &owner)
+                    .map_err(ToolError::msg)?
+                    .iter()
+                    .map(|job| view_with_runs(&root, job, now))
+                    .collect();
+                Ok(ToolResult::success(json!({"owner": owner, "wakes": wakes})))
+            }
             "clear" => {
                 if setter == Setter::MissionControl
-                    && get(&root, &owner)
+                    && get_named(&root, &owner, args.name.as_deref())
                         .map_err(ToolError::msg)?
                         .and_then(|j| j.wake)
                         .is_some_and(|w| w.set_by == Setter::User)
@@ -700,9 +812,10 @@ impl Tool for WakeScheduleTool {
                         "the user set this schedule; ask them to change it",
                     ));
                 }
-                let cleared = clear(&root, &owner).map_err(ToolError::msg)?;
+                let cleared =
+                    clear_named(&root, &owner, args.name.as_deref()).map_err(ToolError::msg)?;
                 Ok(ToolResult::success(
-                    json!({"owner": owner, "cleared": cleared}),
+                    json!({"owner": owner, "name": args.name, "cleared": cleared}),
                 ))
             }
             "set" => {
@@ -710,9 +823,10 @@ impl Tool for WakeScheduleTool {
                 let kind = resolve_owner(&store, &owner).map_err(ToolError::msg)?;
                 let report = if args.report_to.is_some()
                     || args.task_id.is_some()
+                    || args.group.is_some()
                     || args.only_on_change.is_some()
                 {
-                    let current = get(&root, &owner)
+                    let current = get_named(&root, &owner, args.name.as_deref())
                         .ok()
                         .flatten()
                         .and_then(|j| j.wake)
@@ -721,12 +835,14 @@ impl Tool for WakeScheduleTool {
                     Some(ReportPolicy {
                         to: args.report_to.unwrap_or(current.to),
                         task_id: args.task_id.or(current.task_id),
+                        group: args.group.or(current.group),
                         only_on_change: args.only_on_change.unwrap_or(current.only_on_change),
                     })
                 } else {
                     None
                 };
                 let spec = WakeSpec {
+                    name: args.name,
                     schedule: args.schedule,
                     brief: args.brief,
                     enabled: args.enabled,
@@ -764,6 +880,153 @@ mod tests {
 
     fn ist() -> chrono::FixedOffset {
         chrono::FixedOffset::east_opt(330 * 60).unwrap()
+    }
+
+    #[test]
+    fn an_owner_holds_named_wakes_side_by_side() {
+        let r = root();
+        let named = |name: &str, schedule: &str| WakeSpec {
+            name: Some(name.into()),
+            ..spec(schedule)
+        };
+        let daily = set(
+            r.path(),
+            "jev",
+            OwnerKind::Agent,
+            named("LinkedIn sync", "daily 21:00"),
+            Setter::Owner,
+            T0,
+        )
+        .unwrap();
+        assert_eq!(daily.title, "jev: linkedin-sync");
+        set(
+            r.path(),
+            "jev",
+            OwnerKind::Agent,
+            named("weekly digest", "mon 09:00"),
+            Setter::Owner,
+            T0,
+        )
+        .unwrap();
+        set(
+            r.path(),
+            "jev",
+            OwnerKind::Agent,
+            spec("every 1h"),
+            Setter::Owner,
+            T0,
+        )
+        .unwrap();
+        let all = list_for(r.path(), "jev").unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(
+            all[0].wake.as_ref().unwrap().name,
+            None,
+            "default wake first"
+        );
+        let again = set(
+            r.path(),
+            "jev",
+            OwnerKind::Agent,
+            named("linkedin-sync", "daily 21:30"),
+            Setter::Owner,
+            T0,
+        )
+        .unwrap();
+        assert_eq!(again.id, daily.id, "same name updates in place");
+        assert!(clear_named(r.path(), "jev", Some("weekly digest")).unwrap());
+        assert_eq!(list_for(r.path(), "jev").unwrap().len(), 2);
+        for i in 0..MAX_WAKES_PER_OWNER - 2 {
+            set(
+                r.path(),
+                "jev",
+                OwnerKind::Agent,
+                named(&format!("w{i}"), "every 1h"),
+                Setter::Owner,
+                T0,
+            )
+            .unwrap();
+        }
+        let err = set(
+            r.path(),
+            "jev",
+            OwnerKind::Agent,
+            named("extra", "every 1h"),
+            Setter::Owner,
+            T0,
+        )
+        .unwrap_err();
+        assert!(err.contains("clear one first"), "{err}");
+    }
+
+    #[test]
+    fn a_group_report_needs_a_group_the_owner_is_in() {
+        use crate::coordination::types::{Agent, AgentKind, AgentStatus};
+        let r = root();
+        let store = recurring::store_at(r.path()).unwrap();
+        for id in ["jev", "other"] {
+            store
+                .create_agent(&Agent {
+                    id: id.into(),
+                    display_name: id.into(),
+                    handle: id.into(),
+                    kind: AgentKind::Worker,
+                    status: AgentStatus::Active,
+                    capabilities: vec![],
+                })
+                .unwrap();
+        }
+        let group = store
+            .create_group(
+                "g",
+                ("human", "human"),
+                &["jev".into()],
+                None,
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+        let to_group = |group: Option<&str>| WakeSpec {
+            report: Some(ReportPolicy {
+                to: ReportTo::Group,
+                group: group.map(str::to_string),
+                ..ReportPolicy::default()
+            }),
+            ..spec("daily 21:00")
+        };
+        assert!(
+            set(
+                r.path(),
+                "jev",
+                OwnerKind::Agent,
+                to_group(None),
+                Setter::Owner,
+                T0
+            )
+            .is_err()
+        );
+        let err = set(
+            r.path(),
+            "other",
+            OwnerKind::Agent,
+            to_group(Some(&group.id)),
+            Setter::Owner,
+            T0,
+        )
+        .unwrap_err();
+        assert!(err.contains("not in group"), "{err}");
+        let job = set(
+            r.path(),
+            "jev",
+            OwnerKind::Agent,
+            to_group(Some(&group.id)),
+            Setter::Owner,
+            T0,
+        )
+        .unwrap();
+        let wake = job.wake.unwrap();
+        assert_eq!(wake.report.group.as_deref(), Some(group.id.as_str()));
+        let text = goal_addendum(&wake, None, None);
+        assert!(text.contains(&format!("group {}", group.id)), "{text}");
     }
 
     #[test]
@@ -967,6 +1230,7 @@ mod tests {
         s.report = Some(ReportPolicy {
             to: ReportTo::TaskRoom,
             task_id: None,
+            group: None,
             only_on_change: true,
         });
         assert!(
@@ -1004,6 +1268,7 @@ mod tests {
     fn policy(quiet: Option<(&str, &str)>, cap: u32) -> WakePolicy {
         WakePolicy {
             owner: "jev".into(),
+            name: None,
             owner_kind: OwnerKind::Agent,
             set_by: Setter::User,
             quiet_start: quiet.map(|q| q.0.into()),
@@ -1154,7 +1419,7 @@ mod tests {
         assert_eq!(v["quiet_hours"], json!({"start": "22:00", "end": "08:00"}));
         assert_eq!(
             v["report"],
-            json!({"to": "mission_control", "task_id": null, "only_on_change": true})
+            json!({"to": "mission_control", "task_id": null, "group": null, "only_on_change": true})
         );
         assert_eq!(v["runs_last_day"], 2);
         assert_eq!(limits()["min_interval_secs"]["agent"], 900);
