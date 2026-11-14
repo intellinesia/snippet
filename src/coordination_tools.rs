@@ -1999,7 +1999,7 @@ impl Tool for GroupThread {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "group_thread".into(),
-            description: "Group threads: a thread with several agents and the human where posting fans out and agents take turns like colleagues in a chat — a post that names agents wakes just them, and a post that names nobody goes to the lead while everyone else only speaks if it is a question in their field. An agent's post wakes only the agents it mentions. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
+            description: "Group threads: a thread with several agents and the human where posting fans out and agents take turns like colleagues in a chat — a post that names agents wakes just them, and a post that names nobody goes to the lead while everyone else joins only when they add something relevant. An agent's post wakes only the agents it mentions. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
             input_schema: schema(
                 json!({
                     "action": {"type": "string", "enum": ["create", "list", "read", "post", "set_lead", "add_member"]},
