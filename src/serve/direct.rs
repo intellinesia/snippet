@@ -843,6 +843,35 @@ fn prefix_envelope_note(envelope: String, prefix: &str) -> String {
 /// Hand a message to a session by its urgency and sender. Urgent ends the
 /// current run, then delivers. Normal from the human steers a busy session (or
 /// interrupts first on a stop command); normal from an agent queues while busy.
+pub(super) fn session_busy(d: &Shared, session_id: &str) -> bool {
+    d.store
+        .get_session_row(session_id)
+        .ok()
+        .flatten()
+        .map(|row| matches!(row.status.as_str(), "running" | "waiting_for_input"))
+        .unwrap_or_else(|| {
+            crate::session::state_path_for_id(session_id)
+                .and_then(|path| crate::session::read_session_meta(&path))
+                .is_some_and(|meta| {
+                    matches!(
+                        meta.status,
+                        crate::harness::HarnessStatus::Running
+                            | crate::harness::HarnessStatus::WaitingForInput
+                    )
+                })
+        })
+}
+
+/// Hand an envelope to a session now: a steer when it is mid-run, so it can
+/// change course or stop, otherwise a fresh turn.
+pub(super) async fn deliver_steer(d: &Shared, session_id: &str, envelope: String) {
+    if !session_busy(d, session_id) {
+        crate::session::wake_settled(session_id);
+    }
+    d.deliver(session_id, LoopInput::UserMessage(envelope))
+        .await;
+}
+
 pub(super) async fn deliver_by_urgency(
     d: &Shared,
     session_id: &str,
@@ -858,23 +887,7 @@ pub(super) async fn deliver_by_urgency(
         && (payload.get("reaction").is_some_and(|v| !v.is_null())
             || payload.get("kind").and_then(|v| v.as_str()) == Some("reaction"));
     let from_human = from_human && !is_reaction;
-    let busy = d
-        .store
-        .get_session_row(session_id)
-        .ok()
-        .flatten()
-        .map(|row| matches!(row.status.as_str(), "running" | "waiting_for_input"))
-        .unwrap_or_else(|| {
-            crate::session::state_path_for_id(session_id)
-                .and_then(|path| crate::session::read_session_meta(&path))
-                .is_some_and(|meta| {
-                    matches!(
-                        meta.status,
-                        crate::harness::HarnessStatus::Running
-                            | crate::harness::HarnessStatus::WaitingForInput
-                    )
-                })
-        });
+    let busy = session_busy(d, session_id);
     if is_reaction {
         if busy {
             let item = crate::harness::QueuedInput {
