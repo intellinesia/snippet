@@ -270,6 +270,7 @@ fn clip(text: &str, max: usize) -> String {
 pub fn sweep(store: &Store) {
     sweep_attention(store);
     sweep_results(store);
+    sweep_outcomes(store);
 }
 
 fn sweep_attention(store: &Store) {
@@ -351,8 +352,10 @@ fn sweep_attention(store: &Store) {
                 ),
             )
         };
+        let mut card_event = None;
         match post_origin_event(store, &task, key, card, &body, false) {
             Ok(Some(event)) => {
+                card_event = Some(event.event_id.clone());
                 let agent = event.actor_id.clone();
                 let shown = thread_title(store, &task.origin_thread.clone().unwrap_or_default())
                     .unwrap_or_else(|| "the chat".to_string());
@@ -386,8 +389,169 @@ fn sweep_attention(store: &Store) {
         let attention_id = attention.id.clone();
         let _ = store.update_task_in(&task.id, &chrono::Utc::now().to_rfc3339(), |t| {
             t.origin_attention = Some(attention_id.clone());
+            if let Some(event_id) = card_event {
+                t.origin_attention_event = Some(event_id);
+            }
         });
     }
+}
+
+/// Stamp `outcome` onto every posted origin card whose session is no longer
+/// waiting on that request, then push `coordination_event_updated` per stamp.
+/// Runs every sweep and once at startup, where it doubles as the backfill for
+/// cards posted before outcomes existed. Returns per-state counts.
+pub fn sweep_outcomes(store: &Store) -> std::collections::BTreeMap<String, u64> {
+    let mut counts = std::collections::BTreeMap::new();
+    let Ok(tasks) = store.tasks_with_origin() else {
+        return counts;
+    };
+    for task in tasks {
+        let Some(thread) = task
+            .origin_thread
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        else {
+            continue;
+        };
+        let Ok(cards) = store.unstamped_card_events(thread) else {
+            continue;
+        };
+        for card in cards {
+            let Some((key, attention_id, mut session)) = card_attention(&card.payload) else {
+                continue;
+            };
+            if session.is_empty() {
+                session = if task.session_id.trim().is_empty() {
+                    task.reporting_session.clone().unwrap_or_default()
+                } else {
+                    task.session_id.clone()
+                };
+            }
+            let live = !session.is_empty()
+                && store
+                    .current_attention_request(&session)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|a| a.id == attention_id);
+            if live {
+                continue;
+            }
+            let state = card_outcome(store, &session, key, &attention_id);
+            let outcome = serde_json::json!({
+                "state": state,
+                "at": chrono::Utc::now().to_rfc3339(),
+            });
+            match store.stamp_event_card_outcome(&card.event_id, key, &outcome) {
+                Ok(Some(_)) => {
+                    *counts.entry(state.to_string()).or_default() += 1;
+                    crate::session::emit_device_event(serde_json::json!({
+                        "kind": "coordination_event_updated",
+                        "thread_id": card.thread_id,
+                        "event_id": card.event_id,
+                    }));
+                }
+                _ => {}
+            }
+        }
+    }
+    counts
+}
+
+/// The card kind, attention id and session an unstamped origin card carries.
+fn card_attention(payload: &serde_json::Value) -> Option<(&'static str, String, String)> {
+    for (key, id_key) in [("approval", "approval_id"), ("question", "question_id")] {
+        let Some(card) = payload.get(key) else {
+            continue;
+        };
+        if let Some(id) = card.get(id_key).and_then(|v| v.as_str()) {
+            let session = card
+                .get("session")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            return Some((key, id.to_string(), session));
+        }
+    }
+    None
+}
+
+/// The outcome a card's session log supports for the request `attention_id`
+/// (`{ordinal}:{created_at}` of the approval_request / user_question event).
+fn card_outcome(store: &Store, session: &str, key: &str, attention_id: &str) -> &'static str {
+    if session.is_empty() {
+        return "outdated";
+    }
+    let Some(ordinal) = attention_id
+        .split(':')
+        .next()
+        .and_then(|o| o.parse::<i64>().ok())
+    else {
+        return "outdated";
+    };
+    let Ok(events) = store.session_events_from(session, ordinal - 1) else {
+        return "outdated";
+    };
+    if key == "approval" {
+        approval_outcome(&events, ordinal)
+    } else {
+        question_outcome(&events, ordinal)
+    }
+}
+
+/// An approval's call is the `tool_call` right before its `approval_request`
+/// event; the first decisive event after is its `tool_result` — `user_denied`
+/// means denied, anything else answered means approved. Lane prompts and
+/// interrupted waits have no such pair, so they read outdated.
+fn approval_outcome(events: &[(i64, String, String)], ordinal: i64) -> &'static str {
+    let Some(request) = events.iter().find(|e| e.0 == ordinal) else {
+        return "outdated";
+    };
+    if request.1 != "approval_request" {
+        return "outdated";
+    }
+    let Some(call) = events.iter().find(|e| e.0 == ordinal - 1) else {
+        return "outdated";
+    };
+    if call.1 != "tool_call" {
+        return "outdated";
+    }
+    for event in events.iter().filter(|e| e.0 > ordinal) {
+        match event.1.as_str() {
+            "tool_result" => {
+                let denied = serde_json::from_str::<serde_json::Value>(&event.2)
+                    .ok()
+                    .and_then(|p| {
+                        p.pointer("/result/error/code")
+                            .and_then(|c| c.as_str().map(str::to_string))
+                    })
+                    .is_some_and(|code| code == "user_denied");
+                return if denied { "denied" } else { "approved" };
+            }
+            "tool_call" | "user_question" | "approval_request" => return "outdated",
+            _ => {}
+        }
+    }
+    "outdated"
+}
+
+/// A question is answered by the next `user_input` event; another request
+/// first means it was superseded, and nothing means the wait ended another way.
+fn question_outcome(events: &[(i64, String, String)], ordinal: i64) -> &'static str {
+    let Some(request) = events.iter().find(|e| e.0 == ordinal) else {
+        return "outdated";
+    };
+    if request.1 != "user_question" {
+        return "outdated";
+    }
+    for event in events.iter().filter(|e| e.0 > ordinal) {
+        match event.1.as_str() {
+            "user_input" => return "answered",
+            "user_question" | "approval_request" | "tool_call" | "tool_result" => return "outdated",
+            _ => {}
+        }
+    }
+    "outdated"
 }
 
 fn sweep_results(store: &Store) {
@@ -781,5 +945,371 @@ mod tests {
             store.events_for_thread(&group.id, 0, 50).unwrap().len(),
             before
         );
+    }
+
+    use crate::harness::HarnessEvent;
+    use serde_json::json;
+
+    const T0: &str = "2026-01-01T01:00:00Z";
+
+    fn origin_task(store: &Store, group: &str, id: &str, session: &str) {
+        let mut t = task(id);
+        t.origin_thread = Some(group.to_string());
+        t.status = TaskStatus::InProgress;
+        t.session_id = session.into();
+        store.create_task(&t).unwrap();
+        store
+            .add_task_agent_full(id, "a", "implementer", None, "", "active", T0)
+            .unwrap();
+    }
+
+    fn session(store: &Store, id: &str, status: &str, state: &str) {
+        store
+            .save_session_scalar(id, "wk", "/w", None, status, state, T0, T0)
+            .unwrap();
+    }
+
+    fn approval_events() -> Vec<HarnessEvent> {
+        vec![
+            HarnessEvent::ToolCall {
+                tool_name: "bash".into(),
+                arguments: json!({"command": "ls"}),
+            },
+            HarnessEvent::ApprovalRequest {
+                tool_name: "bash".into(),
+                summary: "run ls".into(),
+                index: 1,
+                total: 1,
+            },
+        ]
+    }
+
+    fn card_outcome_of(store: &Store, thread: &str) -> Vec<serde_json::Value> {
+        store
+            .unstamped_card_events(thread)
+            .unwrap()
+            .iter()
+            .map(|e| e.payload.clone())
+            .collect()
+    }
+
+    fn stamped_outcomes(store: &Store, thread: &str) -> Vec<serde_json::Value> {
+        store
+            .events_for_thread(thread, 0, 100)
+            .unwrap()
+            .iter()
+            .filter_map(|e| {
+                e.payload
+                    .get("approval")
+                    .or_else(|| e.payload.get("question"))
+                    .and_then(|c| c.get("outcome"))
+                    .cloned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn approved_call_stamps_approved() {
+        let store = db();
+        agent(&store, "a");
+        let group = store
+            .create_group("g", ("agent", "a"), &["a".into()], None, T0)
+            .unwrap()
+            .id;
+        origin_task(&store, &group, "t1", "worker");
+        session(&store, "worker", "waiting_for_input", "{}");
+        store
+            .append_conversation_events("worker", &approval_events(), T0)
+            .unwrap();
+        sweep(&store);
+        // The user approves: the call's tool_result lands and the wait ends.
+        store
+            .append_conversation_events(
+                "worker",
+                &[HarnessEvent::ToolResult {
+                    tool_name: "bash".into(),
+                    result: json!({"status": "success", "data": {"output": "ok"}}),
+                }],
+                "2026-01-01T01:05:00Z",
+            )
+            .unwrap();
+        session(&store, "worker", "idle", "{}");
+        sweep(&store);
+        let outcomes = stamped_outcomes(&store, &group);
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0]["state"], "approved");
+        assert!(outcomes[0]["at"].as_str().unwrap().contains('T'));
+        // A second sweep changes nothing.
+        sweep(&store);
+        assert_eq!(stamped_outcomes(&store, &group), outcomes);
+    }
+
+    #[test]
+    fn denied_call_stamps_denied() {
+        let store = db();
+        agent(&store, "a");
+        let group = store
+            .create_group("g", ("agent", "a"), &["a".into()], None, T0)
+            .unwrap()
+            .id;
+        origin_task(&store, &group, "t1", "worker");
+        session(&store, "worker", "waiting_for_input", "{}");
+        store
+            .append_conversation_events("worker", &approval_events(), T0)
+            .unwrap();
+        sweep(&store);
+        store
+            .append_conversation_events(
+                "worker",
+                &[HarnessEvent::ToolResult {
+                    tool_name: "bash".into(),
+                    result: json!({"status": "error", "error": {"code": "user_denied", "message": "no"}}),
+                }],
+                "2026-01-01T01:05:00Z",
+            )
+            .unwrap();
+        session(&store, "worker", "idle", "{}");
+        sweep(&store);
+        let outcomes = stamped_outcomes(&store, &group);
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0]["state"], "denied");
+    }
+
+    #[test]
+    fn newer_request_supersedes_and_stamps_update_frame() {
+        let store = db();
+        agent(&store, "a");
+        let group = store
+            .create_group("g", ("agent", "a"), &["a".into()], None, T0)
+            .unwrap()
+            .id;
+        origin_task(&store, &group, "t1", "worker");
+        session(&store, "worker", "waiting_for_input", "{}");
+        store
+            .append_conversation_events("worker", &approval_events(), T0)
+            .unwrap();
+        sweep(&store);
+        let mut rx = crate::session::subscribe_device_events();
+        // A second approval request arrives before the first is answered.
+        store
+            .append_conversation_events(
+                "worker",
+                &[HarnessEvent::ApprovalRequest {
+                    tool_name: "write".into(),
+                    summary: "write a file".into(),
+                    index: 1,
+                    total: 1,
+                }],
+                "2026-01-01T01:05:00Z",
+            )
+            .unwrap();
+        sweep(&store);
+        let outcomes = stamped_outcomes(&store, &group);
+        assert_eq!(outcomes.len(), 1, "only the superseded card is stamped");
+        assert_eq!(outcomes[0]["state"], "outdated");
+        // The live card has no outcome yet.
+        let live = store
+            .events_for_thread(&group, 0, 100)
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                e.payload
+                    .get("approval")
+                    .is_some_and(|c| c.get("outcome").is_none())
+            })
+            .count();
+        assert_eq!(live, 1);
+        // The update frame named the stamped event.
+        let stamped_id = store
+            .events_for_thread(&group, 0, 100)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                e.payload
+                    .get("approval")
+                    .and_then(|c| c.get("outcome"))
+                    .is_some()
+            })
+            .unwrap()
+            .event_id;
+        let mut saw_frame = false;
+        while let Ok(ev) = rx.try_recv() {
+            if ev["kind"] == "coordination_event_updated"
+                && ev["event_id"] == stamped_id
+                && ev["thread_id"] == group
+            {
+                saw_frame = true;
+            }
+        }
+        assert!(saw_frame, "coordination_event_updated frame emitted");
+    }
+
+    #[test]
+    fn answered_question_stamps_answered() {
+        let store = db();
+        agent(&store, "a");
+        let group = store
+            .create_group("g", ("agent", "a"), &["a".into()], None, T0)
+            .unwrap()
+            .id;
+        origin_task(&store, &group, "t1", "worker");
+        let questions = json!({"questions": [{"id": "q0", "text": "pick one", "answer_kind": {"kind": "free_text"}}]});
+        let state = json!({"pending_question": questions}).to_string();
+        session(&store, "worker", "waiting_for_input", &state);
+        store
+            .append_conversation_events(
+                "worker",
+                &[HarnessEvent::UserQuestion {
+                    questions: questions.clone(),
+                }],
+                T0,
+            )
+            .unwrap();
+        sweep(&store);
+        store
+            .append_conversation_events(
+                "worker",
+                &[HarnessEvent::UserInput {
+                    text: "the second one".into(),
+                }],
+                "2026-01-01T01:05:00Z",
+            )
+            .unwrap();
+        session(&store, "worker", "idle", &state);
+        sweep(&store);
+        let outcomes = stamped_outcomes(&store, &group);
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0]["state"], "answered");
+    }
+
+    #[test]
+    fn unanswered_question_and_gone_session_stamp_outdated() {
+        let store = db();
+        agent(&store, "a");
+        let group = store
+            .create_group("g", ("agent", "a"), &["a".into()], None, T0)
+            .unwrap()
+            .id;
+        origin_task(&store, &group, "t1", "worker");
+        let questions = json!({"questions": [{"id": "q0", "text": "pick one", "answer_kind": {"kind": "free_text"}}]});
+        let state = json!({"pending_question": questions}).to_string();
+        session(&store, "worker", "waiting_for_input", &state);
+        store
+            .append_conversation_events(
+                "worker",
+                &[HarnessEvent::UserQuestion {
+                    questions: questions.clone(),
+                }],
+                T0,
+            )
+            .unwrap();
+        sweep(&store);
+        // The wait ended without an answer (interrupt, cancel).
+        session(&store, "worker", "idle", "{}");
+        sweep(&store);
+        let outcomes = stamped_outcomes(&store, &group);
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0]["state"], "outdated");
+        // A card whose session row is gone stamps outdated too.
+        let gone = post_origin_event(
+            &store,
+            &store
+                .list_tasks(None, None)
+                .unwrap()
+                .into_iter()
+                .find(|t| t.id == "t1")
+                .unwrap(),
+            "approval",
+            json!({"session": "missing", "approval_id": "9:2026-01-01T00:00:00Z"}),
+            "waiting",
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let _ = gone;
+        let counts = sweep_outcomes(&store);
+        assert_eq!(counts.get("outdated"), Some(&1));
+    }
+
+    #[test]
+    fn backfill_stamps_old_cards_and_leaves_the_live_one() {
+        let store = db();
+        agent(&store, "a");
+        let group = store
+            .create_group("g", ("agent", "a"), &["a".into()], None, T0)
+            .unwrap()
+            .id;
+        let mut t = task("t1");
+        t.origin_thread = Some(group.clone());
+        t.status = TaskStatus::InProgress;
+        t.session_id = "s1".into();
+        store.create_task(&t).unwrap();
+        store
+            .add_task_agent_full("t1", "a", "implementer", None, "", "active", T0)
+            .unwrap();
+        let t = store.list_tasks(None, None).unwrap().remove(0);
+        // An answered approval and a still-live question, posted as cards.
+        session(&store, "s1", "idle", "{}");
+        store
+            .append_conversation_events(
+                "s1",
+                &[
+                    HarnessEvent::ToolCall {
+                        tool_name: "bash".into(),
+                        arguments: json!({}),
+                    },
+                    HarnessEvent::ApprovalRequest {
+                        tool_name: "bash".into(),
+                        summary: "run it".into(),
+                        index: 1,
+                        total: 1,
+                    },
+                    HarnessEvent::ToolResult {
+                        tool_name: "bash".into(),
+                        result: json!({"status": "success", "data": {}}),
+                    },
+                ],
+                T0,
+            )
+            .unwrap();
+        post_origin_event(
+            &store,
+            &t,
+            "approval",
+            json!({"session": "s1", "approval_id": format!("1:{T0}"), "task_id": "t1"}),
+            "waiting on approval",
+            false,
+        )
+        .unwrap();
+        let questions = json!({"questions": [{"id": "q0", "text": "pick", "answer_kind": {"kind": "free_text"}}]});
+        let state = json!({"pending_question": questions}).to_string();
+        session(&store, "s2", "waiting_for_input", &state);
+        store
+            .append_conversation_events(
+                "s2",
+                &[HarnessEvent::UserQuestion {
+                    questions: questions.clone(),
+                }],
+                T0,
+            )
+            .unwrap();
+        post_origin_event(
+            &store,
+            &t,
+            "question",
+            json!({"session": "s2", "question_id": format!("0:{T0}"), "task_id": "t1"}),
+            "waiting on a question",
+            false,
+        )
+        .unwrap();
+        let counts = sweep_outcomes(&store);
+        assert_eq!(counts.get("approved"), Some(&1));
+        let outcomes = stamped_outcomes(&store, &group);
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0]["state"], "approved");
+        // The live question card is untouched and still discoverable as unstamped.
+        assert_eq!(card_outcome_of(&store, &group).len(), 1);
+        // Running it again is a no-op.
+        assert!(sweep_outcomes(&store).is_empty());
     }
 }

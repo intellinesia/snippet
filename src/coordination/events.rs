@@ -190,6 +190,76 @@ impl Store {
             rows.collect()
         })
     }
+
+    /// Origin-card events in a thread whose `approval`/`question` payload has
+    /// no `outcome` yet — the set the outcome sweep considers stamping.
+    pub fn unstamped_card_events(
+        &self,
+        thread_id: &str,
+    ) -> Result<Vec<CoordinationEvent>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT event_id, thread_id, partition_key, sequence, event_type,
+                        actor_kind, actor_id, payload_version, payload_json,
+                        causation_id, correlation_id, idempotency_key, created_at
+                 FROM board_events
+                 WHERE thread_id = ?1
+                   AND (json_extract(payload_json, '$.approval.approval_id') IS NOT NULL
+                        OR json_extract(payload_json, '$.question.question_id') IS NOT NULL)
+                   AND json_extract(payload_json, '$.approval.outcome') IS NULL
+                   AND json_extract(payload_json, '$.question.outcome') IS NULL
+                 ORDER BY sequence",
+            )?;
+            let rows = stmt.query_map(params![thread_id], event_from_row)?;
+            rows.collect()
+        })
+    }
+
+    /// Write `outcome` into the event's `key` card payload, once: an existing
+    /// outcome or a lost compare-and-swap returns `None`. Returns the thread
+    /// id when this call did the stamping, so the caller can push the update
+    /// frame.
+    pub fn stamp_event_card_outcome(
+        &self,
+        event_id: &str,
+        key: &str,
+        outcome: &Value,
+    ) -> Result<Option<String>, StoreError> {
+        self.with_connection(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT thread_id, payload_json FROM board_events WHERE event_id = ?1",
+                    params![event_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let Some((thread_id, raw)) = row else {
+                return Ok(None);
+            };
+            let mut payload: Value = serde_json::from_str(&raw).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+            let Some(card) = payload.get_mut(key).and_then(Value::as_object_mut) else {
+                return Ok(None);
+            };
+            if card.contains_key("outcome") {
+                return Ok(None);
+            }
+            card.insert("outcome".into(), outcome.clone());
+            let updated = serde_json::to_string(&payload)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+            let changed = conn.execute(
+                "UPDATE board_events SET payload_json = ?2
+                 WHERE event_id = ?1 AND payload_json = ?3",
+                params![event_id, updated, raw],
+            )?;
+            Ok((changed == 1).then_some(thread_id))
+        })
+    }
 }
 
 fn event_from_row(row: &rusqlite::Row<'_>) -> Result<CoordinationEvent, rusqlite::Error> {

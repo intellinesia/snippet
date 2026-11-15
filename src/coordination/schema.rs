@@ -161,7 +161,10 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              origin_thread TEXT,
              -- The last approval/question attention id already mirrored to
              -- origin_thread, so each request posts once.
-             origin_attention TEXT
+             origin_attention TEXT,
+             -- The board event carrying that mirrored card, so its outcome can
+             -- be stamped without a payload scan.
+             origin_attention_event TEXT
          );
          CREATE INDEX IF NOT EXISTS tasks_status_priority
              ON tasks(status, priority DESC, created_at);

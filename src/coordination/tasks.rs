@@ -134,6 +134,9 @@ pub struct Task {
     /// `origin_thread`, so each request posts there once.
     #[serde(default)]
     pub origin_attention: Option<String>,
+    /// The board event carrying the mirrored card, when one was posted.
+    #[serde(default)]
+    pub origin_attention_event: Option<String>,
 }
 
 /// One step of a task's working plan.
@@ -411,6 +414,7 @@ impl Task {
             expected_minutes: None,
             origin_thread: None,
             origin_attention: None,
+            origin_attention_event: None,
         }
     }
 
@@ -458,6 +462,7 @@ impl Task {
             expected_minutes: None,
             origin_thread: None,
             origin_attention: None,
+            origin_attention_event: None,
         }
     }
 }
@@ -588,6 +593,7 @@ pub(super) fn task_from_row(row: &rusqlite::Row<'_>) -> Result<Task, rusqlite::E
         expected_minutes: row.get::<_, Option<i64>>(25)?.map(|m| m.max(0) as u32),
         origin_thread: row.get(26)?,
         origin_attention: row.get(27)?,
+        origin_attention_event: row.get(28)?,
     })
 }
 
@@ -608,7 +614,7 @@ pub(super) const TASK_COLUMNS: &str = "id, title, description, status, priority,
      created_by_id, created_at, updated_at, completed_at, thread_id, session_id,
      handoff_json, handoff_mode, reporting_session, dispatch_failures, result_json,
      notifications_json, owned_paths_json, profile, plan, work_plan_json, superseded_by, goal_id,
-     last_progress_at, expected_minutes, origin_thread, origin_attention";
+     last_progress_at, expected_minutes, origin_thread, origin_attention, origin_attention_event";
 
 /// Persist every mutable column of a task. Takes the connection so it composes
 /// into the read-modify-write transaction in `update_task_in` — a separate
@@ -640,7 +646,8 @@ fn write_task(conn: &rusqlite::Connection, task: &Task) -> Result<(), rusqlite::
             last_progress_at = ?20,
             expected_minutes = ?21,
             origin_thread = ?22,
-            origin_attention = ?23
+            origin_attention = ?23,
+            origin_attention_event = ?24
          WHERE id = ?1",
         params![
             task.id,
@@ -666,6 +673,7 @@ fn write_task(conn: &rusqlite::Connection, task: &Task) -> Result<(), rusqlite::
             task.expected_minutes,
             task.origin_thread,
             task.origin_attention,
+            task.origin_attention_event,
         ],
     )?;
     Ok(())
@@ -695,8 +703,8 @@ impl Store {
                     completed_at, thread_id, session_id, handoff_json, handoff_mode,
                     reporting_session, dispatch_failures, result_json,
                     notifications_json, owned_paths_json, profile, plan, superseded_by, goal_id,
-                    last_progress_at, expected_minutes, origin_thread, origin_attention)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
+                    last_progress_at, expected_minutes, origin_thread, origin_attention, origin_attention_event)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)",
                 params![
                     task.id,
                     task.title,
@@ -725,6 +733,7 @@ impl Store {
                     task.expected_minutes,
                     task.origin_thread,
                     task.origin_attention,
+                    task.origin_attention_event,
                 ],
             )?;
             tx.execute(

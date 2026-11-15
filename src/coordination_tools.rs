@@ -1825,6 +1825,7 @@ impl Tool for ClaimAndDispatchTask {
                 if let Some(thread) = report_to.as_deref() {
                     t.origin_thread = Some(thread.to_string());
                     t.origin_attention = None;
+                    t.origin_attention_event = None;
                 } else if t.origin_thread.is_none()
                     && let Some(thread) = default_origin.as_deref()
                 {

@@ -961,6 +961,27 @@ impl Store {
         })
     }
 
+    /// `(ordinal, kind, payload_json)` for a session's event log at or after
+    /// `from_ordinal`, in order — the raw rows card-outcome stamping reads.
+    pub fn session_events_from(
+        &self,
+        session_id: &str,
+        from_ordinal: i64,
+    ) -> Result<Vec<(i64, String, String)>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT ordinal, COALESCE(json_extract(payload_json, '$.kind'), ''), payload_json
+                 FROM session_events
+                 WHERE session_id = ?1 AND ordinal >= ?2
+                 ORDER BY ordinal",
+            )?;
+            let rows = stmt.query_map(params![session_id, from_ordinal], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            rows.collect()
+        })
+    }
+
     /// The agent's last words this turn, for the notification when it stops.
     pub fn last_assistant_excerpt(&self, id: &str) -> Result<Option<String>, StoreError> {
         self.with_connection(|conn| {
