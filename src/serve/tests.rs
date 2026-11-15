@@ -1313,3 +1313,224 @@ async fn release_route_ends_the_turn_lease_and_seat() {
     .await;
     assert_eq!(again.status(), StatusCode::NOT_FOUND);
 }
+
+// -- Theme routes ----------------------------------------------------------
+
+fn theme_daemon() -> Shared {
+    let d = authed_daemon();
+    crate::themes::seed_builtins(&d.store).unwrap();
+    d
+}
+
+fn theme_app(d: Shared) -> axum::Router {
+    theme_routes::router().with_state(d)
+}
+
+async fn theme_call(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
+    use tower::ServiceExt;
+    let mut req = axum::http::Request::builder().method(method).uri(uri);
+    let body = match body {
+        Some(v) => {
+            req = req.header("content-type", "application/json");
+            axum::body::Body::from(serde_json::to_vec(&v).unwrap())
+        }
+        None => axum::body::Body::empty(),
+    };
+    let resp = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+fn harbor_doc() -> serde_json::Value {
+    serde_json::json!({
+        "schema": 1,
+        "id": "harbor",
+        "name": "Harbor",
+        "base": "black",
+        "color": {"fg4": "#FFEEEEEE"},
+    })
+}
+
+#[tokio::test]
+async fn themes_round_trip_and_active_set_flag() {
+    let d = theme_daemon();
+    let app = theme_app(d);
+
+    let (status, _) = theme_call(&app, "PUT", "/themes/harbor", Some(harbor_doc())).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, list) = theme_call(&app, "GET", "/themes", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["active"], "black");
+    assert_eq!(list["active_set"], false);
+    assert!(
+        list["live_groups"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("chat"))
+    );
+    let harbor = list["themes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "harbor")
+        .expect("harbor listed");
+    assert_eq!(harbor["author"], "user");
+    assert_eq!(harbor["builtin"], false);
+    assert_eq!(harbor["preview"]["bg"], "#000000");
+
+    let (status, got) = theme_call(&app, "GET", "/themes/harbor", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["resolved"]["color"]["bg"], "#000000");
+    assert_eq!(got["resolved"]["color"]["fg4"], "#FFEEEEEE");
+    assert_eq!(got["resolved"]["color"]["fg1"], "#FAFAFA");
+
+    let (status, _) = theme_call(
+        &app,
+        "PUT",
+        "/themes/active",
+        Some(serde_json::json!({"id": "harbor"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, active) = theme_call(&app, "GET", "/themes/active", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(active["id"], "harbor");
+    assert_eq!(active["active_set"], true);
+    assert_eq!(active["color"]["fg4"], "#FFEEEEEE");
+
+    let (_, list) = theme_call(&app, "GET", "/themes", None).await;
+    assert_eq!(list["active"], "harbor");
+    assert_eq!(list["active_set"], true);
+}
+
+#[tokio::test]
+async fn builtin_theme_is_immutable() {
+    let d = theme_daemon();
+    let app = theme_app(d);
+
+    let (status, _) = theme_call(&app, "PUT", "/themes/black", Some(black_doc_mut())).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = theme_call(&app, "DELETE", "/themes/black", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+fn black_doc_mut() -> serde_json::Value {
+    let mut doc = crate::themes::builtin_docs()
+        .iter()
+        .find(|d| d["id"] == "black")
+        .unwrap()
+        .clone();
+    doc["name"] = serde_json::json!("Not black");
+    doc
+}
+
+#[tokio::test]
+async fn deleting_the_active_theme_falls_back_to_black() {
+    let d = theme_daemon();
+    let app = theme_app(d);
+    theme_call(&app, "PUT", "/themes/harbor", Some(harbor_doc())).await;
+    theme_call(
+        &app,
+        "PUT",
+        "/themes/active",
+        Some(serde_json::json!({"id": "harbor"})),
+    )
+    .await;
+
+    let (status, _) = theme_call(&app, "DELETE", "/themes/harbor", None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, active) = theme_call(&app, "GET", "/themes/active", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(active["id"], "black");
+}
+
+#[tokio::test]
+async fn theme_mutations_emit_themes_changed() {
+    let d = theme_daemon();
+    let app = theme_app(d);
+    let mut rx = crate::session::subscribe_device_events();
+
+    theme_call(&app, "PUT", "/themes/harbor", Some(harbor_doc())).await;
+    let frame = rx.try_recv().expect("event frame");
+    assert_eq!(frame["kind"], "themes_changed");
+    assert_eq!(frame["changed"], "harbor");
+    assert_eq!(frame["active"], "black");
+
+    theme_call(
+        &app,
+        "PUT",
+        "/themes/active",
+        Some(serde_json::json!({"id": "harbor"})),
+    )
+    .await;
+    let frame = rx.try_recv().expect("event frame");
+    assert_eq!(frame["kind"], "themes_changed");
+    assert_eq!(frame["active"], "harbor");
+}
+
+#[tokio::test]
+async fn validate_route_checks_without_storing() {
+    let d = theme_daemon();
+    let app = theme_app(d);
+
+    let mut bad = harbor_doc();
+    bad["color"] = serde_json::json!({"fg2": "#FF141414"});
+    let (status, body) = theme_call(&app, "POST", "/themes/validate", Some(bad)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "theme invalid");
+    assert!(
+        body["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("fg2 on surface1"))
+    );
+
+    let (status, body) = theme_call(&app, "POST", "/themes/validate", Some(harbor_doc())).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["valid"], true);
+
+    let (_, list) = theme_call(&app, "GET", "/themes", None).await;
+    assert!(
+        list["themes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["id"] != "harbor")
+    );
+}
+
+#[tokio::test]
+async fn put_rejects_invalid_and_mismatched_ids() {
+    let d = theme_daemon();
+    let app = theme_app(d);
+
+    let mut bad = harbor_doc();
+    bad["shape"] = serde_json::json!({"radii": {"card": 60}});
+    let (status, body) = theme_call(&app, "PUT", "/themes/harbor", Some(bad)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("shape.radii.card"))
+    );
+
+    let mut wrong = harbor_doc();
+    wrong["id"] = serde_json::json!("other");
+    let (status, _) = theme_call(&app, "PUT", "/themes/harbor", Some(wrong)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

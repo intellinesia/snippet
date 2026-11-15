@@ -175,6 +175,105 @@ impl Store {
         })
     }
 
+    // ---- themes -----------------------------------------------------------
+
+    /// Create or replace a theme. `created_at` survives an update; everything
+    /// else is overwritten, which is what builtin reseeding wants.
+    pub fn upsert_theme(
+        &self,
+        id: &str,
+        name: &str,
+        author: &str,
+        builtin: bool,
+        doc: &serde_json::Value,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let json = encode("theme doc", doc)?;
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO themes (id, name, author, builtin, json, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?6)
+                 ON CONFLICT(id) DO UPDATE SET
+                   name = excluded.name,
+                   author = excluded.author,
+                   builtin = excluded.builtin,
+                   json = excluded.json,
+                   updated_at = excluded.updated_at",
+                params![id, name, author, builtin as i64, json, now],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn get_theme(&self, id: &str) -> Result<Option<ThemeRow>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt =
+                conn.prepare(&format!("SELECT {THEME_COLUMNS} FROM themes WHERE id = ?1"))?;
+            let mut rows = stmt.query_map(params![id], theme_row_from_row)?;
+            match rows.next() {
+                Some(row) => Ok(Some(row?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Builtins first, then everything else by name: a stable order for the
+    /// theme list (the client re-sorts for its carousel anyway).
+    pub fn list_themes(&self) -> Result<Vec<ThemeRow>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {THEME_COLUMNS} FROM themes
+                 ORDER BY builtin DESC, name COLLATE NOCASE, id"
+            ))?;
+            let rows = stmt.query_map([], theme_row_from_row)?;
+            rows.collect()
+        })
+    }
+
+    pub fn delete_theme(&self, id: &str) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            Ok(conn.execute("DELETE FROM themes WHERE id = ?1", params![id])? > 0)
+        })
+    }
+
+    /// The raw `theme_settings` pointer; `None` means `black`.
+    pub fn active_theme_id(&self) -> Result<Option<String>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt =
+                conn.prepare("SELECT active_theme_id FROM theme_settings WHERE id = 1")?;
+            let mut rows = stmt.query_map([], |row| row.get::<_, Option<String>>(0))?;
+            match rows.next() {
+                Some(row) => Ok(row?),
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Whether a `theme_settings` row with an id exists — distinguishes "user
+    /// never picked" from "picked black".
+    pub fn active_theme_is_set(&self) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT active_theme_id IS NOT NULL FROM theme_settings WHERE id = 1")?;
+            let mut rows = stmt.query_map([], |row| row.get::<_, bool>(0))?;
+            match rows.next() {
+                Some(row) => Ok(row?),
+                None => Ok(false),
+            }
+        })
+    }
+
+    pub fn set_active_theme_id(&self, id: &str) -> Result<(), StoreError> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO theme_settings (id, active_theme_id) VALUES (1, ?1)
+                 ON CONFLICT(id) DO UPDATE SET active_theme_id = excluded.active_theme_id",
+                params![id],
+            )?;
+            Ok(())
+        })
+    }
+
     // ---- recurring jobs ---------------------------------------------------
 
     pub fn upsert_recurring_job(&self, job: &RecurringJob) -> Result<(), StoreError> {
@@ -530,6 +629,35 @@ impl Store {
 const JOB_COLUMNS: &str = "id, title, session_id, prompt, plan_path, schedule_json, delivery, \
                            enabled, next_run_at, last_run_at, last_error, queued, \
                            created_at, updated_at, wake_json, last_result, report_group";
+
+const THEME_COLUMNS: &str = "id, name, author, builtin, json, created_at, updated_at";
+
+/// A theme row: listing columns plus the whole schema-1 document.
+pub struct ThemeRow {
+    pub id: String,
+    pub name: String,
+    pub author: String,
+    pub builtin: bool,
+    pub doc: serde_json::Value,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+fn theme_row_from_row(row: &rusqlite::Row<'_>) -> Result<ThemeRow, rusqlite::Error> {
+    let raw: String = row.get(4)?;
+    let doc = serde_json::from_str(&raw).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    Ok(ThemeRow {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        author: row.get(2)?,
+        builtin: row.get::<_, i64>(3)? != 0,
+        doc,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+    })
+}
 
 fn delivery_str(delivery: &Delivery) -> &'static str {
     match delivery {

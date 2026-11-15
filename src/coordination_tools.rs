@@ -46,6 +46,7 @@ pub fn add_coordination_tools(registry: &mut ToolRegistry) {
     registry.insert(Chats);
     registry.insert(ReadChat);
     registry.insert(PostChat);
+    crate::theme_tools::add_theme_tools(registry);
 }
 
 /// Open the store the daemon owns: the path bound to this session when present,
