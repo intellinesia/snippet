@@ -1463,7 +1463,7 @@ async fn theme_mutations_emit_themes_changed() {
     let mut rx = crate::session::subscribe_device_events();
 
     theme_call(&app, "PUT", "/themes/harbor", Some(harbor_doc())).await;
-    let frame = rx.try_recv().expect("event frame");
+    let frame = next_theme_frame(&mut rx, |f| f["changed"] == "harbor");
     assert_eq!(frame["kind"], "themes_changed");
     assert_eq!(frame["changed"], "harbor");
     assert_eq!(frame["active"], "black");
@@ -1475,9 +1475,22 @@ async fn theme_mutations_emit_themes_changed() {
         Some(serde_json::json!({"id": "harbor"})),
     )
     .await;
-    let frame = rx.try_recv().expect("event frame");
+    let frame = next_theme_frame(&mut rx, |f| f["active"] == "harbor");
     assert_eq!(frame["kind"], "themes_changed");
     assert_eq!(frame["active"], "harbor");
+}
+
+// The device-event bus is process-global, so parallel tests' frames interleave.
+fn next_theme_frame(
+    rx: &mut tokio::sync::broadcast::Receiver<serde_json::Value>,
+    want: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    while let Ok(f) = rx.try_recv() {
+        if f["kind"] == "themes_changed" && want(&f) {
+            return f;
+        }
+    }
+    panic!("no matching themes_changed frame");
 }
 
 #[tokio::test]
