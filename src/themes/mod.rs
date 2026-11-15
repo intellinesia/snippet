@@ -19,11 +19,17 @@ use crate::store::{Store, StoreError};
 pub const LIVE_GROUPS: &[&str] = &[
     "color",
     "accent",
-    "type.uiFont",
-    "type.codeFont",
+    "type",
     "translucency",
     "border",
     "chat",
+    "shape.radiusScale",
+    "shape.radii",
+    "space",
+    "motion",
+    "terminal",
+    "syntax",
+    "backdrop.scene",
 ];
 
 /// Accent preset names (`allAccents` in the client's `lib/theme.dart`). A
