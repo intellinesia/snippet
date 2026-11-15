@@ -77,6 +77,7 @@ mod review;
 mod routing_routes;
 pub mod session_routes;
 mod settle_routes;
+mod theme_routes;
 mod stall;
 pub(crate) mod watches;
 mod followups;
@@ -928,6 +929,10 @@ pub async fn run_serve(
     config.ensure_setups();
     let store = crate::store::Store::open(crate::store::default_db_path())
         .map_err(|error| format!("open store: {error}"))?;
+    // Reseed builtin themes on every start so a regenerated builtin.json lands.
+    if let Err(error) = crate::themes::seed_builtins(&store) {
+        eprintln!("[themes] seed builtins: {error}");
+    }
     let daemon: Shared = Arc::new(Daemon {
         config: std::sync::Mutex::new(config),
         config_path,
@@ -1112,6 +1117,7 @@ pub async fn run_serve(
         .merge(github_routes::router())
         .merge(mission_control::router())
         .merge(goals::router())
+        .merge(theme_routes::router())
         .route("/fs", get(browse_fs))
         .route("/fs/file", get(read_fs_file))
         .route("/fs/files", get(list_fs_files))

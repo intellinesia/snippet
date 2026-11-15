@@ -42,6 +42,23 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              state_json TEXT NOT NULL
          );
 
+         -- Theme documents (schema 1) and the single active-theme pointer.
+         -- `json` holds the whole document; the columns exist for listing and
+         -- author checks without decoding every row.
+         CREATE TABLE IF NOT EXISTS themes (
+             id TEXT PRIMARY KEY NOT NULL,
+             name TEXT NOT NULL,
+             author TEXT NOT NULL,
+             builtin INTEGER NOT NULL DEFAULT 0,
+             json TEXT NOT NULL,
+             created_at INTEGER NOT NULL,
+             updated_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS theme_settings (
+             id INTEGER PRIMARY KEY CHECK (id = 1),
+             active_theme_id TEXT
+         );
+
          CREATE TABLE IF NOT EXISTS recurring_jobs (
              id TEXT PRIMARY KEY NOT NULL,
              title TEXT NOT NULL,

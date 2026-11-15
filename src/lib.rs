@@ -71,6 +71,8 @@ pub mod store;
 pub mod stt;
 pub mod task_state_tools;
 pub mod term;
+pub mod theme_tools;
+pub mod themes;
 pub mod tools;
 pub mod tts;
 pub mod tts_stream;
