@@ -19,11 +19,17 @@ use crate::store::{Store, StoreError};
 pub const LIVE_GROUPS: &[&str] = &[
     "color",
     "accent",
-    "type.uiFont",
-    "type.codeFont",
+    "type",
     "translucency",
     "border",
     "chat",
+    "shape.radiusScale",
+    "shape.radii",
+    "space",
+    "motion",
+    "terminal",
+    "syntax",
+    "backdrop.scene",
 ];
 
 /// Accent preset names (`allAccents` in the client's `lib/theme.dart`). A
@@ -703,15 +709,11 @@ fn validate_type(map: &Map<String, Value>, problems: &mut Vec<String>) {
                     {
                         problems.push(format!("{sp}.weight: expected a number from 100 to 900"));
                     }
-                    if let Some(h) = sm.get("height")
-                        && !in_range(h, 1.0, 2.0)
-                    {
-                        problems.push(format!("{sp}.height: expected a number from 1.0 to 2.0"));
+                    if let Some(h) = sm.get("height") {
+                        check_num_or_pair(h, &format!("{sp}.height"), 1.0, 2.0, problems);
                     }
-                    if let Some(t) = sm.get("tracking")
-                        && !in_range(t, -2.0, 4.0)
-                    {
-                        problems.push(format!("{sp}.tracking: expected a number from -2 to 4"));
+                    if let Some(t) = sm.get("tracking") {
+                        check_num_or_pair(t, &format!("{sp}.tracking"), -2.0, 4.0, problems);
                     }
                 }
             }
@@ -1336,7 +1338,7 @@ pub fn contract() -> Value {
                 "codeFont": MONO_FONTS,
                 "scale": "0.8-1.4",
                 "weights": "{body,label,title,strong}: 100-900 step 100",
-                "styles": format!("{}: {{size: number|pair 8-48, weight: 100-900, height: 1.0-2.0, tracking: -2-4}}", STYLE_NAMES.join("|")),
+                "styles": format!("{}: {{size: number|pair 8-48, weight: 100-900, height: number|pair 1.0-2.0, tracking: number|pair -2-4}}", STYLE_NAMES.join("|")),
             },
             "shape": {
                 "radiusScale": "0-2",
@@ -1526,6 +1528,27 @@ mod tests {
             !problems
                 .iter()
                 .any(|p| p.contains("chat.fontSize") || p.contains("chat.bubbleRadius")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn type_height_and_tracking_take_pairs() {
+        let store = store();
+        let mut doc = child_doc("type-pairs");
+        doc["type"] = json!({"styles": {
+            "pageTitle": {"height": {"phone": 1.2142857, "desktop": 1.3}, "tracking": {"phone": -0.4, "desktop": 0}},
+            "body": {"height": {"phone": 2.5, "desktop": 1.5}},
+        }});
+        let problems = validate(&store, &doc, false);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("type.styles.body.height.phone")),
+            "{problems:?}"
+        );
+        assert!(
+            !problems.iter().any(|p| p.contains("pageTitle")),
             "{problems:?}"
         );
     }

@@ -80,107 +80,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -415,107 +457,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -750,107 +834,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -1085,107 +1211,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -1420,107 +1588,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -1755,107 +1965,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -2090,107 +2342,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -2425,107 +2719,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -2760,107 +3096,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -3095,107 +3473,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -3430,107 +3850,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -3765,107 +4227,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -4100,107 +4604,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -4435,107 +4981,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -4770,107 +5358,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -5105,107 +5735,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -5440,107 +6112,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -5775,107 +6489,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -6110,107 +6866,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -6445,107 +7243,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -6780,107 +7620,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -7115,107 +7997,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -7450,107 +8374,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -7785,107 +8751,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -8120,107 +9128,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -8455,107 +9505,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -8790,107 +9882,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -9125,107 +10259,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -9460,107 +10636,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -9795,107 +11013,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -10130,107 +11390,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -10465,107 +11767,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -10800,107 +12144,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -11135,107 +12521,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -11470,107 +12898,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
@@ -11805,107 +13275,149 @@
       "styles": {
         "pageTitle": {
           "size": {
-            "phone": 28,
-            "desktop": 20
+            "phone": 28.0,
+            "desktop": 20.0
           },
           "weight": 500,
-          "height": 1.3,
-          "tracking": -0.08
+          "height": {
+            "phone": 1.2142857142857142,
+            "desktop": 1.3
+          },
+          "tracking": {
+            "phone": -0.56,
+            "desktop": -0.08
+          }
         },
         "sectionTitle": {
           "size": {
-            "phone": 20,
-            "desktop": 16
+            "phone": 20.0,
+            "desktop": 16.0
           },
           "weight": 500,
-          "height": 1.375,
-          "tracking": 0.0
+          "height": {
+            "phone": 1.3,
+            "desktop": 1.375
+          },
+          "tracking": {
+            "phone": -0.08,
+            "desktop": 0.0
+          }
         },
         "rowTitle": {
           "size": {
-            "phone": 16,
-            "desktop": 13
+            "phone": 16.0,
+            "desktop": 13.0
           },
           "weight": 500,
-          "height": 1.385,
+          "height": {
+            "phone": 1.375,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "body": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.5,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "ui": {
           "size": {
-            "phone": 14,
-            "desktop": 13
+            "phone": 14.0,
+            "desktop": 13.0
           },
           "weight": 400,
-          "height": 1.385,
+          "height": {
+            "phone": 1.4285714285714286,
+            "desktop": 1.3846153846153846
+          },
           "tracking": 0.0
         },
         "label": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 500,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "meta": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.333,
+          "height": {
+            "phone": 1.3846153846153846,
+            "desktop": 1.3333333333333333
+          },
           "tracking": 0.0
         },
         "caption": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 400,
-          "height": 1.273,
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
           "tracking": 0.0
         },
         "overline": {
           "size": {
-            "phone": 12,
-            "desktop": 11
+            "phone": 12.0,
+            "desktop": 11.0
           },
           "weight": 500,
-          "height": 1.273,
-          "tracking": 0.66
+          "height": {
+            "phone": 1.3333333333333333,
+            "desktop": 1.2727272727272727
+          },
+          "tracking": {
+            "phone": 0.72,
+            "desktop": 0.6599999999999999
+          }
         },
         "reading": {
           "size": {
-            "phone": 16,
-            "desktop": 14
+            "phone": 16.0,
+            "desktop": 14.0
           },
           "weight": 400,
-          "height": 1.571,
+          "height": {
+            "phone": 1.625,
+            "desktop": 1.5714285714285714
+          },
           "tracking": 0.0
         },
         "code": {
           "size": {
-            "phone": 13,
-            "desktop": 12
+            "phone": 13.0,
+            "desktop": 12.0
           },
           "weight": 400,
-          "height": 1.5,
+          "height": {
+            "phone": 1.5384615384615385,
+            "desktop": 1.5
+          },
           "tracking": 0.0
         },
         "codeSmall": {
-          "size": 12,
+          "size": 12.0,
           "weight": 400,
-          "height": 1.333,
+          "height": 1.3333333333333333,
           "tracking": 0.0
         }
       }
