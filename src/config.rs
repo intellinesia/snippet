@@ -88,7 +88,44 @@ pub fn snippet_home() -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
+    // Unit tests that never set HOME were writing memory repos into the user's real ~/.snippet.
+    #[cfg(test)]
+    if is_login_home(&home) {
+        return test_snippet_home();
+    }
     home.join(".snippet")
+}
+
+#[cfg(test)]
+fn is_login_home(home: &Path) -> bool {
+    let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buf = vec![0 as libc::c_char; 16 * 1024];
+    let mut out: *mut libc::passwd = std::ptr::null_mut();
+    let rc = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut pw,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut out,
+        )
+    };
+    if rc != 0 || out.is_null() || pw.pw_dir.is_null() {
+        return false;
+    }
+    let dir = unsafe { std::ffi::CStr::from_ptr(pw.pw_dir) };
+    Path::new(&*dir.to_string_lossy()) == home
+}
+
+#[cfg(test)]
+fn test_snippet_home() -> PathBuf {
+    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        std::env::temp_dir()
+            .join(format!("snippet-test-home-{}", std::process::id()))
+            .join(".snippet")
+    })
+    .clone()
 }
 
 /// The default config file: `~/.snippet/config.toml`.
@@ -1083,5 +1120,20 @@ mod tests {
         };
         let model = profile.build_model_for_session(Some("session-1".to_string()));
         assert_eq!(model.context_settings(), Some((1_048_576, 90)));
+    }
+}
+
+#[cfg(test)]
+mod home_isolation_tests {
+    use super::*;
+
+    #[test]
+    fn unit_tests_never_resolve_the_login_home() {
+        let real = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        if is_login_home(&real) {
+            assert!(!snippet_home().starts_with(real.join(".snippet")));
+        }
     }
 }
