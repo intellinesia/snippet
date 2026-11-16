@@ -7,6 +7,12 @@ struct FsEntry {
     path: String,
     is_dir: bool,
     git: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_status: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -21,27 +27,150 @@ pub(super) struct FsQuery {
     path: Option<String>,
 }
 
-// GET /fs?path= — one directory level (lazy folder tree). Defaults to $HOME.
-pub(super) async fn browse_fs(Query(q): Query<FsQuery>) -> Response {
-    let path = q
-        .path
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(home_dir);
+fn status_rank(s: &str) -> u8 {
+    match s {
+        "modified" => 5,
+        "added" => 4,
+        "renamed" => 3,
+        "deleted" => 2,
+        "untracked" => 1,
+        _ => 0,
+    }
+}
+
+fn classify_porcelain_status(x: char, y: char) -> Option<&'static str> {
+    match (x, y) {
+        ('?', '?') => Some("untracked"),
+        ('!', '!') => None,
+        ('D', _) | (_, 'D') => Some("deleted"),
+        ('R', _) | (_, 'R') => Some("renamed"),
+        ('A', _) => Some("added"),
+        ('M', _) | (_, 'M') | ('T', _) | (_, 'T') | ('U', _) | (_, 'U') | ('C', _) => {
+            Some("modified")
+        }
+        _ => None,
+    }
+}
+
+fn parse_git_dir_statuses(
+    porcelain_z: &str,
+    dir_prefix: Option<&str>,
+) -> std::collections::HashMap<String, &'static str> {
+    let mut map: std::collections::HashMap<String, &'static str> = std::collections::HashMap::new();
+    let parts: Vec<&str> = porcelain_z.split('\0').collect();
+    let mut i = 0;
+    while i < parts.len() {
+        let tok = parts[i];
+        i += 1;
+        let bytes = tok.as_bytes();
+        if bytes.len() < 4 || bytes[2] != b' ' {
+            continue;
+        }
+        let x = bytes[0] as char;
+        let y = bytes[1] as char;
+        let raw_path = &tok[3..];
+        if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
+            i += 1; // skip the original path token in -z rename/copy records
+        }
+        let Some(status) = classify_porcelain_status(x, y) else {
+            continue;
+        };
+        let rel = match dir_prefix {
+            Some(prefix) => {
+                let Some(rest) = raw_path
+                    .strip_prefix(prefix)
+                    .and_then(|r| r.strip_prefix('/'))
+                else {
+                    continue;
+                };
+                rest
+            }
+            None => raw_path,
+        };
+        let rel = rel.trim_end_matches('/');
+        if rel.is_empty() {
+            continue;
+        }
+        let entry_name = rel.split('/').next().unwrap_or(rel);
+        if entry_name.is_empty() || entry_name.starts_with('.') {
+            continue;
+        }
+        map.entry(entry_name.to_string())
+            .and_modify(|cur| {
+                if status_rank(status) > status_rank(cur) {
+                    *cur = status;
+                }
+            })
+            .or_insert(status);
+    }
+    map
+}
+
+fn git_dir_statuses(dir: &Path) -> std::collections::HashMap<String, &'static str> {
+    let canon = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let Some(repo_root) = canon.ancestors().find(|a| a.join(".git").exists()) else {
+        return std::collections::HashMap::new();
+    };
+    let prefix = canon
+        .strip_prefix(repo_root)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .filter(|s| !s.is_empty());
+    let Ok(out) = std::process::Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .arg("-C")
+        .arg(&canon)
+        .args([
+            "-c",
+            "core.quotepath=off",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "-uall",
+            "--",
+            ".",
+        ])
+        .output()
+    else {
+        return std::collections::HashMap::new();
+    };
+    if !out.status.success() {
+        return std::collections::HashMap::new();
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    parse_git_dir_statuses(&stdout, prefix.as_deref())
+}
+
+fn list_dir_entries(path: &Path) -> FsListing {
+    let git_statuses = git_dir_statuses(path);
     let mut entries = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&path) {
+    if let Ok(rd) = std::fs::read_dir(path) {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
             if name.starts_with('.') {
                 continue; // hide dotfiles
             }
             let p = e.path();
-            let is_dir = p.is_dir();
+            let meta = std::fs::metadata(&p).ok();
+            let is_dir = meta
+                .as_ref()
+                .map(|m| m.is_dir())
+                .unwrap_or_else(|| p.is_dir());
+            let size = (!is_dir).then(|| meta.as_ref().map(|m| m.len())).flatten();
+            let modified = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64);
+            let git_status = git_statuses.get(&name).copied();
             entries.push(FsEntry {
                 git: is_dir && p.join(".git").exists(),
                 name,
                 path: p.display().to_string(),
                 is_dir,
+                size,
+                modified,
+                git_status,
             });
         }
     }
@@ -50,12 +179,24 @@ pub(super) async fn browse_fs(Query(q): Query<FsQuery>) -> Response {
             .cmp(&a.is_dir)
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
-    Json(FsListing {
+    FsListing {
         parent: path.parent().map(|p| p.display().to_string()),
         path: path.display().to_string(),
         entries,
-    })
-    .into_response()
+    }
+}
+
+// GET /fs?path= — one directory level (lazy folder tree). Defaults to $HOME.
+pub(super) async fn browse_fs(Query(q): Query<FsQuery>) -> Response {
+    let path = q
+        .path
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(home_dir);
+    match tokio::task::spawn_blocking(move || list_dir_entries(&path)).await {
+        Ok(listing) => Json(listing).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 #[derive(Serialize)]
@@ -528,4 +669,98 @@ pub(super) async fn upload_fs_file(Json(req): Json<UploadReq>) -> Response {
     }
     Json(serde_json::json!({"path": path.display().to_string(), "size": bytes.len()}))
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn parse_git_dir_statuses_handles_subtrees_and_renames() {
+        let z = " M src/main.rs\0A  src/new.rs\0R  src/renamed.rs\0src/old.rs\0?? src/sub/extra.rs\0 D src/gone/dead.rs\0?? top.txt\0";
+        let root_map = parse_git_dir_statuses(z, None);
+        assert_eq!(root_map.get("src"), Some(&"modified"));
+        assert_eq!(root_map.get("top.txt"), Some(&"untracked"));
+
+        let src_map = parse_git_dir_statuses(z, Some("src"));
+        assert_eq!(src_map.get("main.rs"), Some(&"modified"));
+        assert_eq!(src_map.get("new.rs"), Some(&"added"));
+        assert_eq!(src_map.get("renamed.rs"), Some(&"renamed"));
+        assert_eq!(src_map.get("old.rs"), None);
+        assert_eq!(src_map.get("sub"), Some(&"untracked"));
+        assert_eq!(src_map.get("gone"), Some(&"deleted"));
+        assert_eq!(src_map.get("top.txt"), None);
+    }
+
+    #[test]
+    fn list_dir_entries_includes_size_modified_and_git_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        run_git(root, &["init", "-q"]);
+        run_git(root, &["config", "user.email", "test@example.com"]);
+        run_git(root, &["config", "user.name", "Test"]);
+
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("clean.txt"), "hello").unwrap();
+        std::fs::write(root.join("mod.txt"), "v1").unwrap();
+        std::fs::write(root.join("sub/nested.txt"), "n1").unwrap();
+        run_git(root, &["add", "."]);
+        run_git(root, &["commit", "-q", "-m", "init"]);
+
+        std::fs::write(root.join("mod.txt"), "v2 changed").unwrap();
+        std::fs::write(root.join("added.txt"), "staged").unwrap();
+        run_git(root, &["add", "added.txt"]);
+        std::fs::write(root.join("untracked.txt"), "new").unwrap();
+        std::fs::write(root.join("sub/nested.txt"), "n2").unwrap();
+
+        let top = list_dir_entries(root);
+        let by_name: std::collections::HashMap<_, _> =
+            top.entries.iter().map(|e| (e.name.as_str(), e)).collect();
+
+        assert_eq!(by_name["sub"].is_dir, true);
+        assert_eq!(by_name["sub"].size, None);
+        assert!(by_name["sub"].modified.is_some());
+        assert_eq!(by_name["sub"].git_status, Some("modified"));
+
+        assert_eq!(by_name["clean.txt"].size, Some(5));
+        assert!(by_name["clean.txt"].modified.is_some());
+        assert_eq!(by_name["clean.txt"].git_status, None);
+
+        assert_eq!(by_name["mod.txt"].size, Some(10));
+        assert_eq!(by_name["mod.txt"].git_status, Some("modified"));
+        assert_eq!(by_name["added.txt"].git_status, Some("added"));
+        assert_eq!(by_name["untracked.txt"].git_status, Some("untracked"));
+
+        let sub = list_dir_entries(&root.join("sub"));
+        assert_eq!(sub.entries.len(), 1);
+        assert_eq!(sub.entries[0].name, "nested.txt");
+        assert_eq!(sub.entries[0].git_status, Some("modified"));
+    }
+
+    #[test]
+    fn list_dir_entries_non_git_dir_has_no_git_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("plain.txt"), "abc").unwrap();
+        let listing = list_dir_entries(tmp.path());
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].size, Some(3));
+        assert!(listing.entries[0].modified.is_some());
+        assert_eq!(listing.entries[0].git_status, None);
+    }
 }

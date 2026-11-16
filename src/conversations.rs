@@ -1016,14 +1016,18 @@ impl Store {
                 .query_row(
                     "SELECT s.updated_at,
                             COALESCE((SELECT ordinal + 1 FROM session_messages WHERE session_id = s.id ORDER BY ordinal DESC LIMIT 1), 0),
-                            COALESCE((SELECT ordinal + 1 FROM session_events WHERE session_id = s.id ORDER BY ordinal DESC LIMIT 1), 0)
+                            COALESCE((SELECT ordinal + 1 FROM session_events WHERE session_id = s.id ORDER BY ordinal DESC LIMIT 1), 0),
+                            COALESCE(s.last_changes, ''),
+                            COALESCE(s.total_changes, '')
                      FROM sessions s WHERE s.id = ?1",
                     params![id],
                     |row| {
                         let updated: String = row.get(0)?;
                         let messages: i64 = row.get(1)?;
                         let events: i64 = row.get(2)?;
-                        Ok(format!("{updated}|{messages}|{events}"))
+                        let last_changes: String = row.get(3)?;
+                        let total_changes: String = row.get(4)?;
+                        Ok(format!("{updated}|{messages}|{events}|{last_changes}|{total_changes}"))
                     },
                 )
                 .optional()

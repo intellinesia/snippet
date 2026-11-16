@@ -4,8 +4,11 @@
 //! and GitHub Enterprise work the same way.
 
 use super::api_error;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use axum::extract::Query;
 use axum::http::StatusCode;
@@ -20,6 +23,142 @@ use super::Shared;
 use super::session_routes::resolve_session_dir;
 
 const GH_TIMEOUT: Duration = Duration::from_secs(45);
+const PR_CACHE_TTL: Duration = Duration::from_secs(300);
+
+#[derive(Clone)]
+struct BranchPrCacheEntry {
+    branch: String,
+    count: usize,
+    fetched_at: Option<Instant>,
+    refreshing: bool,
+}
+
+static BRANCH_PR_CACHE: OnceLock<Mutex<HashMap<String, BranchPrCacheEntry>>> = OnceLock::new();
+static PR_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
+
+fn pr_cache() -> &'static Mutex<HashMap<String, BranchPrCacheEntry>> {
+    BRANCH_PR_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn pr_cache_revision() -> u64 {
+    PR_CACHE_REVISION.load(Ordering::Acquire)
+}
+
+fn has_git_remote(dir: &Path) -> bool {
+    std::process::Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .arg("-C")
+        .arg(dir)
+        .arg("remote")
+        .output()
+        .ok()
+        .is_some_and(|o| {
+            o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty()
+        })
+}
+
+fn parse_open_pr_count(page: &Value) -> usize {
+    page.pointer("/data/repository/pullRequests/nodes")
+        .and_then(Value::as_array)
+        .map(|nodes| nodes.iter().filter(|n| n.get("number").is_some()).count())
+        .unwrap_or(0)
+}
+
+async fn count_open_prs_for_branch(dir: &Path, branch: &str) -> Result<usize, String> {
+    let query = "query=query($owner:String!,$repo:String!,$branch:String!){repository(owner:$owner,name:$repo){pullRequests(states:[OPEN],headRefName:$branch,first:20){nodes{number}}}}";
+    let branch_arg = format!("branch={branch}");
+    let args = [
+        "api",
+        "graphql",
+        "-F",
+        "owner={owner}",
+        "-F",
+        "repo={repo}",
+        "-F",
+        branch_arg.as_str(),
+        "-f",
+        query,
+    ];
+    let page = gh_json(dir, &args).await?;
+    Ok(parse_open_pr_count(&page))
+}
+
+/// Cached open PR count for a session's branch, refreshing in the background at
+/// most every 5 minutes or when the branch changes. Never blocks `/attach`.
+pub(crate) fn cached_open_pr_count(session: &str, workspace: &Path) -> usize {
+    let Some(branch) = crate::session_stats::git_branch(workspace) else {
+        return 0;
+    };
+    let (count, should_refresh) = {
+        let mut cache = pr_cache().lock().unwrap_or_else(|e| e.into_inner());
+        let entry = cache
+            .entry(session.to_string())
+            .or_insert_with(|| BranchPrCacheEntry {
+                branch: branch.clone(),
+                count: 0,
+                fetched_at: None,
+                refreshing: false,
+            });
+        if entry.branch != branch {
+            entry.branch = branch.clone();
+            entry.count = 0;
+            entry.fetched_at = None;
+            entry.refreshing = false;
+        }
+        let fresh = entry
+            .fetched_at
+            .is_some_and(|at| at.elapsed() < PR_CACHE_TTL);
+        let refresh = !fresh && !entry.refreshing;
+        if refresh {
+            entry.refreshing = true;
+        }
+        (entry.count, refresh)
+    };
+    if should_refresh && let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let session = session.to_string();
+        let dir = workspace.to_path_buf();
+        handle.spawn(async move {
+            let fetched = if has_git_remote(&dir) {
+                count_open_prs_for_branch(&dir, &branch).await.unwrap_or(0)
+            } else {
+                0
+            };
+            let mut changed = false;
+            {
+                let mut cache = pr_cache().lock().unwrap_or_else(|e| e.into_inner());
+                let entry = cache.entry(session).or_insert_with(|| BranchPrCacheEntry {
+                    branch: branch.clone(),
+                    count: 0,
+                    fetched_at: None,
+                    refreshing: false,
+                });
+                if entry.branch == branch {
+                    if entry.count != fetched {
+                        entry.count = fetched;
+                        changed = true;
+                    }
+                    entry.fetched_at = Some(Instant::now());
+                    entry.refreshing = false;
+                }
+            }
+            if changed {
+                PR_CACHE_REVISION.fetch_add(1, Ordering::Release);
+            }
+        });
+    }
+    count
+}
+
+pub(crate) fn invalidate_pr_cache(session: &str, workspace: Option<&Path>) {
+    {
+        let mut cache = pr_cache().lock().unwrap_or_else(|e| e.into_inner());
+        cache.remove(session);
+    }
+    PR_CACHE_REVISION.fetch_add(1, Ordering::Release);
+    if let Some(dir) = workspace {
+        let _ = cached_open_pr_count(session, dir);
+    }
+}
 
 pub fn router() -> Router<Shared> {
     Router::new()
@@ -554,6 +693,7 @@ async fn create(Json(req): Json<CreateReq>) -> Response {
     let body = req.body.clone().unwrap_or_default();
     match gh(&dir, &args, title.map(|_| body.as_str())).await {
         Ok(text) => {
+            invalidate_pr_cache(&req.session, Some(&dir));
             Json(json!({ "created": true, "url": text.trim().lines().last().unwrap_or("") }))
                 .into_response()
         }
@@ -650,6 +790,7 @@ async fn merge(Json(req): Json<MergeReq>) -> Response {
             .await
             .is_ok();
     }
+    invalidate_pr_cache(&req.session, Some(&dir));
     Json(json!({ "merged": true, "branch_deleted": deleted })).into_response()
 }
 
@@ -677,7 +818,12 @@ async fn pr_state(Json(req): Json<StateReq>) -> Response {
         _ => return api_error(StatusCode::BAD_REQUEST, "unknown action"),
     };
     match gh(&dir, &args, None).await {
-        Ok(_) => Json(json!({ "done": true })).into_response(),
+        Ok(_) => {
+            if matches!(req.action.as_str(), "close" | "reopen") {
+                invalidate_pr_cache(&req.session, Some(&dir));
+            }
+            Json(json!({ "done": true })).into_response()
+        }
         Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
@@ -778,5 +924,76 @@ async fn commit_diff(Query(q): Query<CommitQuery>) -> Response {
     {
         Ok(text) => Json(json!({ "diff": text })).into_response(),
         Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_open_pr_count_counts_pr_nodes() {
+        let payload = json!({
+            "data": {
+                "repository": {
+                    "pullRequests": {
+                        "nodes": [
+                            {"number": 12},
+                            {"number": 19},
+                            {"other": "ignored"}
+                        ]
+                    }
+                }
+            }
+        });
+        assert_eq!(parse_open_pr_count(&payload), 2);
+        assert_eq!(parse_open_pr_count(&json!({})), 0);
+    }
+
+    #[test]
+    fn branch_pr_cache_respects_ttl_and_branch_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::process::Command::new("git")
+            .args(["-C", &root.display().to_string(), "init", "-q"])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                &root.display().to_string(),
+                "checkout",
+                "-b",
+                "feat/a",
+            ])
+            .status()
+            .unwrap();
+        let session = format!("test-pr-cache-{}", uuid::Uuid::new_v4().simple());
+        {
+            let mut cache = pr_cache().lock().unwrap();
+            cache.insert(
+                session.clone(),
+                BranchPrCacheEntry {
+                    branch: "feat/a".into(),
+                    count: 3,
+                    fetched_at: Some(Instant::now()),
+                    refreshing: false,
+                },
+            );
+        }
+        assert_eq!(cached_open_pr_count(&session, root), 3);
+
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                &root.display().to_string(),
+                "checkout",
+                "-b",
+                "feat/b",
+            ])
+            .status()
+            .unwrap();
+        assert_eq!(cached_open_pr_count(&session, root), 0);
+        invalidate_pr_cache(&session, None);
     }
 }
