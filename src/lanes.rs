@@ -2816,9 +2816,12 @@ Open: docs pending
             }))))
         });
 
+        let now = Utc::now().to_rfc3339();
         let mut failed = test_record();
         failed.id = "lane-1".into();
         failed.status = LaneStatus::Failed;
+        failed.started_at = now.clone();
+        failed.finished_at = Some(now.clone());
         failed.handoff = Some("fix the bug".into());
         failed.paths = vec!["src/lanes.rs".into()];
         failed.read_only = false;
@@ -2828,11 +2831,14 @@ Open: docs pending
         let mut cancelled = test_record();
         cancelled.id = "lane-2".into();
         cancelled.status = LaneStatus::Cancelled;
+        cancelled.started_at = now.clone();
+        cancelled.finished_at = Some(now.clone());
         cancelled.handoff = Some("review diff".into());
         cancelled.read_only = true;
 
         let mut running = test_record();
         running.id = "lane-3".into();
+        running.started_at = now;
         running.status = LaneStatus::Running;
 
         let mut mgr = LaneManager::new(
