@@ -46,8 +46,8 @@ pub use identity::{AgentHome, IdentityError};
 pub use task_state::{Decision, PendingReport, StatePatch, TaskState, VerifyMethod, VerifyMode};
 pub use tasks::{
     HandoffMode, NotificationMarker, Task, TaskAgent, TaskFilter, TaskHandoff, TaskLink,
-    TaskLinkKind, TaskResult, TaskStatus, TaskSubStatus, WorkStep, offer_marker, progress_stamp,
-    stall_marker_for_current_spell, stall_threshold_minutes, stalled_minutes,
+    TaskLinkKind, TaskResult, TaskStatus, TaskSubStatus, WorkStep, offer_marker, plan_counts,
+    progress_stamp, stall_marker_for_current_spell, stall_threshold_minutes, stalled_minutes,
 };
 
 /// The built-in general coding agent. Mission Control dispatches to it unless a

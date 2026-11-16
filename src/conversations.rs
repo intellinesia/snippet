@@ -1223,6 +1223,127 @@ impl Store {
             Ok((rows.collect::<Result<Vec<HarnessEvent>, _>>()?, start, end))
         })
     }
+
+    /// Latest `PlanUpdated` summary per session without loading full transcripts.
+    pub fn session_plans(&self) -> std::collections::HashMap<String, crate::session::SessionPlan> {
+        #[derive(serde::Deserialize)]
+        struct PlanPayload {
+            #[serde(default)]
+            steps: Vec<crate::harness::PlanStep>,
+        }
+        let mut by_session: std::collections::HashMap<
+            String,
+            Vec<(Vec<crate::harness::PlanStep>, Option<i64>)>,
+        > = std::collections::HashMap::new();
+        let _ = self.with_connection(|conn| {
+            // Substring prefilter avoids JSON parsing rows that are not plan updates.
+            let mut stmt = conn.prepare(
+                "SELECT session_id, payload_json, created_at
+                 FROM session_events
+                 WHERE payload_json LIKE '%\"plan_updated\"%'
+                   AND json_extract(payload_json, '$.kind') = 'plan_updated'
+                 ORDER BY session_id, ordinal DESC",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let sid: String = row.get(0)?;
+                let payload_raw: String = row.get(1)?;
+                let created_at: String = row.get(2)?;
+                let Ok(payload) = serde_json::from_str::<PlanPayload>(&payload_raw) else {
+                    continue;
+                };
+                let ts = chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .ok()
+                    .map(|dt| dt.timestamp());
+                by_session.entry(sid).or_default().push((payload.steps, ts));
+            }
+            Ok(())
+        });
+        by_session
+            .into_iter()
+            .filter_map(|(sid, events)| {
+                crate::session::compute_session_plan(&events).map(|p| (sid, p))
+            })
+            .collect()
+    }
+
+    /// Running delegated lanes per session (capped at 3 items; `running` holds full count).
+    pub fn session_running_lanes(
+        &self,
+    ) -> std::collections::HashMap<String, crate::session::SessionLanes> {
+        #[derive(serde::Deserialize)]
+        struct LaneRow {
+            id: String,
+            title: String,
+            #[serde(default)]
+            status: crate::lanes::LaneStatus,
+            #[serde(default)]
+            agent: Option<String>,
+            #[serde(default)]
+            activity: Option<String>,
+        }
+        let mut out = std::collections::HashMap::new();
+        let _ = self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, json_extract(state_json, '$.lanes')
+                 FROM sessions
+                 WHERE json_extract(state_json, '$.lanes') IS NOT NULL",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let sid: String = row.get(0)?;
+                let raw: Option<String> = row.get(1)?;
+                let Some(raw) = raw else { continue };
+                let Ok(lanes) = serde_json::from_str::<Vec<LaneRow>>(&raw) else {
+                    continue;
+                };
+                let running_lanes: Vec<LaneRow> = lanes
+                    .into_iter()
+                    .filter(|l| l.status == crate::lanes::LaneStatus::Running)
+                    .collect();
+                if running_lanes.is_empty() {
+                    continue;
+                }
+                let running = running_lanes.len();
+                let items = running_lanes
+                    .into_iter()
+                    .take(3)
+                    .map(|l| crate::session::SessionLaneItem {
+                        id: l.id,
+                        title: l.title,
+                        agent: l.agent.filter(|s| !s.trim().is_empty()),
+                        activity: l.activity.filter(|s| !s.trim().is_empty()),
+                    })
+                    .collect();
+                out.insert(sid, crate::session::SessionLanes { running, items });
+            }
+            Ok(())
+        });
+        out
+    }
+
+    /// Earliest pending `schedule_wake` unix timestamp per session.
+    pub fn session_next_wakes(&self) -> std::collections::HashMap<String, i64> {
+        let mut out: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        let _ = self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT session_id, due_at FROM session_followups WHERE delivered_at IS NULL",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let sid: String = row.get(0)?;
+                let due_at: String = row.get(1)?;
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&due_at) {
+                    let ts = dt.timestamp();
+                    out.entry(sid)
+                        .and_modify(|cur| *cur = (*cur).min(ts))
+                        .or_insert(ts);
+                }
+            }
+            Ok(())
+        });
+        out
+    }
 }
 
 fn insert_event(

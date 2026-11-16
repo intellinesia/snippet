@@ -4,7 +4,9 @@
 //! and GitHub Enterprise work the same way.
 
 use super::api_error;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use axum::extract::Query;
@@ -15,11 +17,319 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Semaphore;
 
 use super::Shared;
 use super::session_routes::resolve_session_dir;
+use crate::session::{SessionInfo, SessionPr};
 
 const GH_TIMEOUT: Duration = Duration::from_secs(45);
+pub(crate) const PR_TTL_SECS: i64 = 300;
+const BRANCH_PR_FIELDS: &str = "number,title,state,isDraft,mergeable,statusCheckRollup,url";
+
+static PR_CACHE: LazyLock<Mutex<PrCache>> = LazyLock::new(|| Mutex::new(PrCache::default()));
+static PR_SEMAPHORE: Semaphore = Semaphore::const_new(4);
+
+#[derive(Debug, Clone)]
+struct CachedPr {
+    branch: String,
+    folder: String,
+    pr: Option<SessionPr>,
+    fetched_at: i64,
+}
+
+#[derive(Default)]
+pub(crate) struct PrCache {
+    entries: HashMap<String, CachedPr>,
+    in_flight: HashSet<String>,
+}
+
+impl PrCache {
+    pub fn lookup_and_queue(
+        &mut self,
+        session_id: &str,
+        folder: &str,
+        branch: &str,
+        now: i64,
+    ) -> (Option<SessionPr>, bool) {
+        let key = crate::conversations::canonical_session_id(session_id);
+        let (pr, stale) = match self.entries.get(&key) {
+            Some(entry) if entry.branch == branch && entry.folder == folder => {
+                (entry.pr.clone(), now - entry.fetched_at >= PR_TTL_SECS)
+            }
+            _ => (None, true),
+        };
+        if stale && self.in_flight.insert(key) {
+            (pr, true)
+        } else {
+            (pr, false)
+        }
+    }
+
+    pub fn finish_refresh(
+        &mut self,
+        session_id: &str,
+        folder: &str,
+        branch: &str,
+        result: Result<Option<SessionPr>, String>,
+        now: i64,
+    ) -> bool {
+        let key = crate::conversations::canonical_session_id(session_id);
+        self.in_flight.remove(&key);
+        let prev = self.entries.get(&key);
+        let new_pr = match result {
+            Ok(pr) => pr,
+            Err(_) => prev
+                .filter(|e| e.branch == branch && e.folder == folder)
+                .and_then(|e| e.pr.clone()),
+        };
+        let changed = prev.is_none_or(|e| e.branch != branch || e.pr != new_pr);
+        self.entries.insert(
+            key,
+            CachedPr {
+                branch: branch.to_string(),
+                folder: folder.to_string(),
+                pr: new_pr,
+                fetched_at: now,
+            },
+        );
+        changed
+    }
+}
+
+fn now_unix() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+pub(crate) fn session_pr_from_json(v: &Value) -> Option<SessionPr> {
+    let number = v.get("number").and_then(Value::as_u64)?;
+    let title = v.get("title").and_then(Value::as_str)?.to_string();
+    let url = v.get("url").and_then(Value::as_str)?.to_string();
+    let raw_state = v
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    let is_draft = v.get("isDraft").and_then(Value::as_bool).unwrap_or(false);
+    let state = match raw_state.as_str() {
+        "MERGED" => "merged",
+        "CLOSED" => "closed",
+        "OPEN" if is_draft => "draft",
+        "OPEN" => "open",
+        _ => return None,
+    }
+    .to_string();
+    let mergeable = match v.get("mergeable").and_then(Value::as_str) {
+        Some("MERGEABLE") => Some(true),
+        Some("CONFLICTING") => Some(false),
+        _ => None,
+    };
+    let checks = rollup_checks(v.get("statusCheckRollup"));
+    Some(SessionPr {
+        number,
+        title,
+        state,
+        checks,
+        mergeable,
+        url,
+    })
+}
+
+fn rollup_checks(raw: Option<&Value>) -> String {
+    let items: Option<&Vec<Value>> = raw.and_then(|v| {
+        v.as_array()
+            .or_else(|| v.get("nodes").and_then(Value::as_array))
+    });
+    let Some(items) = items else {
+        return "none".to_string();
+    };
+    if items.is_empty() {
+        return "none".to_string();
+    }
+    let mut any_pending = false;
+    for item in items {
+        let conclusion = item
+            .get("conclusion")
+            .or_else(|| item.get("state"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        let status = item
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        match conclusion.as_str() {
+            "FAILURE" | "ERROR" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED"
+            | "STARTUP_FAILURE" => return "failing".to_string(),
+            "SUCCESS" | "NEUTRAL" | "SKIPPED" => {}
+            _ if status == "COMPLETED" => {}
+            _ => any_pending = true,
+        }
+    }
+    if any_pending {
+        "pending".to_string()
+    } else {
+        "passing".to_string()
+    }
+}
+
+async fn has_git_remote(dir: &Path) -> bool {
+    let Ok(out) = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .arg("remote")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .output()
+        .await
+    else {
+        return false;
+    };
+    out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+}
+
+async fn fetch_branch_pr(dir: &Path, branch: &str) -> Result<Option<SessionPr>, String> {
+    if !has_git_remote(dir).await {
+        return Ok(None);
+    }
+    let list = gh_json(
+        dir,
+        &[
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "all",
+            "--limit",
+            "5",
+            "--json",
+            BRANCH_PR_FIELDS,
+        ],
+    )
+    .await?;
+    let Some(items) = list.as_array() else {
+        return Ok(None);
+    };
+    let picked = items
+        .iter()
+        .find(|item| {
+            item.get("state")
+                .and_then(Value::as_str)
+                .is_some_and(|s| s.eq_ignore_ascii_case("OPEN"))
+        })
+        .or_else(|| items.first());
+    Ok(picked.and_then(session_pr_from_json))
+}
+
+fn spawn_pr_refresh(session_id: String, folder: String, branch: String) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        PR_CACHE
+            .lock()
+            .unwrap()
+            .in_flight
+            .remove(&crate::conversations::canonical_session_id(&session_id));
+        return;
+    };
+    handle.spawn(async move {
+        let Ok(_permit) = PR_SEMAPHORE.acquire().await else {
+            return;
+        };
+        let result = fetch_branch_pr(Path::new(&folder), &branch).await;
+        let changed = PR_CACHE.lock().unwrap().finish_refresh(
+            &session_id,
+            &folder,
+            &branch,
+            result,
+            now_unix(),
+        );
+        if changed {
+            crate::session::emit_device_event(json!({
+                "kind": "session_pr",
+                "session": session_id,
+            }));
+        }
+    });
+}
+
+/// Fill each session's `pr` from the per-session cache without ever invoking `gh`.
+/// Missing, stale (>= 5m), or branch-changed entries are queued for background refresh.
+pub(crate) fn attach_cached_prs(sessions: &mut [SessionInfo]) {
+    let now = now_unix();
+    let mut to_refresh: Vec<(String, String, String)> = Vec::new();
+    {
+        let mut cache = PR_CACHE.lock().unwrap();
+        for s in sessions.iter_mut() {
+            if !s.git {
+                continue;
+            }
+            let Some(branch) = s.branch.as_deref().filter(|b| !b.is_empty()) else {
+                continue;
+            };
+            let (pr, needs_refresh) = cache.lookup_and_queue(&s.id, &s.folder, branch, now);
+            s.pr = pr;
+            if needs_refresh {
+                to_refresh.push((s.id.clone(), s.folder.clone(), branch.to_string()));
+            }
+        }
+    }
+    for (id, folder, branch) in to_refresh {
+        spawn_pr_refresh(id, folder, branch);
+    }
+}
+
+async fn refresh_session_pr_now(session_id: &str, dir: &Path) {
+    let Some(branch) = crate::session_stats::git_branch(dir) else {
+        return;
+    };
+    let result = fetch_branch_pr(dir, &branch).await;
+    let folder = dir.display().to_string();
+    let changed =
+        PR_CACHE
+            .lock()
+            .unwrap()
+            .finish_refresh(session_id, &folder, &branch, result, now_unix());
+    if changed {
+        crate::session::emit_device_event(json!({
+            "kind": "session_pr",
+            "session": crate::conversations::canonical_session_id(session_id),
+        }));
+    }
+}
+
+pub(crate) async fn pr_refresh_loop() {
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let mut tick = tokio::time::interval(Duration::from_secs(60));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let to_refresh = tokio::task::spawn_blocking(|| {
+            let mut sessions = crate::session::list_device_sessions();
+            crate::session_stats::attach_git(&mut sessions);
+            let now = now_unix();
+            let mut cache = PR_CACHE.lock().unwrap();
+            let mut out = Vec::new();
+            for s in sessions {
+                if !s.git {
+                    continue;
+                }
+                let Some(branch) = s.branch.as_deref().filter(|b| !b.is_empty()) else {
+                    continue;
+                };
+                let (_, needs_refresh) = cache.lookup_and_queue(&s.id, &s.folder, branch, now);
+                if needs_refresh {
+                    out.push((s.id, s.folder, branch.to_string()));
+                }
+            }
+            out
+        })
+        .await
+        .unwrap_or_default();
+        for (id, folder, branch) in to_refresh {
+            spawn_pr_refresh(id, folder, branch);
+        }
+    }
+}
 
 pub fn router() -> Router<Shared> {
     Router::new()
@@ -554,6 +864,7 @@ async fn create(Json(req): Json<CreateReq>) -> Response {
     let body = req.body.clone().unwrap_or_default();
     match gh(&dir, &args, title.map(|_| body.as_str())).await {
         Ok(text) => {
+            refresh_session_pr_now(&req.session, &dir).await;
             Json(json!({ "created": true, "url": text.trim().lines().last().unwrap_or("") }))
                 .into_response()
         }
@@ -598,7 +909,10 @@ async fn merge(Json(req): Json<MergeReq>) -> Response {
     let number = req.number.to_string();
     if req.disable_auto {
         return match gh(&dir, &["pr", "merge", &number, "--disable-auto"], None).await {
-            Ok(_) => Json(json!({ "auto": false })).into_response(),
+            Ok(_) => {
+                refresh_session_pr_now(&req.session, &dir).await;
+                Json(json!({ "auto": false })).into_response()
+            }
             Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
         };
     }
@@ -636,6 +950,7 @@ async fn merge(Json(req): Json<MergeReq>) -> Response {
         return api_error(StatusCode::BAD_GATEWAY, e);
     }
     if req.auto {
+        refresh_session_pr_now(&req.session, &dir).await;
         return Json(json!({ "auto": true })).into_response();
     }
     let mut deleted = false;
@@ -650,6 +965,7 @@ async fn merge(Json(req): Json<MergeReq>) -> Response {
             .await
             .is_ok();
     }
+    refresh_session_pr_now(&req.session, &dir).await;
     Json(json!({ "merged": true, "branch_deleted": deleted })).into_response()
 }
 
@@ -677,7 +993,10 @@ async fn pr_state(Json(req): Json<StateReq>) -> Response {
         _ => return api_error(StatusCode::BAD_REQUEST, "unknown action"),
     };
     match gh(&dir, &args, None).await {
-        Ok(_) => Json(json!({ "done": true })).into_response(),
+        Ok(_) => {
+            refresh_session_pr_now(&req.session, &dir).await;
+            Json(json!({ "done": true })).into_response()
+        }
         Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
     }
 }
@@ -778,5 +1097,112 @@ async fn commit_diff(Query(q): Query<CommitQuery>) -> Response {
     {
         Ok(text) => Json(json!({ "diff": text })).into_response(),
         Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_pr_from_json_maps_states_checks_and_mergeable() {
+        let open = session_pr_from_json(&json!({
+            "number": 280,
+            "title": "Add session rows",
+            "state": "OPEN",
+            "isDraft": false,
+            "mergeable": "MERGEABLE",
+            "url": "https://github.com/org/repo/pull/280",
+            "statusCheckRollup": [{"conclusion": "SUCCESS", "status": "COMPLETED"}]
+        }))
+        .unwrap();
+        assert_eq!(open.number, 280);
+        assert_eq!(open.state, "open");
+        assert_eq!(open.checks, "passing");
+        assert_eq!(open.mergeable, Some(true));
+
+        let draft = session_pr_from_json(&json!({
+            "number": 281,
+            "title": "WIP",
+            "state": "OPEN",
+            "isDraft": true,
+            "mergeable": "CONFLICTING",
+            "url": "https://github.com/org/repo/pull/281",
+            "statusCheckRollup": [{"status": "IN_PROGRESS"}]
+        }))
+        .unwrap();
+        assert_eq!(draft.state, "draft");
+        assert_eq!(draft.checks, "pending");
+        assert_eq!(draft.mergeable, Some(false));
+
+        let merged = session_pr_from_json(&json!({
+            "number": 282,
+            "title": "Done",
+            "state": "MERGED",
+            "isDraft": false,
+            "mergeable": "UNKNOWN",
+            "url": "https://github.com/org/repo/pull/282",
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS", "status": "COMPLETED"},
+                {"conclusion": "FAILURE", "status": "COMPLETED"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(merged.state, "merged");
+        assert_eq!(merged.checks, "failing");
+        assert_eq!(merged.mergeable, None);
+
+        let closed = session_pr_from_json(&json!({
+            "number": 283,
+            "title": "Closed",
+            "state": "CLOSED",
+            "url": "https://github.com/org/repo/pull/283",
+            "statusCheckRollup": []
+        }))
+        .unwrap();
+        assert_eq!(closed.state, "closed");
+        assert_eq!(closed.checks, "none");
+    }
+
+    #[test]
+    fn pr_cache_dedups_in_flight_expires_at_5m_and_resets_on_branch_change() {
+        let mut cache = PrCache::default();
+        // Initial miss queues refresh and returns None.
+        assert_eq!(
+            cache.lookup_and_queue("s1", "/repo", "feat/a", 1000),
+            (None, true)
+        );
+        // Second call while in-flight does not double-queue.
+        assert_eq!(
+            cache.lookup_and_queue("s1", "/repo", "feat/a", 1001),
+            (None, false)
+        );
+
+        let pr_a = SessionPr {
+            number: 10,
+            title: "A".into(),
+            state: "open".into(),
+            checks: "passing".into(),
+            mergeable: Some(true),
+            url: "https://github.com/o/r/pull/10".into(),
+        };
+        assert!(cache.finish_refresh("s1", "/repo", "feat/a", Ok(Some(pr_a.clone())), 1002));
+
+        // Fresh cache hit within 5 minutes does not queue.
+        assert_eq!(
+            cache.lookup_and_queue("s1", "/repo", "feat/a", 1299),
+            (Some(pr_a.clone()), false)
+        );
+        // After 5 minutes (300s), returns stale cached PR while queueing refresh.
+        assert_eq!(
+            cache.lookup_and_queue("s1", "/repo", "feat/a", 1302),
+            (Some(pr_a), true)
+        );
+        assert!(cache.finish_refresh("s1", "/repo", "feat/a", Ok(None), 1303));
+        // Branch change drops old PR and queues immediately.
+        assert_eq!(
+            cache.lookup_and_queue("s1", "/repo", "feat/b", 1304),
+            (None, true)
+        );
     }
 }

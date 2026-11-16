@@ -686,3 +686,215 @@ mod inbox_tool_tests {
         assert!(tools.contains("send_agent_message"));
     }
 }
+
+#[cfg(test)]
+mod session_row_d2_tests {
+    use super::super::*;
+    use crate::conversations::SessionExtras;
+    use crate::harness::{HarnessEvent, HarnessState, PlanStatus, PlanStep};
+    use crate::lanes::{LaneRecord, LaneStatus};
+    use crate::store::Store;
+
+    fn step(text: &str, status: PlanStatus) -> PlanStep {
+        PlanStep {
+            step: text.to_string(),
+            status,
+        }
+    }
+
+    fn lane(
+        id: &str,
+        title: &str,
+        status: LaneStatus,
+        agent: Option<&str>,
+        activity: Option<&str>,
+    ) -> LaneRecord {
+        LaneRecord {
+            id: id.to_string(),
+            title: title.to_string(),
+            status,
+            handoff: None,
+            summary: None,
+            report: None,
+            structured: None,
+            error: None,
+            started_at: "2026-11-16T00:00:00Z".to_string(),
+            finished_at: None,
+            activity: activity.map(str::to_string),
+            activity_kind: None,
+            activity_at: None,
+            activity_log: Vec::new(),
+            read_only: false,
+            agent: agent.map(str::to_string),
+            profile: None,
+            transcript: None,
+            paths: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn compute_session_plan_tracks_when_current_step_started() {
+        let e_old = (
+            vec![
+                step("Step 1", PlanStatus::InProgress),
+                step("Step 2", PlanStatus::Pending),
+            ],
+            Some(100),
+        );
+        let e_mid = (
+            vec![
+                step("Step 1", PlanStatus::Done),
+                step("Step 2", PlanStatus::InProgress),
+            ],
+            Some(200),
+        );
+        let e_new = (
+            vec![
+                step("Step 1", PlanStatus::Done),
+                step("Step 2", PlanStatus::InProgress),
+                step("Step 3", PlanStatus::Pending),
+            ],
+            Some(300),
+        );
+        // Descending order (latest first).
+        let plan = compute_session_plan(&[e_new, e_mid, e_old]).unwrap();
+        assert_eq!(plan.done, 1);
+        assert_eq!(plan.total, 3);
+        assert_eq!(plan.current.as_deref(), Some("Step 2"));
+        assert_eq!(plan.step_started_at, Some(200));
+
+        assert_eq!(compute_session_plan(&[]), None);
+        assert_eq!(compute_session_plan(&[(Vec::new(), Some(100))]), None);
+    }
+
+    #[test]
+    fn all_device_sessions_with_populates_plan_lanes_and_next_wake_at() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = HarnessState::blank("/tmp/proj", Some("Build D2".into()));
+        state.lanes = vec![
+            lane(
+                "l1",
+                "First",
+                LaneStatus::Running,
+                Some("reviewer"),
+                Some("Reading diffs"),
+            ),
+            lane("l2", "Done", LaneStatus::Completed, None, Some("Finished")),
+            lane(
+                "l3",
+                "Second",
+                LaneStatus::Running,
+                None,
+                Some("Running tests"),
+            ),
+            lane("l4", "Third", LaneStatus::Running, Some("coder"), None),
+            lane("l5", "Fourth", LaneStatus::Running, None, Some("Extra")),
+        ];
+        store
+            .import_session("s1", "wk1", &state, &SessionExtras::default())
+            .unwrap();
+        store
+            .append_conversation_events(
+                "s1",
+                &[HarnessEvent::PlanUpdated {
+                    steps: vec![
+                        step("A", PlanStatus::Done),
+                        step("B", PlanStatus::InProgress),
+                        step("C", PlanStatus::Pending),
+                    ],
+                    explanation: None,
+                }],
+                "2026-11-16T01:00:00Z",
+            )
+            .unwrap();
+        store
+            .append_conversation_events(
+                "s1",
+                &[HarnessEvent::PlanUpdated {
+                    steps: vec![
+                        step("A", PlanStatus::Done),
+                        step("B", PlanStatus::InProgress),
+                        step("C", PlanStatus::Pending),
+                        step("D", PlanStatus::Pending),
+                    ],
+                    explanation: None,
+                }],
+                "2026-11-16T01:05:00Z",
+            )
+            .unwrap();
+        store
+            .schedule_followup(
+                "s1",
+                None,
+                "2026-11-16T03:00:00Z",
+                "later",
+                "2026-11-16T01:00:00Z",
+            )
+            .unwrap();
+        store
+            .schedule_followup(
+                "s1",
+                None,
+                "2026-11-16T02:00:00Z",
+                "sooner",
+                "2026-11-16T01:00:00Z",
+            )
+            .unwrap();
+        let delivered = store
+            .schedule_followup(
+                "s1",
+                None,
+                "2026-11-16T01:30:00Z",
+                "old",
+                "2026-11-16T01:00:00Z",
+            )
+            .unwrap();
+        store
+            .mark_followup_delivered(&delivered.id, "2026-11-16T01:31:00Z", None)
+            .unwrap();
+
+        let empty = HarnessState::blank("/tmp/proj", Some("Empty".into()));
+        store
+            .import_session("s2", "wk1", &empty, &SessionExtras::default())
+            .unwrap();
+
+        let sessions = all_device_sessions_with(Some(&store));
+        let s1 = sessions.iter().find(|s| s.id == "s1").unwrap();
+        let plan = s1.plan.as_ref().unwrap();
+        assert_eq!(plan.done, 1);
+        assert_eq!(plan.total, 4);
+        assert_eq!(plan.current.as_deref(), Some("B"));
+        assert_eq!(
+            plan.step_started_at,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-11-16T01:00:00Z")
+                    .unwrap()
+                    .timestamp()
+            )
+        );
+
+        let lanes = s1.lanes.as_ref().unwrap();
+        assert_eq!(lanes.running, 4);
+        assert_eq!(lanes.items.len(), 3);
+        assert_eq!(lanes.items[0].id, "l1");
+        assert_eq!(lanes.items[0].agent.as_deref(), Some("reviewer"));
+        assert_eq!(lanes.items[0].activity.as_deref(), Some("Reading diffs"));
+        assert_eq!(lanes.items[1].id, "l3");
+        assert_eq!(lanes.items[2].id, "l4");
+
+        assert_eq!(
+            s1.next_wake_at,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-11-16T02:00:00Z")
+                    .unwrap()
+                    .timestamp()
+            )
+        );
+
+        let s2 = sessions.iter().find(|s| s.id == "s2").unwrap();
+        assert!(s2.plan.is_none());
+        assert!(s2.lanes.is_none());
+        assert!(s2.next_wake_at.is_none());
+        assert!(s2.pr.is_none());
+    }
+}

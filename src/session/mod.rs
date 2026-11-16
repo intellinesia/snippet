@@ -808,6 +808,92 @@ pub struct SessionInfo {
     /// Members seated on this session's task (on the parent session).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<SessionMember>>,
+    /// Latest `update_plan` progress for this session, when it has a plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<SessionPlan>,
+    /// Running delegated lanes, capped at 3 items in `items`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lanes: Option<SessionLanes>,
+    /// Earliest pending `schedule_wake` unix timestamp, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_wake_at: Option<i64>,
+    /// Cached GitHub PR summary for this session's branch, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr: Option<SessionPr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPlan {
+    pub done: usize,
+    pub total: usize,
+    pub current: Option<String>,
+    pub step_started_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionLaneItem {
+    pub id: String,
+    pub title: String,
+    pub agent: Option<String>,
+    pub activity: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionLanes {
+    pub running: usize,
+    pub items: Vec<SessionLaneItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPr {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub checks: String,
+    pub mergeable: Option<bool>,
+    pub url: String,
+}
+
+/// Summarize a session's plan from its `PlanUpdated` events ordered newest-first.
+pub fn compute_session_plan(
+    events_desc: &[(Vec<crate::harness::PlanStep>, Option<i64>)],
+) -> Option<SessionPlan> {
+    let (latest_steps, latest_at) = events_desc.first()?;
+    if latest_steps.is_empty() {
+        return None;
+    }
+    let done = latest_steps
+        .iter()
+        .filter(|s| s.status == crate::harness::PlanStatus::Done)
+        .count();
+    let total = latest_steps.len();
+    let current = latest_steps
+        .iter()
+        .find(|s| s.status == crate::harness::PlanStatus::InProgress)
+        .map(|s| s.step.clone());
+    let step_started_at = current.as_deref().and_then(|cur| {
+        let mut started = *latest_at;
+        for (steps, at) in events_desc.iter().skip(1) {
+            let prev_cur = steps
+                .iter()
+                .find(|s| s.status == crate::harness::PlanStatus::InProgress)
+                .map(|s| s.step.as_str());
+            if prev_cur == Some(cur) {
+                if at.is_some() {
+                    started = *at;
+                }
+            } else {
+                break;
+            }
+        }
+        started
+    });
+    Some(SessionPlan {
+        done,
+        total,
+        current,
+        step_started_at,
+    })
 }
 
 /// The inbox session id for an agent: `inbox-<agent-id>`.
@@ -1021,25 +1107,27 @@ pub fn session_task_contexts(store: &crate::store::Store) -> SessionTaskContexts
 /// [`list_device_sessions`] instead.
 pub fn all_device_sessions() -> Vec<SessionInfo> {
     let store = store_for_sessions();
-    let contexts = store
-        .as_ref()
-        .map(session_task_contexts)
-        .unwrap_or_default();
+    all_device_sessions_with(store.as_ref())
+}
+
+pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> Vec<SessionInfo> {
+    let contexts = store.map(session_task_contexts).unwrap_or_default();
+    let mut plans = store.map(|s| s.session_plans()).unwrap_or_default();
+    let mut lanes_map = store.map(|s| s.session_running_lanes()).unwrap_or_default();
+    let mut wakes = store.map(|s| s.session_next_wakes()).unwrap_or_default();
+    let mc_wake = store
+        .map(crate::mission_autonomy::load_from)
+        .and_then(|a| a.followups.iter().map(|f| f.due_at).min());
     let now = now_unix_secs();
     let ttls = crate::settle::profile_cache_ttls();
     let mut out: Vec<SessionInfo> = store
-        .as_ref()
         .and_then(|store| store.list_all_sessions().ok())
         .unwrap_or_default()
         .into_iter()
         .map(|row| {
             let origin = worktree_origin(Path::new(&row.workspace));
             let attention = (row.status == "waiting_for_input")
-                .then(|| {
-                    store
-                        .as_ref()
-                        .and_then(|s| s.current_attention(&row.id).ok().flatten())
-                })
+                .then(|| store.and_then(|s| s.current_attention(&row.id).ok().flatten()))
                 .flatten();
             let (task_id, parent_session_id, agent_id, members) =
                 if let Some((parent_id, task_id, seated_agent)) = contexts.seats.get(&row.id) {
@@ -1065,6 +1153,17 @@ pub fn all_device_sessions() -> Vec<SessionInfo> {
                     crate::settle::idle_secs(now, row.last_active.unwrap_or(0)),
                     crate::settle::ttl_for(&ttls, row.profile.as_deref()),
                 )
+            };
+            let plan = plans.remove(&row.id);
+            let lanes = lanes_map.remove(&row.id);
+            let wake_db = wakes.remove(&row.id);
+            let next_wake_at = if crate::mission_control::is_session_id(&row.id) {
+                match (wake_db, mc_wake) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                }
+            } else {
+                wake_db
             };
             SessionInfo {
                 attention,
@@ -1099,6 +1198,10 @@ pub fn all_device_sessions() -> Vec<SessionInfo> {
                 task_id,
                 parent_session_id,
                 members,
+                plan,
+                lanes,
+                next_wake_at,
+                pr: None,
             }
         })
         .collect();
@@ -1980,6 +2083,10 @@ pub fn create_blank_session_in(
         task_id: None,
         parent_session_id: None,
         members: None,
+        plan: None,
+        lanes: None,
+        next_wake_at: None,
+        pr: None,
     })
 }
 

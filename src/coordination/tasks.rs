@@ -317,6 +317,12 @@ pub fn board_reason(
     Some(reason.to_string())
 }
 
+/// `(done, total)` steps in a task's mirrored working plan.
+pub fn plan_counts(task: &Task) -> (usize, usize) {
+    let done = task.work_plan.iter().filter(|s| s.status == "done").count();
+    (done, task.work_plan.len())
+}
+
 /// The first unfinished step of a worker's plan.
 pub fn current_step(task: &Task) -> Option<String> {
     task.work_plan
