@@ -48,6 +48,8 @@ pub struct GroupSummary {
     /// Events the human has not read yet.
     pub unread: i64,
     pub last_message: Option<GroupLastMessage>,
+    /// Agents woken for this thread whose reply is still in flight.
+    pub replying: Vec<String>,
 }
 
 /// The newest post in a group, for the list preview.
@@ -169,6 +171,7 @@ fn group_from_row(
             },
         )
         .optional()?;
+    let replying = replying_agents(conn, &id)?;
     Ok(GroupSummary {
         id,
         title: row.get(1)?,
@@ -178,7 +181,37 @@ fn group_from_row(
         last_event_at: row.get(4)?,
         unread: row.get(5)?,
         last_message,
+        replying,
     })
+}
+
+/// Agents woken for a group thread whose reply is still in flight: a wake was
+/// delivered for a post they have not answered since, and their inbox session
+/// is mid-turn. A member told to stay quiet goes idle and drops off the list.
+fn replying_agents(
+    conn: &rusqlite::Connection,
+    thread_id: &str,
+) -> Result<Vec<String>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT d.recipient_id
+         FROM message_deliveries d
+         JOIN board_events e ON e.event_id = d.event_id
+         JOIN sessions s ON s.id = CASE
+             WHEN d.recipient_id = 'mission-control' THEN 'mission-control'
+             ELSE 'inbox-' || d.recipient_id END
+         WHERE e.thread_id = ?1
+           AND d.recipient_kind IN ('group', 'group_deferred', 'group_peer', 'group_unanswered')
+           AND d.delivered_at IS NOT NULL
+           AND s.status IN ('running', 'waiting_for_input')
+           AND NOT EXISTS (
+               SELECT 1 FROM board_events r
+               WHERE r.thread_id = ?1 AND r.event_type = 'group_message'
+                 AND r.actor_kind = 'agent' AND r.actor_id = d.recipient_id
+                 AND r.sequence > e.sequence)
+         ORDER BY d.recipient_id",
+    )?;
+    let rows = stmt.query_map(params![thread_id], |row| row.get(0))?;
+    rows.collect()
 }
 
 const GROUP_COLUMNS: &str = "t.id, t.title,
@@ -296,6 +329,41 @@ impl Store {
             ))?;
             let rows = stmt.query_map([], |row| group_from_row(conn, row))?;
             rows.collect()
+        })
+    }
+
+    /// Agents woken for a room whose reply is still in flight. Groups answer
+    /// from their wake deliveries; a task room's wakes are not recorded per
+    /// agent, so this is the seated members whose work session is mid-turn.
+    pub fn room_replying(&self, thread_id: &str) -> Result<Vec<String>, StoreError> {
+        self.with_connection(|conn| {
+            let scope: Option<String> = conn
+                .query_row(
+                    "SELECT scope FROM board_threads WHERE id = ?1",
+                    params![thread_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match scope.as_deref() {
+                Some("group") => replying_agents(conn, thread_id),
+                Some("task") => {
+                    let mut stmt = conn.prepare(
+                        "SELECT ta.agent_id
+                         FROM task_agents ta
+                         JOIN tasks t ON t.id = ta.task_id
+                         JOIN sessions s ON s.id = ta.work_session_id
+                         WHERE t.thread_id = ?1
+                           AND ta.removed_at IS NULL
+                           AND ta.work_session_id IS NOT NULL
+                           AND ta.work_session_id != ''
+                           AND s.status IN ('running', 'waiting_for_input')
+                         ORDER BY ta.agent_id",
+                    )?;
+                    let rows = stmt.query_map(params![thread_id], |row| row.get(0))?;
+                    rows.collect()
+                }
+                _ => Ok(Vec::new()),
+            }
         })
     }
 
@@ -1600,5 +1668,99 @@ mod tests {
             "a and c still get the follow-up, as context, once b replied: {delivered:?}"
         );
         assert_eq!(db.group_post_replies(&p2.event_id).unwrap().len(), 1);
+    }
+
+    fn session(db: &Store, id: &str, status: &str) {
+        db.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, workspace_key, workspace, title, status, created_at, updated_at)
+                 VALUES (?1, 'k', '/tmp', ?1, ?2, ?3, ?3)",
+                rusqlite::params![id, status, T0],
+            )
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn replying_is_a_delivered_wake_with_no_answer_and_a_busy_session() {
+        let (db, id) = three_agent_group();
+        let post = db
+            .post_group_message(
+                &id,
+                ("human", "human"),
+                "@b status?",
+                &["b".into()],
+                None,
+                "k1",
+                T0,
+            )
+            .unwrap();
+        // Delivered, but b has no inbox session yet.
+        db.mark_direct_delivered(&post.event_id, "group", "b", T0)
+            .unwrap();
+        assert!(db.room_replying(&id).unwrap().is_empty());
+        // The deferred wakes for a and c are still pending: not replying.
+        session(&db, "inbox-b", "running");
+        assert_eq!(db.room_replying(&id).unwrap(), vec!["b".to_string()]);
+        assert_eq!(
+            db.get_group(&id).unwrap().unwrap().replying,
+            vec!["b".to_string()]
+        );
+        // b answers; its own later post closes the obligation.
+        db.post_group_message(
+            &id,
+            ("agent", "b"),
+            "all green",
+            &[],
+            Some(&post.event_id),
+            "k2",
+            T1,
+        )
+        .unwrap();
+        assert!(db.room_replying(&id).unwrap().is_empty());
+        // An idle session is not replying even with an unanswered wake.
+        let p2 = db
+            .post_group_message(&id, ("human", "human"), "@c ping", &["c".into()], None, "k3", T2)
+            .unwrap();
+        db.mark_direct_delivered(&p2.event_id, "group", "c", T2)
+            .unwrap();
+        session(&db, "inbox-c", "idle");
+        assert!(db.room_replying(&id).unwrap().is_empty());
+        db.with_connection(|conn| {
+            conn.execute(
+                "UPDATE sessions SET status = 'running' WHERE id = 'inbox-c'",
+                [],
+            )
+        })
+        .unwrap();
+        assert_eq!(db.room_replying(&id).unwrap(), vec!["c".to_string()]);
+    }
+
+    #[test]
+    fn room_replying_on_a_task_room_is_the_busy_seated_members() {
+        let db = Store::open_in_memory().unwrap();
+        let mut task = crate::coordination::Task::filed_by_human(
+            "t1".into(),
+            "T".into(),
+            "Brief".into(),
+            "s1".into(),
+            0,
+            T0.into(),
+        );
+        task.status = crate::coordination::TaskStatus::InProgress;
+        db.create_task(&task).unwrap();
+        db.create_agent(&worker("w")).unwrap();
+        db.add_task_agent_full("t1", "w", "worker", Some("ws-1"), "", "active", T0)
+            .unwrap();
+        session(&db, "ws-1", "running");
+        assert_eq!(
+            db.room_replying(&task.thread_id).unwrap(),
+            vec!["w".to_string()]
+        );
+        db.with_connection(|conn| {
+            conn.execute("UPDATE sessions SET status = 'idle' WHERE id = 'ws-1'", [])
+        })
+        .unwrap();
+        assert!(db.room_replying(&task.thread_id).unwrap().is_empty());
     }
 }

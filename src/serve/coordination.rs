@@ -445,6 +445,19 @@ pub(super) fn task_with_sub_status(store: &crate::store::Store, task: &Task) -> 
     ) {
         map.extend(extra);
         map.extend(crate::task_state_tools::api_fields(store, task));
+        if let Ok(replying) = store.room_replying(&task.thread_id) {
+            map.insert("replying".into(), serde_json::json!(replying));
+        }
+        // The lease holder is the room's turn holder; `since` is unix seconds.
+        if let Ok(Some(lease)) = store.lease_of(&task.id) {
+            let since = chrono::DateTime::parse_from_rfc3339(&lease.acquired_at)
+                .map(|at| at.timestamp())
+                .unwrap_or(0);
+            map.insert(
+                "turn".into(),
+                serde_json::json!({"agent": lease.agent_id, "since": since}),
+            );
+        }
     }
     value
 }

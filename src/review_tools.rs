@@ -608,6 +608,25 @@ pub fn apply_verdict(
             },
         );
     }
+    let by = if reviewer == "user" { "human" } else { reviewer };
+    let at = chrono::DateTime::parse_from_rfc3339(&now)
+        .map(|at| at.timestamp())
+        .unwrap_or(0);
+    room_event(
+        store,
+        task,
+        "task.verdict",
+        if reviewer == "user" { "human" } else { "agent" },
+        by,
+        json!({
+            "verdict": if approve { "approved" } else { "sent_back" },
+            "by": by,
+            "task_id": task.id,
+            "findings_count": findings.len(),
+            "at": at,
+        }),
+        &now,
+    );
     if approve {
         let note = if findings.is_empty() {
             String::new()
@@ -981,5 +1000,37 @@ How: re-ran everything"
             (done.status, done.result.unwrap().summary.as_str()),
             (TaskStatus::Done, "fixed")
         );
+    }
+
+    #[test]
+    fn a_verdict_posts_a_task_verdict_event_to_the_room() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, task) = seed(dir.path(), "s1");
+        let ctx = ToolContext::new(dir.path())
+            .unwrap()
+            .with_store_path(dir.path().join("snippet.db"));
+        let state = store.task_state("rv1").unwrap().unwrap();
+        apply_verdict(
+            &ctx,
+            &store,
+            &task,
+            &state,
+            false,
+            &["src/a.rs:3 unchecked unwrap".to_string()],
+            "reviewer-1",
+            "2026-01-04T00:00:00Z".to_string(),
+        )
+        .unwrap();
+        let events = store.events_for_thread(&task.thread_id, 0, 100).unwrap();
+        let verdict = events
+            .iter()
+            .find(|e| e.event_type == "task.verdict")
+            .expect("the room hears the verdict");
+        assert_eq!(verdict.payload["verdict"], "sent_back");
+        assert_eq!(verdict.payload["by"], "reviewer-1");
+        assert_eq!(verdict.payload["task_id"], "rv1");
+        assert_eq!(verdict.payload["findings_count"], 1);
+        assert_eq!(verdict.actor_kind, "agent");
+        assert_eq!(verdict.actor_id, "reviewer-1");
     }
 }
