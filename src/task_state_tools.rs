@@ -203,6 +203,9 @@ pub fn api_fields(store: &Store, task: &Task) -> serde_json::Map<String, Value> 
         .as_deref()
         .and_then(|id| store.get_goal(id).ok().flatten())
         .map(|g| g.title);
+    let (plan_done, plan_total) = crate::coordination::plan_counts(task);
+    out.insert("plan_done".into(), json!(plan_done));
+    out.insert("plan_total".into(), json!(plan_total));
     out.insert("goal_title".into(), json!(goal_title));
     out.insert("ledger".into(), json!(state));
     out

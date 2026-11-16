@@ -1021,6 +1021,7 @@ pub async fn run_serve(
         let d = daemon.clone();
         tokio::spawn(async move { worktree_totals_loop(d).await });
     }
+    tokio::spawn(github_routes::pr_refresh_loop());
     {
         let d = daemon.clone();
         tokio::spawn(async move { mission_control::dispatch_loop(d).await });
@@ -1408,6 +1409,7 @@ async fn list_sessions(State(d): State<Shared>, Query(q): Query<ListQuery>) -> R
         sessions.truncate(n);
     }
     crate::session_stats::attach_git(&mut sessions);
+    github_routes::attach_cached_prs(&mut sessions);
     let live = d.sessions.lock().await;
     let out: Vec<serde_json::Value> = sessions
         .into_iter()
