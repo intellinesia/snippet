@@ -23,13 +23,12 @@ pub const LIVE_GROUPS: &[&str] = &[
     "translucency",
     "border",
     "chat",
-    "shape.radiusScale",
-    "shape.radii",
+    "shape",
     "space",
     "motion",
     "terminal",
     "syntax",
-    "backdrop.scene",
+    "backdrop",
 ];
 
 /// Accent preset names (`allAccents` in the client's `lib/theme.dart`). A
@@ -1365,7 +1364,7 @@ pub fn contract() -> Value {
                 "durations": "{press,quick,fast,base,open,close,page,slow,pulse}: ms 0-2000",
                 "curves": "{enter,exit}: [x1,y1,x2,y2], each -1 to 2",
             },
-            "backdrop": {"scene": BACKDROP_SCENES, "params": "object of numbers (-1000..1000) and colours, at most 16 keys"},
+            "backdrop": {"scene": BACKDROP_SCENES, "params": "object of numbers (-1000..1000) and colours, at most 16 keys; the client reads speed (0-4, default 1), intensity (0-3, default 1) and tint (colour, default the accent)"},
             "terminal": {"ansi": "array of exactly 16 colours"},
             "syntax": "map of highlight scope name to colour",
         },
