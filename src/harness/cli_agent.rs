@@ -2151,6 +2151,9 @@ impl CodingHarness {
                     summary: format!("lane «{}» · {}", request.lane, request.summary),
                     index: 1,
                     total: lane_approvals.len(),
+                    title: None,
+                    reason: None,
+                    rule: None,
                 });
                 state.status = HarnessStatus::WaitingForInput;
                 lane_prompt_shown = true;
@@ -2532,10 +2535,10 @@ impl CodingHarness {
                             }
                             self.persist(&mut state, &lanes).await?;
                         }
-                        LoopInput::Approve | LoopInput::ApproveAll | LoopInput::Deny => {
+                        LoopInput::Approve | LoopInput::ApproveAll | LoopInput::ApproveRule | LoopInput::Deny => {
                             let (by, via) = super::events::decision_origin(source.as_ref(), "");
                             let outcome = match input {
-                                LoopInput::Approve => "approved",
+                                LoopInput::Approve | LoopInput::ApproveRule => "approved",
                                 LoopInput::ApproveAll => "approved_all",
                                 LoopInput::Deny => "denied",
                                 _ => "denied",
@@ -2553,7 +2556,10 @@ impl CodingHarness {
                                 continue;
                             }
                             let Some(call) = pending_approval.take() else { continue };
-                            self.record_decision(&mut state, "approval", outcome, None, &by, &via);
+                            let granted = matches!(input, LoopInput::ApproveRule)
+                                .then(|| Self::grant_pending_rule(&mut state))
+                                .flatten();
+                            self.record_decision_with_rule(&mut state, "approval", outcome, None, &by, &via, granted);
                             state.status = HarnessStatus::Running;
                             if matches!(input, LoopInput::ApproveAll) && !pending_vault {
                                 state.approval_mode = ApprovalMode::Auto;
@@ -3052,6 +3058,13 @@ impl CodingHarness {
                                     ));
                                 }
                             }
+                        } else if !gated
+                            && state.approval_mode == ApprovalMode::Manual
+                            && let Some(label) = super::allow_rules::covering(&state.allow_rules, &call.name, &call.arguments, true)
+                        {
+                            Self::record_rule_decision(&mut state, &call.name, crate::agent_tools::approval_summary(&custom), label);
+                            self.persist(&mut state, &lanes).await?;
+                            running.push(Box::pin(self.execute_cli_call(call)));
                         } else if gated || state.approval_mode == ApprovalMode::Manual {
                             if pending_approval.take().is_some() || lane_prompt_shown {
                                 self.record_outdated_approval(&mut state, "human", "app");
@@ -3063,6 +3076,11 @@ impl CodingHarness {
                                 summary: crate::agent_tools::approval_summary(&custom),
                                 index: approval_index,
                                 total: approval_index,
+                                title: super::allow_rules::title(&call.name, &call.arguments),
+                                reason: super::allow_rules::reason(&call.arguments),
+                                rule: (!gated)
+                                    .then(|| super::allow_rules::offer(&call.name, &call.arguments, true))
+                                    .flatten(),
                             });
                             state.status = HarnessStatus::WaitingForInput;
                             pending_vault = gated;
@@ -3165,11 +3183,25 @@ impl CodingHarness {
                                 ),
                                 index: approval_index,
                                 total: approval_index,
+                                title: super::allow_rules::title("bash", &call.arguments),
+                                reason: super::allow_rules::reason(&call.arguments),
+                                rule: None,
                             });
                             state.status = HarnessStatus::WaitingForInput;
                             pending_approval = Some(call);
                             pending_vault = true;
                             self.persist(&mut state, &lanes).await?;
+                        }
+                        name if state.approval_mode == ApprovalMode::Manual
+                            && MUTATING_TOOLS.contains(&name)
+                            && super::allow_rules::covers(&state.allow_rules, name, &call.arguments, false) =>
+                        {
+                            let summary = super::prompts::approval_summary(name, &call.arguments);
+                            let label = super::allow_rules::covering(&state.allow_rules, name, &call.arguments, false)
+                                .unwrap_or_default();
+                            Self::record_rule_decision(&mut state, name, summary, label);
+                            self.persist(&mut state, &lanes).await?;
+                            running.push(Box::pin(self.execute_cli_call(call)));
                         }
                         name if state.approval_mode == ApprovalMode::Manual && MUTATING_TOOLS.contains(&name) => {
                             if pending_approval.take().is_some() || lane_prompt_shown {
@@ -3182,6 +3214,9 @@ impl CodingHarness {
                                 summary: super::prompts::approval_summary(name, &call.arguments),
                                 index: approval_index,
                                 total: approval_index,
+                                title: super::allow_rules::title(name, &call.arguments),
+                                reason: super::allow_rules::reason(&call.arguments),
+                                rule: super::allow_rules::offer(name, &call.arguments, false),
                             });
                             state.status = HarnessStatus::WaitingForInput;
                             pending_approval = Some(call);

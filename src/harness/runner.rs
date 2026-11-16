@@ -460,6 +460,9 @@ impl CodingHarness {
                                 Some((LoopInput::ApproveAll, source)) => {
                                     let _ = approval_tx.send((ApprovalDecision::ApproveAll, source));
                                 }
+                                Some((LoopInput::ApproveRule, source)) => {
+                                    let _ = approval_tx.send((ApprovalDecision::ApproveRule, source));
+                                }
                                 Some((LoopInput::Deny, source)) => {
                                     let _ = approval_tx.send((ApprovalDecision::Deny, source));
                                 }
@@ -661,6 +664,9 @@ impl CodingHarness {
                         summary: format!("lane «{}» · {}", request.lane, request.summary),
                         index: 1,
                         total: lane_approvals.len(),
+                        title: None,
+                        reason: None,
+                        rule: None,
                     });
                     state.status = HarnessStatus::WaitingForInput;
                     self.presence("waiting", "user");
@@ -768,11 +774,12 @@ impl CodingHarness {
                             }
                         }
                         // Idle: the only thing to approve is a lane's request.
-                        Some((decision @ (LoopInput::Approve | LoopInput::ApproveAll | LoopInput::Deny), source)) => {
+                        // Lane prompts offer no rule, so approve_rule is a plain approve.
+                        Some((decision @ (LoopInput::Approve | LoopInput::ApproveAll | LoopInput::ApproveRule | LoopInput::Deny), source)) => {
                             if lane_prompt_shown && let Some(request) = lane_approvals.pop_front() {
                                 let (by, via) = super::events::decision_origin(source.as_ref(), "");
                                 let outcome = match decision {
-                                    LoopInput::Approve => "approved",
+                                    LoopInput::Approve | LoopInput::ApproveRule => "approved",
                                     LoopInput::ApproveAll => "approved_all",
                                     LoopInput::Deny => "denied",
                                     _ => "denied",

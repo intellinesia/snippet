@@ -207,6 +207,7 @@ pub async fn attach(info: &DaemonInfo, state_path: &Path) -> Result<SidecarAttac
                         input,
                         LoopInput::Approve
                             | LoopInput::ApproveAll
+                            | LoopInput::ApproveRule
                             | LoopInput::Deny
                             | LoopInput::Answer(_)
                             | LoopInput::UserMessage(_)
@@ -567,6 +568,7 @@ fn apply_wire_frame(
                     acc.status = partial.status;
                     acc.final_text = partial.final_text;
                     acc.approval_mode = partial.approval_mode;
+                    acc.allow_rules = partial.allow_rules;
                     acc.pending_question = partial.pending_question;
                     acc.total_tokens = partial.total_tokens;
                     acc.prompt_tokens = partial.prompt_tokens;

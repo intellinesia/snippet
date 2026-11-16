@@ -30,6 +30,9 @@ fn persist_wait(store: &crate::store::Store, question: bool, stamp: &str) {
             summary: "action".into(),
             index: 1,
             total: 1,
+            title: None,
+            reason: None,
+            rule: None,
         }
     };
     store

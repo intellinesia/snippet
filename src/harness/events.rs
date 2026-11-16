@@ -93,6 +93,21 @@ impl CodingHarness {
         by: &str,
         via: &str,
     ) {
+        self.record_decision_with_rule(state, request, outcome, answer, by, via, None);
+    }
+
+    /// [`Self::record_decision`], naming the allow-rule granted with it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_decision_with_rule(
+        &self,
+        state: &mut HarnessState,
+        request: &str,
+        outcome: &str,
+        answer: Option<String>,
+        by: &str,
+        via: &str,
+        rule: Option<String>,
+    ) {
         let event_kind = if request == "question" {
             "user_question"
         } else {
@@ -167,7 +182,52 @@ impl CodingHarness {
             by: by.to_string(),
             via: via.to_string(),
             at: Utc::now().timestamp(),
+            rule,
         });
+    }
+
+    /// A call that an allow-rule approved without asking: a Decision with no
+    /// request before it, so no card, attention row or notification.
+    pub(super) fn record_rule_decision(
+        state: &mut HarnessState,
+        tool_name: &str,
+        summary: String,
+        rule: String,
+    ) {
+        state.events.push(HarnessEvent::Decision {
+            request: "approval".into(),
+            request_id: String::new(),
+            outcome: "approved".into(),
+            answer: None,
+            tool_name: Some(tool_name.to_string()),
+            summary: Some(summary),
+            by: "rule".into(),
+            via: "rule".into(),
+            at: Utc::now().timestamp(),
+            rule: Some(rule),
+        });
+    }
+
+    /// The allow-rule offered by the pending approval request, if any.
+    pub(super) fn pending_request_rule(
+        state: &HarnessState,
+    ) -> Option<super::allow_rules::AllowRule> {
+        if !Self::has_pending_approval_event(state) {
+            return None;
+        }
+        state.events.iter().rev().find_map(|e| match e {
+            HarnessEvent::ApprovalRequest { rule, .. } => Some(rule.clone()),
+            _ => None,
+        })?
+    }
+
+    /// Grant the pending request's rule (approve_rule) and return its label
+    /// for the Decision; None when the request offered no rule.
+    pub(super) fn grant_pending_rule(state: &mut HarnessState) -> Option<String> {
+        let rule = Self::pending_request_rule(state)?;
+        let label = rule.label.clone();
+        super::allow_rules::grant(&mut state.allow_rules, rule);
+        Some(label)
     }
 
     pub(super) fn has_pending_approval_event(state: &HarnessState) -> bool {
@@ -821,7 +881,10 @@ impl CodingHarness {
             }
             // Approve/Deny are only meaningful while a tool call is awaiting approval
             // inside a step; arriving here (between turns) they're stray no-ops.
-            LoopInput::Approve | LoopInput::ApproveAll | LoopInput::Deny => false,
+            LoopInput::Approve
+            | LoopInput::ApproveAll
+            | LoopInput::ApproveRule
+            | LoopInput::Deny => false,
             LoopInput::SetGoal(text) => {
                 self.begin_goal(state, text);
                 false
@@ -1870,6 +1933,9 @@ mod d1_decision_record_harness_tests {
             summary: "git push --force-with-lease".into(),
             index: 1,
             total: 1,
+            title: None,
+            reason: None,
+            rule: None,
         };
         store
             .append_conversation_events("s1", &[req.clone()], "2026-11-16T00:02:00Z")

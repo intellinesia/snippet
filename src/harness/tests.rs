@@ -119,6 +119,7 @@ mod assistant_dedup_tests {
             lanes: Vec::new(),
             pending_question: None,
             approval_mode: ApprovalMode::Auto,
+            allow_rules: Vec::new(),
             total_tokens: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
@@ -974,6 +975,251 @@ mod steer_and_interrupt_tests {
             )),
             "second model call received stop message as next input: {:?}",
             calls[1]
+        );
+    }
+}
+
+#[cfg(test)]
+mod allow_rule_flow_tests {
+    use super::*;
+    use crate::llm::ModelOutput;
+    use crate::tools::{Tool, ToolResult};
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    struct Scripted(VecDeque<ModelOutput>);
+
+    #[async_trait::async_trait]
+    impl AgentModel for Scripted {
+        async fn generate(
+            &mut self,
+            _messages: &[HarnessMessage],
+            _tools: &[NativeToolDefinition],
+            _force_tool: bool,
+            _sink: Option<StreamHandle>,
+        ) -> Result<ModelOutput, ToolError> {
+            Ok(self.0.pop_front().unwrap_or_else(|| ModelOutput {
+                content_text: Some("done".into()),
+                ..ModelOutput::default()
+            }))
+        }
+    }
+
+    /// Stands in for bash: records each command instead of running it.
+    struct FakeBash(Arc<Mutex<Vec<String>>>);
+
+    #[async_trait::async_trait]
+    impl Tool for FakeBash {
+        fn definition(&self) -> NativeToolDefinition {
+            NativeToolDefinition {
+                name: "bash".into(),
+                description: "fake bash".into(),
+                input_schema: json!({"type": "object", "properties": {}}),
+            }
+        }
+
+        async fn execute(
+            &self,
+            _ctx: &ToolContext,
+            arguments: Value,
+        ) -> Result<ToolResult, ToolError> {
+            let command = arguments["command"].as_str().unwrap_or("").to_string();
+            self.0.lock().unwrap().push(command);
+            Ok(ToolResult::success(json!({"ok": true})))
+        }
+    }
+
+    fn bash_turn(command: &str, id: &str) -> [ModelOutput; 2] {
+        [
+            ModelOutput {
+                calls: vec![GeneratedToolCall {
+                    tool_name: "bash".into(),
+                    arguments: json!({"command": command, "label": "Push the branch", "reason": "So CI runs on it."}),
+                    id: Some(id.into()),
+                    origin_model: None,
+                    signature: None,
+                }],
+                ..ModelOutput::default()
+            },
+            ModelOutput {
+                content_text: Some(format!("{id} done")),
+                ..ModelOutput::default()
+            },
+        ]
+    }
+
+    async fn wait_status(store: &crate::store::Store, id: &str, status: &str) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if store
+                    .get_session_row(id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|row| row.status == status)
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("session reached {status}"));
+    }
+
+    async fn wait_ran(ran: &Arc<Mutex<Vec<String>>>, n: usize) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while ran.lock().unwrap().len() < n {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("tool ran");
+    }
+
+    #[tokio::test]
+    async fn approve_rule_grants_and_later_calls_skip_the_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let mut tools = ToolRegistry::new();
+        tools.insert(FakeBash(ran.clone()));
+        let harness = Arc::new(CodingHarness::new(
+            HarnessConfig {
+                state_path: Some(dir.path().join("state.json")),
+                memory_enabled: false,
+                manual_approval: true,
+                ..HarnessConfig::default()
+            },
+            tools,
+            ToolContext::new(dir.path())
+                .unwrap()
+                .with_store_path(dir.path().join("store.db")),
+        ));
+        let id = harness.session_id().unwrap();
+        let store = harness.store().unwrap();
+        let mut script = VecDeque::new();
+        script.extend(bash_turn("git push", "c1"));
+        script.extend(bash_turn("git push origin main", "c2"));
+        script.extend(bash_turn("git push && rm -rf x", "c3"));
+        let mut model = Scripted(script);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let run_harness = harness.clone();
+        let join = tokio::spawn(async move {
+            run_harness
+                .run_interactive(&mut model, Some("push it".into()), rx, None, None)
+                .await
+                .unwrap()
+        });
+
+        wait_status(&store, &id, "waiting_for_input").await;
+        tx.send(LoopInput::ApproveRule).unwrap();
+        wait_ran(&ran, 1).await;
+        wait_status(&store, &id, "idle").await;
+
+        tx.send(LoopInput::UserMessage("push again".into()))
+            .unwrap();
+        wait_ran(&ran, 2).await;
+        wait_status(&store, &id, "idle").await;
+
+        tx.send(LoopInput::UserMessage("push and clean".into()))
+            .unwrap();
+        wait_status(&store, &id, "waiting_for_input").await;
+        tx.send(LoopInput::Deny).unwrap();
+        wait_status(&store, &id, "idle").await;
+        drop(tx);
+        let state = join.await.unwrap();
+
+        assert_eq!(*ran.lock().unwrap(), ["git push", "git push origin main"]);
+        assert_eq!(
+            state.allow_rules,
+            [allow_rules::AllowRule {
+                id: "bash:git push".into(),
+                label: "pushes".into()
+            }]
+        );
+        let requests: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                HarnessEvent::ApprovalRequest {
+                    summary,
+                    title,
+                    reason,
+                    rule,
+                    ..
+                } => Some((summary.clone(), title.clone(), reason.clone(), rule.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            requests.len(),
+            2,
+            "the second push did not ask: {requests:?}"
+        );
+        assert_eq!(requests[0].1.as_deref(), Some("Push the branch"));
+        assert_eq!(requests[0].2.as_deref(), Some("So CI runs on it."));
+        assert_eq!(
+            requests[0].3.as_ref().map(|r| r.id.as_str()),
+            Some("bash:git push")
+        );
+        assert_eq!(
+            requests[1].3.as_ref().map(|r| r.id.as_str()),
+            Some("bash:git push,rm")
+        );
+        let decisions: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                HarnessEvent::Decision {
+                    outcome,
+                    by,
+                    via,
+                    rule,
+                    summary,
+                    request_id,
+                    ..
+                } => Some((
+                    outcome.as_str(),
+                    by.as_str(),
+                    via.as_str(),
+                    rule.as_deref(),
+                    summary.as_deref(),
+                    request_id.as_str(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(decisions.len(), 3, "{decisions:?}");
+        assert_eq!(decisions[0].0, "approved");
+        assert_eq!(decisions[0].1, "human");
+        assert_eq!(decisions[0].3, Some("pushes"));
+        assert_eq!(
+            decisions[1],
+            (
+                "approved",
+                "rule",
+                "rule",
+                Some("pushes"),
+                Some("git push origin main"),
+                ""
+            )
+        );
+        assert_eq!(decisions[2].0, "denied");
+        assert_eq!(decisions[2].3, None);
+        // The rule-approved call left no attention behind.
+        let rule_pos = state
+            .events
+            .iter()
+            .position(|e| matches!(e, HarnessEvent::Decision { by, .. } if by == "rule"))
+            .unwrap();
+        let prev_request = state.events[..rule_pos]
+            .iter()
+            .rposition(|e| matches!(e, HarnessEvent::ApprovalRequest { .. }))
+            .unwrap();
+        assert!(
+            state.events[prev_request + 1..rule_pos]
+                .iter()
+                .any(|e| matches!(e, HarnessEvent::Decision { by, .. } if by == "human")),
+            "the only request before the rule decision was answered by the user"
         );
     }
 }

@@ -331,7 +331,9 @@ fn approval_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     }
     let mut actions = Vec::new();
     actions.extend(keycap("y", "approve", success()));
-    if total > 1 {
+    if let Some(label) = app.pending_rule_label() {
+        actions.extend(keycap("r", &format!("always allow {label}"), accent()));
+    } else if total > 1 {
         actions.extend(keycap("a", "approve all", accent()));
     }
     actions.extend(keycap("n", "deny", danger()));

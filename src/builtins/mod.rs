@@ -15,6 +15,9 @@ use crate::tools::{ToolError, ToolRegistry};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+/// Schema text for the optional `reason` argument on approval-gated tools.
+pub const REASON_DESCRIPTION: &str = "One short sentence on why this is needed; shown on the user's approval card when the session asks before acting.";
+
 pub fn coding_tools(exa_api_key: Option<String>) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.insert(BashTool);
