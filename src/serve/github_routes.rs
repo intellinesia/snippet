@@ -263,7 +263,11 @@ pub(crate) fn attach_cached_prs(sessions: &mut [SessionInfo]) {
             if !s.git {
                 continue;
             }
-            let Some(branch) = s.branch.as_deref().filter(|b| !b.is_empty()) else {
+            let Some(branch) = s
+                .branch
+                .as_deref()
+                .filter(|b| !b.is_empty() && !matches!(*b, "main" | "master"))
+            else {
                 continue;
             };
             let (pr, needs_refresh) = cache.lookup_and_queue(&s.id, &s.folder, branch, now);
@@ -297,6 +301,31 @@ async fn refresh_session_pr_now(session_id: &str, dir: &Path) {
     }
 }
 
+/// The background poll covers only sessions whose PR can still change: a
+/// feature branch touched in the last three days, or one whose cached PR is
+/// still open. Settled sessions refresh when listed or when a PR action runs,
+/// which keeps the gh calls well inside GitHub's rate limit.
+fn worth_polling(
+    cache: &PrCache,
+    session_id: &str,
+    branch: &str,
+    last_active: i64,
+    now: i64,
+) -> bool {
+    if matches!(branch, "main" | "master") {
+        return false;
+    }
+    if now - last_active < 3 * 24 * 3600 {
+        return true;
+    }
+    let key = crate::conversations::canonical_session_id(session_id);
+    cache
+        .entries
+        .get(&key)
+        .and_then(|e| e.pr.as_ref())
+        .is_some_and(|pr| pr.state == "open" || pr.state == "draft")
+}
+
 pub(crate) async fn pr_refresh_loop() {
     tokio::time::sleep(Duration::from_secs(5)).await;
     let mut tick = tokio::time::interval(Duration::from_secs(60));
@@ -316,6 +345,9 @@ pub(crate) async fn pr_refresh_loop() {
                 let Some(branch) = s.branch.as_deref().filter(|b| !b.is_empty()) else {
                     continue;
                 };
+                if !worth_polling(&cache, &s.id, branch, s.last_active, now) {
+                    continue;
+                }
                 let (_, needs_refresh) = cache.lookup_and_queue(&s.id, &s.folder, branch, now);
                 if needs_refresh {
                     out.push((s.id, s.folder, branch.to_string()));
@@ -1103,6 +1135,21 @@ async fn commit_diff(Query(q): Query<CommitQuery>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polling_skips_main_and_settled_branches_without_an_open_pr() {
+        let now = 10_000_000;
+        let mut cache = PrCache::default();
+        assert!(!worth_polling(&cache, "s1", "main", now, now));
+        assert!(worth_polling(&cache, "s1", "feat/x", now - 3600, now));
+        let old = now - 10 * 24 * 3600;
+        assert!(!worth_polling(&cache, "s1", "feat/x", old, now));
+        let open = session_pr_from_json(&json!({
+            "number": 7, "title": "t", "url": "u", "state": "OPEN"
+        }));
+        cache.finish_refresh("s1", "/w", "feat/x", Ok(open), now);
+        assert!(worth_polling(&cache, "s1", "feat/x", old, now));
+    }
 
     #[test]
     fn session_pr_from_json_maps_states_checks_and_mergeable() {
