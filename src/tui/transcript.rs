@@ -570,6 +570,23 @@ pub(super) fn event_lines(event: &HarnessEvent, width: usize) -> Vec<Line<'stati
             }
         }
         HarnessEvent::ModelError { message } => marker_block("✗", danger(), message, width),
+        HarnessEvent::SessionHandoff {
+            from,
+            to,
+            note,
+            by,
+            pending,
+            ..
+        } => {
+            let label = if *pending {
+                format!("Hands to {to} after this turn")
+            } else if note.trim().is_empty() {
+                format!("{from} → {to} (by {by})")
+            } else {
+                format!("{from} → {to} · {} (by {by})", note.trim())
+            };
+            marker_block("→", muted(), &label, width)
+        }
         HarnessEvent::UserQuestion { questions } => {
             // No "? " marker — questions almost always end with one already.
             let text = question_text(questions).unwrap_or_else(|| "(question)".to_string());

@@ -1313,3 +1313,555 @@ async fn release_route_ends_the_turn_lease_and_seat() {
     .await;
     assert_eq!(again.status(), StatusCode::NOT_FOUND);
 }
+
+fn handoff_test_daemon() -> (Shared, tempfile::TempDir) {
+    let ws = tempfile::tempdir().unwrap();
+    let d = authed_daemon();
+    *d.config.lock().unwrap() = toml::from_str(
+        "[setups.p_default]\nprovider = \"openai\"\nmodel = \"m0\"\napi_key = \"\"\n\
+         [setups.p_snippet]\nprovider = \"openai\"\nmodel = \"m1\"\napi_key = \"\"\n\
+         [setups.p_rook]\nprovider = \"openai\"\nmodel = \"m2\"\napi_key = \"\"\n\
+         [setups.p_rook2]\nprovider = \"openai\"\nmodel = \"m2b\"\napi_key = \"\"\n\
+         [setups.p_pin]\nprovider = \"openai\"\nmodel = \"m3\"\napi_key = \"\"\n\
+         [setups.p_task]\nprovider = \"openai\"\nmodel = \"m4\"\napi_key = \"\"\n",
+    )
+    .unwrap();
+    mission_control::register_builtin_agents(&d);
+    for (id, status) in [
+        ("rook", crate::coordination::types::AgentStatus::Active),
+        ("sage", crate::coordination::types::AgentStatus::Active),
+        ("paused", crate::coordination::types::AgentStatus::Paused),
+    ] {
+        d.store
+            .create_agent(&crate::coordination::types::Agent {
+                id: id.into(),
+                display_name: id.into(),
+                handle: id.into(),
+                kind: crate::coordination::types::AgentKind::Worker,
+                status,
+                capabilities: vec![],
+            })
+            .unwrap();
+    }
+    (d, ws)
+}
+
+fn insert_test_session(
+    d: &Daemon,
+    id: &str,
+    workspace: &Path,
+    status: &str,
+    role: &str,
+    kind: &str,
+    agent_id: Option<&str>,
+) {
+    d.store
+        .create_conversation(
+            &crate::conversations::SessionRow {
+                id: id.into(),
+                workspace_key: "wk".into(),
+                workspace: workspace.display().to_string(),
+                title: Some("Test".into()),
+                status: status.into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                last_active: Some(10),
+                profile: None,
+                role: role.into(),
+                agent_id: agent_id.map(str::to_string),
+                kind: kind.into(),
+                settled_at: None,
+                keep_awake: false,
+                resume_mode: "ask".into(),
+                last_changes: None,
+                total_changes: None,
+                user_seen_at: None,
+                finished_at: None,
+                result_summary: None,
+                pending_handoff: None,
+            },
+            &[],
+            "[]",
+        )
+        .unwrap();
+    d.store.set_session_role(id, role, agent_id).unwrap();
+    if kind != "conversation" {
+        d.store
+            .with_connection(|c| {
+                c.execute(
+                    "UPDATE sessions SET kind = ?2 WHERE id = ?1",
+                    rusqlite::params![id, kind],
+                )
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn profile_precedence_task_over_pin_over_agent_over_default() {
+    let (d, ws) = handoff_test_daemon();
+    insert_test_session(
+        &d,
+        "s-prec",
+        ws.path(),
+        "idle",
+        "standard",
+        "conversation",
+        None,
+    );
+    let sp = state_path_for_id("s-prec").unwrap();
+
+    // 4. Default (no task, no pin, no agent profile).
+    assert_eq!(d.resume_profile("s-prec", &sp), None);
+
+    // 3. Owner agent profile ("snippet" by default, then "rook").
+    d.store
+        .set_agent_profile("snippet", Some("p_snippet"))
+        .unwrap();
+    assert_eq!(
+        d.resume_profile("s-prec", &sp).as_deref(),
+        Some("p_snippet")
+    );
+    d.store
+        .set_session_role("s-prec", "standard", Some("rook"))
+        .unwrap();
+    d.store.set_agent_profile("rook", Some("p_rook")).unwrap();
+    assert_eq!(d.resume_profile("s-prec", &sp).as_deref(), Some("p_rook"));
+
+    // 2. Session pin overrides owner agent profile.
+    d.store
+        .set_session_profile("s-prec", Some("p_pin"))
+        .unwrap();
+    assert_eq!(d.resume_profile("s-prec", &sp).as_deref(), Some("p_pin"));
+
+    // 1. In-progress task overrides session pin.
+    let mut task = crate::coordination::Task::dispatched_to(
+        "t-prec".into(),
+        "s-prec".into(),
+        "Task".into(),
+        "scope".into(),
+        vec![],
+        crate::coordination::HandoffMode::Resume,
+        "human",
+        "human",
+        "2026-01-01T00:00:00Z".into(),
+    );
+    task.status = crate::coordination::TaskStatus::InProgress;
+    task.profile = Some("p_task".into());
+    d.store.create_task(&task).unwrap();
+    assert_eq!(d.resume_profile("s-prec", &sp).as_deref(), Some("p_task"));
+}
+
+#[tokio::test]
+async fn open_session_uses_owner_profile_without_pinning_unless_explicit() {
+    let (d, ws) = handoff_test_daemon();
+    d.store
+        .set_agent_profile("snippet", Some("p_snippet"))
+        .unwrap();
+
+    let resp = open_session(
+        State(d.clone()),
+        Json(OpenReq {
+            folder: ws.path().display().to_string(),
+            resume: false,
+            profile: None,
+            new_conversation: true,
+            workspace: crate::session::WorkspaceMode::Folder,
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 16384).await.unwrap())
+            .unwrap();
+    let id = body["id"].as_str().unwrap().to_string();
+    {
+        let mut sessions = d.sessions.lock().await;
+        let live = sessions.remove(&id).unwrap();
+        assert_eq!(live.profile.as_deref(), Some("p_snippet"));
+        live.join.abort();
+    }
+    assert_eq!(
+        d.store
+            .get_session_row(&id)
+            .unwrap()
+            .and_then(|r| r.profile),
+        None
+    );
+}
+
+#[tokio::test]
+async fn handoff_applies_keeps_pin_clears_back_to_snippet_and_persists_event() {
+    let (d, ws) = handoff_test_daemon();
+    d.store.set_agent_profile("rook", Some("p_rook")).unwrap();
+    insert_test_session(
+        &d,
+        "s-hand",
+        ws.path(),
+        "idle",
+        "standard",
+        "conversation",
+        None,
+    );
+    let mut rx = subscribe_device_events();
+
+    // Unpinned hand-off to rook moves owner and adopts rook's profile.
+    let resp = handoff::handoff_route(
+        State(d.clone()),
+        Json(
+            serde_json::from_value(serde_json::json!({
+                "session": "s-hand",
+                "to_agent": "rook",
+                "note": "take over security audit"
+            }))
+            .unwrap(),
+        ),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 16384).await.unwrap())
+            .unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "session": "s-hand",
+            "from": "snippet",
+            "to": "rook",
+            "pending": false
+        })
+    );
+
+    let row = d.store.get_session_row("s-hand").unwrap().unwrap();
+    assert_eq!(row.agent_id.as_deref(), Some("rook"));
+    {
+        let sessions = d.sessions.lock().await;
+        assert_eq!(sessions["s-hand"].profile.as_deref(), Some("p_rook"));
+    }
+    let events = d.store.load_conversation_events("s-hand").unwrap();
+    assert!(matches!(
+        events.last(),
+        Some(HarnessEvent::SessionHandoff {
+            from,
+            to,
+            note,
+            by,
+            pending: false,
+            ..
+        }) if from == "snippet" && to == "rook" && note == "take over security audit" && by == "human"
+    ));
+
+    let mut saw_device_event = false;
+    while let Ok(ev) = rx.try_recv() {
+        if ev.get("kind").and_then(|k| k.as_str()) == Some("session_handoff")
+            && ev.get("session").and_then(|s| s.as_str()) == Some("s-hand")
+        {
+            assert!(
+                ev.get("status")
+                    .and_then(|s| s.as_str())
+                    .is_some_and(|s| !s.is_empty())
+            );
+            saw_device_event = true;
+        }
+    }
+    assert!(saw_device_event, "expected session_handoff device event");
+
+    // Pin stays on hand-off even when moving to an agent with a different (or no) profile.
+    d.store
+        .set_session_profile("s-hand", Some("p_pin"))
+        .unwrap();
+    let out = handoff::hand_off_session(&d, "s-hand", "sage", "review", "human")
+        .await
+        .unwrap();
+    assert!(!out.pending);
+    {
+        let sessions = d.sessions.lock().await;
+        assert_eq!(sessions["s-hand"].profile.as_deref(), Some("p_pin"));
+    }
+    assert_eq!(
+        d.store
+            .get_session_row("s-hand")
+            .unwrap()
+            .unwrap()
+            .profile
+            .as_deref(),
+        Some("p_pin")
+    );
+
+    // Handing back to "snippet" writes agent_id = None.
+    handoff::hand_off_session(&d, "s-hand", "snippet", "", "human")
+        .await
+        .unwrap();
+    assert_eq!(
+        d.store.get_session_row("s-hand").unwrap().unwrap().agent_id,
+        None
+    );
+    if let Some(live) = d.sessions.lock().await.remove("s-hand") {
+        live.join.abort();
+    }
+}
+
+#[tokio::test]
+async fn handoff_refuses_invalid_targets_and_oversized_notes() {
+    let (d, ws) = handoff_test_daemon();
+    insert_test_session(
+        &d,
+        "s-ref",
+        ws.path(),
+        "idle",
+        "standard",
+        "conversation",
+        None,
+    );
+    insert_test_session(
+        &d,
+        crate::mission_control::SESSION_ID,
+        ws.path(),
+        "idle",
+        "mission_control",
+        "mission_control",
+        None,
+    );
+    insert_test_session(
+        &d,
+        "inbox-rook",
+        ws.path(),
+        "idle",
+        "coordination",
+        "inbox",
+        Some("rook"),
+    );
+    insert_test_session(
+        &d,
+        "coord-1",
+        ws.path(),
+        "idle",
+        "coordination",
+        "conversation",
+        Some("rook"),
+    );
+
+    // Refuses MC, desk, coordination session.
+    for target in [crate::mission_control::SESSION_ID, "inbox-rook", "coord-1"] {
+        assert!(
+            handoff::hand_off_session(&d, target, "sage", "hi", "human")
+                .await
+                .is_err(),
+            "{target} must be refused"
+        );
+    }
+    // Refuses unknown, inactive, non-worker, same-owner, and >4000-char notes.
+    assert!(
+        handoff::hand_off_session(&d, "s-ref", "ghost", "hi", "human")
+            .await
+            .is_err()
+    );
+    assert!(
+        handoff::hand_off_session(&d, "s-ref", "paused", "hi", "human")
+            .await
+            .is_err()
+    );
+    assert!(
+        handoff::hand_off_session(
+            &d,
+            "s-ref",
+            crate::mission_control::SESSION_ID,
+            "hi",
+            "human"
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        handoff::hand_off_session(&d, "s-ref", "snippet", "hi", "human")
+            .await
+            .is_err()
+    );
+    let long_note = "a".repeat(4001);
+    assert!(
+        handoff::hand_off_session(&d, "s-ref", "rook", &long_note, "human")
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn handoff_goes_pending_while_busy_replaces_and_applies_at_idle() {
+    let (d, ws) = handoff_test_daemon();
+    d.store.set_agent_profile("rook", Some("p_rook")).unwrap();
+    insert_test_session(
+        &d,
+        "s-pend",
+        ws.path(),
+        "running",
+        "standard",
+        "conversation",
+        None,
+    );
+
+    let first = handoff::hand_off_session(&d, "s-pend", "rook", "first", "human")
+        .await
+        .unwrap();
+    assert!(first.pending);
+    let second = handoff::hand_off_session(&d, "s-pend", "sage", "newer", "human")
+        .await
+        .unwrap();
+    assert!(second.pending);
+
+    let events = d.store.load_conversation_events("s-pend").unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(matches!(
+        &events[1],
+        HarnessEvent::SessionHandoff { to, pending: true, .. } if to == "sage"
+    ));
+
+    // Still waiting_for_input does not apply yet.
+    d.store
+        .with_connection(|c| {
+            c.execute(
+                "UPDATE sessions SET status = 'waiting_for_input' WHERE id = 's-pend'",
+                [],
+            )
+        })
+        .unwrap();
+    handoff::apply_pending_handoff(&d, "s-pend").await;
+    assert!(
+        d.store
+            .get_session_row("s-pend")
+            .unwrap()
+            .unwrap()
+            .pending_handoff
+            .is_some()
+    );
+
+    // Transitioning to idle applies the latest pending hand-off.
+    d.store
+        .with_connection(|c| {
+            c.execute(
+                "UPDATE sessions SET status = 'idle' WHERE id = 's-pend'",
+                [],
+            )
+        })
+        .unwrap();
+    handoff::apply_pending_handoff(&d, "s-pend").await;
+
+    let row = d.store.get_session_row("s-pend").unwrap().unwrap();
+    assert_eq!(row.pending_handoff, None);
+    assert_eq!(row.agent_id.as_deref(), Some("sage"));
+    let events = d.store.load_conversation_events("s-pend").unwrap();
+    assert!(matches!(
+        events.last(),
+        Some(HarnessEvent::SessionHandoff { to, note, pending: false, .. }) if to == "sage" && note == "newer"
+    ));
+    if let Some(live) = d.sessions.lock().await.remove("s-pend") {
+        live.join.abort();
+    }
+}
+
+#[tokio::test]
+async fn unpinned_live_session_follows_agent_profile_change() {
+    let (d, ws) = handoff_test_daemon();
+    d.store.set_agent_profile("rook", Some("p_rook")).unwrap();
+    insert_test_session(
+        &d,
+        "s-unpinned",
+        ws.path(),
+        "idle",
+        "standard",
+        "conversation",
+        Some("rook"),
+    );
+    insert_test_session(
+        &d,
+        "s-pinned",
+        ws.path(),
+        "idle",
+        "standard",
+        "conversation",
+        Some("rook"),
+    );
+    d.store
+        .set_session_profile("s-pinned", Some("p_pin"))
+        .unwrap();
+
+    d.run_session_on_profile("s-unpinned", "p_rook", false)
+        .await
+        .unwrap();
+    d.run_session_on_profile("s-pinned", "p_pin", false)
+        .await
+        .unwrap();
+
+    d.store.set_agent_profile("rook", Some("p_rook2")).unwrap();
+    d.follow_agent_profile("rook");
+
+    // Wait briefly for the spawned follow_agent_profile task to switch the unpinned session.
+    let mut switched = false;
+    for _ in 0..30 {
+        {
+            let sessions = d.sessions.lock().await;
+            if sessions
+                .get("s-unpinned")
+                .and_then(|s| s.profile.as_deref())
+                == Some("p_rook2")
+            {
+                switched = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(switched, "unpinned session should follow agent profile");
+
+    let mut sessions = d.sessions.lock().await;
+    assert_eq!(sessions["s-pinned"].profile.as_deref(), Some("p_pin"));
+    for id in ["s-unpinned", "s-pinned"] {
+        if let Some(live) = sessions.remove(id) {
+            live.join.abort();
+        }
+    }
+}
+
+#[tokio::test]
+async fn seen_route_clears_came_back_and_404s_unknown() {
+    let (d, ws) = handoff_test_daemon();
+    insert_test_session(
+        &d,
+        "s-seen",
+        ws.path(),
+        "idle",
+        "standard",
+        "conversation",
+        None,
+    );
+    d.store
+        .set_session_finished("s-seen", 1000, Some("All done"))
+        .unwrap();
+    let row = d.store.get_session_row("s-seen").unwrap().unwrap();
+    assert!(crate::session::compute_came_back(
+        &row.id,
+        &row.status,
+        row.finished_at,
+        row.user_seen_at
+    ));
+
+    let resp = session_routes::seen_session(
+        State(d.clone()),
+        Json(serde_json::from_value(serde_json::json!({ "session": "s-seen" })).unwrap()),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let row = d.store.get_session_row("s-seen").unwrap().unwrap();
+    assert!(!crate::session::compute_came_back(
+        &row.id,
+        &row.status,
+        row.finished_at,
+        row.user_seen_at
+    ));
+
+    let missing = session_routes::seen_session(
+        State(d),
+        Json(serde_json::from_value(serde_json::json!({ "session": "missing" })).unwrap()),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}

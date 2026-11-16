@@ -260,6 +260,16 @@ pub enum HarnessEvent {
         tool_name: String,
         error: String,
     },
+    /// Session ownership passed from one agent to another.
+    SessionHandoff {
+        from: String,
+        to: String,
+        note: String,
+        by: String,
+        at: i64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pending: bool,
+    },
     /// An event kind this build no longer produces (e.g. the retired `note`),
     /// read from an older session and ignored.
     #[serde(other)]

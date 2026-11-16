@@ -421,6 +421,9 @@ impl CodingHarness {
                         .map(|lane| lane.title.clone())
                         .collect::<Vec<_>>(),
                 );
+                if !matches!(status.as_str(), "running" | "waiting_for_input") {
+                    crate::serve::handoff::apply_pending_handoff_if_due(&id);
+                }
                 Ok(())
             }
             Err(error) => Err(ToolError::msg(format!("persist session: {error}"))),
