@@ -616,7 +616,7 @@ pub(crate) fn normalize_agent_character(raw: Option<&str>) -> Result<Option<Stri
 pub(crate) fn default_agent_character(agent_id: &str) -> String {
     match agent_id {
         "mission-control" => "14".to_string(),
-        "snippet" => "19".to_string(),
+        "snippet" => "01".to_string(),
         _ => {
             // Stable FNV-1a hash so defaults do not drift across Rust versions or restarts.
             let mut h: u64 = 0xcbf29ce484222325;
@@ -624,7 +624,10 @@ pub(crate) fn default_agent_character(agent_id: &str) -> String {
                 h ^= u64::from(b);
                 h = h.wrapping_mul(0x100000001b3);
             }
-            format!("{:02}", (h % 36) + 1)
+            // 01 and 14 stay reserved so no agent defaults to Snippet's or
+            // Mission Control's look.
+            let pool: Vec<u64> = (1..=36).filter(|n| *n != 1 && *n != 14).collect();
+            format!("{:02}", pool[(h % pool.len() as u64) as usize])
         }
     }
 }
@@ -977,5 +980,20 @@ pub(crate) async fn notification_replay(Query(q): Query<NotificationReplayQuery>
     match result {
         Ok(page) => Json(page).into_response(),
         Err(error) => api_error(StatusCode::SERVICE_UNAVAILABLE, error),
+    }
+}
+
+#[cfg(test)]
+mod default_character_tests {
+    use super::default_agent_character;
+
+    #[test]
+    fn snippet_is_rook_and_reserved_looks_are_not_handed_out() {
+        assert_eq!(default_agent_character("snippet"), "01");
+        assert_eq!(default_agent_character("mission-control"), "14");
+        for i in 0..500 {
+            let c = default_agent_character(&format!("agent-{i}"));
+            assert!(c != "01" && c != "14", "agent-{i} got {c}");
+        }
     }
 }

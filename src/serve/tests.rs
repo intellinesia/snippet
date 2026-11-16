@@ -1349,7 +1349,7 @@ async fn agent_character_route_validates_and_resolves_defaults() {
         })
         .collect();
     assert_eq!(by_id.get("mission-control").map(String::as_str), Some("14"));
-    assert_eq!(by_id.get("snippet").map(String::as_str), Some("19"));
+    assert_eq!(by_id.get("snippet").map(String::as_str), Some("01"));
     assert_eq!(by_id.get("custom-char").map(String::as_str), Some("07"));
 
     // Invalid character values are rejected.
@@ -1402,7 +1402,7 @@ async fn agent_character_route_validates_and_resolves_defaults() {
         .find(|v| v["id"] == "snippet")
         .and_then(|v| v["character"].as_str())
         .unwrap();
-    assert_eq!(snippet_char, "19");
+    assert_eq!(snippet_char, "01");
 
     // Unknown agent returns 404.
     let missing = set_agent_character(
