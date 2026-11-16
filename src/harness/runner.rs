@@ -48,7 +48,8 @@ impl CodingHarness {
         // One-shot / lane runs are always Auto — force it so a resumed/forced Manual
         // state can't block forever on an approval channel that's never driven here.
         state.approval_mode = ApprovalMode::Auto;
-        let (_approval_tx, mut approval_rx) = mpsc::unbounded_channel::<ApprovalDecision>();
+        let (_approval_tx, mut approval_rx) =
+            mpsc::unbounded_channel::<(ApprovalDecision, Option<DecisionSource>)>();
         for iteration in start..=self.config.runtime_backstop_iterations {
             state.iterations = iteration;
             if let Some(mailbox) = &self.config.lane_mailbox {
@@ -210,13 +211,16 @@ impl CodingHarness {
                 let mut needs_persist = false;
                 let mut woke = false;
                 for input in std::mem::take(&mut pending_inputs) {
-                    match input {
+                    let (inner, source) = input.unwrap_source();
+                    match inner {
                         // Buffered /compact must actually run — `apply_input`
                         // treated it as a no-op, silently swallowing the request.
                         LoopInput::Compact => wants_compact = true,
-                        LoopInput::Queue(_) | LoopInput::Unqueue(_) | LoopInput::DropQueued => {
+                        other @ (LoopInput::Queue(_)
+                        | LoopInput::Unqueue(_)
+                        | LoopInput::DropQueued) => {
                             needs_persist = true;
-                            self.apply_input(&mut state, input);
+                            self.apply_input(&mut state, other);
                         }
                         LoopInput::SteerQueued(id) => {
                             if let Some(text) = take_queued(&mut state, &id) {
@@ -229,7 +233,10 @@ impl CodingHarness {
                                     state.events.push(HarnessEvent::Steer { text });
                                     self.bump_activity();
                                 } else {
-                                    self.accept_user_message(&mut state, &mut vars, text).await;
+                                    self.accept_user_message_with_source(
+                                        &mut state, &mut vars, text, source,
+                                    )
+                                    .await;
                                     consecutive_errors = 0;
                                 }
                             } else {
@@ -269,7 +276,10 @@ impl CodingHarness {
                                 // that ended the turn), not a steer — take the full
                                 // new-request path (checkpoint, budget/dedup reset,
                                 // pending-question clearing).
-                                self.accept_user_message(&mut state, &mut vars, text).await;
+                                self.accept_user_message_with_source(
+                                    &mut state, &mut vars, text, source,
+                                )
+                                .await;
                                 consecutive_errors = 0;
                             }
                         }
@@ -285,7 +295,11 @@ impl CodingHarness {
                             ) {
                                 needs_persist = true;
                             }
-                            self.apply_input(&mut state, other);
+                            let wrapped = match source {
+                                Some(src) => other.with_source(src.by, src.via),
+                                None => other,
+                            };
+                            self.apply_input(&mut state, wrapped);
                             woke |= !was_running && state.status == HarnessStatus::Running;
                         }
                     }
@@ -335,7 +349,10 @@ impl CodingHarness {
             }
 
             if state.status == HarnessStatus::Running {
-                lane_prompt_shown = false;
+                if lane_prompt_shown {
+                    self.record_outdated_approval(&mut state, "human", "app");
+                    lane_prompt_shown = false;
+                }
                 if !model.is_configured() {
                     state.events.push(HarnessEvent::ModelError {
                         message:
@@ -385,7 +402,9 @@ impl CodingHarness {
                 // Bridge approvals from the input channel to the in-flight step: while
                 // a mutating tool waits (manual mode), Approve/Deny arrive here and are
                 // forwarded to the step over this channel; interrupt still cancels.
-                let (approval_tx, mut approval_rx) = mpsc::unbounded_channel::<ApprovalDecision>();
+                let (approval_tx, mut approval_rx) =
+                    mpsc::unbounded_channel::<(ApprovalDecision, Option<DecisionSource>)>();
+                let mut interrupted_by: Option<DecisionSource> = None;
                 let outcome = {
                     let step_fut = self.step(
                         model,
@@ -401,20 +420,27 @@ impl CodingHarness {
                     loop {
                         tokio::select! {
                             result = &mut step_fut => break Some(result),
-                            msg = input_rx.recv() => match msg {
-                                Some(LoopInput::Interrupt) | None => break None,
-                                Some(LoopInput::Approve) => {
-                                    let _ = approval_tx.send(ApprovalDecision::Approve);
+                            msg = input_rx.recv() => match msg.map(LoopInput::unwrap_source) {
+                                Some((LoopInput::Interrupt, source)) => {
+                                    interrupted_by = source;
+                                    break None;
                                 }
-                                Some(LoopInput::ApproveAll) => {
-                                    let _ = approval_tx.send(ApprovalDecision::ApproveAll);
+                                None => break None,
+                                Some((LoopInput::Approve, source)) => {
+                                    let _ = approval_tx.send((ApprovalDecision::Approve, source));
                                 }
-                                Some(LoopInput::Deny) => {
-                                    let _ = approval_tx.send(ApprovalDecision::Deny);
+                                Some((LoopInput::ApproveAll, source)) => {
+                                    let _ = approval_tx.send((ApprovalDecision::ApproveAll, source));
+                                }
+                                Some((LoopInput::Deny, source)) => {
+                                    let _ = approval_tx.send((ApprovalDecision::Deny, source));
                                 }
                                 // Queue/unqueue/drop land after this step — `state`
                                 // is borrowed by the in-flight tool/model call.
-                                Some(other) => pending_inputs.push(other),
+                                Some((other, source)) => pending_inputs.push(match source {
+                                    Some(src) => other.with_source(src.by, src.via),
+                                    None => other,
+                                }),
                             },
                             Some(request) = lane_approval_rx.recv() => lane_approvals.push_back(request),
                         }
@@ -424,7 +450,7 @@ impl CodingHarness {
                 let Some(result) = outcome else {
                     // Drain any remaining inputs buffered right before/with the interrupt
                     while let Ok(msg) = input_rx.try_recv() {
-                        if !matches!(msg, LoopInput::Interrupt) {
+                        if !matches!(msg.inner(), LoopInput::Interrupt) {
                             pending_inputs.push(msg);
                         }
                     }
@@ -437,6 +463,8 @@ impl CodingHarness {
                     if let Some((ids, _)) = voice_turn_ids(&state.messages) {
                         crate::ambient::record_outcome(&ids, "interrupted");
                     }
+                    let (by, via) = super::events::decision_origin(interrupted_by.as_ref(), "");
+                    self.record_outdated_approval(&mut state, &by, &via);
                     repair_unanswered_tool_events(&mut state.events, evt_mark);
                     repair_unanswered_tool_calls(&mut state.messages);
                     trim_spoken_calls(&mut state, evt_mark);
@@ -614,8 +642,8 @@ impl CodingHarness {
                     && matches!(&state.goal, Some(g) if g.status == GoalStatus::Active);
                 tokio::select! {
                     biased;
-                    input = input_rx.recv() => match input {
-                        Some(LoopInput::UserMessage(text)) | Some(LoopInput::Answer(text)) => {
+                    input = input_rx.recv() => match input.map(LoopInput::unwrap_source) {
+                        Some((LoopInput::UserMessage(text) | LoopInput::Answer(text), source)) => {
                             let text = text.trim().to_string();
                             if text.is_empty() {
                                 continue;
@@ -631,49 +659,78 @@ impl CodingHarness {
                                 self.persist(&mut state, &lanes).await?;
                                 continue;
                             }
+                            if lane_prompt_shown {
+                                let (by, via) = super::events::decision_origin(source.as_ref(), &text);
+                                self.record_outdated_approval(&mut state, &by, &via);
+                                lane_prompt_shown = false;
+                            }
                             crate::coordination::direct_consumed(&text);
-                            self.accept_user_message(&mut state, &mut vars, text).await;
+                            self.accept_user_message_with_source(&mut state, &mut vars, text, source).await;
                             consecutive_errors = 0;
                             self.persist(&mut state, &lanes).await?;
                         }
-                        Some(LoopInput::Notice(event)) => {
+                        Some((LoopInput::Notice(event), _)) => {
                             self.record_notice(&mut state, event);
                             self.persist(&mut state, &lanes).await?;
                         }
-                        Some(LoopInput::ContinueLean) => {
+                        Some((LoopInput::ContinueLean, _)) => {
                             self.continue_lean(&mut state);
                             self.persist(&mut state, &lanes).await?;
                         }
-                        Some(LoopInput::Compact) => {
+                        Some((LoopInput::Compact, source)) => {
+                            let (by, via) = super::events::decision_origin(source.as_ref(), "");
+                            if lane_prompt_shown {
+                                self.record_outdated_approval(&mut state, &by, &via);
+                                lane_prompt_shown = false;
+                            }
+                            self.record_outdated_question(&mut state, &by, &via);
                             self.run_manual_compaction(model, &mut state, &lanes).await?;
                             state.pending_question = None;
                             state.status = HarnessStatus::Idle;
                             self.persist(&mut state, &lanes).await?;
                         }
-                        Some(LoopInput::SetMode(mode)) => {
+                        Some((LoopInput::SetMode(mode), _)) => {
                             state.approval_mode = mode;
                             self.persist(&mut state, &lanes).await?;
                         }
-                        Some(LoopInput::SetTitle(title)) => {
+                        Some((LoopInput::SetTitle(title), _)) => {
                             let t = title.trim();
                             state.title = if t.is_empty() { None } else { Some(t.to_string()) };
                             self.persist(&mut state, &lanes).await?;
                         }
-                        Some(LoopInput::SetGoal(text)) => {
+                        Some((LoopInput::SetGoal(text), source)) => {
+                            let (by, via) = super::events::decision_origin(source.as_ref(), "");
+                            if lane_prompt_shown {
+                                self.record_outdated_approval(&mut state, &by, &via);
+                                lane_prompt_shown = false;
+                            }
+                            self.record_outdated_question(&mut state, &by, &via);
                             self.begin_goal(&mut state, text);
                             consecutive_errors = 0;
                             self.persist(&mut state, &lanes).await?;
                         }
-                        Some(LoopInput::ResumeGoal) => {
+                        Some((LoopInput::ResumeGoal, source)) => {
+                            let (by, via) = super::events::decision_origin(source.as_ref(), "");
+                            if lane_prompt_shown {
+                                self.record_outdated_approval(&mut state, &by, &via);
+                                lane_prompt_shown = false;
+                            }
+                            self.record_outdated_question(&mut state, &by, &via);
                             self.resume_goal(&mut state);
                             consecutive_errors = 0;
                             self.persist(&mut state, &lanes).await?;
                         }
-                        Some(LoopInput::CancelGoal) => {
+                        Some((LoopInput::CancelGoal, _)) => {
                             self.end_goal(&mut state);
                             self.persist(&mut state, &lanes).await?;
                         }
-                        Some(LoopInput::Rewind { checkpoint }) => {
+                        Some((LoopInput::Rewind { checkpoint }, source)) => {
+                            let (by, via) = super::events::decision_origin(source.as_ref(), "");
+                            if lane_prompt_shown {
+                                self.record_outdated_approval(&mut state, &by, &via);
+                                lane_prompt_shown = false;
+                            }
+                            self.record_outdated_question(&mut state, &by, &via);
                             match state.apply_checkpoint_rewind(&checkpoint) {
                                 Ok(_) => self.persist(&mut state, &lanes).await?,
                                 Err(_) => {
@@ -682,8 +739,16 @@ impl CodingHarness {
                             }
                         }
                         // Idle: the only thing to approve is a lane's request.
-                        Some(decision @ (LoopInput::Approve | LoopInput::ApproveAll | LoopInput::Deny)) => {
+                        Some((decision @ (LoopInput::Approve | LoopInput::ApproveAll | LoopInput::Deny), source)) => {
                             if lane_prompt_shown && let Some(request) = lane_approvals.pop_front() {
+                                let (by, via) = super::events::decision_origin(source.as_ref(), "");
+                                let outcome = match decision {
+                                    LoopInput::Approve => "approved",
+                                    LoopInput::ApproveAll => "approved_all",
+                                    LoopInput::Deny => "denied",
+                                    _ => "denied",
+                                };
+                                self.record_decision(&mut state, "approval", outcome, None, &by, &via);
                                 let _ = request.reply.send(!matches!(decision, LoopInput::Deny));
                                 lane_prompt_shown = false;
                                 if state.status == HarnessStatus::WaitingForInput && state.pending_question.is_none() {
@@ -692,42 +757,54 @@ impl CodingHarness {
                                 self.persist(&mut state, &lanes).await?;
                             }
                         }
-                        Some(LoopInput::Queue(item)) => {
+                        Some((LoopInput::Queue(item), _)) => {
                             queue_held(&mut state, item);
                             self.persist(&mut state, &lanes).await?;
                         }
-                        Some(LoopInput::Unqueue(id)) => {
+                        Some((LoopInput::Unqueue(id), _)) => {
                             take_queued(&mut state, &id);
                             self.persist(&mut state, &lanes).await?;
                         }
-                        Some(LoopInput::SteerQueued(id)) => {
+                        Some((LoopInput::SteerQueued(id), source)) => {
                             if let Some(text) = take_queued(&mut state, &id) {
-                                self.accept_user_message(&mut state, &mut vars, text).await;
+                                if lane_prompt_shown {
+                                    let (by, via) = super::events::decision_origin(source.as_ref(), &text);
+                                    self.record_outdated_approval(&mut state, &by, &via);
+                                    lane_prompt_shown = false;
+                                }
+                                self.accept_user_message_with_source(&mut state, &mut vars, text, source).await;
                                 consecutive_errors = 0;
                             }
                             self.persist(&mut state, &lanes).await?;
                         }
-                        Some(LoopInput::DropQueued) => {
+                        Some((LoopInput::DropQueued, _)) => {
                             if !state.queued_inputs.is_empty() {
                                 state.queued_inputs.clear();
                                 self.persist(&mut state, &lanes).await?;
                             }
                         }
-                        Some(LoopInput::Interrupt) => {
+                        Some((LoopInput::Interrupt, source)) => {
+                            let (by, via) = super::events::decision_origin(source.as_ref(), "");
+                            if lane_prompt_shown {
+                                self.record_outdated_approval(&mut state, &by, &via);
+                                lane_prompt_shown = false;
+                            }
+                            self.record_outdated_question(&mut state, &by, &via);
                             state.pending_question = None;
                             pause_goal_on_interrupt(&mut state);
                             state.status = HarnessStatus::Interrupted;
                             self.persist(&mut state, &lanes).await?;
                             state.status = HarnessStatus::Idle;
                         }
-                        Some(LoopInput::KeepWarm(id)) => {
+                        Some((LoopInput::KeepWarm(id), _)) => {
                             let outcome = self.keep_warm(model, &state).await;
                             crate::keep_warm::complete(&id, outcome);
                         }
-                        Some(LoopInput::SpawnLane(spec)) => {
+                        Some((LoopInput::SpawnLane(spec), _)) => {
                             self.spawn_requested_lane(&mut state, &mut lanes, spec);
                             self.persist(&mut state, &lanes).await?;
                         }
+                        Some((LoopInput::Sourced { .. }, _)) => unreachable!("unwrapped above"),
                         None => {
                             state.status = HarnessStatus::Interrupted;
                             self.persist(&mut state, &lanes).await?;

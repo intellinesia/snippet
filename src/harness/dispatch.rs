@@ -284,7 +284,7 @@ impl CodingHarness {
         vars: &mut LoopVars,
         conversation_mode: bool,
         sink: Option<&StreamHandle>,
-        approval_rx: &mut mpsc::UnboundedReceiver<ApprovalDecision>,
+        approval_rx: &mut mpsc::UnboundedReceiver<(ApprovalDecision, Option<DecisionSource>)>,
         calls: Vec<GeneratedToolCall>,
         definitions: &[NativeToolDefinition],
     ) -> Result<TurnStats, StepResult> {
@@ -454,7 +454,7 @@ impl CodingHarness {
         vars: &mut LoopVars,
         conversation_mode: bool,
         sink: Option<&StreamHandle>,
-        approval_rx: &mut mpsc::UnboundedReceiver<ApprovalDecision>,
+        approval_rx: &mut mpsc::UnboundedReceiver<(ApprovalDecision, Option<DecisionSource>)>,
         call: GeneratedToolCall,
         definitions: &[NativeToolDefinition],
         stats: &mut TurnStats,
@@ -724,8 +724,23 @@ impl CodingHarness {
             });
             state.status = HarnessStatus::WaitingForInput;
             let _ = self.persist(state, lanes).await;
-            let decision = approval_rx.recv().await;
+            let received = approval_rx.recv().await;
             state.status = HarnessStatus::Running;
+            let (decision, source) = match received {
+                Some((decision, source)) => (Some(decision), source),
+                None => (None, None),
+            };
+            let (by, via) = match source {
+                Some(src) => (src.by, src.via),
+                None => ("human".to_string(), "app".to_string()),
+            };
+            let outcome = match decision {
+                Some(ApprovalDecision::Approve) => "approved",
+                Some(ApprovalDecision::ApproveAll) => "approved_all",
+                Some(ApprovalDecision::Deny) => "denied",
+                None => "outdated",
+            };
+            self.record_decision(state, "approval", outcome, None, &by, &via);
             // Approve-All flips to Auto for ordinary mutating calls — never off a
             // vault prompt, which must not authorize an unattended mode.
             if matches!(decision, Some(ApprovalDecision::ApproveAll)) && !force_vault_approval {

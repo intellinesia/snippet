@@ -961,6 +961,99 @@ impl Store {
         })
     }
 
+    /// Latest persisted event id (`"{ordinal}:{created_at}"`) and raw payload
+    /// for `event_kind` (`"approval_request"` or `"user_question"`).
+    pub fn latest_attention_request_meta(
+        &self,
+        session_id: &str,
+        event_kind: &str,
+    ) -> Result<Option<(String, serde_json::Value)>, StoreError> {
+        self.with_connection(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT ordinal, created_at, payload_json
+                     FROM session_events
+                     WHERE session_id = ?1 AND json_extract(payload_json, '$.kind') = ?2
+                     ORDER BY ordinal DESC
+                     LIMIT 1",
+                    params![session_id, event_kind],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            Ok(row.map(|(ordinal, created_at, payload)| {
+                (
+                    format!("{ordinal}:{created_at}"),
+                    serde_json::from_str(&payload).unwrap_or_default(),
+                )
+            }))
+        })
+    }
+
+    /// Attach persisted `decision` payloads onto desk/group approval and
+    /// question cards so restarted clients render them as decided.
+    pub fn attach_desk_decisions(
+        &self,
+        events: &mut [crate::coordination::types::CoordinationEvent],
+    ) {
+        let mut sessions = std::collections::BTreeSet::new();
+        for event in events.iter() {
+            if let Some((session, request_id)) = desk_card_target(&event.payload)
+                && !session.is_empty()
+                && !request_id.is_empty()
+            {
+                sessions.insert(session);
+            }
+        }
+        if sessions.is_empty() {
+            return;
+        }
+        let Ok(decisions) = self.with_connection(|conn| {
+            let mut map = std::collections::HashMap::new();
+            let mut stmt = conn.prepare(
+                "SELECT payload_json FROM session_events
+                 WHERE session_id = ?1 AND json_extract(payload_json, '$.kind') = 'decision'
+                 ORDER BY ordinal ASC",
+            )?;
+            for session_id in &sessions {
+                let rows = stmt.query_map(params![session_id], |row| row.get::<_, String>(0))?;
+                for raw in rows {
+                    let raw = raw?;
+                    let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                        continue;
+                    };
+                    let Some(request_id) = val.get("request_id").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    if !request_id.is_empty() {
+                        map.insert((session_id.clone(), request_id.to_string()), val);
+                    }
+                }
+            }
+            Ok(map)
+        }) else {
+            return;
+        };
+        if decisions.is_empty() {
+            return;
+        }
+        for event in events.iter_mut() {
+            let Some((session, request_id)) = desk_card_target(&event.payload) else {
+                continue;
+            };
+            if let Some(decision) = decisions.get(&(session, request_id))
+                && let Some(obj) = event.payload.as_object_mut()
+            {
+                obj.insert("decision".to_string(), decision.clone());
+            }
+        }
+    }
+
     /// The agent's last words this turn, for the notification when it stops.
     pub fn last_assistant_excerpt(&self, id: &str) -> Result<Option<String>, StoreError> {
         self.with_connection(|conn| {
@@ -1481,6 +1574,115 @@ mod tests {
             .unwrap();
         assert_eq!(db.conversation_message_count("s1").unwrap(), 1);
     }
+
+    #[test]
+    fn attach_desk_decisions_enriches_approval_and_question_cards_and_serializes_decision_shape() {
+        let db = db();
+        let s = session("s-dec");
+        db.create_conversation(&s, &[], "[]").unwrap();
+        db.append_conversation_events(
+            &s.id,
+            &[
+                crate::harness::HarnessEvent::ApprovalRequest {
+                    tool_name: "bash".into(),
+                    summary: "git push --force-with-lease".into(),
+                    index: 1,
+                    total: 1,
+                },
+                crate::harness::HarnessEvent::Decision {
+                    request: "approval".into(),
+                    request_id: "0:2026-11-16T09:52:00Z".into(),
+                    outcome: "approved".into(),
+                    answer: None,
+                    tool_name: Some("bash".into()),
+                    summary: Some("git push --force-with-lease".into()),
+                    by: "human".into(),
+                    via: "desk".into(),
+                    at: 1763286720,
+                },
+                crate::harness::HarnessEvent::UserQuestion {
+                    questions: serde_json::json!({"questions": [{"id": "q1", "text": "Which?"}]}),
+                },
+                crate::harness::HarnessEvent::Decision {
+                    request: "question".into(),
+                    request_id: "2:2026-11-16T09:53:00Z".into(),
+                    outcome: "answered".into(),
+                    answer: Some("Blue".into()),
+                    tool_name: None,
+                    summary: None,
+                    by: "human".into(),
+                    via: "app".into(),
+                    at: 1763286780,
+                },
+            ],
+            "2026-11-16T09:52:00Z",
+        )
+        .unwrap();
+
+        let (id, payload) = db
+            .latest_attention_request_meta(&s.id, "approval_request")
+            .unwrap()
+            .unwrap();
+        assert_eq!(id, "0:2026-11-16T09:52:00Z");
+        assert_eq!(payload["tool_name"], "bash");
+
+        let mut cards = vec![
+            crate::coordination::types::CoordinationEvent {
+                event_id: "e1".into(),
+                thread_id: "direct:1".into(),
+                partition_key: "p".into(),
+                sequence: 1,
+                event_type: "message".into(),
+                actor_kind: "agent".into(),
+                actor_id: "builder".into(),
+                payload_version: 1,
+                payload: serde_json::json!({
+                    "approval": {
+                        "session": "s-dec",
+                        "approval_id": "0:2026-11-16T09:52:00Z",
+                        "summary": "git push --force-with-lease"
+                    }
+                }),
+                causation_id: None,
+                correlation_id: None,
+                idempotency_key: "k1".into(),
+                created_at: "2026-11-16T09:52:01Z".into(),
+            },
+            crate::coordination::types::CoordinationEvent {
+                event_id: "e2".into(),
+                thread_id: "direct:1".into(),
+                partition_key: "p".into(),
+                sequence: 2,
+                event_type: "message".into(),
+                actor_kind: "agent".into(),
+                actor_id: "builder".into(),
+                payload_version: 1,
+                payload: serde_json::json!({
+                    "question": {
+                        "session": "s-dec",
+                        "question_id": "2:2026-11-16T09:53:00Z",
+                        "questions": []
+                    }
+                }),
+                causation_id: None,
+                correlation_id: None,
+                idempotency_key: "k2".into(),
+                created_at: "2026-11-16T09:53:01Z".into(),
+            },
+        ];
+        db.attach_desk_decisions(&mut cards);
+        assert_eq!(cards[0].payload["decision"]["kind"], "decision");
+        assert_eq!(cards[0].payload["decision"]["outcome"], "approved");
+        assert_eq!(cards[0].payload["decision"]["via"], "desk");
+        assert!(
+            cards[0].payload["decision"]
+                .get("answer")
+                .unwrap()
+                .is_null()
+        );
+        assert_eq!(cards[1].payload["decision"]["outcome"], "answered");
+        assert_eq!(cards[1].payload["decision"]["answer"], "Blue");
+    }
 }
 
 fn clip(text: &str, max: usize) -> String {
@@ -1581,4 +1783,26 @@ fn attention_detail(attention: &mut serde_json::Value, payload: &serde_json::Val
     if !choices.is_empty() {
         attention["choices"] = choices.into();
     }
+}
+
+fn desk_card_target(payload: &serde_json::Value) -> Option<(String, String)> {
+    if let Some(approval) = payload.get("approval").and_then(|v| v.as_object()) {
+        let session = approval.get("session").and_then(|v| v.as_str())?.trim();
+        let id = approval.get("approval_id").and_then(|v| v.as_str())?.trim();
+        if !session.is_empty() && !id.is_empty() {
+            return Some((session.to_string(), id.to_string()));
+        }
+    }
+    if let Some(question) = payload.get("question").and_then(|v| v.as_object()) {
+        let session = question.get("session").and_then(|v| v.as_str())?.trim();
+        let id = question
+            .get("question_id")
+            .or_else(|| question.get("request_id"))
+            .and_then(|v| v.as_str())?
+            .trim();
+        if !session.is_empty() && !id.is_empty() {
+            return Some((session.to_string(), id.to_string()));
+        }
+    }
+    None
 }

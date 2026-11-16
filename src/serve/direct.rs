@@ -584,14 +584,20 @@ pub(crate) fn relay_question(
     let mut extra = serde_json::Map::new();
     extra.insert("kind".into(), json!("question"));
     extra.insert("auto".into(), json!("ask"));
-    extra.insert(
-        "question".into(),
-        json!({
-            "session": session_id,
-            "questions": questions,
-            "asked_at": chrono::Utc::now().to_rfc3339(),
-        }),
-    );
+    let request_id = store
+        .latest_attention_request_meta(session_id, "user_question")
+        .ok()
+        .flatten()
+        .map(|(id, _)| id);
+    let mut question_obj = json!({
+        "session": session_id,
+        "questions": questions,
+        "asked_at": chrono::Utc::now().to_rfc3339(),
+    });
+    if let Some(id) = request_id {
+        question_obj["request_id"] = json!(id);
+    }
+    extra.insert("question".into(), question_obj);
     crate::coordination::reach::reach_with_key(
         store,
         &agent_id,
@@ -1099,8 +1105,21 @@ async fn deliver_direct(
                 "[agent_reply]\nfrom: {}:{}\nthread_id: {}\nnote: {note}\nbody: {body}\n[/agent_reply]",
                 event.actor_kind, event.actor_id, event.thread_id
             );
-            d.deliver(&session_id, LoopInput::UserMessage(envelope))
-                .await;
+            let source_via = if event.actor_kind == "human" {
+                "desk"
+            } else {
+                "agent"
+            };
+            let source_by = if event.actor_kind == "human" {
+                "human"
+            } else {
+                event.actor_id.as_str()
+            };
+            d.deliver(
+                &session_id,
+                LoopInput::UserMessage(envelope).with_source(source_by, source_via),
+            )
+            .await;
             return Ok(());
         }
         // By the session it came from, not the actor's name: agent `snippet`
@@ -1608,7 +1627,8 @@ pub(super) async fn direct_list_messages(
         .store
         .direct_thread_events(&thread_id, q.after_sequence, q.limit.clamp(1, 200))
     {
-        Ok(events) => {
+        Ok(mut events) => {
+            d.store.attach_desk_decisions(&mut events);
             let event_ids: Vec<String> =
                 events.iter().map(|event| event.event_id.clone()).collect();
             let deliveries = match d.store.direct_deliveries(&event_ids) {
@@ -1723,8 +1743,11 @@ pub(super) async fn direct_answer(
         );
     }
     crate::speech::cancel_all("interrupted");
-    d.deliver(session, LoopInput::Answer(req.text.trim().to_string()))
-        .await;
+    d.deliver(
+        session,
+        LoopInput::Answer(req.text.trim().to_string()).with_source("human", "desk"),
+    )
+    .await;
     match record_question_answer(
         &d.store,
         session,

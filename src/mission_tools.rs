@@ -217,7 +217,7 @@ impl Tool for AnswerWorker {
             }), &["session_id", "answer"]),
         }
     }
-    async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: AnswerWorkerArgs =
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let session = args
@@ -239,7 +239,8 @@ impl Tool for AnswerWorker {
         if args.answer.trim().is_empty() {
             return Err(ToolError::msg("answer must not be empty"));
         }
-        crate::mission_autonomy::queue_answer(&session, args.answer.trim())
+        let by = ctx.agent_id().unwrap_or(crate::mission_control::SESSION_ID);
+        crate::mission_autonomy::queue_answer(&session, args.answer.trim(), by)
             .map_err(ToolError::msg)?;
         Ok(ToolResult::success(
             json!({"queued": true, "note": "The worker receives it within a few seconds and continues."}),

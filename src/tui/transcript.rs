@@ -577,9 +577,44 @@ pub(super) fn event_lines(event: &HarnessEvent, width: usize) -> Vec<Line<'stati
         }
         HarnessEvent::ApprovalRequest { .. } => {
             // While pending it's shown in the approval card above the input; the
-            // outcome is logged via the `approval_resolved` decision. No transcript
+            // outcome is logged via the `decision` event. No transcript
             // line for the bare request.
             Vec::new()
+        }
+        HarnessEvent::Decision {
+            outcome,
+            answer,
+            summary,
+            tool_name,
+            by,
+            ..
+        } => {
+            let actor = if by == "human" || by.is_empty() {
+                "You"
+            } else if by == "mission-control" {
+                "Mission Control"
+            } else {
+                by.as_str()
+            };
+            let line = match outcome.as_str() {
+                "approved" => match summary.as_deref().or(tool_name.as_deref()) {
+                    Some(s) if !s.is_empty() => format!("{actor} approved · {s}"),
+                    _ => format!("{actor} approved"),
+                },
+                "approved_all" => format!("{actor} approved all"),
+                "denied" => match summary.as_deref().or(tool_name.as_deref()) {
+                    Some(s) if !s.is_empty() => format!("{actor} denied · {s}"),
+                    _ => format!("{actor} denied"),
+                },
+                "answered" => match answer.as_deref() {
+                    Some(a) if !a.is_empty() => format!("{actor} answered: {a}"),
+                    _ => format!("{actor} answered"),
+                },
+                "skipped" => format!("{actor} skipped"),
+                "outdated" => "Request outdated".to_string(),
+                other => format!("{actor} {other}"),
+            };
+            marker_block("·", muted(), &line, width)
         }
         // Subject only — lane ids are internal plumbing, not for the transcript.
         HarnessEvent::LaneSpawned { id: _, title } => {

@@ -38,7 +38,7 @@ impl CodingHarness {
         vars: &mut LoopVars,
         conversation_mode: bool,
         sink: Option<&StreamHandle>,
-        approval_rx: &mut mpsc::UnboundedReceiver<ApprovalDecision>,
+        approval_rx: &mut mpsc::UnboundedReceiver<(ApprovalDecision, Option<DecisionSource>)>,
     ) -> StepResult {
         let goal_active = state
             .goal

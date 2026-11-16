@@ -18,11 +18,27 @@ impl CodingHarness {
         vars: &mut LoopVars,
         text: String,
     ) {
+        self.accept_user_message_with_source(state, vars, text, None)
+            .await;
+    }
+
+    pub(super) async fn accept_user_message_with_source(
+        &self,
+        state: &mut HarnessState,
+        vars: &mut LoopVars,
+        text: String,
+        source: Option<DecisionSource>,
+    ) {
         if text.contains("<ambient_turn") {
             crate::ambient::mark_last("loop_accept");
         }
         let answering =
             state.status == HarnessStatus::WaitingForInput && state.pending_question.is_some();
+        if answering {
+            let (outcome, answer) = parse_question_answer(&text);
+            let (by, via) = decision_origin(source.as_ref(), &text);
+            self.record_decision(state, "question", &outcome, answer, &by, &via);
+        }
         // Snapshot the workspace before acting on a NEW request, so the whole turn
         // (direct edits + any lane changes + bash) can be rewound. An answer
         // continues a turn already checkpointed.
@@ -66,6 +82,117 @@ impl CodingHarness {
         state.status = HarnessStatus::Running;
         vars.empty_reply_reprompts = 0;
         self.bump_activity();
+    }
+
+    pub(super) fn record_decision(
+        &self,
+        state: &mut HarnessState,
+        request: &str,
+        outcome: &str,
+        answer: Option<String>,
+        by: &str,
+        via: &str,
+    ) {
+        let event_kind = if request == "question" {
+            "user_question"
+        } else {
+            "approval_request"
+        };
+        let request_pos = state.events.iter().rposition(|event| match event {
+            HarnessEvent::UserQuestion { .. } => request == "question",
+            HarnessEvent::ApprovalRequest { .. } => request == "approval",
+            _ => false,
+        });
+        if let Some(pos) = request_pos
+            && state.events[pos + 1..].iter().any(
+                |event| matches!(event, HarnessEvent::Decision { request: r, .. } if r == request),
+            )
+        {
+            return;
+        }
+        let db_meta = self.store().zip(self.session_id()).and_then(|(store, id)| {
+            store
+                .latest_attention_request_meta(&id, event_kind)
+                .ok()
+                .flatten()
+        });
+        let request_id = db_meta
+            .as_ref()
+            .map(|(id, _)| id.clone())
+            .unwrap_or_default();
+        if !request_id.is_empty()
+            && state.events.iter().any(|event| {
+                matches!(
+                    event,
+                    HarnessEvent::Decision {
+                        request: r,
+                        request_id: rid,
+                        ..
+                    } if r == request && rid == &request_id
+                )
+            })
+        {
+            return;
+        }
+        let (tool_name, summary) = if request == "approval" {
+            let from_state = state.events.iter().rev().find_map(|event| match event {
+                HarnessEvent::ApprovalRequest {
+                    tool_name, summary, ..
+                } => Some((Some(tool_name.clone()), Some(summary.clone()))),
+                _ => None,
+            });
+            from_state.unwrap_or_else(|| {
+                let payload = db_meta.as_ref().map(|(_, p)| p);
+                (
+                    payload
+                        .and_then(|p| p.get("tool_name"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    payload
+                        .and_then(|p| p.get("summary"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                )
+            })
+        } else {
+            (None, None)
+        };
+        state.events.push(HarnessEvent::Decision {
+            request: request.to_string(),
+            request_id,
+            outcome: outcome.to_string(),
+            answer,
+            tool_name,
+            summary,
+            by: by.to_string(),
+            via: via.to_string(),
+            at: Utc::now().timestamp(),
+        });
+    }
+
+    pub(super) fn has_pending_approval_event(state: &HarnessState) -> bool {
+        let Some(pos) = state
+            .events
+            .iter()
+            .rposition(|e| matches!(e, HarnessEvent::ApprovalRequest { .. }))
+        else {
+            return false;
+        };
+        !state.events[pos + 1..]
+            .iter()
+            .any(|e| matches!(e, HarnessEvent::Decision { request, .. } if request == "approval"))
+    }
+
+    pub(super) fn record_outdated_approval(&self, state: &mut HarnessState, by: &str, via: &str) {
+        if Self::has_pending_approval_event(state) {
+            self.record_decision(state, "approval", "outdated", None, by, via);
+        }
+    }
+
+    pub(super) fn record_outdated_question(&self, state: &mut HarnessState, by: &str, via: &str) {
+        if state.pending_question.is_some() {
+            self.record_decision(state, "question", "outdated", None, by, via);
+        }
     }
 
     /// Run a user-requested compaction pass now, surfacing the compaction UI
@@ -493,17 +620,17 @@ impl CodingHarness {
         let mut wants_compact = false;
         while let Ok(input) = input_rx.try_recv() {
             if interrupted {
-                if !matches!(input, LoopInput::Interrupt) {
+                if !matches!(input.inner(), LoopInput::Interrupt) {
                     after_interrupt.push(input);
                 }
                 continue;
             }
-            if matches!(input, LoopInput::Compact) {
+            if matches!(input.inner(), LoopInput::Compact) {
                 wants_compact = true;
                 continue;
             }
-            if let LoopInput::SpawnLane(spec) = input {
-                self.spawn_requested_lane(state, lanes, spec);
+            if let LoopInput::SpawnLane(spec) = input.inner() {
+                self.spawn_requested_lane(state, lanes, spec.clone());
                 continue;
             }
             interrupted |= self.apply_input(state, input);
@@ -565,6 +692,7 @@ impl CodingHarness {
     /// a mid-run user message, an interrupt returns `true`. Shared by the between-iteration
     /// drain and the buffered-input drain.
     pub(super) fn apply_input(&self, state: &mut HarnessState, input: LoopInput) -> bool {
+        let (input, source) = input.unwrap_source();
         match input {
             LoopInput::Notice(event) => {
                 self.record_notice(state, event);
@@ -573,6 +701,12 @@ impl CodingHarness {
             LoopInput::UserMessage(text) | LoopInput::Answer(text) => {
                 let text = text.trim().to_string();
                 if !text.is_empty() {
+                    if state.pending_question.is_some() {
+                        let (outcome, answer) = parse_question_answer(&text);
+                        let (by, via) = decision_origin(source.as_ref(), &text);
+                        self.record_decision(state, "question", &outcome, answer, &by, &via);
+                        state.pending_question = None;
+                    }
                     crate::coordination::direct_consumed(&text);
                     state.messages.push(HarnessMessage::User {
                         content: steer_message(&text),
@@ -642,6 +776,8 @@ impl CodingHarness {
                 false
             }
             LoopInput::Rewind { checkpoint } => {
+                let (by, via) = decision_origin(source.as_ref(), "");
+                self.record_outdated_question(state, &by, &via);
                 let _ = state.apply_checkpoint_rewind(&checkpoint);
                 false
             }
@@ -653,7 +789,7 @@ impl CodingHarness {
                 false
             }
             // Spawned by `drain_pending`, which holds the lane manager.
-            LoopInput::SpawnLane(_) => false,
+            LoopInput::SpawnLane(_) | LoopInput::Sourced { .. } => false,
             LoopInput::Interrupt => true,
         }
     }
@@ -666,6 +802,8 @@ impl CodingHarness {
         if text.is_empty() {
             return;
         }
+        self.record_outdated_question(state, "human", "app");
+        state.pending_question = None;
         if text.starts_with("**Scheduled run") {
             self.start_fresh_context(state);
         }
@@ -706,12 +844,18 @@ impl CodingHarness {
 
     /// Resume a paused rate-limited goal without replacing its text.
     pub(super) fn resume_goal(&self, state: &mut HarnessState) {
+        if state
+            .goal
+            .as_ref()
+            .is_none_or(|g| g.status != GoalStatus::Paused)
+        {
+            return;
+        }
+        self.record_outdated_question(state, "human", "app");
+        state.pending_question = None;
         let Some(goal) = state.goal.as_mut() else {
             return;
         };
-        if goal.status != GoalStatus::Paused {
-            return;
-        }
         goal.status = GoalStatus::Active;
         goal.resume_at = 0;
         let text = goal.text.clone();
@@ -986,6 +1130,96 @@ pub(super) fn turn_changes_event(entries: Vec<(String, u64, u64)>) -> Option<Har
         add,
         del,
     })
+}
+
+pub(super) fn decision_origin(source: Option<&DecisionSource>, text: &str) -> (String, String) {
+    if let Some(src) = source {
+        return (src.by.clone(), src.via.clone());
+    }
+    if text.contains("<ambient_turn") {
+        return ("human".to_string(), "voice".to_string());
+    }
+    ("human".to_string(), "app".to_string())
+}
+
+fn extract_ambient_text(raw: &str) -> Option<String> {
+    let start = raw.find("<ambient_turn")?;
+    let open_end = raw[start..].find('>')? + start + 1;
+    let close = raw[open_end..].find("</ambient_turn>")? + open_end;
+    let mut inner = raw[open_end..close].to_string();
+    for tag in ["context", "recent_speech"] {
+        let open_tag = format!("<{tag}>");
+        let close_tag = format!("</{tag}>");
+        while let Some(a) = inner.find(&open_tag) {
+            if let Some(b) = inner[a..].find(&close_tag) {
+                inner.replace_range(a..a + b + close_tag.len(), "");
+            } else {
+                break;
+            }
+        }
+    }
+    let decoded = inner
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+    Some(decoded.trim().to_string())
+}
+
+fn extract_direct_body(raw: &str) -> Option<String> {
+    if !raw.trim_start().starts_with("[direct_message]") {
+        return None;
+    }
+    let body_start = raw.find("\nbody: ")?;
+    let rest = &raw[body_start + 7..];
+    let body = rest
+        .split("\n[/direct_message]")
+        .next()
+        .unwrap_or(rest)
+        .trim();
+    Some(body.to_string())
+}
+
+pub(super) fn parse_question_answer(raw: &str) -> (String, Option<String>) {
+    let text = extract_ambient_text(raw)
+        .or_else(|| extract_direct_body(raw))
+        .unwrap_or_else(|| raw.trim().to_string());
+    if text.is_empty() {
+        return ("answered".to_string(), None);
+    }
+    let mut parts = Vec::new();
+    let mut all_skipped = true;
+    for block in text.split("\n\n") {
+        let block = block.trim();
+        if block.is_empty() {
+            continue;
+        }
+        let chosen = if let Some(idx) = block.find("\n→ ") {
+            block[idx + "\n→ ".len()..].trim()
+        } else if let Some(rest) = block.strip_prefix("→ ") {
+            rest.trim()
+        } else {
+            block
+        };
+        if chosen.is_empty() {
+            continue;
+        }
+        if chosen == "user skipped the question" {
+            parts.push("Skipped".to_string());
+        } else {
+            all_skipped = false;
+            parts.push(chosen.to_string());
+        }
+    }
+    if parts.is_empty() {
+        return ("answered".to_string(), None);
+    }
+    if all_skipped {
+        ("skipped".to_string(), None)
+    } else {
+        ("answered".to_string(), Some(parts.join(", ")))
+    }
 }
 
 #[cfg(test)]
@@ -1434,5 +1668,192 @@ All lanes reported; integrate and check the findings you rely on.
             0,
         );
         assert!(!no_changed.contains("changed:"), "{no_changed}");
+    }
+}
+
+#[cfg(test)]
+mod d1_decision_record_harness_tests {
+    use super::*;
+
+    #[test]
+    fn parse_question_answer_extracts_labels_skips_and_ambient_turns() {
+        assert_eq!(
+            parse_question_answer("Which color?\n→ Blue"),
+            ("answered".into(), Some("Blue".into()))
+        );
+        assert_eq!(
+            parse_question_answer("Q1\n→ Blue\n\nQ2\n→ Fast"),
+            ("answered".into(), Some("Blue, Fast".into()))
+        );
+        assert_eq!(
+            parse_question_answer("Q1\n→ user skipped the question"),
+            ("skipped".into(), None)
+        );
+        assert_eq!(
+            parse_question_answer(
+                "<ambient_turn mode=\"active\"><context>earlier</context>Blue</ambient_turn>"
+            ),
+            ("answered".into(), Some("Blue".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_user_message_with_source_records_question_decision_and_request_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("store.db");
+        let store = crate::store::Store::open(&db_path).unwrap();
+        let initial_state = HarnessState::blank(dir.path().to_str().unwrap(), None);
+        store
+            .import_session(
+                "s1",
+                "wk",
+                &initial_state,
+                &crate::conversations::SessionExtras::default(),
+            )
+            .unwrap();
+        let questions = json!({
+            "questions": [{"id": "q1", "text": "Which target?"}]
+        });
+        store
+            .append_conversation_events(
+                "s1",
+                &[HarnessEvent::UserQuestion {
+                    questions: questions.clone(),
+                }],
+                "2026-11-16T00:01:00Z",
+            )
+            .unwrap();
+
+        let ctx = ToolContext::new(dir.path())
+            .unwrap()
+            .with_store_path(&db_path)
+            .with_durable_session_id("s1");
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                memory_enabled: false,
+                ..HarnessConfig::default()
+            },
+            ToolRegistry::new(),
+            ctx,
+        );
+        let mut state = HarnessState::blank(dir.path().to_str().unwrap(), None);
+        state.status = HarnessStatus::WaitingForInput;
+        state.pending_question = Some(questions.clone());
+        state.events.push(HarnessEvent::UserQuestion { questions });
+
+        let mut vars = LoopVars::default();
+        harness
+            .accept_user_message_with_source(
+                &mut state,
+                &mut vars,
+                "Which target?\n→ Staging".to_string(),
+                Some(DecisionSource {
+                    by: "mission-control".into(),
+                    via: "agent".into(),
+                }),
+            )
+            .await;
+
+        let decision = state
+            .events
+            .iter()
+            .find_map(|e| match e {
+                HarnessEvent::Decision {
+                    request,
+                    request_id,
+                    outcome,
+                    answer,
+                    by,
+                    via,
+                    ..
+                } => Some((
+                    request.clone(),
+                    request_id.clone(),
+                    outcome.clone(),
+                    answer.clone(),
+                    by.clone(),
+                    via.clone(),
+                )),
+                _ => None,
+            })
+            .expect("decision event recorded");
+        assert_eq!(decision.0, "question");
+        assert_eq!(decision.1, "0:2026-11-16T00:01:00Z");
+        assert_eq!(decision.2, "answered");
+        assert_eq!(decision.3.as_deref(), Some("Staging"));
+        assert_eq!(decision.4, "mission-control");
+        assert_eq!(decision.5, "agent");
+    }
+
+    #[test]
+    fn record_outdated_approval_deduplicates_and_copies_request_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("store.db");
+        let store = crate::store::Store::open(&db_path).unwrap();
+        let initial_state = HarnessState::blank(dir.path().to_str().unwrap(), None);
+        store
+            .import_session(
+                "s1",
+                "wk",
+                &initial_state,
+                &crate::conversations::SessionExtras::default(),
+            )
+            .unwrap();
+        let req = HarnessEvent::ApprovalRequest {
+            tool_name: "bash".into(),
+            summary: "git push --force-with-lease".into(),
+            index: 1,
+            total: 1,
+        };
+        store
+            .append_conversation_events("s1", &[req.clone()], "2026-11-16T00:02:00Z")
+            .unwrap();
+
+        let ctx = ToolContext::new(dir.path())
+            .unwrap()
+            .with_store_path(&db_path)
+            .with_durable_session_id("s1");
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                memory_enabled: false,
+                ..HarnessConfig::default()
+            },
+            ToolRegistry::new(),
+            ctx,
+        );
+        let mut state = HarnessState::blank(dir.path().to_str().unwrap(), None);
+        state.events.push(req);
+
+        harness.record_outdated_approval(&mut state, "human", "app");
+        harness.record_outdated_approval(&mut state, "human", "app");
+        let decisions: Vec<_> = state
+            .events
+            .iter()
+            .filter(|e| matches!(e, HarnessEvent::Decision { .. }))
+            .collect();
+        assert_eq!(decisions.len(), 1);
+        match decisions[0] {
+            HarnessEvent::Decision {
+                request,
+                request_id,
+                outcome,
+                answer,
+                tool_name,
+                summary,
+                by,
+                via,
+                ..
+            } => {
+                assert_eq!(request, "approval");
+                assert_eq!(request_id, "0:2026-11-16T00:02:00Z");
+                assert_eq!(outcome, "outdated");
+                assert_eq!(answer, &None);
+                assert_eq!(tool_name.as_deref(), Some("bash"));
+                assert_eq!(summary.as_deref(), Some("git push --force-with-lease"));
+                assert_eq!(by, "human");
+                assert_eq!(via, "app");
+            }
+            _ => unreachable!(),
+        }
     }
 }
