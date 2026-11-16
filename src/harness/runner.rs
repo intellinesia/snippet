@@ -590,7 +590,8 @@ impl CodingHarness {
                                 tokio::select! {
                                     a = &mut recover_fut => break Some(a),
                                     msg = input_rx.recv() => match msg {
-                                        Some(LoopInput::Interrupt) | None => break None,
+                                        None => break None,
+                                        Some(m) if matches!(m.inner(), LoopInput::Interrupt) => break None,
                                         Some(other) => pending_inputs.push(other),
                                     }
                                 }
@@ -599,7 +600,7 @@ impl CodingHarness {
                         match action {
                             None => {
                                 while let Ok(msg) = input_rx.try_recv() {
-                                    if !matches!(msg, LoopInput::Interrupt) {
+                                    if !matches!(msg.inner(), LoopInput::Interrupt) {
                                         pending_inputs.push(msg);
                                     }
                                 }

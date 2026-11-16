@@ -3308,10 +3308,16 @@ mod tests {
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
-        match rx.try_recv().expect("answer delivered to session") {
+        let (input, source) = rx
+            .try_recv()
+            .expect("answer delivered to session")
+            .unwrap_source();
+        match input {
             LoopInput::Answer(text) => assert_eq!(text, "wait for review"),
             other => panic!("expected LoopInput::Answer, got {other:?}"),
         }
+        let source = source.expect("a desk answer carries its source");
+        assert_eq!((source.by.as_str(), source.via.as_str()), ("human", "desk"));
         let events = thread_events(&store, "a");
         let answer = events
             .iter()

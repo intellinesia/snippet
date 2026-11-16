@@ -752,7 +752,7 @@ impl Daemon {
     /// A wake with nobody there to choose: the session's resume mode decides
     /// whether a lapsed cache continues lean first.
     pub(crate) async fn deliver_wake(&self, id: &str, input: LoopInput) {
-        let lean = match &input {
+        let lean = match input.inner() {
             LoopInput::UserMessage(text) => !skip_lean_for_voice(text) && resume_lean(id, false),
             _ => false,
         };
@@ -763,7 +763,7 @@ impl Daemon {
     }
 
     pub(crate) async fn deliver(&self, id: &str, input: LoopInput) {
-        match &input {
+        match input.inner() {
             LoopInput::Unqueue(queue_id) | LoopInput::SteerQueued(queue_id) => {
                 self.hide_queued(id, queue_id).await
             }
