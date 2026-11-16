@@ -4150,6 +4150,8 @@ struct RegisterAgentArgs {
     profile: Option<String>,
     #[serde(default)]
     nickname: Option<String>,
+    #[serde(default)]
+    character: Option<String>,
 }
 /// The one step that makes a built agent real: its identity file and its
 /// directory row, written together so an agent is never half-created.
@@ -4159,15 +4161,16 @@ impl Tool for RegisterAgent {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "register_agent".into(),
-            description: "Create or rebuild a specialized agent: writes its identity.md into its agent home (~/.snippet/agents/<id>/) and registers it in the directory so it can be messaged, assigned and dispatched. The identity is the agent's whole persona and expertise, applied on top of the standard coding runtime in every session it works in. An agent is a lasting skill (a Rust expert, a motion designer), never one task or project. Call it once per build, after researching the domain; calling it again with the same id replaces the identity.".into(),
+            description: "Create or rebuild a specialized agent: writes its identity.md into its agent home (~/.snippet/agents/<id>/) and registers it in the directory so it can be messaged and dispatched. The identity is its whole persona and expertise, applied on top of the coding runtime in every session. An agent is a lasting skill (a Rust expert, a motion designer), never one task or project. Call it once per build, after researching the domain; calling it again with the same id replaces the identity.".into(),
             input_schema: schema(
                 json!({
                     "id": {"type": "string", "description": "kebab-case agent id, e.g. rust-pr-reviewer"},
                     "display_name": {"type": "string"},
                     "capabilities": {"type": "array", "items": {"type": "string"}, "description": "short tags, e.g. rust, code-review"},
                     "identity": {"type": "string", "description": "identity.md in markdown: who the agent is, its mandate, how it works, what it checks, how it reports"},
-                    "profile": {"type": "string", "description": "optional; the inference profile this agent always works on, named exactly as list_profiles returns it. Cheaper profiles for routine work, stronger ones for hard reasoning. Omit to leave the agent's profile unchanged."},
-                    "nickname": {"type": "string", "description": "optional; a short name shown instead of the display name. Pass the nickname the user asked for, if any."}
+                    "profile": {"type": "string", "description": "optional; the inference profile this agent always works on, exactly as list_profiles names it: cheaper for routine work, stronger for hard reasoning. Omit to keep the current one."},
+                    "nickname": {"type": "string", "description": "optional; a short name shown instead of the display name, if the user asked for one."},
+                    "character": {"type": "string", "description": "optional; avatar id 01..36, if the user picked one."}
                 }),
                 &["id", "display_name", "identity"],
             ),
@@ -4197,6 +4200,9 @@ impl Tool for RegisterAgent {
         if let Some(name) = profile.as_deref() {
             check_profile(name).await?;
         }
+        let character =
+            crate::serve::agent_routes::normalize_agent_character(args.character.as_deref())
+                .map_err(ToolError::msg)?;
         let home = crate::coordination::AgentHome::new(
             crate::coordination::agents_root(&root(ctx)?),
             &args.id,
@@ -4229,6 +4235,11 @@ impl Tool for RegisterAgent {
             db(ctx)?
                 .set_agent_nickname(&args.id, Some(nickname))
                 .map_err(|e| ToolError::msg(format!("set agent nickname: {e}")))?;
+        }
+        if let Some(character) = character.as_deref() {
+            db(ctx)?
+                .set_agent_character(&args.id, Some(character))
+                .map_err(|e| ToolError::msg(format!("set agent character: {e}")))?;
         }
         Ok(ToolResult::success(json!({
             "agent_id": args.id,

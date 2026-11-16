@@ -50,6 +50,11 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              shape TEXT NOT NULL
          );
 
+         CREATE TABLE IF NOT EXISTS agent_characters (
+             agent_id TEXT PRIMARY KEY NOT NULL,
+             character TEXT NOT NULL
+         );
+
          CREATE TABLE IF NOT EXISTS agent_channels (
              agent_id TEXT NOT NULL,
              channel TEXT NOT NULL,

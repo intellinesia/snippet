@@ -158,6 +158,10 @@ impl Store {
             tx.execute("DELETE FROM agent_colors WHERE agent_id = ?1", params![id])?;
             tx.execute("DELETE FROM agent_shapes WHERE agent_id = ?1", params![id])?;
             tx.execute(
+                "DELETE FROM agent_characters WHERE agent_id = ?1",
+                params![id],
+            )?;
+            tx.execute(
                 "DELETE FROM agent_nicknames WHERE agent_id = ?1",
                 params![id],
             )?;
@@ -232,6 +236,16 @@ impl Store {
     pub fn agent_shapes(&self) -> Result<std::collections::HashMap<String, String>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare("SELECT agent_id, shape FROM agent_shapes")?;
+            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<Result<_, _>>()
+        })
+    }
+
+    pub fn agent_characters(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare("SELECT agent_id, character FROM agent_characters")?;
             let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
             rows.collect::<Result<_, _>>()
         })
@@ -437,6 +451,35 @@ impl Store {
         })
     }
 
+    pub fn set_agent_character(
+        &self,
+        id: &str,
+        character: Option<&str>,
+    ) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM agents WHERE id = ?1)",
+                params![id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Ok(false);
+            }
+            match character {
+                Some(character) => conn.execute(
+                    "INSERT INTO agent_characters (agent_id, character) VALUES (?1, ?2)
+                     ON CONFLICT(agent_id) DO UPDATE SET character = excluded.character",
+                    params![id, character],
+                )?,
+                None => conn.execute(
+                    "DELETE FROM agent_characters WHERE agent_id = ?1",
+                    params![id],
+                )?,
+            };
+            Ok(true)
+        })
+    }
+
     /// Whether an agent may be handed new work. Paused, draining and disabled
     /// agents keep what they hold but take nothing new; an unknown id takes
     /// nothing at all.
@@ -566,6 +609,27 @@ mod tests {
         db.set_agent_shape("a1", Some("bear")).unwrap();
         db.delete_agent("a1").unwrap();
         assert!(db.agent_shapes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn agent_character_is_set_cleared_and_removed_with_the_agent() {
+        let db = Store::open_in_memory().unwrap();
+        db.create_agent(&agent("a1", "A")).unwrap();
+        assert!(
+            !db.set_agent_character("ghost-agent", Some("04")).unwrap(),
+            "unknown agent"
+        );
+        assert!(db.set_agent_character("a1", Some("04")).unwrap());
+        assert!(db.set_agent_character("a1", Some("19")).unwrap());
+        assert_eq!(
+            db.agent_characters().unwrap().get("a1").map(String::as_str),
+            Some("19")
+        );
+        assert!(db.set_agent_character("a1", None).unwrap());
+        assert!(db.agent_characters().unwrap().is_empty());
+        db.set_agent_character("a1", Some("14")).unwrap();
+        db.delete_agent("a1").unwrap();
+        assert!(db.agent_characters().unwrap().is_empty());
     }
 
     #[test]

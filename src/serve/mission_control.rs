@@ -199,6 +199,8 @@ struct AgentBuildReq {
     prompt: String,
     #[serde(default)]
     nickname: Option<String>,
+    #[serde(default)]
+    character: Option<String>,
 }
 
 async fn build_agent_from_prompt(
@@ -212,6 +214,10 @@ async fn build_agent_from_prompt(
             "prompt must describe the desired agent",
         );
     }
+    let character = match super::agent_routes::normalize_agent_character(req.character.as_deref()) {
+        Ok(character) => character,
+        Err(msg) => return api_error(StatusCode::BAD_REQUEST, msg),
+    };
     if !d
         .store
         .has_conversation(mission_control::SESSION_ID)
@@ -236,8 +242,16 @@ async fn build_agent_from_prompt(
             )
         })
         .unwrap_or_default();
+    let character_note = character
+        .as_deref()
+        .map(|c| {
+            format!(
+                "\n\nThe user chose character \"{c}\": pass it as `character` to register_agent."
+            )
+        })
+        .unwrap_or_default();
     let description = format!(
-        "Build a specialized agent from this user brief:\n\n{prompt}{nickname_note}\n\nResearch the domain first (web_search / web_read when available): the domain's standards, the checks an expert runs, common failure modes. Choose a short kebab-case id and a display name, then write the identity: who the agent is, its mandate, how it works step by step, what it checks, and how it reports. Create the agent with register_agent, then report this task with report_mission_task: the agent id, a two-line identity summary, and the sources you used."
+        "Build a specialized agent from this user brief:\n\n{prompt}{nickname_note}{character_note}\n\nResearch the domain first (web_search / web_read when available): the domain's standards, the checks an expert runs, common failure modes. Choose a short kebab-case id and a display name, then write the identity: who the agent is, its mandate, how it works step by step, what it checks, and how it reports. Create the agent with register_agent, then report this task with report_mission_task: the agent id, a two-line identity summary, and the sources you used."
     );
     let task = Task::dispatched_to(
         task_id,

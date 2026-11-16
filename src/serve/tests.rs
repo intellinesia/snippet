@@ -78,6 +78,7 @@ fn create_agent_req(id: &str) -> AgentReq {
         capabilities: vec!["web_search".into()],
         profile: None,
         nickname: None,
+        character: None,
     }
 }
 
@@ -1344,4 +1345,115 @@ async fn release_route_ends_the_turn_lease_and_seat() {
     )
     .await;
     assert_eq!(again.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn agent_character_route_validates_and_resolves_defaults() {
+    use axum::body::to_bytes;
+
+    let d = authed_daemon();
+    let mc = create_agent(State(d.clone()), Json(create_agent_req("mission-control"))).await;
+    assert_eq!(mc.status(), StatusCode::CREATED);
+    let snip = create_agent(State(d.clone()), Json(create_agent_req("snippet"))).await;
+    assert_eq!(snip.status(), StatusCode::CREATED);
+
+    let mut custom_req = create_agent_req("custom-char");
+    custom_req.character = Some("07".into());
+    let custom = create_agent(State(d.clone()), Json(custom_req)).await;
+    assert_eq!(custom.status(), StatusCode::CREATED);
+
+    let mut invalid_req = create_agent_req("bad-char");
+    invalid_req.character = Some("37".into());
+    let invalid_create = create_agent(State(d.clone()), Json(invalid_req)).await;
+    assert_eq!(invalid_create.status(), StatusCode::BAD_REQUEST);
+
+    let list_resp = list_agents(State(d.clone()), Query(agents_query())).await;
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let bytes = to_bytes(list_resp.into_body(), 1024 * 1024).await.unwrap();
+    let list: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    let by_id: HashMap<String, String> = list
+        .iter()
+        .map(|v| {
+            (
+                v["id"].as_str().unwrap().to_string(),
+                v["character"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(by_id.get("mission-control").map(String::as_str), Some("14"));
+    assert_eq!(by_id.get("snippet").map(String::as_str), Some("01"));
+    assert_eq!(by_id.get("custom-char").map(String::as_str), Some("07"));
+
+    // Invalid character values are rejected.
+    for bad in ["00", "37", "1", "abc", "-1"] {
+        let resp = set_agent_character(
+            State(d.clone()),
+            axum::extract::Path("snippet".into()),
+            Json(AgentCharacterReq {
+                character: Some(bad.into()),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "bad={bad}");
+    }
+
+    // Valid update overrides default, null clears back to default.
+    let updated = set_agent_character(
+        State(d.clone()),
+        axum::extract::Path("snippet".into()),
+        Json(AgentCharacterReq {
+            character: Some("23".into()),
+        }),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+
+    let list_resp = list_agents(State(d.clone()), Query(agents_query())).await;
+    let bytes = to_bytes(list_resp.into_body(), 1024 * 1024).await.unwrap();
+    let list: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    let snippet_char = list
+        .iter()
+        .find(|v| v["id"] == "snippet")
+        .and_then(|v| v["character"].as_str())
+        .unwrap();
+    assert_eq!(snippet_char, "23");
+
+    let cleared = set_agent_character(
+        State(d.clone()),
+        axum::extract::Path("snippet".into()),
+        Json(AgentCharacterReq { character: None }),
+    )
+    .await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+
+    let list_resp = list_agents(State(d.clone()), Query(agents_query())).await;
+    let bytes = to_bytes(list_resp.into_body(), 1024 * 1024).await.unwrap();
+    let list: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    let snippet_char = list
+        .iter()
+        .find(|v| v["id"] == "snippet")
+        .and_then(|v| v["character"].as_str())
+        .unwrap();
+    assert_eq!(snippet_char, "01");
+
+    // Unknown agent returns 404.
+    let missing = set_agent_character(
+        State(d.clone()),
+        axum::extract::Path("no-such-agent".into()),
+        Json(AgentCharacterReq {
+            character: Some("01".into()),
+        }),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    // Deterministic default hash stays in 01..36.
+    let h = agent_routes::default_agent_character("some-arbitrary-agent");
+    assert_eq!(h.len(), 2);
+    let n: u8 = h.parse().unwrap();
+    assert!((1..=36).contains(&n));
+    assert_eq!(
+        h,
+        agent_routes::default_agent_character("some-arbitrary-agent")
+    );
 }
