@@ -302,7 +302,8 @@ async fn group_events(
     let after = q.after.unwrap_or(0);
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
     match d.store.events_for_thread(&id, after, limit) {
-        Ok(events) => {
+        Ok(mut events) => {
+            d.store.attach_desk_decisions(&mut events);
             let up_to = events.last().map(|e| e.sequence).unwrap_or(after);
             let now = chrono::Utc::now().to_rfc3339();
             let _ = d.store.mark_group_read(&id, up_to, &now);

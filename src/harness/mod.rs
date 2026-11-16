@@ -231,6 +231,21 @@ pub enum HarnessEvent {
         index: usize,
         total: usize,
     },
+    /// Record of how an approval or question request was resolved.
+    Decision {
+        request: String,
+        request_id: String,
+        outcome: String,
+        #[serde(default)]
+        answer: Option<String>,
+        #[serde(default)]
+        tool_name: Option<String>,
+        #[serde(default)]
+        summary: Option<String>,
+        by: String,
+        via: String,
+        at: i64,
+    },
     /// A delegated lane was started.
     LaneSpawned {
         id: String,
@@ -770,6 +785,50 @@ pub enum LoopInput {
     KeepWarm(String),
     /// Start a lane on the session's behalf (the daemon starting a task review).
     SpawnLane(LaneSpawn),
+    /// Internal wrapper carrying who sent an input and through which surface.
+    #[serde(skip)]
+    Sourced {
+        input: Box<LoopInput>,
+        by: String,
+        via: String,
+    },
+}
+
+/// Who resolved an approval or question, and from which surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionSource {
+    pub by: String,
+    pub via: String,
+}
+
+impl LoopInput {
+    pub fn with_source(self, by: impl Into<String>, via: impl Into<String>) -> Self {
+        match self {
+            LoopInput::Sourced { .. } => self,
+            other => LoopInput::Sourced {
+                input: Box::new(other),
+                by: by.into(),
+                via: via.into(),
+            },
+        }
+    }
+
+    pub fn unwrap_source(self) -> (LoopInput, Option<DecisionSource>) {
+        match self {
+            LoopInput::Sourced { input, by, via } => {
+                let (inner, nested) = input.unwrap_source();
+                (inner, nested.or(Some(DecisionSource { by, via })))
+            }
+            other => (other, None),
+        }
+    }
+
+    pub fn inner(&self) -> &LoopInput {
+        match self {
+            LoopInput::Sourced { input, .. } => input.inner(),
+            other => other,
+        }
+    }
 }
 
 /// What the daemon asks the session to delegate.

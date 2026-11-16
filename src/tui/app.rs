@@ -462,8 +462,17 @@ impl App {
             return attach.send(input);
         }
         if let Some(tx) = &self.input_tx {
+            let tagged = match input {
+                LoopInput::Approve
+                | LoopInput::ApproveAll
+                | LoopInput::Deny
+                | LoopInput::Answer(_)
+                | LoopInput::UserMessage(_)
+                | LoopInput::Interrupt => input.with_source("human", "tui"),
+                other => other,
+            };
             return tx
-                .send(input)
+                .send(tagged)
                 .map_err(|_| "agent loop is no longer accepting input".to_string());
         }
         Err("no live session".to_string())

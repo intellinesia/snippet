@@ -79,7 +79,10 @@ pub async fn autonomy_loop(daemon: Shared) {
         }
         for queued in mission_autonomy::take_answers() {
             daemon
-                .deliver(&queued.session_id, LoopInput::Answer(queued.answer))
+                .deliver(
+                    &queued.session_id,
+                    LoopInput::Answer(queued.answer).with_source(queued.by, "agent"),
+                )
                 .await;
         }
         if last_round.elapsed() < ROUND_EVERY {

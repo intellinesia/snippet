@@ -2479,6 +2479,7 @@ impl CodingHarness {
                 input = input_rx.recv() => {
                     let Some(input) = input else { break };
                     save_at = None;
+                    let (input, source) = input.unwrap_source();
                     match input {
                         LoopInput::UserMessage(text) | LoopInput::Answer(text) => {
                             let text = text.trim().to_string();
@@ -2493,7 +2494,7 @@ impl CodingHarness {
                             if state.pending_question.is_some() {
                                 let mid_turn = state.status == HarnessStatus::Running && process.is_some();
                                 state.status = HarnessStatus::WaitingForInput;
-                                self.accept_user_message(&mut state, &mut vars, text.clone()).await;
+                                self.accept_user_message_with_source(&mut state, &mut vars, text.clone(), source).await;
                                 let answer = match state.messages.last() {
                                     Some(HarnessMessage::User { content }) => content.clone(),
                                     _ => text,
@@ -2518,7 +2519,7 @@ impl CodingHarness {
                                     outbox.push(text);
                                 }
                             } else {
-                                self.accept_user_message(&mut state, &mut vars, text.clone()).await;
+                                self.accept_user_message_with_source(&mut state, &mut vars, text.clone(), source).await;
                                 outbox.push(text);
                             }
                             if state.pending_question.is_none() {
@@ -2532,8 +2533,16 @@ impl CodingHarness {
                             self.persist(&mut state, &lanes).await?;
                         }
                         LoopInput::Approve | LoopInput::ApproveAll | LoopInput::Deny => {
+                            let (by, via) = super::events::decision_origin(source.as_ref(), "");
+                            let outcome = match input {
+                                LoopInput::Approve => "approved",
+                                LoopInput::ApproveAll => "approved_all",
+                                LoopInput::Deny => "denied",
+                                _ => "denied",
+                            };
                             if pending_approval.is_none() && lane_prompt_shown {
                                 if let Some(request) = lane_approvals.pop_front() {
+                                    self.record_decision(&mut state, "approval", outcome, None, &by, &via);
                                     let _ = request.reply.send(!matches!(input, LoopInput::Deny));
                                 }
                                 lane_prompt_shown = false;
@@ -2544,6 +2553,7 @@ impl CodingHarness {
                                 continue;
                             }
                             let Some(call) = pending_approval.take() else { continue };
+                            self.record_decision(&mut state, "approval", outcome, None, &by, &via);
                             state.status = HarnessStatus::Running;
                             if matches!(input, LoopInput::ApproveAll) && !pending_vault {
                                 state.approval_mode = ApprovalMode::Auto;
@@ -2588,7 +2598,12 @@ impl CodingHarness {
                             if let Ok(mut queue) = steers.lock() {
                                 queue.clear();
                             }
-                            pending_approval = None;
+                            let (by, via) = super::events::decision_origin(source.as_ref(), "");
+                            if pending_approval.take().is_some() || lane_prompt_shown {
+                                self.record_outdated_approval(&mut state, &by, &via);
+                                lane_prompt_shown = false;
+                            }
+                            self.record_outdated_question(&mut state, &by, &via);
                             state.pending_question = None;
                             if let Some(s) = sink.as_ref() {
                                 StreamBuffer::clear(s);
@@ -2601,7 +2616,11 @@ impl CodingHarness {
                         goal_input @ (LoopInput::SetGoal(_) | LoopInput::ResumeGoal | LoopInput::CancelGoal) => {
                             let mid_turn = state.status == HarnessStatus::Running && process.is_some();
                             let before = state.messages.len();
-                            self.apply_input(&mut state, goal_input);
+                            let wrapped = match source {
+                                Some(src) => goal_input.with_source(src.by, src.via),
+                                None => goal_input,
+                            };
+                            self.apply_input(&mut state, wrapped);
                             if state.messages.len() > before
                                 && let Some(HarnessMessage::User { content }) = state.messages.last()
                             {
@@ -2639,7 +2658,7 @@ impl CodingHarness {
                                 if state.pending_question.is_some() {
                                     state.status = HarnessStatus::WaitingForInput;
                                 }
-                                self.accept_user_message(&mut state, &mut vars, text.clone()).await;
+                                self.accept_user_message_with_source(&mut state, &mut vars, text.clone(), source).await;
                                 let message = match state.messages.last() {
                                     Some(HarnessMessage::User { content }) => content.clone(),
                                     _ => text,
@@ -2669,7 +2688,11 @@ impl CodingHarness {
                             self.persist(&mut state, &lanes).await?;
                         }
                         other => {
-                            if self.apply_input(&mut state, other) {
+                            let wrapped = match source {
+                                Some(src) => other.with_source(src.by, src.via),
+                                None => other,
+                            };
+                            if self.apply_input(&mut state, wrapped) {
                                 break;
                             }
                             self.persist(&mut state, &lanes).await?;
@@ -3002,6 +3025,10 @@ impl CodingHarness {
                                 }
                             }
                         } else if gated || state.approval_mode == ApprovalMode::Manual {
+                            if pending_approval.take().is_some() || lane_prompt_shown {
+                                self.record_outdated_approval(&mut state, "human", "app");
+                                lane_prompt_shown = false;
+                            }
                             approval_index += 1;
                             state.events.push(HarnessEvent::ApprovalRequest {
                                 tool_name: call.name.clone(),
@@ -3022,6 +3049,7 @@ impl CodingHarness {
                     match call.name.as_str() {
                         "ask_user" => match parse_ask_user(&call.arguments) {
                             Ok(questions) => {
+                                self.record_outdated_question(&mut state, "human", "app");
                                 state.pending_question = Some(questions.clone());
                                 state.events.push(HarnessEvent::UserQuestion { questions });
                                 let _ = call.reply.send(json!({
@@ -3096,6 +3124,10 @@ impl CodingHarness {
                                 }
                                 continue;
                             }
+                            if pending_approval.take().is_some() || lane_prompt_shown {
+                                self.record_outdated_approval(&mut state, "human", "app");
+                                lane_prompt_shown = false;
+                            }
                             approval_index += 1;
                             state.events.push(HarnessEvent::ApprovalRequest {
                                 tool_name: "bash".to_string(),
@@ -3112,6 +3144,10 @@ impl CodingHarness {
                             self.persist(&mut state, &lanes).await?;
                         }
                         name if state.approval_mode == ApprovalMode::Manual && MUTATING_TOOLS.contains(&name) => {
+                            if pending_approval.take().is_some() || lane_prompt_shown {
+                                self.record_outdated_approval(&mut state, "human", "app");
+                                lane_prompt_shown = false;
+                            }
                             approval_index += 1;
                             state.events.push(HarnessEvent::ApprovalRequest {
                                 tool_name: name.to_string(),
@@ -3133,6 +3169,10 @@ impl CodingHarness {
         }
         if let Some(mut p) = process.take() {
             let _ = p.child.start_kill();
+        }
+        if pending_approval.take().is_some() || lane_prompt_shown {
+            self.record_outdated_approval(&mut state, "human", "app");
+            let _ = self.persist(&mut state, &lanes).await;
         }
         Ok(state)
     }

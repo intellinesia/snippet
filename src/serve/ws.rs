@@ -571,8 +571,27 @@ async fn handle_ws(
                 if read_only {
                     continue;
                 }
+                let parsed_val = serde_json::from_str::<serde_json::Value>(t.as_str()).ok();
                 if let Ok(input) = serde_json::from_str::<LoopInput>(t.as_str()) {
-                    if let LoopInput::Answer(text) = &input
+                    let via = parsed_val
+                        .as_ref()
+                        .and_then(|v| v.get("via"))
+                        .and_then(|v| v.as_str())
+                        .filter(|v| {
+                            matches!(
+                                *v,
+                                "app" | "notification" | "desk" | "tui" | "voice" | "agent"
+                            )
+                        })
+                        .unwrap_or("app");
+                    let by = parsed_val
+                        .as_ref()
+                        .and_then(|v| v.get("by"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("human");
+                    if let LoopInput::Answer(text) = input.inner()
                         && let Some(question) =
                             direct::latest_question_event(&daemon.store, &session)
                     {
@@ -585,7 +604,7 @@ async fn handle_ws(
                         );
                     }
                     if matches!(
-                        input,
+                        input.inner(),
                         LoopInput::UserMessage(_)
                             | LoopInput::Queue(_)
                             | LoopInput::Answer(_)
@@ -594,9 +613,20 @@ async fn handle_ws(
                     ) {
                         crate::speech::cancel_all("interrupted");
                     }
-                    if matches!(input, LoopInput::UserMessage(_)) && resume_lean(&session, true) {
+                    if matches!(input.inner(), LoopInput::UserMessage(_))
+                        && resume_lean(&session, true)
+                    {
                         daemon.deliver(&session, LoopInput::ContinueLean).await;
                     }
+                    let input = match input {
+                        LoopInput::Approve
+                        | LoopInput::ApproveAll
+                        | LoopInput::Deny
+                        | LoopInput::Answer(_)
+                        | LoopInput::UserMessage(_)
+                        | LoopInput::Interrupt => input.with_source(by, via),
+                        other => other,
+                    };
                     daemon.deliver(&session, input).await;
                 }
             }

@@ -93,17 +93,24 @@ pub struct UserCall {
     pub until: i64,
 }
 
+fn default_answer_by() -> String {
+    crate::mission_control::SESSION_ID.to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QueuedAnswer {
     pub session_id: String,
     pub answer: String,
+    #[serde(default = "default_answer_by")]
+    pub by: String,
 }
 
-pub fn queue_answer(session_id: &str, answer: &str) -> Result<(), String> {
+pub fn queue_answer(session_id: &str, answer: &str, by: &str) -> Result<(), String> {
     update(|state| {
         state.answers.push(QueuedAnswer {
             session_id: session_id.to_string(),
             answer: answer.to_string(),
+            by: by.to_string(),
         })
     })
 }

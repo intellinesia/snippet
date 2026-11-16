@@ -45,10 +45,16 @@ impl CodingHarness {
             state.history_rewritten = true;
         }
         repair_unanswered_tool_events(&mut state.events, 0);
+        if Self::has_pending_approval_event(&state)
+            && state.status != HarnessStatus::WaitingForInput
+        {
+            self.record_outdated_approval(&mut state, "human", "app");
+        }
         if let Some(request) = initial_request
             .map(|r| r.trim().to_string())
             .filter(|r| !r.is_empty())
         {
+            self.record_outdated_question(&mut state, "human", "app");
             state.status = HarnessStatus::Running;
             state.final_text = None;
             state.pending_question = None;
@@ -336,6 +342,7 @@ impl CodingHarness {
                     .await?;
                 }
             }
+            let mut has_new_decision = false;
             if events_rewritten {
                 on_busy(|| store.replace_conversation_events(&id, &state.events, &now)).await?;
             } else {
@@ -351,9 +358,18 @@ impl CodingHarness {
                                 | HarnessEvent::AssistantText { .. }
                         )
                     });
+                    has_new_decision = state.events[from..]
+                        .iter()
+                        .any(|e| matches!(e, HarnessEvent::Decision { .. }));
                     on_busy(|| store.append_conversation_events(&id, &state.events[from..], &now))
                         .await?;
                 }
+            }
+            if has_new_decision {
+                crate::session::emit_device_event(serde_json::json!({
+                    "kind": "session_decision",
+                    "session": id,
+                }));
             }
             if active {
                 let ts = Utc::now().timestamp();

@@ -243,7 +243,7 @@ fn token_matches(provided: &str, expected: &str) -> bool {
 /// Inputs that put a settled session back to work: a message, an answer, or a goal (recurring runs set one).
 pub(crate) fn wakes_settled(input: &LoopInput) -> bool {
     matches!(
-        input,
+        input.inner(),
         LoopInput::UserMessage(_)
             | LoopInput::Answer(_)
             | LoopInput::Queue(_)
@@ -752,7 +752,7 @@ impl Daemon {
     /// A wake with nobody there to choose: the session's resume mode decides
     /// whether a lapsed cache continues lean first.
     pub(crate) async fn deliver_wake(&self, id: &str, input: LoopInput) {
-        let lean = match &input {
+        let lean = match input.inner() {
             LoopInput::UserMessage(text) => !skip_lean_for_voice(text) && resume_lean(id, false),
             _ => false,
         };
@@ -763,7 +763,7 @@ impl Daemon {
     }
 
     pub(crate) async fn deliver(&self, id: &str, input: LoopInput) {
-        match &input {
+        match input.inner() {
             LoopInput::Unqueue(queue_id) | LoopInput::SteerQueued(queue_id) => {
                 self.hide_queued(id, queue_id).await
             }
@@ -772,7 +772,8 @@ impl Daemon {
         if wakes_settled(&input) {
             crate::session::wake_settled(id);
         }
-        let input = match input {
+        let (inner, source) = input.unwrap_source();
+        let inner = match inner {
             LoopInput::UserMessage(text) => {
                 LoopInput::UserMessage(self.with_transcripts(text).await)
             }
@@ -781,6 +782,10 @@ impl Daemon {
                 LoopInput::Queue(item)
             }
             other => other,
+        };
+        let input = match source {
+            Some(src) => inner.with_source(src.by, src.via),
+            None => inner,
         };
         let mut sessions = self.sessions.lock().await;
         if let Some(s) = sessions.get(id)
@@ -796,10 +801,6 @@ impl Daemon {
         // is FORWARDED to it. Previously everything but text was dropped here, so a
         // phone-triggered compaction (or /goal, mode/title change) on a not-yet-live
         // session silently did nothing.
-        let initial = match &input {
-            LoopInput::UserMessage(t) | LoopInput::Answer(t) => Some(t.clone()),
-            _ => None,
-        };
         let (sp, profile) = match sessions.get(id) {
             Some(s) => (s.state_path.clone(), s.profile.clone()),
             None => match state_path_for_id(id) {
@@ -813,6 +814,15 @@ impl Daemon {
         let Some(state) = read_session_meta(&sp) else {
             return;
         };
+        let initial =
+            if state.pending_question.is_some() || matches!(input.inner(), LoopInput::Answer(_)) {
+                None
+            } else {
+                match input.inner() {
+                    LoopInput::UserMessage(t) => Some(t.clone()),
+                    _ => None,
+                }
+            };
         let folder = PathBuf::from(&state.workspace);
         if state.workspace.is_empty() || !folder.is_dir() {
             return;

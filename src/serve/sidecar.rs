@@ -200,8 +200,22 @@ pub async fn attach(info: &DaemonInfo, state_path: &Path) -> Result<SidecarAttac
             tokio::select! {
                 input = input_rx.recv() => {
                     let Some(input) = input else { break; };
-                    let Ok(json) = serde_json::to_string(&input) else { continue; };
-                    if sink.send(WsMessage::Text(json.into())).await.is_err() {
+                    let (input, source) = input.unwrap_source();
+                    let via = source.as_ref().map(|s| s.via.as_str()).unwrap_or("tui");
+                    let Ok(mut val) = serde_json::to_value(&input) else { continue; };
+                    if matches!(
+                        input,
+                        LoopInput::Approve
+                            | LoopInput::ApproveAll
+                            | LoopInput::Deny
+                            | LoopInput::Answer(_)
+                            | LoopInput::UserMessage(_)
+                            | LoopInput::Interrupt
+                    ) && let Some(obj) = val.as_object_mut()
+                    {
+                        obj.insert("via".to_string(), serde_json::json!(via));
+                    }
+                    if sink.send(WsMessage::Text(val.to_string().into())).await.is_err() {
                         break;
                     }
                 }

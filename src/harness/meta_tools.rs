@@ -287,6 +287,7 @@ impl CodingHarness {
                                 .map(str::to_string)
                         })
                         .unwrap_or_else(|| "Waiting for your input.".to_string());
+                    self.record_outdated_question(state, "human", "app");
                     state.events.push(HarnessEvent::UserQuestion {
                         questions: rendered.clone(),
                     });
