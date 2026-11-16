@@ -1467,12 +1467,10 @@ async fn run_lane_once(
     Ok((summary, full_text, structured))
 }
 
-pub(crate) fn lane_finish_instructions(is_cli: bool) -> &'static str {
-    if is_cli {
-        "When you're done, write your closing response directly (do not call `message_parent` with the final report) using the four headings `Summary` (the outcome, under 600 characters), `Findings` (one `- <claim> (<file:line>)` bullet each), `Tests` and `Open`; do not paste diffs or file contents into the report."
-    } else {
-        "When you're done, finish with `terminate_loop` giving `summary` (the outcome, under 600 characters), `findings` (one line each with its `file:line`), `tests` and `open`; do not paste diffs or file contents into the report."
-    }
+pub(crate) fn lane_finish_instructions(_is_cli: bool) -> &'static str {
+    // Every lane, API or CLI, finishes through terminate_loop: the call is the
+    // signal that it is done, so a turn that merely stops is never taken as a report.
+    "When you're done, finish with `terminate_loop` giving `summary` (the outcome, under 600 characters), `findings` (one line each with its `file:line`), `tests` and `open`; do not paste diffs or file contents into the report. Ending your turn without it does not finish the lane."
 }
 
 /// Verify every `path:line` reference in `text` against the workspace and the
@@ -2440,11 +2438,8 @@ mod tests {
         assert!(api_footer.contains("findings"));
         assert!(api_footer.contains("do not paste diffs"));
 
-        let cli_footer = super::lane_finish_instructions(true);
-        assert!(cli_footer.contains("Summary"));
-        assert!(cli_footer.contains("Findings"));
-        assert!(cli_footer.contains("Tests"));
-        assert!(cli_footer.contains("Open"));
+        // CLI lanes finish the same way: the call is the signal they are done.
+        assert_eq!(super::lane_finish_instructions(true), api_footer);
 
         let text = "\
 ## Summary

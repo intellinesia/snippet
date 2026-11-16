@@ -1360,11 +1360,16 @@ fn cli_meta_tool_definitions(
     lanes: bool,
     hidden: &[&str],
 ) -> Vec<NativeToolDefinition> {
-    meta::conversation_meta_definitions_for(!once, lanes)
+    let mut defs: Vec<NativeToolDefinition> = meta::conversation_meta_definitions_for(!once, lanes)
         .into_iter()
         .filter(|d| !once || !matches!(d.name.as_str(), "ask_user" | "monitor"))
         .filter(|d| !hidden.contains(&d.name.as_str()))
-        .collect()
+        .collect();
+    // A headless run (a lane) ends by handing back its report.
+    if once {
+        defs.push(meta::terminate_loop_tool());
+    }
+    defs
 }
 
 const CLI_STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -1962,11 +1967,12 @@ impl CodingHarness {
                 .unwrap_or_else(|| "The CLI agent finished without a summary".to_string());
             return Err(ToolError::msg(message));
         }
+        let closing = cli_closing(&state.events);
         Ok(HarnessOutcome {
             final_text: state.final_text,
             events: state.events,
             iterations: state.iterations,
-            closing: None,
+            closing,
         })
     }
 
@@ -2073,6 +2079,7 @@ impl CodingHarness {
             std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>,
         > = FuturesUnordered::new();
         let mut outbox: Vec<String> = Vec::new();
+        let mut report_nudges = 0usize;
         let mut held_envelopes: Vec<String> = Vec::new();
         let mut last_heard = tokio::time::Instant::now();
         let mut stall_restarts = 0u8;
@@ -2891,8 +2898,33 @@ impl CodingHarness {
                             if changed {
                                 self.persist(&mut state, &lanes).await?;
                             }
-                            if once && finished && running.is_empty() {
-                                break;
+                            if once && finished {
+                                // The CLI has ended its turn, so nothing will read the results
+                                // of calls still in flight (an MCP call whose connection
+                                // dropped never resolves); waiting on them hangs the lane.
+                                if !running.is_empty() {
+                                    running = Default::default();
+                                }
+                                // A lane finishes through terminate_loop; a turn that ends
+                                // without it is a stall, so ask before reporting it done.
+                                if outbox.is_empty()
+                                    && self.context.lane_origin().is_some()
+                                    && state.status != HarnessStatus::Failed
+                                    && state.pending_question.is_none()
+                                    && report_nudges < LANE_REPORT_NUDGES
+                                {
+                                    report_nudges += 1;
+                                    state.messages.push(HarnessMessage::User {
+                                        content: LANE_REPORT_NUDGE.to_string(),
+                                    });
+                                    outbox.push(LANE_REPORT_NUDGE.to_string());
+                                    state.status = HarnessStatus::Running;
+                                    self.persist(&mut state, &lanes).await?;
+                                }
+                                // Steering that arrived during the turn still gets its turn.
+                                if outbox.is_empty() {
+                                    break;
+                                }
                             }
                         }
                         CliLine::Exited(g, stderr) if g == generation => {
@@ -3006,6 +3038,39 @@ impl CodingHarness {
                                 let _ = call.reply.send(error_result("invalid_arguments", &message));
                             }
                         },
+                        "terminate_loop" if once => {
+                            let summary = call
+                                .arguments
+                                .get("summary")
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string);
+                            let Some(summary) = summary else {
+                                let _ = call.reply.send(error_result(
+                                    "invalid_arguments",
+                                    "`terminate_loop` needs a non-empty `summary` of what you did and found.",
+                                ));
+                                continue;
+                            };
+                            let mut data = call.arguments.as_object().cloned().unwrap_or_default();
+                            data.insert("summary".into(), Value::String(summary.clone()));
+                            let _ = call.reply.send(json!({
+                                "schema_version": 1,
+                                "status": "success",
+                                "data": {"received": true, "note": "Report received; this run is finished."}
+                            }));
+                            state.final_text = Some(summary);
+                            state.events.push(HarnessEvent::ToolResult {
+                                tool_name: "terminate_loop".into(),
+                                result: Value::Object(data),
+                            });
+                            state.status = HarnessStatus::Completed;
+                            self.persist(&mut state, &lanes).await?;
+                            // The report is the end of the run: in-flight calls and the
+                            // CLI's own end of turn are not waited on.
+                            break;
+                        }
                         name if meta_names.iter().any(|m| m == name) => {
                             let (value, _) = self.dispatch_meta(&mut state, &mut lanes, &mut watches, name, &call.arguments);
                             let _ = call.reply.send(value);
@@ -4791,5 +4856,53 @@ mod devinrel_tests {
         assert_eq!(stall_action(1, CliKind::Devin), StallAction::Fail);
         assert_eq!(stall_action(1, CliKind::ClaudeCode), StallAction::Fail);
         assert_eq!(stall_action(0, CliKind::Antigravity), StallAction::Fail);
+    }
+}
+
+/// How many times a lane that ends its turn without terminate_loop is asked to go on.
+const LANE_REPORT_NUDGES: usize = 3;
+
+const LANE_REPORT_NUDGE: &str = "[lane] Your turn ended without `terminate_loop`, so this lane is not finished. If work remains, carry on with it now. When it is all done, call `terminate_loop` with `summary`, `findings`, `tests` and `open`; that call is the only way a lane finishes.";
+
+/// The report a CLI run handed back through terminate_loop, if it did.
+pub(crate) fn cli_closing(events: &[HarnessEvent]) -> Option<Value> {
+    events.iter().rev().find_map(|e| match e {
+        HarnessEvent::ToolResult { tool_name, result } if tool_name == "terminate_loop" => {
+            Some(result.clone())
+        }
+        _ => None,
+    })
+}
+
+#[cfg(test)]
+mod lane_closing_tests {
+    use super::{HarnessEvent, cli_closing, cli_meta_tool_definitions};
+    use serde_json::json;
+
+    #[test]
+    fn the_last_terminate_loop_result_is_the_closing() {
+        let events = vec![
+            HarnessEvent::ToolResult {
+                tool_name: "bash".into(),
+                result: json!({"ok": 1}),
+            },
+            HarnessEvent::ToolResult {
+                tool_name: "terminate_loop".into(),
+                result: json!({"summary": "done", "tests": "ok"}),
+            },
+        ];
+        assert_eq!(cli_closing(&events).unwrap()["summary"], "done");
+        assert!(cli_closing(&events[..1]).is_none());
+    }
+
+    #[test]
+    fn only_headless_runs_are_served_terminate_loop() {
+        let has = |once| {
+            cli_meta_tool_definitions(once, false, &[])
+                .iter()
+                .any(|d| d.name == "terminate_loop")
+        };
+        assert!(has(true));
+        assert!(!has(false));
     }
 }
