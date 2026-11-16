@@ -4,11 +4,11 @@
 //! and GitHub Enterprise work the same way.
 
 use super::api_error;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
 
 use axum::extract::Query;
 use axum::http::StatusCode;
@@ -18,145 +18,377 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Semaphore;
 
 use super::Shared;
 use super::session_routes::resolve_session_dir;
+use crate::session::{SessionInfo, SessionPr};
 
 const GH_TIMEOUT: Duration = Duration::from_secs(45);
-const PR_CACHE_TTL: Duration = Duration::from_secs(300);
+pub(crate) const PR_TTL_SECS: i64 = 300;
+const BRANCH_PR_FIELDS: &str = "number,title,state,isDraft,mergeable,statusCheckRollup,url";
 
-#[derive(Clone)]
-struct BranchPrCacheEntry {
-    branch: String,
-    count: usize,
-    fetched_at: Option<Instant>,
-    refreshing: bool,
-}
-
-static BRANCH_PR_CACHE: OnceLock<Mutex<HashMap<String, BranchPrCacheEntry>>> = OnceLock::new();
+static PR_CACHE: LazyLock<Mutex<PrCache>> = LazyLock::new(|| Mutex::new(PrCache::default()));
+static PR_SEMAPHORE: Semaphore = Semaphore::const_new(4);
+// Bumped whenever a cached PR changes, so attached sessions resend their counts.
 static PR_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
-
-fn pr_cache() -> &'static Mutex<HashMap<String, BranchPrCacheEntry>> {
-    BRANCH_PR_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
 
 pub(crate) fn pr_cache_revision() -> u64 {
     PR_CACHE_REVISION.load(Ordering::Acquire)
 }
 
-fn has_git_remote(dir: &Path) -> bool {
-    std::process::Command::new("git")
-        .env("GIT_OPTIONAL_LOCKS", "0")
+#[derive(Debug, Clone)]
+struct CachedPr {
+    branch: String,
+    folder: String,
+    pr: Option<SessionPr>,
+    fetched_at: i64,
+}
+
+#[derive(Default)]
+pub(crate) struct PrCache {
+    entries: HashMap<String, CachedPr>,
+    in_flight: HashSet<String>,
+}
+
+impl PrCache {
+    pub fn lookup_and_queue(
+        &mut self,
+        session_id: &str,
+        folder: &str,
+        branch: &str,
+        now: i64,
+    ) -> (Option<SessionPr>, bool) {
+        let key = crate::conversations::canonical_session_id(session_id);
+        let (pr, stale) = match self.entries.get(&key) {
+            Some(entry) if entry.branch == branch && entry.folder == folder => {
+                (entry.pr.clone(), now - entry.fetched_at >= PR_TTL_SECS)
+            }
+            _ => (None, true),
+        };
+        if stale && self.in_flight.insert(key) {
+            (pr, true)
+        } else {
+            (pr, false)
+        }
+    }
+
+    pub fn finish_refresh(
+        &mut self,
+        session_id: &str,
+        folder: &str,
+        branch: &str,
+        result: Result<Option<SessionPr>, String>,
+        now: i64,
+    ) -> bool {
+        let key = crate::conversations::canonical_session_id(session_id);
+        self.in_flight.remove(&key);
+        let prev = self.entries.get(&key);
+        let new_pr = match result {
+            Ok(pr) => pr,
+            Err(_) => prev
+                .filter(|e| e.branch == branch && e.folder == folder)
+                .and_then(|e| e.pr.clone()),
+        };
+        let changed = prev.is_none_or(|e| e.branch != branch || e.pr != new_pr);
+        self.entries.insert(
+            key,
+            CachedPr {
+                branch: branch.to_string(),
+                folder: folder.to_string(),
+                pr: new_pr,
+                fetched_at: now,
+            },
+        );
+        changed
+    }
+}
+
+fn now_unix() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+pub(crate) fn session_pr_from_json(v: &Value) -> Option<SessionPr> {
+    let number = v.get("number").and_then(Value::as_u64)?;
+    let title = v.get("title").and_then(Value::as_str)?.to_string();
+    let url = v.get("url").and_then(Value::as_str)?.to_string();
+    let raw_state = v
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    let is_draft = v.get("isDraft").and_then(Value::as_bool).unwrap_or(false);
+    let state = match raw_state.as_str() {
+        "MERGED" => "merged",
+        "CLOSED" => "closed",
+        "OPEN" if is_draft => "draft",
+        "OPEN" => "open",
+        _ => return None,
+    }
+    .to_string();
+    let mergeable = match v.get("mergeable").and_then(Value::as_str) {
+        Some("MERGEABLE") => Some(true),
+        Some("CONFLICTING") => Some(false),
+        _ => None,
+    };
+    let checks = rollup_checks(v.get("statusCheckRollup"));
+    Some(SessionPr {
+        number,
+        title,
+        state,
+        checks,
+        mergeable,
+        url,
+    })
+}
+
+fn rollup_checks(raw: Option<&Value>) -> String {
+    let items: Option<&Vec<Value>> = raw.and_then(|v| {
+        v.as_array()
+            .or_else(|| v.get("nodes").and_then(Value::as_array))
+    });
+    let Some(items) = items else {
+        return "none".to_string();
+    };
+    if items.is_empty() {
+        return "none".to_string();
+    }
+    let mut any_pending = false;
+    for item in items {
+        let conclusion = item
+            .get("conclusion")
+            .or_else(|| item.get("state"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        let status = item
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        match conclusion.as_str() {
+            "FAILURE" | "ERROR" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED"
+            | "STARTUP_FAILURE" => return "failing".to_string(),
+            "SUCCESS" | "NEUTRAL" | "SKIPPED" => {}
+            _ if status == "COMPLETED" => {}
+            _ => any_pending = true,
+        }
+    }
+    if any_pending {
+        "pending".to_string()
+    } else {
+        "passing".to_string()
+    }
+}
+
+async fn has_git_remote(dir: &Path) -> bool {
+    let Ok(out) = tokio::process::Command::new("git")
         .arg("-C")
         .arg(dir)
         .arg("remote")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
-        .ok()
-        .is_some_and(|o| {
-            o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty()
+        .await
+    else {
+        return false;
+    };
+    out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+}
+
+async fn fetch_branch_pr(dir: &Path, branch: &str) -> Result<Option<SessionPr>, String> {
+    if !has_git_remote(dir).await {
+        return Ok(None);
+    }
+    let list = gh_json(
+        dir,
+        &[
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "all",
+            "--limit",
+            "5",
+            "--json",
+            BRANCH_PR_FIELDS,
+        ],
+    )
+    .await?;
+    let Some(items) = list.as_array() else {
+        return Ok(None);
+    };
+    let picked = items
+        .iter()
+        .find(|item| {
+            item.get("state")
+                .and_then(Value::as_str)
+                .is_some_and(|s| s.eq_ignore_ascii_case("OPEN"))
         })
+        .or_else(|| items.first());
+    Ok(picked.and_then(session_pr_from_json))
 }
 
-fn parse_open_pr_count(page: &Value) -> usize {
-    page.pointer("/data/repository/pullRequests/nodes")
-        .and_then(Value::as_array)
-        .map(|nodes| nodes.iter().filter(|n| n.get("number").is_some()).count())
-        .unwrap_or(0)
+fn spawn_pr_refresh(session_id: String, folder: String, branch: String) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        PR_CACHE
+            .lock()
+            .unwrap()
+            .in_flight
+            .remove(&crate::conversations::canonical_session_id(&session_id));
+        return;
+    };
+    handle.spawn(async move {
+        let Ok(_permit) = PR_SEMAPHORE.acquire().await else {
+            return;
+        };
+        let result = fetch_branch_pr(Path::new(&folder), &branch).await;
+        let changed = PR_CACHE.lock().unwrap().finish_refresh(
+            &session_id,
+            &folder,
+            &branch,
+            result,
+            now_unix(),
+        );
+        if changed {
+            PR_CACHE_REVISION.fetch_add(1, Ordering::Release);
+            crate::session::emit_device_event(json!({
+                "kind": "session_pr",
+                "session": session_id,
+            }));
+        }
+    });
 }
 
-async fn count_open_prs_for_branch(dir: &Path, branch: &str) -> Result<usize, String> {
-    let query = "query=query($owner:String!,$repo:String!,$branch:String!){repository(owner:$owner,name:$repo){pullRequests(states:[OPEN],headRefName:$branch,first:20){nodes{number}}}}";
-    let branch_arg = format!("branch={branch}");
-    let args = [
-        "api",
-        "graphql",
-        "-F",
-        "owner={owner}",
-        "-F",
-        "repo={repo}",
-        "-F",
-        branch_arg.as_str(),
-        "-f",
-        query,
-    ];
-    let page = gh_json(dir, &args).await?;
-    Ok(parse_open_pr_count(&page))
+/// Fill each session's `pr` from the per-session cache without ever invoking `gh`.
+/// Missing, stale (>= 5m), or branch-changed entries are queued for background refresh.
+pub(crate) fn attach_cached_prs(sessions: &mut [SessionInfo]) {
+    let now = now_unix();
+    let mut to_refresh: Vec<(String, String, String)> = Vec::new();
+    {
+        let mut cache = PR_CACHE.lock().unwrap();
+        for s in sessions.iter_mut() {
+            if !s.git {
+                continue;
+            }
+            let Some(branch) = s
+                .branch
+                .as_deref()
+                .filter(|b| !b.is_empty() && !matches!(*b, "main" | "master"))
+            else {
+                continue;
+            };
+            let (pr, needs_refresh) = cache.lookup_and_queue(&s.id, &s.folder, branch, now);
+            s.pr = pr;
+            if needs_refresh {
+                to_refresh.push((s.id.clone(), s.folder.clone(), branch.to_string()));
+            }
+        }
+    }
+    for (id, folder, branch) in to_refresh {
+        spawn_pr_refresh(id, folder, branch);
+    }
 }
 
-/// Cached open PR count for a session's branch, refreshing in the background at
-/// most every 5 minutes or when the branch changes. Never blocks `/attach`.
+/// Open PRs for the session's branch (0 or 1), read from the same cache as
+/// `attach_cached_prs`; never calls `gh` inline.
 pub(crate) fn cached_open_pr_count(session: &str, workspace: &Path) -> usize {
-    let Some(branch) = crate::session_stats::git_branch(workspace) else {
+    let Some(branch) = crate::session_stats::git_branch(workspace)
+        .filter(|b| !b.is_empty() && !matches!(b.as_str(), "main" | "master"))
+    else {
         return 0;
     };
-    let (count, should_refresh) = {
-        let mut cache = pr_cache().lock().unwrap_or_else(|e| e.into_inner());
-        let entry = cache
-            .entry(session.to_string())
-            .or_insert_with(|| BranchPrCacheEntry {
-                branch: branch.clone(),
-                count: 0,
-                fetched_at: None,
-                refreshing: false,
-            });
-        if entry.branch != branch {
-            entry.branch = branch.clone();
-            entry.count = 0;
-            entry.fetched_at = None;
-            entry.refreshing = false;
-        }
-        let fresh = entry
-            .fetched_at
-            .is_some_and(|at| at.elapsed() < PR_CACHE_TTL);
-        let refresh = !fresh && !entry.refreshing;
-        if refresh {
-            entry.refreshing = true;
-        }
-        (entry.count, refresh)
-    };
-    if should_refresh && let Ok(handle) = tokio::runtime::Handle::try_current() {
-        let session = session.to_string();
-        let dir = workspace.to_path_buf();
-        handle.spawn(async move {
-            let fetched = if has_git_remote(&dir) {
-                count_open_prs_for_branch(&dir, &branch).await.unwrap_or(0)
-            } else {
-                0
-            };
-            let mut changed = false;
-            {
-                let mut cache = pr_cache().lock().unwrap_or_else(|e| e.into_inner());
-                let entry = cache.entry(session).or_insert_with(|| BranchPrCacheEntry {
-                    branch: branch.clone(),
-                    count: 0,
-                    fetched_at: None,
-                    refreshing: false,
-                });
-                if entry.branch == branch {
-                    if entry.count != fetched {
-                        entry.count = fetched;
-                        changed = true;
-                    }
-                    entry.fetched_at = Some(Instant::now());
-                    entry.refreshing = false;
-                }
-            }
-            if changed {
-                PR_CACHE_REVISION.fetch_add(1, Ordering::Release);
-            }
-        });
+    let folder = workspace.display().to_string();
+    let (pr, needs_refresh) =
+        PR_CACHE
+            .lock()
+            .unwrap()
+            .lookup_and_queue(session, &folder, &branch, now_unix());
+    if needs_refresh {
+        spawn_pr_refresh(session.to_string(), folder, branch);
     }
-    count
+    usize::from(pr.is_some_and(|p| matches!(p.state.as_str(), "open" | "draft")))
 }
 
-pub(crate) fn invalidate_pr_cache(session: &str, workspace: Option<&Path>) {
-    {
-        let mut cache = pr_cache().lock().unwrap_or_else(|e| e.into_inner());
-        cache.remove(session);
+async fn refresh_session_pr_now(session_id: &str, dir: &Path) {
+    let Some(branch) = crate::session_stats::git_branch(dir) else {
+        return;
+    };
+    let result = fetch_branch_pr(dir, &branch).await;
+    let folder = dir.display().to_string();
+    let changed =
+        PR_CACHE
+            .lock()
+            .unwrap()
+            .finish_refresh(session_id, &folder, &branch, result, now_unix());
+    if changed {
+        PR_CACHE_REVISION.fetch_add(1, Ordering::Release);
+        crate::session::emit_device_event(json!({
+            "kind": "session_pr",
+            "session": crate::conversations::canonical_session_id(session_id),
+        }));
     }
-    PR_CACHE_REVISION.fetch_add(1, Ordering::Release);
-    if let Some(dir) = workspace {
-        let _ = cached_open_pr_count(session, dir);
+}
+
+/// The background poll covers only sessions whose PR can still change: a
+/// feature branch touched in the last three days, or one whose cached PR is
+/// still open. Settled sessions refresh when listed or when a PR action runs,
+/// which keeps the gh calls well inside GitHub's rate limit.
+fn worth_polling(
+    cache: &PrCache,
+    session_id: &str,
+    branch: &str,
+    last_active: i64,
+    now: i64,
+) -> bool {
+    if matches!(branch, "main" | "master") {
+        return false;
+    }
+    if now - last_active < 3 * 24 * 3600 {
+        return true;
+    }
+    let key = crate::conversations::canonical_session_id(session_id);
+    cache
+        .entries
+        .get(&key)
+        .and_then(|e| e.pr.as_ref())
+        .is_some_and(|pr| pr.state == "open" || pr.state == "draft")
+}
+
+pub(crate) async fn pr_refresh_loop() {
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let mut tick = tokio::time::interval(Duration::from_secs(60));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let to_refresh = tokio::task::spawn_blocking(|| {
+            let mut sessions = crate::session::list_device_sessions();
+            crate::session_stats::attach_git(&mut sessions);
+            let now = now_unix();
+            let mut cache = PR_CACHE.lock().unwrap();
+            let mut out = Vec::new();
+            for s in sessions {
+                if !s.git {
+                    continue;
+                }
+                let Some(branch) = s.branch.as_deref().filter(|b| !b.is_empty()) else {
+                    continue;
+                };
+                if !worth_polling(&cache, &s.id, branch, s.last_active, now) {
+                    continue;
+                }
+                let (_, needs_refresh) = cache.lookup_and_queue(&s.id, &s.folder, branch, now);
+                if needs_refresh {
+                    out.push((s.id, s.folder, branch.to_string()));
+                }
+            }
+            out
+        })
+        .await
+        .unwrap_or_default();
+        for (id, folder, branch) in to_refresh {
+            spawn_pr_refresh(id, folder, branch);
+        }
     }
 }
 
@@ -693,7 +925,7 @@ async fn create(Json(req): Json<CreateReq>) -> Response {
     let body = req.body.clone().unwrap_or_default();
     match gh(&dir, &args, title.map(|_| body.as_str())).await {
         Ok(text) => {
-            invalidate_pr_cache(&req.session, Some(&dir));
+            refresh_session_pr_now(&req.session, &dir).await;
             Json(json!({ "created": true, "url": text.trim().lines().last().unwrap_or("") }))
                 .into_response()
         }
@@ -738,7 +970,10 @@ async fn merge(Json(req): Json<MergeReq>) -> Response {
     let number = req.number.to_string();
     if req.disable_auto {
         return match gh(&dir, &["pr", "merge", &number, "--disable-auto"], None).await {
-            Ok(_) => Json(json!({ "auto": false })).into_response(),
+            Ok(_) => {
+                refresh_session_pr_now(&req.session, &dir).await;
+                Json(json!({ "auto": false })).into_response()
+            }
             Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
         };
     }
@@ -776,6 +1011,7 @@ async fn merge(Json(req): Json<MergeReq>) -> Response {
         return api_error(StatusCode::BAD_GATEWAY, e);
     }
     if req.auto {
+        refresh_session_pr_now(&req.session, &dir).await;
         return Json(json!({ "auto": true })).into_response();
     }
     let mut deleted = false;
@@ -790,7 +1026,7 @@ async fn merge(Json(req): Json<MergeReq>) -> Response {
             .await
             .is_ok();
     }
-    invalidate_pr_cache(&req.session, Some(&dir));
+    refresh_session_pr_now(&req.session, &dir).await;
     Json(json!({ "merged": true, "branch_deleted": deleted })).into_response()
 }
 
@@ -819,9 +1055,7 @@ async fn pr_state(Json(req): Json<StateReq>) -> Response {
     };
     match gh(&dir, &args, None).await {
         Ok(_) => {
-            if matches!(req.action.as_str(), "close" | "reopen") {
-                invalidate_pr_cache(&req.session, Some(&dir));
-            }
+            refresh_session_pr_now(&req.session, &dir).await;
             Json(json!({ "done": true })).into_response()
         }
         Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
@@ -932,68 +1166,162 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_open_pr_count_counts_pr_nodes() {
-        let payload = json!({
-            "data": {
-                "repository": {
-                    "pullRequests": {
-                        "nodes": [
-                            {"number": 12},
-                            {"number": 19},
-                            {"other": "ignored"}
-                        ]
-                    }
-                }
-            }
-        });
-        assert_eq!(parse_open_pr_count(&payload), 2);
-        assert_eq!(parse_open_pr_count(&json!({})), 0);
+    fn open_pr_count_reads_the_session_pr_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .status()
+                .unwrap()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        assert_eq!(cached_open_pr_count("counts-test", root), 0);
+        git(&["checkout", "-q", "-b", "feat/counts"]);
+        let folder = root.display().to_string();
+        let pr = |state: &str| SessionPr {
+            number: 7,
+            title: "t".into(),
+            state: state.into(),
+            checks: "none".into(),
+            mergeable: None,
+            url: String::new(),
+        };
+        let now = now_unix();
+        PR_CACHE.lock().unwrap().finish_refresh(
+            "counts-test",
+            &folder,
+            "feat/counts",
+            Ok(Some(pr("open"))),
+            now,
+        );
+        assert_eq!(cached_open_pr_count("counts-test", root), 1);
+        PR_CACHE.lock().unwrap().finish_refresh(
+            "counts-test",
+            &folder,
+            "feat/counts",
+            Ok(Some(pr("merged"))),
+            now,
+        );
+        assert_eq!(cached_open_pr_count("counts-test", root), 0);
     }
 
     #[test]
-    fn branch_pr_cache_respects_ttl_and_branch_change() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        std::process::Command::new("git")
-            .args(["-C", &root.display().to_string(), "init", "-q"])
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .args([
-                "-C",
-                &root.display().to_string(),
-                "checkout",
-                "-b",
-                "feat/a",
-            ])
-            .status()
-            .unwrap();
-        let session = format!("test-pr-cache-{}", uuid::Uuid::new_v4().simple());
-        {
-            let mut cache = pr_cache().lock().unwrap();
-            cache.insert(
-                session.clone(),
-                BranchPrCacheEntry {
-                    branch: "feat/a".into(),
-                    count: 3,
-                    fetched_at: Some(Instant::now()),
-                    refreshing: false,
-                },
-            );
-        }
-        assert_eq!(cached_open_pr_count(&session, root), 3);
+    fn polling_skips_main_and_settled_branches_without_an_open_pr() {
+        let now = 10_000_000;
+        let mut cache = PrCache::default();
+        assert!(!worth_polling(&cache, "s1", "main", now, now));
+        assert!(worth_polling(&cache, "s1", "feat/x", now - 3600, now));
+        let old = now - 10 * 24 * 3600;
+        assert!(!worth_polling(&cache, "s1", "feat/x", old, now));
+        let open = session_pr_from_json(&json!({
+            "number": 7, "title": "t", "url": "u", "state": "OPEN"
+        }));
+        cache.finish_refresh("s1", "/w", "feat/x", Ok(open), now);
+        assert!(worth_polling(&cache, "s1", "feat/x", old, now));
+    }
 
-        std::process::Command::new("git")
-            .args([
-                "-C",
-                &root.display().to_string(),
-                "checkout",
-                "-b",
-                "feat/b",
-            ])
-            .status()
-            .unwrap();
-        assert_eq!(cached_open_pr_count(&session, root), 0);
-        invalidate_pr_cache(&session, None);
+    #[test]
+    fn session_pr_from_json_maps_states_checks_and_mergeable() {
+        let open = session_pr_from_json(&json!({
+            "number": 280,
+            "title": "Add session rows",
+            "state": "OPEN",
+            "isDraft": false,
+            "mergeable": "MERGEABLE",
+            "url": "https://github.com/org/repo/pull/280",
+            "statusCheckRollup": [{"conclusion": "SUCCESS", "status": "COMPLETED"}]
+        }))
+        .unwrap();
+        assert_eq!(open.number, 280);
+        assert_eq!(open.state, "open");
+        assert_eq!(open.checks, "passing");
+        assert_eq!(open.mergeable, Some(true));
+
+        let draft = session_pr_from_json(&json!({
+            "number": 281,
+            "title": "WIP",
+            "state": "OPEN",
+            "isDraft": true,
+            "mergeable": "CONFLICTING",
+            "url": "https://github.com/org/repo/pull/281",
+            "statusCheckRollup": [{"status": "IN_PROGRESS"}]
+        }))
+        .unwrap();
+        assert_eq!(draft.state, "draft");
+        assert_eq!(draft.checks, "pending");
+        assert_eq!(draft.mergeable, Some(false));
+
+        let merged = session_pr_from_json(&json!({
+            "number": 282,
+            "title": "Done",
+            "state": "MERGED",
+            "isDraft": false,
+            "mergeable": "UNKNOWN",
+            "url": "https://github.com/org/repo/pull/282",
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS", "status": "COMPLETED"},
+                {"conclusion": "FAILURE", "status": "COMPLETED"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(merged.state, "merged");
+        assert_eq!(merged.checks, "failing");
+        assert_eq!(merged.mergeable, None);
+
+        let closed = session_pr_from_json(&json!({
+            "number": 283,
+            "title": "Closed",
+            "state": "CLOSED",
+            "url": "https://github.com/org/repo/pull/283",
+            "statusCheckRollup": []
+        }))
+        .unwrap();
+        assert_eq!(closed.state, "closed");
+        assert_eq!(closed.checks, "none");
+    }
+
+    #[test]
+    fn pr_cache_dedups_in_flight_expires_at_5m_and_resets_on_branch_change() {
+        let mut cache = PrCache::default();
+        // Initial miss queues refresh and returns None.
+        assert_eq!(
+            cache.lookup_and_queue("s1", "/repo", "feat/a", 1000),
+            (None, true)
+        );
+        // Second call while in-flight does not double-queue.
+        assert_eq!(
+            cache.lookup_and_queue("s1", "/repo", "feat/a", 1001),
+            (None, false)
+        );
+
+        let pr_a = SessionPr {
+            number: 10,
+            title: "A".into(),
+            state: "open".into(),
+            checks: "passing".into(),
+            mergeable: Some(true),
+            url: "https://github.com/o/r/pull/10".into(),
+        };
+        assert!(cache.finish_refresh("s1", "/repo", "feat/a", Ok(Some(pr_a.clone())), 1002));
+
+        // Fresh cache hit within 5 minutes does not queue.
+        assert_eq!(
+            cache.lookup_and_queue("s1", "/repo", "feat/a", 1299),
+            (Some(pr_a.clone()), false)
+        );
+        // After 5 minutes (300s), returns stale cached PR while queueing refresh.
+        assert_eq!(
+            cache.lookup_and_queue("s1", "/repo", "feat/a", 1302),
+            (Some(pr_a), true)
+        );
+        assert!(cache.finish_refresh("s1", "/repo", "feat/a", Ok(None), 1303));
+        // Branch change drops old PR and queues immediately.
+        assert_eq!(
+            cache.lookup_and_queue("s1", "/repo", "feat/b", 1304),
+            (None, true)
+        );
     }
 }

@@ -577,17 +577,17 @@ fn goal_attention_line(
 
 /// " · plan 3/5, now: <step>" for a task whose worker has laid out a plan.
 fn plan_progress(task: &crate::coordination::Task) -> String {
-    if task.work_plan.is_empty() {
+    let (done, total) = crate::coordination::plan_counts(task);
+    if total == 0 {
         return String::new();
     }
-    let done = task.work_plan.iter().filter(|s| s.status == "done").count();
     let now = task
         .work_plan
         .iter()
         .find(|s| s.status == "in_progress")
         .map(|s| format!(", now: {}", one_line(&s.step, 80)))
         .unwrap_or_default();
-    format!(" · plan {done}/{}{now}", task.work_plan.len())
+    format!(" · plan {done}/{total}{now}")
 }
 
 #[allow(clippy::too_many_arguments)]
