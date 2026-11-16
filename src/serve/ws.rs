@@ -572,6 +572,20 @@ async fn handle_ws(
                     continue;
                 }
                 if let Ok(input) = serde_json::from_str::<LoopInput>(t.as_str()) {
+                    if matches!(
+                        input,
+                        LoopInput::UserMessage(_)
+                            | LoopInput::Answer(_)
+                            | LoopInput::Queue(_)
+                            | LoopInput::SteerQueued(_)
+                            | LoopInput::Approve
+                            | LoopInput::ApproveAll
+                            | LoopInput::Deny
+                    ) {
+                        let _ = daemon
+                            .store
+                            .set_session_user_seen(&session, crate::session::now_unix_secs());
+                    }
                     if let LoopInput::Answer(text) = &input
                         && let Some(question) =
                             direct::latest_question_event(&daemon.store, &session)

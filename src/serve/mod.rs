@@ -1198,6 +1198,7 @@ pub async fn run_serve(
             post(session_routes::interrupt_session),
         )
         .route("/session/rename", post(rename_session))
+        .route("/session/seen", post(session_routes::seen_session))
         .route("/git/worktrees", get(git_worktrees))
         .route("/git/status", get(git_status))
         .route("/git/diff", get(git_diff))
@@ -1407,6 +1408,12 @@ async fn list_sessions(State(d): State<Shared>, Query(q): Query<ListQuery>) -> R
                 s.status = "idle".to_string();
             }
             let running = s.status == "running";
+            s.came_back = crate::session::compute_came_back(
+                &s.id,
+                &s.status,
+                s.finished_at,
+                s.user_seen_at,
+            ) && !alive;
             crate::session_stats::attach_running_since(&mut s);
             let profile = live_s
                 .and_then(|l| l.profile.clone())

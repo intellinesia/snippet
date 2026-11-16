@@ -283,6 +283,40 @@ mod tests {
     }
 
     #[test]
+    fn migrating_sessions_leaves_came_back_fields_null() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("snippet.db");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    workspace_key TEXT NOT NULL,
+                    workspace TEXT NOT NULL,
+                    title TEXT,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO sessions (id, workspace_key, workspace, title, status, created_at, updated_at)
+                VALUES ('legacy-1', 'wk', '/tmp/w', 'old', 'idle', 't0', 't0');",
+            )
+            .unwrap();
+        }
+        let db = Store::open(&path).unwrap();
+        let row = db.get_session_row("legacy-1").unwrap().unwrap();
+        assert_eq!(row.user_seen_at, None);
+        assert_eq!(row.finished_at, None);
+        assert_eq!(row.result_summary, None);
+        assert!(!crate::session::compute_came_back(
+            &row.id,
+            &row.status,
+            row.finished_at,
+            row.user_seen_at
+        ));
+    }
+
+    #[test]
     fn initializes_schema() {
         let db = Store::open_in_memory().unwrap();
         db.with_connection(|connection| {

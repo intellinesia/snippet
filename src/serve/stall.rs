@@ -795,6 +795,10 @@ mod tests {
             resume_mode: "ask".into(),
             last_changes: None,
             total_changes: None,
+            user_seen_at: None,
+            finished_at: None,
+            result_summary: None,
+            pending_handoff: None,
         };
         store.create_conversation(&row, &[], "{}").unwrap();
         let user = |text: &str| crate::llm::HarnessMessage::User {
