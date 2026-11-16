@@ -4149,6 +4149,8 @@ struct RegisterAgentArgs {
     profile: Option<String>,
     #[serde(default)]
     nickname: Option<String>,
+    #[serde(default)]
+    character: Option<String>,
 }
 /// The one step that makes a built agent real: its identity file and its
 /// directory row, written together so an agent is never half-created.
@@ -4166,7 +4168,8 @@ impl Tool for RegisterAgent {
                     "capabilities": {"type": "array", "items": {"type": "string"}, "description": "short tags, e.g. rust, code-review"},
                     "identity": {"type": "string", "description": "identity.md in markdown: who the agent is, its mandate, how it works, what it checks, how it reports"},
                     "profile": {"type": "string", "description": "optional; the inference profile this agent always works on, named exactly as list_profiles returns it. Cheaper profiles for routine work, stronger ones for hard reasoning. Omit to leave the agent's profile unchanged."},
-                    "nickname": {"type": "string", "description": "optional; a short name shown instead of the display name. Pass the nickname the user asked for, if any."}
+                    "nickname": {"type": "string", "description": "optional; a short name shown instead of the display name. Pass the nickname the user asked for, if any."},
+                    "character": {"type": "string", "description": "optional; character id 01..36. Pass the character the user asked for, if any."}
                 }),
                 &["id", "display_name", "identity"],
             ),
@@ -4196,6 +4199,9 @@ impl Tool for RegisterAgent {
         if let Some(name) = profile.as_deref() {
             check_profile(name).await?;
         }
+        let character =
+            crate::serve::agent_routes::normalize_agent_character(args.character.as_deref())
+                .map_err(ToolError::msg)?;
         let home = crate::coordination::AgentHome::new(
             crate::coordination::agents_root(&root(ctx)?),
             &args.id,
@@ -4228,6 +4234,11 @@ impl Tool for RegisterAgent {
             db(ctx)?
                 .set_agent_nickname(&args.id, Some(nickname))
                 .map_err(|e| ToolError::msg(format!("set agent nickname: {e}")))?;
+        }
+        if let Some(character) = character.as_deref() {
+            db(ctx)?
+                .set_agent_character(&args.id, Some(character))
+                .map_err(|e| ToolError::msg(format!("set agent character: {e}")))?;
         }
         Ok(ToolResult::success(json!({
             "agent_id": args.id,

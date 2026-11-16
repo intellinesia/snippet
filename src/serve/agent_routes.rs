@@ -38,6 +38,7 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
             };
             let colors = d.store.agent_colors().unwrap_or_default();
             let shapes = d.store.agent_shapes().unwrap_or_default();
+            let characters = d.store.agent_characters().unwrap_or_default();
             let nicknames = d.store.agent_nicknames().unwrap_or_default();
             let profiles = d.store.agent_profiles().unwrap_or_default();
             let desk_models = d.store.agent_desk_profiles().unwrap_or_default();
@@ -70,6 +71,11 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
                         if let Some(shape) = shapes.get(&agent.id) {
                             object.insert("shape".into(), shape.clone().into());
                         }
+                        let character = resolve_agent_character(
+                            &agent.id,
+                            characters.get(&agent.id).map(String::as_str),
+                        );
+                        object.insert("character".into(), character.into());
                         if let Some(nickname) = nicknames.get(&agent.id) {
                             object.insert("nickname".into(), nickname.clone().into());
                         }
@@ -396,6 +402,8 @@ pub(crate) struct AgentReq {
     pub(crate) profile: Option<String>,
     #[serde(default)]
     pub(crate) nickname: Option<String>,
+    #[serde(default)]
+    pub(crate) character: Option<String>,
 }
 fn default_agent_kind() -> crate::coordination::types::AgentKind {
     crate::coordination::types::AgentKind::Worker
@@ -419,6 +427,10 @@ pub(crate) async fn create_agent(State(d): State<Shared>, Json(req): Json<AgentR
     {
         return api_error(StatusCode::BAD_REQUEST, error.to_string());
     }
+    let character = match normalize_agent_character(req.character.as_deref()) {
+        Ok(character) => character,
+        Err(msg) => return api_error(StatusCode::BAD_REQUEST, msg),
+    };
     let req_nickname = req.nickname.as_deref().map(|n| n.trim().to_string());
     let agent = crate::coordination::types::Agent {
         id: req.id,
@@ -455,9 +467,18 @@ pub(crate) async fn create_agent(State(d): State<Shared>, Json(req): Json<AgentR
             if let Some(n) = nickname.as_deref() {
                 let _ = d.store.set_agent_nickname(&agent.id, Some(n));
             }
+            if let Some(ch) = character.as_deref() {
+                let _ = d.store.set_agent_character(&agent.id, Some(ch));
+            }
             let mut body = serde_json::to_value(&agent).unwrap_or_default();
-            if let (Some(object), Some(name)) = (body.as_object_mut(), profile) {
-                object.insert("profile".into(), name.into());
+            if let Some(object) = body.as_object_mut() {
+                if let Some(name) = profile {
+                    object.insert("profile".into(), name.into());
+                }
+                object.insert(
+                    "character".into(),
+                    resolve_agent_character(&agent.id, character.as_deref()).into(),
+                );
             }
             (StatusCode::CREATED, Json(body)).into_response()
         }
@@ -574,6 +595,72 @@ pub(crate) async fn set_agent_shape(
         Err(error) => api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("set agent shape: {error}"),
+        ),
+    }
+}
+
+pub(crate) fn normalize_agent_character(raw: Option<&str>) -> Result<Option<String>, &'static str> {
+    let Some(trimmed) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let valid = trimmed.len() == 2
+        && trimmed.bytes().all(|b| b.is_ascii_digit())
+        && matches!(trimmed.parse::<u8>(), Ok(1..=36));
+    if valid {
+        Ok(Some(trimmed.to_string()))
+    } else {
+        Err("character must be 01..36")
+    }
+}
+
+pub(crate) fn default_agent_character(agent_id: &str) -> String {
+    match agent_id {
+        "mission-control" => "14".to_string(),
+        "snippet" => "19".to_string(),
+        _ => {
+            // Stable FNV-1a hash so defaults do not drift across Rust versions or restarts.
+            let mut h: u64 = 0xcbf29ce484222325;
+            for &b in agent_id.as_bytes() {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            format!("{:02}", (h % 36) + 1)
+        }
+    }
+}
+
+pub(crate) fn resolve_agent_character(agent_id: &str, stored: Option<&str>) -> String {
+    stored
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| default_agent_character(agent_id))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AgentCharacterReq {
+    pub(crate) character: Option<String>,
+}
+
+/// POST /agents/{id}/character — the agent's character ("01".."36"), or null to
+/// fall back to the deterministic default.
+pub(crate) async fn set_agent_character(
+    State(d): State<Shared>,
+    axum::extract::Path(agent_id): axum::extract::Path<String>,
+    Json(req): Json<AgentCharacterReq>,
+) -> Response {
+    let character = match normalize_agent_character(req.character.as_deref()) {
+        Ok(character) => character,
+        Err(msg) => return api_error(StatusCode::BAD_REQUEST, msg),
+    };
+    match d.store.set_agent_character(&agent_id, character.as_deref()) {
+        Ok(true) => {
+            Json(serde_json::json!({ "id": agent_id, "character": character })).into_response()
+        }
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such agent"),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("set agent character: {error}"),
         ),
     }
 }
