@@ -187,7 +187,9 @@ fn group_from_row(
 
 /// Agents woken for a group thread whose reply is still in flight: a wake was
 /// delivered for a post they have not answered since, and their inbox session
-/// is mid-turn. A member told to stay quiet goes idle and drops off the list.
+/// is mid-turn. A member told to stay quiet goes idle and drops off the list;
+/// one paused on the user is waiting, not replying. Only the last 200 events
+/// are scanned, since a reply in flight answers a recent post.
 fn replying_agents(
     conn: &rusqlite::Connection,
     thread_id: &str,
@@ -202,7 +204,9 @@ fn replying_agents(
          WHERE e.thread_id = ?1
            AND d.recipient_kind IN ('group', 'group_deferred', 'group_peer', 'group_unanswered')
            AND d.delivered_at IS NOT NULL
-           AND s.status IN ('running', 'waiting_for_input')
+           AND s.status = 'running'
+           AND e.sequence > (SELECT COALESCE(MAX(sequence), 0) - 200
+                             FROM board_events WHERE thread_id = ?1)
            AND NOT EXISTS (
                SELECT 1 FROM board_events r
                WHERE r.thread_id = ?1 AND r.event_type = 'group_message'
@@ -356,7 +360,7 @@ impl Store {
                            AND ta.removed_at IS NULL
                            AND ta.work_session_id IS NOT NULL
                            AND ta.work_session_id != ''
-                           AND s.status IN ('running', 'waiting_for_input')
+                           AND s.status = 'running'
                          ORDER BY ta.agent_id",
                     )?;
                     let rows = stmt.query_map(params![thread_id], |row| row.get(0))?;
