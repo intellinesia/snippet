@@ -48,7 +48,64 @@ const REFUSED_PROGRAMS: &[&str] = &[
     ".", "time", "nice", "timeout", "watch", "parallel", "setsid", "chroot", "runuser",
 ];
 
+/// A shell runs whatever its script, stdin or heredoc says, so no rule covers one.
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
+
+/// Flags that make a covered program run another program (`git push
+/// --receive-pack=...`, `cargo --config target.x.runner=...`).
+const REFUSED_FLAG_PREFIXES: &[&str] = &[
+    "--config",
+    "--exec",
+    "--upload-pack",
+    "--receive-pack",
+    "--ssh",
+    "--rcfile",
+    "--init-file",
+];
+
+/// A redirect target a rule may write: a fd, /dev/null, or a plain file
+/// under the working directory or /tmp. Home, absolute paths, `..`,
+/// variables and dot-paths (`.git/hooks`, `.bashrc`) are refused.
+fn harmless_target(word: &str) -> bool {
+    if word == "/dev/null" || word.chars().all(|ch| ch.is_ascii_digit() || ch == '-') {
+        return true;
+    }
+    let rel = word.strip_prefix("/tmp/").unwrap_or(word);
+    !rel.is_empty()
+        && !rel.starts_with('/')
+        && !rel.contains(['~', '$', '*', '?', '['])
+        && rel.split('/').all(|part| !part.starts_with('.'))
+}
+
+/// Environment a prefix may set that changes which code a program runs.
+fn risky_assignment(word: &str) -> bool {
+    let name = word.split_once('=').map_or(word, |(n, _)| n);
+    matches!(
+        name,
+        "PATH"
+            | "BASH_ENV"
+            | "ENV"
+            | "PAGER"
+            | "EDITOR"
+            | "VISUAL"
+            | "SHELL"
+            | "PROMPT_COMMAND"
+            | "IFS"
+            | "RUSTC"
+            | "RUSTC_WRAPPER"
+            | "CARGO_BUILD_RUSTC_WRAPPER"
+            | "NODE_OPTIONS"
+            | "PYTHONPATH"
+            | "PYTHONSTARTUP"
+            | "PERL5OPT"
+            | "RUBYOPT"
+    ) || ["LD_", "DYLD_", "GIT_", "SSH_", "CARGO_TARGET_"]
+        .iter()
+        .any(|p| name.starts_with(p))
+        || name.ends_with("_COMMAND")
+        || name.ends_with("_EDITOR")
+        || name.ends_with("_PAGER")
+}
 
 /// find options that run or delete beyond what the key `find` suggests.
 const REFUSED_WORDS: &[&str] = &["-exec", "-execdir", "-ok", "-okdir", "-delete"];
@@ -210,6 +267,13 @@ pub fn bash_keys(command: &str) -> Option<Vec<String>> {
     }
     let mut keys: Vec<String> = Vec::new();
     for segment in segments(command)? {
+        if segment
+            .iter()
+            .take_while(|w| is_assignment(w) || matches!(w.as_str(), "!" | "{" | "}"))
+            .any(|w| is_assignment(w) && risky_assignment(w))
+        {
+            return None;
+        }
         let mut words = segment
             .iter()
             .map(String::as_str)
@@ -221,16 +285,14 @@ pub fn bash_keys(command: &str) -> Option<Vec<String>> {
         let rest: Vec<&str> = words.collect();
         if REFUSED_PROGRAMS.contains(&program)
             || program.starts_with('$')
-            || rest
-                .iter()
-                .any(|w| REFUSED_WORDS.contains(w) || *w == "eval" || *w == "sudo")
-        {
-            return None;
-        }
-        if SHELLS.contains(&program)
-            && rest
-                .iter()
-                .any(|w| w.starts_with('-') && !w.starts_with("--") && w.contains('c'))
+            || SHELLS.contains(&program)
+            || rest.iter().any(|w| {
+                REFUSED_WORDS.contains(w)
+                    || *w == "eval"
+                    || *w == "sudo"
+                    || REFUSED_FLAG_PREFIXES.iter().any(|p| w.starts_with(p))
+                    || (program == "git" && *w == "-c")
+            })
         {
             return None;
         }
@@ -323,12 +385,24 @@ fn segments(command: &str) -> Option<Vec<Vec<String>>> {
     let mut in_word = false;
     let mut skip_word = false;
     let mut heredocs: Vec<String> = Vec::new();
+    // None: no pending output target; Some(false): pending; Some(true): wrote a file.
+    let mut writes: Option<bool> = None;
     let mut chars = command.chars().peekable();
 
-    fn flush(out: &mut [Vec<String>], word: &mut String, in_word: &mut bool, skip: &mut bool) {
+    fn flush(
+        out: &mut [Vec<String>],
+        word: &mut String,
+        in_word: &mut bool,
+        skip: &mut bool,
+        writes: &mut Option<bool>,
+    ) {
         if *in_word {
             if *skip {
                 *skip = false;
+                // An output redirect to a real file writes beyond what the key says.
+                if writes.take() == Some(false) && !harmless_target(word) {
+                    *writes = Some(true);
+                }
             } else if let Some(last) = out.last_mut() {
                 last.push(std::mem::take(word));
             }
@@ -372,9 +446,21 @@ fn segments(command: &str) -> Option<Vec<Vec<String>>> {
                 }
                 None => {}
             },
-            ' ' | '\t' | '\r' => flush(&mut out, &mut word, &mut in_word, &mut skip_word),
+            ' ' | '\t' | '\r' => flush(
+                &mut out,
+                &mut word,
+                &mut in_word,
+                &mut skip_word,
+                &mut writes,
+            ),
             '\n' => {
-                flush(&mut out, &mut word, &mut in_word, &mut skip_word);
+                flush(
+                    &mut out,
+                    &mut word,
+                    &mut in_word,
+                    &mut skip_word,
+                    &mut writes,
+                );
                 separate(&mut out, &mut skip_word);
                 for delimiter in std::mem::take(&mut heredocs) {
                     let mut line = String::new();
@@ -393,24 +479,43 @@ fn segments(command: &str) -> Option<Vec<Vec<String>>> {
                 }
             }
             ';' | '(' | ')' => {
-                flush(&mut out, &mut word, &mut in_word, &mut skip_word);
+                flush(
+                    &mut out,
+                    &mut word,
+                    &mut in_word,
+                    &mut skip_word,
+                    &mut writes,
+                );
                 separate(&mut out, &mut skip_word);
             }
             '|' => {
-                flush(&mut out, &mut word, &mut in_word, &mut skip_word);
+                flush(
+                    &mut out,
+                    &mut word,
+                    &mut in_word,
+                    &mut skip_word,
+                    &mut writes,
+                );
                 if matches!(chars.peek(), Some('|' | '&')) {
                     chars.next();
                 }
                 separate(&mut out, &mut skip_word);
             }
             '&' => {
-                flush(&mut out, &mut word, &mut in_word, &mut skip_word);
+                flush(
+                    &mut out,
+                    &mut word,
+                    &mut in_word,
+                    &mut skip_word,
+                    &mut writes,
+                );
                 if chars.peek() == Some(&'>') {
                     chars.next();
                     if chars.peek() == Some(&'>') {
                         chars.next();
                     }
                     skip_word = true;
+                    writes = Some(false);
                 } else {
                     if chars.peek() == Some(&'&') {
                         chars.next();
@@ -423,7 +528,13 @@ fn segments(command: &str) -> Option<Vec<Vec<String>>> {
                     word.clear();
                     in_word = false;
                 }
-                flush(&mut out, &mut word, &mut in_word, &mut skip_word);
+                flush(
+                    &mut out,
+                    &mut word,
+                    &mut in_word,
+                    &mut skip_word,
+                    &mut writes,
+                );
                 if chars.peek() == Some(&'(') {
                     return None;
                 }
@@ -460,6 +571,9 @@ fn segments(command: &str) -> Option<Vec<Vec<String>>> {
                     chars.next();
                 }
                 skip_word = true;
+                if c == '>' {
+                    writes = Some(false);
+                }
             }
             '#' if !in_word => {
                 while chars.peek().is_some_and(|ch| *ch != '\n') {
@@ -472,7 +586,16 @@ fn segments(command: &str) -> Option<Vec<Vec<String>>> {
             }
         }
     }
-    flush(&mut out, &mut word, &mut in_word, &mut skip_word);
+    flush(
+        &mut out,
+        &mut word,
+        &mut in_word,
+        &mut skip_word,
+        &mut writes,
+    );
+    if writes == Some(true) {
+        return None;
+    }
     out.retain(|s| !s.is_empty());
     Some(out)
 }
@@ -586,9 +709,9 @@ mod tests {
             assert_eq!(keys(command), None, "{command}");
             assert_eq!(offer("bash", &bash(command), false), None, "{command}");
         }
-        // Three keys is still fine; a script run is not a refusal.
+        // Three keys is still fine; a shell never gets a rule.
         assert_eq!(keys("ls; cat a; head b"), k(&["cat", "head", "ls"]));
-        assert_eq!(keys("bash script.sh"), k(&["bash"]));
+        assert_eq!(keys("bash script.sh"), None);
     }
 
     #[test]
@@ -694,6 +817,30 @@ mod tests {
         let long = reason(&json!({"reason": "x".repeat(400)})).unwrap();
         assert_eq!(long.chars().count(), MAX_REASON_CHARS);
         assert!(long.ends_with('…'));
+    }
+
+    #[test]
+    fn refuses_rule_stretching() {
+        assert_eq!(keys("GIT_SSH_COMMAND='sh evil' git push"), None);
+        assert_eq!(keys("LD_PRELOAD=/tmp/x.so git status"), None);
+        assert_eq!(keys("PATH=.:$PATH git status"), None);
+        assert_eq!(keys("RUST_LOG=debug cargo test"), k(&["cargo test"]));
+        assert_eq!(keys("git -c core.sshCommand=evil push"), None);
+        assert_eq!(keys("git push --receive-pack=evil origin"), None);
+        assert_eq!(keys("cargo --config target.x.runner=evil test"), None);
+        assert_eq!(keys("cargo test --config=x"), None);
+        assert_eq!(keys("bash build.sh"), None);
+        assert_eq!(keys("bash <<EOF\nrm -rf /\nEOF"), None);
+        assert_eq!(keys("git status > ~/.bashrc"), None);
+        assert_eq!(keys("git log > .git/hooks/pre-commit"), None);
+        assert_eq!(keys("cargo test &> ../x"), None);
+        assert_eq!(keys("cargo test > $HOME/x"), None);
+        assert_eq!(keys("cargo test > /etc/x"), None);
+        assert_eq!(keys("cargo test > target/log.txt 2>&1"), k(&["cargo test"]));
+        assert_eq!(keys("cargo test &> /tmp/run/log"), k(&["cargo test"]));
+        assert_eq!(keys("cargo test > /dev/null 2>&1"), k(&["cargo test"]));
+        assert_eq!(keys("cargo test 2>/dev/null"), k(&["cargo test"]));
+        assert_eq!(keys("grep x < input.txt"), k(&["grep"]));
     }
 
     #[test]
