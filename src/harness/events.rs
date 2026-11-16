@@ -633,6 +633,23 @@ impl CodingHarness {
                 self.spawn_requested_lane(state, lanes, spec.clone());
                 continue;
             }
+            if let LoopInput::CancelLane {
+                request_id,
+                lane_id,
+                reason,
+            } = input
+            {
+                self.cancel_requested_lane(state, lanes, &request_id, &lane_id, &reason);
+                continue;
+            }
+            if let LoopInput::RetryLane {
+                request_id,
+                lane_id,
+            } = input
+            {
+                self.retry_requested_lane(state, lanes, &request_id, &lane_id);
+                continue;
+            }
             interrupted |= self.apply_input(state, input);
         }
         while let Ok(result) = lane_rx.try_recv() {
@@ -668,12 +685,54 @@ impl CodingHarness {
             Ok(id) => state.events.push(HarnessEvent::LaneSpawned {
                 id,
                 title: spec.title,
+                retry_of: None,
             }),
             Err(error) => eprintln!(
                 "[lanes] requested lane `{}` not started: {error}",
                 spec.title
             ),
         }
+    }
+
+    pub(super) fn cancel_requested_lane(
+        &self,
+        state: &mut HarnessState,
+        lanes: &mut LaneManager,
+        request_id: &str,
+        lane_id: &str,
+        reason: &str,
+    ) -> bool {
+        let res = lanes.cancel(lane_id, reason).map(|title| {
+            state.events.push(HarnessEvent::LaneCancelled {
+                id: lane_id.to_string(),
+                title: title.clone(),
+                reason: reason.to_string(),
+            });
+            title
+        });
+        let ok = res.is_ok();
+        crate::lanes::complete_control(request_id, res);
+        ok
+    }
+
+    pub(super) fn retry_requested_lane(
+        &self,
+        state: &mut HarnessState,
+        lanes: &mut LaneManager,
+        request_id: &str,
+        lane_id: &str,
+    ) -> bool {
+        let res = lanes.retry(lane_id).map(|(new_id, title)| {
+            state.events.push(HarnessEvent::LaneSpawned {
+                id: new_id.clone(),
+                title,
+                retry_of: Some(lane_id.to_string()),
+            });
+            new_id
+        });
+        let ok = res.is_ok();
+        crate::lanes::complete_control(request_id, res);
+        ok
     }
 
     /// Record an event addressed to this session WITHOUT starting a turn.
@@ -790,6 +849,13 @@ impl CodingHarness {
             }
             // Spawned by `drain_pending`, which holds the lane manager.
             LoopInput::SpawnLane(_) | LoopInput::Sourced { .. } => false,
+            LoopInput::CancelLane { request_id, .. } | LoopInput::RetryLane { request_id, .. } => {
+                crate::lanes::complete_control(
+                    &request_id,
+                    Err("lane control unavailable in this context".to_string()),
+                );
+                false
+            }
             LoopInput::Interrupt => true,
         }
     }

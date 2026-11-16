@@ -2687,6 +2687,34 @@ impl CodingHarness {
                             self.spawn_requested_lane(&mut state, &mut lanes, spec);
                             self.persist(&mut state, &lanes).await?;
                         }
+                        LoopInput::CancelLane {
+                            request_id,
+                            lane_id,
+                            reason,
+                        } => {
+                            if self.cancel_requested_lane(
+                                &mut state,
+                                &mut lanes,
+                                &request_id,
+                                &lane_id,
+                                &reason,
+                            ) {
+                                self.persist(&mut state, &lanes).await?;
+                            }
+                        }
+                        LoopInput::RetryLane {
+                            request_id,
+                            lane_id,
+                        } => {
+                            if self.retry_requested_lane(
+                                &mut state,
+                                &mut lanes,
+                                &request_id,
+                                &lane_id,
+                            ) {
+                                self.persist(&mut state, &lanes).await?;
+                            }
+                        }
                         other => {
                             let wrapped = match source {
                                 Some(src) => other.with_source(src.by, src.via),

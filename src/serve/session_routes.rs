@@ -627,7 +627,158 @@ pub(crate) async fn lane_detail(Query(q): Query<LaneQuery>) -> Response {
         return api_error(StatusCode::NOT_FOUND, "no such session");
     };
     match state.lanes.into_iter().find(|l| l.id == q.id) {
-        Some(lane) => Json(lane).into_response(),
+        Some(lane) => {
+            let mut v = serde_json::to_value(&lane).unwrap_or_default();
+            crate::lanes::attach_recent(&mut v, &lane);
+            Json(v).into_response()
+        }
         None => api_error(StatusCode::NOT_FOUND, "no such lane"),
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct LaneControlReq {
+    session: String,
+    #[serde(alias = "id")]
+    lane: String,
+}
+
+const LANE_CONTROL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+
+fn lane_control_error(msg: String) -> Response {
+    let status = if msg.starts_with("no delegated task") {
+        StatusCode::NOT_FOUND
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+    api_error(status, msg)
+}
+
+async fn run_live_lane_control(
+    tx: UnboundedSender<LoopInput>,
+    request_id: String,
+    input: LoopInput,
+) -> Result<String, Response> {
+    let rx = crate::lanes::register_control(&request_id);
+    if tx.send(input).is_err() {
+        crate::lanes::complete_control(&request_id, Err("session closed".into()));
+        return Err(api_error(StatusCode::GONE, "session closed"));
+    }
+    match tokio::time::timeout(LANE_CONTROL_TIMEOUT, rx).await {
+        Ok(Ok(Ok(val))) => Ok(val),
+        Ok(Ok(Err(msg))) => Err(lane_control_error(msg)),
+        Ok(Err(_)) | Err(_) => {
+            crate::lanes::complete_control(&request_id, Err("timed out".into()));
+            Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "session loop did not answer",
+            ))
+        }
+    }
+}
+
+/// POST /session/lane/cancel {session, lane} — stop a running or paused lane.
+pub(crate) async fn cancel_lane(
+    State(d): State<Shared>,
+    Json(req): Json<LaneControlReq>,
+) -> Response {
+    let Some(sp) = state_path_for_id(&req.session) else {
+        return api_error(StatusCode::NOT_FOUND, "no such session");
+    };
+    let live_tx = {
+        let sessions = d.sessions.lock().await;
+        sessions
+            .get(&req.session)
+            .filter(|s| !s.join.is_finished())
+            .map(|s| s.input_tx.clone())
+    };
+    let reason = "stopped by the user";
+    if let Some(tx) = live_tx {
+        let request_id = format!("lc-{}", uuid::Uuid::new_v4().simple());
+        return match run_live_lane_control(
+            tx,
+            request_id.clone(),
+            LoopInput::CancelLane {
+                request_id,
+                lane_id: req.lane.clone(),
+                reason: reason.to_string(),
+            },
+        )
+        .await
+        {
+            Ok(title) => Json(serde_json::json!({
+                "cancelled": true,
+                "id": req.lane,
+                "title": title,
+            }))
+            .into_response(),
+            Err(resp) => resp,
+        };
+    }
+
+    let lane_id = req.lane.clone();
+    let offline = tokio::task::spawn_blocking(move || {
+        let Some(mut state) = crate::session::read_session_state(&sp) else {
+            return Err(api_error(StatusCode::NOT_FOUND, "no such session"));
+        };
+        let Some(record) = state.lanes.iter_mut().find(|l| l.id == lane_id) else {
+            return Err(api_error(
+                StatusCode::NOT_FOUND,
+                format!("no delegated task `{lane_id}` is known in this conversation."),
+            ));
+        };
+        let title = crate::lanes::cancel_record(record, reason).map_err(lane_control_error)?;
+        state
+            .events
+            .push(crate::harness::HarnessEvent::LaneCancelled {
+                id: lane_id.clone(),
+                title: title.clone(),
+                reason: reason.to_string(),
+            });
+        crate::session::write_session_state(&sp, &state)
+            .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        Ok(title)
+    })
+    .await;
+    match offline {
+        Ok(Ok(title)) => Json(serde_json::json!({
+            "cancelled": true,
+            "id": req.lane,
+            "title": title,
+        }))
+        .into_response(),
+        Ok(Err(resp)) => resp,
+        Err(_) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "cancel task failed"),
+    }
+}
+
+/// POST /session/lane/retry {session, lane} — re-run a failed or cancelled lane.
+pub(crate) async fn retry_lane(
+    State(d): State<Shared>,
+    Json(req): Json<LaneControlReq>,
+) -> Response {
+    if state_path_for_id(&req.session).is_none() {
+        return api_error(StatusCode::NOT_FOUND, "no such session");
+    }
+    let Some((tx, _, _)) = d.ensure_live(&req.session).await else {
+        return api_error(StatusCode::BAD_REQUEST, "session cannot be resumed");
+    };
+    let request_id = format!("lr-{}", uuid::Uuid::new_v4().simple());
+    match run_live_lane_control(
+        tx,
+        request_id.clone(),
+        LoopInput::RetryLane {
+            request_id,
+            lane_id: req.lane.clone(),
+        },
+    )
+    .await
+    {
+        Ok(new_id) => Json(serde_json::json!({
+            "id": new_id,
+            "retry_of": req.lane,
+        }))
+        .into_response(),
+        Err(resp) => resp,
     }
 }

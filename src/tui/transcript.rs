@@ -617,8 +617,16 @@ pub(super) fn event_lines(event: &HarnessEvent, width: usize) -> Vec<Line<'stati
             marker_block("·", muted(), &line, width)
         }
         // Subject only — lane ids are internal plumbing, not for the transcript.
-        HarnessEvent::LaneSpawned { id: _, title } => {
-            marker_block("→", lane(), &format!("delegated: {title}"), width)
+        HarnessEvent::LaneSpawned {
+            id: _,
+            title,
+            retry_of,
+        } => {
+            let label = match retry_of.as_deref() {
+                Some(old_id) => format!("delegated: {title} (retry of {old_id})"),
+                None => format!("delegated: {title}"),
+            };
+            marker_block("→", lane(), &label, width)
         }
         HarnessEvent::LaneCancelled { title, reason, .. } => marker_block(
             "×",
