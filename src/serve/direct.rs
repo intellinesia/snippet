@@ -1743,6 +1743,9 @@ pub(super) async fn direct_answer(
         );
     }
     crate::speech::cancel_all("interrupted");
+    let _ = d
+        .store
+        .set_session_user_seen(session, crate::session::now_unix_secs());
     d.deliver(
         session,
         LoopInput::Answer(req.text.trim().to_string()).with_source("human", "desk"),

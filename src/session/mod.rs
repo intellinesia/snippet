@@ -221,9 +221,17 @@ pub struct SessionSidecar {
 /// values and the change would appear to do nothing.
 pub fn write_session_sidecar(state_path: &Path, sidecar: &SessionSidecar) {
     if let Some(store) = store_for_sessions() {
-        let id = session_id_for_state_path(state_path);
-        let _ = store.set_session_role(&id, role_str(sidecar.role), sidecar.agent_id.as_deref());
+        write_session_sidecar_in(&store, state_path, sidecar);
     }
+}
+
+pub(crate) fn write_session_sidecar_in(
+    store: &crate::store::Store,
+    state_path: &Path,
+    sidecar: &SessionSidecar,
+) {
+    let id = session_id_for_state_path(state_path);
+    let _ = store.set_session_role(&id, role_str(sidecar.role), sidecar.agent_id.as_deref());
 }
 
 /// Read a session's persisted kind and agent. THE one parser.
@@ -243,9 +251,26 @@ pub fn read_session_sidecar(state_path: &Path) -> Option<SessionSidecar> {
             agent_id: None,
         });
     }
-    let row = store_session_row(state_path)?;
+    let store = store_for_sessions()?;
+    read_session_sidecar_in(&store, state_path)
+}
+
+pub(crate) fn read_session_sidecar_in(
+    store: &crate::store::Store,
+    state_path: &Path,
+) -> Option<SessionSidecar> {
+    let id = session_id_for_state_path(state_path);
+    if crate::mission_control::is_session_id(&id) {
+        return Some(SessionSidecar {
+            role: SessionRole::MissionControl,
+            agent_id: None,
+        });
+    }
+    let row = store.get_session_row(&id).ok()??;
     let role = if row.role == "mission_control" {
         SessionRole::MissionControl
+    } else if row.role == "coordination" {
+        SessionRole::Coordination
     } else {
         SessionRole::Standard
     };
@@ -535,6 +560,7 @@ pub(crate) fn work_tool_registry(
     tools.insert(crate::review_tools::SubmitReview);
     tools.insert(crate::profiles::ListProfiles);
     tools.insert(crate::followup_tool::SessionWakeTool);
+    tools.insert(crate::session_handoff_tool::HandOffSession);
     tools
 }
 
@@ -820,6 +846,20 @@ pub struct SessionInfo {
     /// Cached GitHub PR summary for this session's branch, if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<SessionPr>,
+    /// The agent that owns this session (`"mission-control"`, inbox agent,
+    /// bound/seated agent, or `"snippet"` by default).
+    pub owner_agent_id: String,
+    /// Unix seconds when a turn last ended with a result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<i64>,
+    /// First line of the finished turn's result, trimmed to 200 chars.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_summary: Option<String>,
+    /// Unix seconds when the user last saw or sent input in this session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_seen_at: Option<i64>,
+    /// Whether this session finished with an unseen result.
+    pub came_back: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -894,6 +934,62 @@ pub fn compute_session_plan(
         current,
         step_started_at,
     })
+
+}
+
+/// Resolve the owning agent for a session row or id.
+pub fn owner_agent_id_for(session_id: &str, agent_id: Option<&str>) -> String {
+    if crate::mission_control::is_session_id(session_id) {
+        return crate::mission_control::SESSION_ID.to_string();
+    }
+    if let Some(inbox_agent) = session_id
+        .strip_prefix("inbox-")
+        .filter(|_| is_inbox_session_id(session_id))
+    {
+        return agent_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(inbox_agent)
+            .to_string();
+    }
+    agent_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(crate::coordination::SNIPPET_AGENT_ID)
+        .to_string()
+}
+
+/// True when a standard session finished after the user last saw it.
+pub fn compute_came_back(
+    id: &str,
+    status: &str,
+    finished_at: Option<i64>,
+    user_seen_at: Option<i64>,
+) -> bool {
+    if crate::mission_control::is_session_id(id)
+        || is_inbox_session_id(id)
+        || is_lane_session_id(id)
+    {
+        return false;
+    }
+    if matches!(status, "waiting_for_input" | "running") {
+        return false;
+    }
+    finished_at.is_some_and(|fin| fin > user_seen_at.unwrap_or(0))
+}
+
+/// First non-empty line of a notification body, trimmed to 200 characters.
+pub fn summarize_result_body(body: Option<&str>) -> Option<String> {
+    let first_line = body?.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let clipped: String = first_line.chars().take(200).collect();
+    let trimmed = clipped.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+pub fn mark_session_user_seen(id: &str) {
+    if let Some(store) = store_for_sessions() {
+        let _ = store.set_session_user_seen(id, now_unix_secs());
+    }
 }
 
 /// The inbox session id for an agent: `inbox-<agent-id>`.
@@ -996,9 +1092,17 @@ pub fn read_session_profile(state_path: &std::path::Path) -> Option<String> {
 /// value — the switch would appear to revert on the next read.
 pub fn write_session_profile(state_path: &std::path::Path, profile: &str) {
     if let Some(store) = store_for_sessions() {
-        let id = session_id_for_state_path(state_path);
-        let _ = store.set_session_profile(&id, Some(profile.trim()));
+        write_session_profile_in(&store, state_path, profile);
     }
+}
+
+pub(crate) fn write_session_profile_in(
+    store: &crate::store::Store,
+    state_path: &Path,
+    profile: &str,
+) {
+    let id = session_id_for_state_path(state_path);
+    let _ = store.set_session_profile(&id, Some(profile.trim()));
 }
 
 /// Merge the two session sources into the final catalog.
@@ -1110,6 +1214,10 @@ pub fn all_device_sessions() -> Vec<SessionInfo> {
     all_device_sessions_with(store.as_ref())
 }
 
+pub fn all_device_sessions_in(store: &crate::store::Store) -> Vec<SessionInfo> {
+    all_device_sessions_with(Some(store))
+}
+
 pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> Vec<SessionInfo> {
     let contexts = store.map(session_task_contexts).unwrap_or_default();
     let mut plans = store.map(|s| s.session_plans()).unwrap_or_default();
@@ -1165,6 +1273,9 @@ pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> V
             } else {
                 wake_db
             };
+            let owner_agent_id = owner_agent_id_for(&row.id, agent_id.as_deref());
+            let came_back =
+                compute_came_back(&row.id, &row.status, row.finished_at, row.user_seen_at);
             SessionInfo {
                 attention,
                 conversation: conversation_name_from_id(&row.id).to_string(),
@@ -1202,6 +1313,11 @@ pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> V
                 lanes,
                 next_wake_at,
                 pr: None,
+                owner_agent_id,
+                finished_at: row.finished_at,
+                result_summary: row.result_summary,
+                user_seen_at: row.user_seen_at,
+                came_back,
             }
         })
         .collect();
@@ -1347,7 +1463,7 @@ pub fn role_str(role: SessionRole) -> &'static str {
     }
 }
 
-fn now_unix_secs() -> i64 {
+pub fn now_unix_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -1636,6 +1752,15 @@ fn emit_device_event_with_store(
                 .and_then(|id| store.last_assistant_excerpt(id).ok().flatten())
         {
             notification["body"] = text.into();
+        }
+        if matches!(notification["kind"].as_str(), Some("idle" | "done"))
+            && let Some(session_id) = notification["session"].as_str()
+            && !crate::mission_control::is_session_id(session_id)
+            && !is_inbox_session_id(session_id)
+            && !is_lane_session_id(session_id)
+        {
+            let summary = summarize_result_body(notification["body"].as_str());
+            let _ = store.set_session_finished(session_id, now_unix_secs(), summary.as_deref());
         }
         if let Ok(settings) = store.load_control_settings()
             && notification_allowed(&settings, &notification)
@@ -2087,6 +2212,11 @@ pub fn create_blank_session_in(
         lanes: None,
         next_wake_at: None,
         pr: None,
+        owner_agent_id: crate::coordination::SNIPPET_AGENT_ID.to_string(),
+        finished_at: None,
+        result_summary: None,
+        user_seen_at: None,
+        came_back: false,
     })
 }
 

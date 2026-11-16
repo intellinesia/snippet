@@ -650,6 +650,20 @@ async fn handle_ws(
                         .map(str::trim)
                         .filter(|s| !s.is_empty())
                         .unwrap_or("human");
+                    if matches!(
+                        input.inner(),
+                        LoopInput::UserMessage(_)
+                            | LoopInput::Answer(_)
+                            | LoopInput::Queue(_)
+                            | LoopInput::SteerQueued(_)
+                            | LoopInput::Approve
+                            | LoopInput::ApproveAll
+                            | LoopInput::Deny
+                    ) {
+                        let _ = daemon
+                            .store
+                            .set_session_user_seen(&session, crate::session::now_unix_secs());
+                    }
                     if let LoopInput::Answer(text) = input.inner()
                         && let Some(question) =
                             direct::latest_question_event(&daemon.store, &session)

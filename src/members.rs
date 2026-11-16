@@ -298,8 +298,12 @@ pub fn seat(store: &Store, task: &Task, agent_id: &str, now: &str) -> Result<Str
     let profile = task
         .profile
         .clone()
-        .or_else(|| store.agent_profile(agent_id).ok().flatten())
+        // The owner agent's profile applies by precedence, so it is not copied
+        // in as a pin; the seat would then stop following the agent's changes.
         .or_else(|| {
+            if store.agent_profile(agent_id).ok().flatten().is_some() {
+                return None;
+            }
             store
                 .get_session_row(&task.session_id)
                 .ok()

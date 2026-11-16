@@ -462,6 +462,16 @@ impl App {
             return attach.send(input);
         }
         if let Some(tx) = &self.input_tx {
+            let mark_seen = matches!(
+                input,
+                LoopInput::UserMessage(_)
+                    | LoopInput::Answer(_)
+                    | LoopInput::Queue(_)
+                    | LoopInput::SteerQueued(_)
+                    | LoopInput::Approve
+                    | LoopInput::ApproveAll
+                    | LoopInput::Deny
+            );
             let tagged = match input {
                 LoopInput::Approve
                 | LoopInput::ApproveAll
@@ -471,9 +481,14 @@ impl App {
                 | LoopInput::Interrupt => input.with_source("human", "tui"),
                 other => other,
             };
-            return tx
+            let res = tx
                 .send(tagged)
                 .map_err(|_| "agent loop is no longer accepting input".to_string());
+            if res.is_ok() && mark_seen {
+                let id = crate::session::session_id_for_state_path(&self.active_state_path);
+                crate::session::mark_session_user_seen(&id);
+            }
+            return res;
         }
         Err("no live session".to_string())
     }

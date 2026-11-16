@@ -782,3 +782,22 @@ pub(crate) async fn retry_lane(
         Err(resp) => resp,
     }
 }
+
+#[derive(Deserialize)]
+pub(crate) struct SeenReq {
+    session: String,
+}
+
+/// POST /session/seen {session} — record that the user viewed this session.
+pub(crate) async fn seen_session(State(d): State<Shared>, Json(req): Json<SeenReq>) -> Response {
+    let id = state_path_for_id(&req.session)
+        .map(|p| session_id_for_state_path(&p))
+        .unwrap_or_else(|| crate::conversations::canonical_session_id(&req.session));
+    let now = crate::session::now_unix_secs();
+    match d.store.set_session_user_seen(&id, now) {
+        Ok(true) => Json(serde_json::json!({ "ok": true, "session": id, "user_seen_at": now }))
+            .into_response(),
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such session"),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}

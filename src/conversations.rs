@@ -92,7 +92,15 @@ pub fn ensure_schema(connection: &rusqlite::Connection) -> Result<(), rusqlite::
              -- JSON {files, added, removed} summed over every turn since the session began.
              total_changes TEXT,
              -- Fresh token while the session is stopped idle; cleared by user input.
-             stop_identity TEXT
+             stop_identity TEXT,
+             -- Unix seconds when the user last viewed or sent input in this session.
+             user_seen_at INTEGER,
+             -- Unix seconds when a turn last ended with a result.
+             finished_at INTEGER,
+             -- First line of the done/idle result body, trimmed to 200 chars.
+             result_summary TEXT,
+             -- Queued hand-off JSON ({to_agent, note, by, at}) applied at turn end.
+             pending_handoff TEXT
          );
          CREATE INDEX IF NOT EXISTS sessions_workspace
              ON sessions(workspace_key, updated_at DESC);
@@ -183,6 +191,14 @@ pub struct SessionRow {
     pub last_changes: Option<String>,
     /// JSON lifetime totals over all turns that changed files.
     pub total_changes: Option<String>,
+    /// Unix seconds when the user last saw or interacted with this session.
+    pub user_seen_at: Option<i64>,
+    /// Unix seconds when a turn last finished with a result.
+    pub finished_at: Option<i64>,
+    /// First line of the finished turn's result, trimmed to 200 chars.
+    pub result_summary: Option<String>,
+    /// Queued hand-off payload JSON while waiting for turn end / input resolution.
+    pub pending_handoff: Option<String>,
 }
 
 /// Session metadata that used to live in sidecar files.
@@ -679,6 +695,66 @@ impl Store {
         })
     }
 
+    pub fn set_session_user_seen(&self, id: &str, seen_at: i64) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            Ok(conn.execute(
+                "UPDATE sessions SET user_seen_at = ?2 WHERE id = ?1",
+                params![id, seen_at],
+            )? == 1)
+        })
+    }
+
+    pub fn set_session_finished(
+        &self,
+        id: &str,
+        finished_at: i64,
+        result_summary: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE sessions SET finished_at = ?2, result_summary = ?3 WHERE id = ?1",
+                params![id, finished_at, result_summary],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn set_pending_handoff(
+        &self,
+        id: &str,
+        pending_json: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE sessions SET pending_handoff = ?2 WHERE id = ?1",
+                params![id, pending_json],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn take_pending_handoff(&self, id: &str) -> Result<Option<String>, StoreError> {
+        self.with_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let current: Option<String> = tx
+                .query_row(
+                    "SELECT pending_handoff FROM sessions WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map(Option::flatten)?;
+            if current.is_some() {
+                tx.execute(
+                    "UPDATE sessions SET pending_handoff = NULL WHERE id = ?1",
+                    params![id],
+                )?;
+            }
+            tx.commit()?;
+            Ok(current)
+        })
+    }
+
     /// Import a whole session — scalar state plus both logs — in one transaction.
     ///
     /// Unlike [`Self::create_conversation`] this takes the session's real scalar
@@ -759,7 +835,8 @@ impl Store {
 }
 
 const SESSION_COLUMNS: &str = "id, workspace_key, workspace, title, status, created_at, \
-     updated_at, last_active, profile, role, agent_id, kind, settled_at, keep_awake, resume_mode, last_changes, total_changes";
+     updated_at, last_active, profile, role, agent_id, kind, settled_at, keep_awake, resume_mode, last_changes, total_changes, \
+     user_seen_at, finished_at, result_summary, pending_handoff";
 
 impl Store {
     /// Save a session's scalar state, creating the row on first write.
@@ -1500,6 +1577,10 @@ fn session_row_from(row: &rusqlite::Row<'_>) -> Result<SessionRow, rusqlite::Err
         resume_mode: row.get(14)?,
         last_changes: row.get(15)?,
         total_changes: row.get(16)?,
+        user_seen_at: row.get(17)?,
+        finished_at: row.get(18)?,
+        result_summary: row.get(19)?,
+        pending_handoff: row.get(20)?,
     })
 }
 
@@ -1560,6 +1641,10 @@ mod tests {
             resume_mode: "ask".into(),
             last_changes: None,
             total_changes: None,
+            user_seen_at: None,
+            finished_at: None,
+            result_summary: None,
+            pending_handoff: None,
         }
     }
 

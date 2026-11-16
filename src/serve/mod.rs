@@ -72,6 +72,7 @@ mod agent_wakes;
 mod followups;
 mod goals;
 mod groups;
+pub(crate) mod handoff;
 mod keep_warm;
 mod recurring;
 mod review;
@@ -216,6 +217,12 @@ fn machine_hostname() -> String {
 }
 
 type Shared = Arc<Daemon>;
+
+static LIVE_DAEMON: std::sync::OnceLock<Shared> = std::sync::OnceLock::new();
+
+pub(crate) fn live_daemon() -> Option<&'static Shared> {
+    LIVE_DAEMON.get()
+}
 
 /// Working directory for daemon-wide shells.
 ///
@@ -378,7 +385,8 @@ impl Daemon {
         // One reader, one shape. The arms are on the enum rather than on a
         // hand-parsed string, so a grammar this function does not know about is
         // now impossible to write.
-        let sidecar = read_session_sidecar(&sp);
+        let sidecar = crate::session::read_session_sidecar_in(&self.store, &sp)
+            .or_else(|| read_session_sidecar(&sp));
         if let Some(sidecar) = sidecar.as_ref()
             && sidecar.role == SessionRole::MissionControl
         {
@@ -468,7 +476,7 @@ impl Daemon {
     ///   is not the dispatcher's to overwrite. So the profile is in-memory only:
     ///   it drives this run, and a later start falls back to whatever the
     ///   session was already set to.
-    pub(crate) fn resume_profile(&self, id: &str, sp: &std::path::Path) -> Option<String> {
+    pub(crate) fn active_task_profile(&self, id: &str) -> Option<String> {
         self.store
             .list_tasks(None, Some(&crate::coordination::TaskStatus::InProgress))
             .ok()
@@ -478,41 +486,133 @@ impl Daemon {
                     .filter(|t| t.session_id == id)
                     .find_map(|t| self.task_profile(&t))
             })
-            // A desk runs on its agent's profile and keeps no pin of its own.
-            .or_else(|| {
-                (!is_agent_desk(id))
-                    .then(|| read_session_profile(sp))
-                    .flatten()
-            })
+    }
+
+    pub(crate) fn pinned_session_profile(&self, id: &str, sp: &std::path::Path) -> Option<String> {
+        // A desk runs on its agent's profile and keeps no pin of its own.
+        if is_agent_desk(id) {
+            return None;
+        }
+        self.store
+            .get_session_row(id)
+            .ok()
+            .flatten()
+            .and_then(|r| r.profile)
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .or_else(|| read_session_profile(sp))
+    }
+
+    pub(crate) fn owner_agent_profile(&self, id: &str) -> Option<String> {
+        if mc::is_session_id(id) || is_agent_desk(id) || crate::session::is_lane_session_id(id) {
+            return None;
+        }
+        let row_agent = self
+            .store
+            .get_session_row(id)
+            .ok()
+            .flatten()
+            .and_then(|r| r.agent_id);
+        let owner = crate::session::owner_agent_id_for(id, row_agent.as_deref());
+        self.agent_profile(&owner)
+    }
+
+    pub(crate) fn resume_profile(&self, id: &str, sp: &std::path::Path) -> Option<String> {
+        self.active_task_profile(id)
+            .or_else(|| self.pinned_session_profile(id, sp))
+            .or_else(|| self.owner_agent_profile(id))
             .or_else(|| self.routed_profile(id))
     }
 
-    /// Moves a live desk onto its agent's current profile once any turn in
-    /// flight has finished.
+    fn session_busy_for_profile_follow(&self, id: &str, sp: &std::path::Path) -> bool {
+        if let Ok(Some(row)) = self.store.get_session_row(id) {
+            return matches!(row.status.as_str(), "running" | "waiting_for_input");
+        }
+        read_session_meta(sp).is_some_and(|s| {
+            matches!(
+                s.status,
+                crate::harness::HarnessStatus::Running
+                    | crate::harness::HarnessStatus::WaitingForInput
+            )
+        }) || recurring::session_busy_for_recurring(id)
+    }
+
+    /// Moves a live desk and any unpinned live sessions owned by `agent_id` onto
+    /// the agent's current profile once any turn in flight has finished.
     pub(crate) fn follow_agent_profile(self: &Arc<Self>, agent_id: &str) {
-        let desk = format!("inbox-{agent_id}");
+        let agent_id = agent_id.to_string();
         let d = self.clone();
         tokio::spawn(async move {
+            let mut targets = vec![format!("inbox-{agent_id}")];
+            let live_ids: Vec<String> = d
+                .sessions
+                .lock()
+                .await
+                .iter()
+                .filter(|(id, live)| {
+                    !live.join.is_finished()
+                        && !mc::is_session_id(id)
+                        && !is_agent_desk(id)
+                        && !crate::session::is_lane_session_id(id)
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in live_ids {
+                let row_agent = d
+                    .store
+                    .get_session_row(&id)
+                    .ok()
+                    .flatten()
+                    .and_then(|r| r.agent_id);
+                if crate::session::owner_agent_id_for(&id, row_agent.as_deref()) == agent_id {
+                    targets.push(id);
+                }
+            }
             for _ in 0..1800 {
-                let current = match d.sessions.lock().await.get(&desk) {
-                    Some(live) => live.profile.clone(),
-                    None => return,
-                };
-                let Some(target) = d.routed_profile(&desk) else {
-                    return;
-                };
-                if current.as_deref() == Some(target.as_str()) {
-                    return;
-                }
-                if !recurring::session_busy_for_recurring(&desk) {
-                    match d.run_session_on_profile(&desk, &target, false).await {
-                        Ok(()) => config_routes::notify_models(Some(&desk)),
-                        Err(error) => {
-                            eprintln!("[agents] desk `{desk}` stayed on its model: {error}")
-                        }
+                let mut next = Vec::new();
+                for id in targets {
+                    let live_info = d
+                        .sessions
+                        .lock()
+                        .await
+                        .get(&id)
+                        .filter(|l| !l.join.is_finished())
+                        .map(|l| (l.profile.clone(), l.state_path.clone()));
+                    let Some((current, sp)) = live_info else {
+                        continue;
+                    };
+                    if !is_agent_desk(&id) && d.pinned_session_profile(&id, &sp).is_some() {
+                        continue;
                     }
+                    let target = if is_agent_desk(&id) {
+                        match d.routed_profile(&id) {
+                            Some(t) => Some(t),
+                            None => continue,
+                        }
+                    } else {
+                        d.resume_profile(&id, &sp)
+                    };
+                    if current == target {
+                        continue;
+                    }
+                    if !d.session_busy_for_profile_follow(&id, &sp) {
+                        match d
+                            .restart_session_with_profile(&id, target.as_deref(), false, None, None)
+                            .await
+                        {
+                            Ok(()) => config_routes::notify_models(Some(&id)),
+                            Err(error) => {
+                                eprintln!("[agents] session `{id}` stayed on its model: {error}")
+                            }
+                        }
+                    } else {
+                        next.push(id);
+                    }
+                }
+                if next.is_empty() {
                     return;
                 }
+                targets = next;
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         });
@@ -594,46 +694,86 @@ impl Daemon {
         crate::routing::candidates(&c, route).into_iter().next()
     }
 
-    pub(crate) async fn run_session_on_profile(
+    pub(crate) fn load_session_workspace_in(
         &self,
         session: &str,
-        profile: &str,
+    ) -> Result<(PathBuf, PathBuf), String> {
+        if let Ok(Some(row)) = self.store.get_session_row(session) {
+            let sp =
+                state_path_for_id(&row.id).ok_or_else(|| format!("unknown session `{session}`"))?;
+            let folder = PathBuf::from(&row.workspace);
+            if row.workspace.is_empty() || !folder.is_dir() {
+                return Err("session workspace missing".into());
+            }
+            return Ok((sp, folder));
+        }
+        load_session_workspace(session).map_err(|_| format!("unknown session `{session}`"))
+    }
+
+    /// Abort any live loop for `session`, optionally persist an event, and
+    /// restart role-aware on `profile` (or the default model when `None`).
+    pub(crate) async fn restart_session_with_profile(
+        &self,
+        session: &str,
+        profile: Option<&str>,
         persist: bool,
+        event: Option<HarnessEvent>,
+        initial: Option<String>,
     ) -> Result<(), String> {
         self.reload_config().await; // a profile added in the TUI must be usable
-        let model_cfg = {
-            let c = self.config.lock().unwrap();
-            c.setups
-                .as_ref()
-                .and_then(|m| m.get(profile))
-                .cloned()
-                .ok_or_else(|| format!("no such profile `{profile}`"))?
+        let model_cfg = match profile {
+            Some(name) => {
+                let c = self.config.lock().unwrap();
+                let m = c
+                    .setups
+                    .as_ref()
+                    .and_then(|m| m.get(name))
+                    .cloned()
+                    .ok_or_else(|| format!("no such profile `{name}`"))?;
+                Some((name.to_string(), m))
+            }
+            None => None,
         };
-        let (sp, folder) =
-            load_session_workspace(session).map_err(|_| format!("unknown session `{session}`"))?;
+        let (sp, folder) = self.load_session_workspace_in(session)?;
         let cfg = {
             let c = self.config.lock().unwrap();
             let mut w = c.for_workspace(folder);
-            w.model = model_cfg;
-            w.active_setup = Some(profile.to_string());
+            if let Some((name, m)) = model_cfg {
+                w.model = m;
+                w.active_setup = Some(name);
+            }
             w
         };
         let mut sessions = self.sessions.lock().await;
         if let Some(old) = sessions.remove(session) {
             old.join.abort();
         }
-        // Role-aware restart. Switching the model must NOT downgrade the
-        // session: a Mission Control or agent session keeps its prompt, tools,
-        // and lane limits, which a plain restart would silently drop.
-        let handle = self.start_role_aware(&cfg, sp.clone(), None).await;
-        if persist {
-            write_session_profile(&sp, profile); // outlives this run
+        if let Some(ev) = event {
+            let now = chrono::Utc::now().to_rfc3339();
+            self.store
+                .append_conversation_events(session, &[ev], &now)
+                .map_err(|e| e.to_string())?;
+        }
+        // Role-aware restart keeps Mission Control and agent identities intact.
+        let handle = self.start_role_aware(&cfg, sp.clone(), initial).await;
+        if persist && let Some(name) = profile {
+            crate::session::write_session_profile_in(&self.store, &sp, name);
         }
         sessions.insert(
             session.to_string(),
-            live_from_handle(handle, Some(profile.to_string())),
+            live_from_handle(handle, profile.map(str::to_string)),
         );
         Ok(())
+    }
+
+    pub(crate) async fn run_session_on_profile(
+        &self,
+        session: &str,
+        profile: &str,
+        persist: bool,
+    ) -> Result<(), String> {
+        self.restart_session_with_profile(session, Some(profile), persist, None, None)
+            .await
     }
 
     /// The provider actually driving a session: its per-chat profile's provider
@@ -960,6 +1100,7 @@ pub async fn run_serve(
         recurring_root: crate::recurring::default_root(),
     });
 
+    let _ = LIVE_DAEMON.set(daemon.clone());
     // Register the built-in agents before anything can address them.
     mission_control::register_builtin_agents(&daemon);
     ambient_routes::resume(daemon.clone());
@@ -1215,6 +1356,8 @@ pub async fn run_serve(
             post(session_routes::interrupt_session),
         )
         .route("/session/rename", post(rename_session))
+        .route("/session/seen", post(session_routes::seen_session))
+        .route("/session/handoff", post(handoff::handoff_route))
         .route("/git/worktrees", get(git_worktrees))
         .route("/git/status", get(git_status))
         .route("/git/diff", get(git_diff))
@@ -1427,10 +1570,13 @@ async fn list_sessions(State(d): State<Shared>, Query(q): Query<ListQuery>) -> R
                 s.status = "idle".to_string();
             }
             let running = s.status == "running";
+            s.came_back =
+                crate::session::compute_came_back(&s.id, &s.status, s.finished_at, s.user_seen_at)
+                    && !alive;
             crate::session_stats::attach_running_since(&mut s);
             let profile = live_s
                 .and_then(|l| l.profile.clone())
-                .or_else(|| state_path_for_id(&s.id).and_then(|p| read_session_profile(&p)));
+                .or_else(|| state_path_for_id(&s.id).and_then(|p| d.resume_profile(&s.id, &p)));
             let mut v = serde_json::to_value(&s).unwrap_or_default();
             if let Some(obj) = v.as_object_mut() {
                 obj.insert("running".into(), serde_json::json!(running));
@@ -1614,8 +1760,19 @@ async fn open_session(State(d): State<Shared>, Json(req): Json<OpenReq>) -> Resp
     // reopening the chat), and honoring it silently reverted the model the user
     // set for this chat via /session/model. An explicit profile only seeds a
     // conversation that has no override yet (e.g. new_conversation).
-    let persisted = d.resume_profile(&id, &sp);
-    let profile = persisted.clone().or_else(|| req.profile.clone());
+    let pin_or_task = d
+        .active_task_profile(&id)
+        .or_else(|| d.pinned_session_profile(&id, &sp));
+    let explicit = req
+        .profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string);
+    let profile = pin_or_task
+        .clone()
+        .or_else(|| explicit.clone())
+        .or_else(|| d.resume_profile(&id, &sp));
     let cfg = {
         let c = d.config.lock().unwrap();
         let mut w = c.for_workspace(folder.clone());
@@ -1625,17 +1782,21 @@ async fn open_session(State(d): State<Shared>, Json(req): Json<OpenReq>) -> Resp
 
     let mut sessions = d.sessions.lock().await;
     if !sessions.contains_key(&id) {
-        let handle = start_session(
-            &cfg,
-            sp.clone(),
-            None,
-            resume,
-            Some(std::sync::Arc::new(std::sync::Mutex::new(
-                crate::llm::StreamBuffer::default(),
-            ))),
-        );
-        if persisted.is_none()
-            && let Some(name) = req.profile.clone()
+        let handle = if resume {
+            d.start_role_aware(&cfg, sp.clone(), None).await
+        } else {
+            start_session(
+                &cfg,
+                sp.clone(),
+                None,
+                false,
+                Some(std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::llm::StreamBuffer::default(),
+                ))),
+            )
+        };
+        if pin_or_task.is_none()
+            && let Some(name) = explicit
         {
             let sp = sp.clone();
             tokio::spawn(async move {

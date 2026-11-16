@@ -898,3 +898,165 @@ mod session_row_d2_tests {
         assert!(s2.pr.is_none());
     }
 }
+
+#[cfg(test)]
+mod owner_and_came_back_tests {
+    use crate::conversations::SessionRow;
+    use crate::harness::HarnessEvent;
+    use crate::session::*;
+    use crate::store::Store;
+
+    fn session_row(id: &str, status: &str, agent_id: Option<&str>) -> SessionRow {
+        SessionRow {
+            id: id.into(),
+            workspace_key: "wk".into(),
+            workspace: "/tmp/ws".into(),
+            title: Some("Test".into()),
+            status: status.into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            last_active: Some(10),
+            profile: None,
+            role: if id == crate::mission_control::SESSION_ID {
+                "mission_control".into()
+            } else {
+                "standard".into()
+            },
+            agent_id: agent_id.map(str::to_string),
+            kind: if is_inbox_session_id(id) {
+                "inbox".into()
+            } else {
+                "conversation".into()
+            },
+            settled_at: None,
+            keep_awake: false,
+            resume_mode: "ask".into(),
+            last_changes: None,
+            total_changes: None,
+            user_seen_at: None,
+            finished_at: None,
+            result_summary: None,
+            pending_handoff: None,
+        }
+    }
+
+    #[test]
+    fn owner_rule_covers_default_bound_seated_mc_and_desks() {
+        let db = Store::open_in_memory().unwrap();
+        db.create_conversation(&session_row("plain", "idle", None), &[], "[]")
+            .unwrap();
+        db.create_conversation(&session_row("spec", "idle", Some("rook")), &[], "[]")
+            .unwrap();
+        db.set_session_role("spec", "standard", Some("rook"))
+            .unwrap();
+        db.create_conversation(
+            &session_row(crate::mission_control::SESSION_ID, "idle", None),
+            &[],
+            "[]",
+        )
+        .unwrap();
+        db.set_session_role(crate::mission_control::SESSION_ID, "mission_control", None)
+            .unwrap();
+        db.create_conversation(&session_row("inbox-scout", "idle", None), &[], "[]")
+            .unwrap();
+
+        // Seated collaborator session with no stored agent_id inherits seated agent.
+        db.create_conversation(&session_row("seat-1", "idle", None), &[], "[]")
+            .unwrap();
+        let task = crate::coordination::Task::dispatched_to(
+            "t-seat".into(),
+            "plain".into(),
+            "Task".into(),
+            "scope".into(),
+            vec![],
+            crate::coordination::HandoffMode::Resume,
+            "human",
+            "human",
+            "2026-01-01T00:00:00Z".into(),
+        );
+        db.create_task(&task).unwrap();
+        db.create_agent(&crate::coordination::types::Agent {
+            id: "auditor".into(),
+            display_name: "Auditor".into(),
+            handle: "auditor".into(),
+            kind: crate::coordination::types::AgentKind::Worker,
+            status: crate::coordination::types::AgentStatus::Active,
+            capabilities: vec![],
+        })
+        .unwrap();
+        db.add_task_agent("t-seat", "auditor", "reviewer", "2026-01-01T00:00:00Z")
+            .unwrap();
+        db.set_member_session("t-seat", "auditor", "seat-1")
+            .unwrap();
+
+        let by_id: std::collections::HashMap<String, SessionInfo> = all_device_sessions_in(&db)
+            .into_iter()
+            .map(|s| (s.id.clone(), s))
+            .collect();
+        assert_eq!(by_id["plain"].owner_agent_id, "snippet");
+        assert_eq!(by_id["spec"].owner_agent_id, "rook");
+        assert_eq!(
+            by_id[crate::mission_control::SESSION_ID].owner_agent_id,
+            "mission-control"
+        );
+        assert_eq!(by_id["inbox-scout"].owner_agent_id, "scout");
+        assert_eq!(by_id["seat-1"].owner_agent_id, "auditor");
+    }
+
+    #[test]
+    fn came_back_set_by_finish_and_cleared_by_seen() {
+        let db = Store::open_in_memory().unwrap();
+        db.create_conversation(&session_row("s1", "idle", None), &[], "[]")
+            .unwrap();
+        db.append_conversation_events(
+            "s1",
+            &[HarnessEvent::AssistantText {
+                text: format!("\n  {}\nsecond line", "x".repeat(250)),
+                quiet: false,
+            }],
+            "t1",
+        )
+        .unwrap();
+
+        let (tx, _) = tokio::sync::broadcast::channel(8);
+        emit_device_event_with_store(
+            serde_json::json!({ "kind": "idle", "session": "s1" }),
+            Some(&db),
+            &tx,
+        );
+
+        let list = all_device_sessions_in(&db);
+        let info = list.iter().find(|s| s.id == "s1").unwrap();
+        assert!(info.finished_at.is_some());
+        assert_eq!(info.result_summary.as_deref().unwrap().chars().count(), 200);
+        assert!(info.came_back);
+
+        // Waiting or running never shows as came back.
+        assert!(!compute_came_back(
+            "s1",
+            "waiting_for_input",
+            info.finished_at,
+            None
+        ));
+        assert!(!compute_came_back("s1", "running", info.finished_at, None));
+        assert!(!compute_came_back(
+            crate::mission_control::SESSION_ID,
+            "idle",
+            info.finished_at,
+            None
+        ));
+        assert!(!compute_came_back(
+            "inbox-rook",
+            "idle",
+            info.finished_at,
+            None
+        ));
+
+        // Seen at or after finished_at clears came_back.
+        db.set_session_user_seen("s1", info.finished_at.unwrap())
+            .unwrap();
+        let list = all_device_sessions_in(&db);
+        let info = list.iter().find(|s| s.id == "s1").unwrap();
+        assert!(!info.came_back);
+    }
+}
