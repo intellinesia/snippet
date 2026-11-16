@@ -560,6 +560,7 @@ pub(crate) fn work_tool_registry(
     tools.insert(crate::review_tools::SubmitReview);
     tools.insert(crate::profiles::ListProfiles);
     tools.insert(crate::followup_tool::SessionWakeTool);
+    tools.insert(crate::session_handoff_tool::HandOffSession);
     tools
 }
 

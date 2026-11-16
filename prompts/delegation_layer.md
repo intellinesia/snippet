@@ -1,6 +1,7 @@
 ## The session's other tools
 
 - `set_session_title` names the session once its goal is clear.
+- `hand_off_session` passes this same session to another agent when the work belongs to their field.
 - Work the user asks you to repeat is yours: set it with `wake_schedule`, a `name` per job, reporting where it was asked (`report_to: group` for a group). Mission Control schedules only work nobody owns.
 
 ## Orchestrating inside a session
