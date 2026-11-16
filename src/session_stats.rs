@@ -83,21 +83,53 @@ fn text_lines(path: &Path) -> u64 {
     newlines + u64::from(bytes.last().is_some_and(|b| *b != b'\n'))
 }
 
-/// What a linked worktree, or a checkout of a non-default branch, adds to the repository's
-/// default branch, counting uncommitted and untracked work. `None` leaves the stored total alone:
-/// neither of those, git failed, or a clean branch with nothing ahead, which is also how a merged
-/// branch looks.
-pub fn worktree_changes(workspace: &Path) -> Option<Changes> {
+/// Outcome of measuring a workspace against the default branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Measured {
+    /// Work ahead of the default branch.
+    Changes(Changes),
+    /// A git checkout with nothing to report: the default branch, or a clean branch with nothing
+    /// ahead (which is also how a merged branch looks). Any stored total is stale.
+    Nothing,
+    /// Not a git checkout, or git failed. Says nothing about the stored total.
+    Failed,
+}
+
+/// A plain checkout (not a linked worktree) sitting on the repository's default branch.
+/// `None` when git cannot say.
+pub fn on_default_branch(workspace: &Path) -> Option<bool> {
     let root = git_out(workspace, &["rev-parse", "--show-toplevel"])?;
     let root = Path::new(root.trim());
     let base = default_branch(root)?;
-    if crate::session::worktree::worktree_origin(workspace).is_none() {
-        let branch = git_out(root, &["symbolic-ref", "--short", "HEAD"])?;
-        let default = base.rsplit('/').next().unwrap_or(&base);
-        if branch.trim() == default {
-            return None;
-        }
+    if crate::session::worktree::worktree_origin(workspace).is_some() {
+        return Some(false);
     }
+    let branch = git_out(root, &["symbolic-ref", "--short", "HEAD"])?;
+    let default = base.rsplit('/').next().unwrap_or(&base);
+    Some(branch.trim() == default)
+}
+
+/// What a linked worktree, or a checkout of a non-default branch, adds to the repository's
+/// default branch, counting uncommitted and untracked work. `None` when there is nothing to
+/// measure or git failed; use [`measure_worktree`] to tell those apart.
+pub fn worktree_changes(workspace: &Path) -> Option<Changes> {
+    match measure_worktree(workspace) {
+        Measured::Changes(c) => Some(c),
+        _ => None,
+    }
+}
+
+pub fn measure_worktree(workspace: &Path) -> Measured {
+    measure(workspace).unwrap_or(Measured::Failed)
+}
+
+fn measure(workspace: &Path) -> Option<Measured> {
+    if on_default_branch(workspace)? {
+        return Some(Measured::Nothing);
+    }
+    let root = git_out(workspace, &["rev-parse", "--show-toplevel"])?;
+    let root = Path::new(root.trim());
+    let base = default_branch(root)?;
     let merge_base = git_out(root, &["merge-base", "HEAD", &base])?;
     let fork =
         branch_start(root, merge_base.trim()).unwrap_or_else(|| merge_base.trim().to_string());
@@ -128,13 +160,13 @@ pub fn worktree_changes(workspace: &Path) -> Option<Changes> {
     let removed = tracked.iter().map(|t| t.2).sum::<u64>();
     let head = git_out(root, &["rev-parse", "HEAD"])?;
     if tracked.is_empty() && added == 0 && head.trim() == fork {
-        return None;
+        return Some(Measured::Nothing);
     }
-    Some(Changes {
+    Some(Measured::Changes(Changes {
         files: (tracked.len() + untracked.len()) as u32,
         added: added as u32,
         removed: removed as u32,
-    })
+    }))
 }
 
 /// Bring worktree sessions' totals up to date. `active_since` limits it to rows running or active
@@ -144,7 +176,7 @@ pub fn refresh_worktree_totals(store: &crate::store::Store, active_since: Option
     let Ok(rows) = store.list_all_sessions() else {
         return;
     };
-    let mut measured: std::collections::HashMap<String, Option<Changes>> =
+    let mut measured: std::collections::HashMap<String, Measured> =
         std::collections::HashMap::new();
     for row in rows {
         if row.id.contains("/conversations/") {
@@ -158,8 +190,17 @@ pub fn refresh_worktree_totals(store: &crate::store::Store, active_since: Option
         }
         let total = *measured
             .entry(row.workspace.clone())
-            .or_insert_with(|| worktree_changes(Path::new(&row.workspace)));
-        let Some(total) = total else { continue };
+            .or_insert_with(|| measure_worktree(Path::new(&row.workspace)));
+        let total = match total {
+            Measured::Changes(total) => total,
+            Measured::Nothing => {
+                if row.total_changes.is_some() {
+                    let _ = store.clear_total_changes(&row.id);
+                }
+                continue;
+            }
+            Measured::Failed => continue,
+        };
         let stored = row
             .total_changes
             .as_deref()
@@ -425,6 +466,84 @@ mod tests {
         git(&["commit", "-qm", "feature"]);
         let got = worktree_changes(dir).expect("feature branch measured");
         assert_eq!((got.files, got.added, got.removed), (1, 2, 0));
+    }
+
+    fn init_repo(dir: &Path) -> impl Fn(&[&str]) + '_ {
+        let git = move |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        write(&dir.join("keep.txt"), "a\n");
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        git
+    }
+
+    #[test]
+    fn measure_distinguishes_nothing_to_report_from_git_failure() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path();
+        let git = init_repo(dir);
+        assert_eq!(measure_worktree(dir), Measured::Nothing, "default branch");
+        git(&["checkout", "-qb", "merged"]);
+        assert_eq!(
+            measure_worktree(dir),
+            Measured::Nothing,
+            "clean, nothing ahead"
+        );
+        write(&dir.join("new.txt"), "1\n");
+        assert!(matches!(measure_worktree(dir), Measured::Changes(_)));
+        let plain = tempfile::tempdir().unwrap();
+        if git_branch(plain.path()).is_none() {
+            assert_eq!(measure_worktree(plain.path()), Measured::Failed);
+        }
+        assert_eq!(
+            measure_worktree(&dir.join("missing")),
+            Measured::Failed,
+            "unreadable workspace leaves totals alone"
+        );
+    }
+
+    #[test]
+    fn refresh_clears_stale_total_on_default_branch_but_keeps_it_on_git_failure() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("repo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let _git = init_repo(&dir);
+        let gone = t.path().join("gone");
+        let stale = Changes {
+            files: 1275,
+            added: 1,
+            removed: 1,
+        };
+        for (id, ws) in [("clean", &dir), ("failed", &gone)] {
+            store
+                .save_session_scalar(
+                    id,
+                    id,
+                    ws.to_str().unwrap(),
+                    Some("t"),
+                    "idle",
+                    "{}",
+                    "2026-01-01T00:00:00Z",
+                    "2026-01-01T00:00:00Z",
+                )
+                .unwrap();
+            store.set_total_changes(id, &stale).unwrap();
+        }
+        refresh_worktree_totals(&store, None);
+        let total = |id: &str| store.get_session_row(id).unwrap().unwrap().total_changes;
+        assert_eq!(total("clean"), None);
+        assert!(total("failed").is_some());
     }
 
     #[test]

@@ -765,7 +765,9 @@ fn compute_session_counts(
         .flatten()
         .and_then(|row| {
             let is_git = crate::session_stats::git_branch(workspace).is_some();
-            let raw = if is_git {
+            // A plain checkout on the default branch has no lifetime total to show.
+            let stale = is_git && crate::session_stats::on_default_branch(workspace) == Some(true);
+            let raw = if is_git && !stale {
                 row.total_changes.or(row.last_changes)
             } else {
                 row.last_changes
@@ -1114,5 +1116,49 @@ mod stream_frame_tests {
         crate::bg::record(tmp.path(), "p1", "sleep 10", None, pid).unwrap();
         let counts = compute_session_counts(&store, "s1", tmp.path());
         assert_eq!(counts.processes, 1);
+    }
+
+    #[test]
+    fn compute_session_counts_ignores_stale_total_on_default_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(tmp.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(tmp.path().join("a.txt"), "a\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store
+            .save_session_scalar(
+                "s1",
+                "k1",
+                &tmp.path().display().to_string(),
+                Some("t"),
+                "idle",
+                "{}",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+        store.record_turn_changes("s1", 1275, 1, 1).unwrap();
+        store.record_turn_changes("s1", 2, 1, 1).unwrap();
+        let counts = compute_session_counts(&store, "s1", tmp.path());
+        assert_eq!(
+            counts.changed_files, 2,
+            "last turn, not the 1277 lifetime total"
+        );
+
+        git(&["checkout", "-qb", "feature"]);
+        let counts = compute_session_counts(&store, "s1", tmp.path());
+        assert_eq!(counts.changed_files, 1277, "feature branch keeps the total");
     }
 }

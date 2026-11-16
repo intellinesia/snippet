@@ -816,6 +816,9 @@ pub struct SessionInfo {
     /// Lifetime totals over every turn that changed files (files is the sum of per-turn counts).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_changes: Option<crate::session_stats::Changes>,
+    /// The ongoing (active or paused) `/goal`, same shape as session state's `goal`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal: Option<crate::harness::Goal>,
     /// Unix seconds when the current run began; only while running.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub running_since: Option<i64>,
@@ -934,7 +937,6 @@ pub fn compute_session_plan(
         current,
         step_started_at,
     })
-
 }
 
 /// Resolve the owning agent for a session row or id.
@@ -1223,6 +1225,7 @@ pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> V
     let mut plans = store.map(|s| s.session_plans()).unwrap_or_default();
     let mut lanes_map = store.map(|s| s.session_running_lanes()).unwrap_or_default();
     let mut wakes = store.map(|s| s.session_next_wakes()).unwrap_or_default();
+    let mut goals = store.map(|s| s.session_goals()).unwrap_or_default();
     let mc_wake = store
         .map(crate::mission_autonomy::load_from)
         .and_then(|a| a.followups.iter().map(|f| f.due_at).min());
@@ -1263,6 +1266,7 @@ pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> V
                 )
             };
             let plan = plans.remove(&row.id);
+            let goal = goals.remove(&row.id);
             let lanes = lanes_map.remove(&row.id);
             let wake_db = wakes.remove(&row.id);
             let next_wake_at = if crate::mission_control::is_session_id(&row.id) {
@@ -1302,6 +1306,7 @@ pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> V
                     .total_changes
                     .as_deref()
                     .and_then(|j| serde_json::from_str(j).ok()),
+                goal,
                 running_since: None,
                 idle_secs: crate::settle::idle_secs(now, row.last_active.unwrap_or(0)),
                 cache,
@@ -2201,6 +2206,7 @@ pub fn create_blank_session_in(
         git: false,
         changes: None,
         total_changes: None,
+        goal: None,
         running_since: None,
         idle_secs: 0,
         cache: "warm",

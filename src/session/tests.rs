@@ -1060,3 +1060,41 @@ mod owner_and_came_back_tests {
         assert!(!info.came_back);
     }
 }
+
+#[test]
+fn session_goals_lists_only_ongoing_goals() {
+    let store = crate::store::Store::open_in_memory().unwrap();
+    let save = |id: &str, scalar: &str| {
+        store
+            .save_session_scalar(
+                id,
+                id,
+                "/w",
+                Some("t"),
+                "idle",
+                scalar,
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+    };
+    save(
+        "a",
+        r#"{"goal":{"text":"ship","dir":"d","status":"active","autonomous_turns":3,"resume_at":0}}"#,
+    );
+    save(
+        "p",
+        r#"{"goal":{"text":"wait","status":"paused","resume_at":99}}"#,
+    );
+    save("c", r#"{"goal":{"text":"done","status":"complete"}}"#);
+    save("x", r#"{"goal":{"text":"no","status":"cancelled"}}"#);
+    save("n", r#"{"goal":null}"#);
+    let goals = store.session_goals();
+    let mut ids: Vec<_> = goals.keys().cloned().collect();
+    ids.sort();
+    assert_eq!(ids, ["a", "p"]);
+    assert_eq!(goals["a"].autonomous_turns, 3);
+    assert_eq!(goals["p"].resume_at, 99);
+    let json = serde_json::to_value(&goals["a"]).unwrap();
+    assert_eq!(json["status"], "active");
+}

@@ -628,6 +628,41 @@ impl Store {
         })
     }
 
+    /// Drop a session's lifetime totals, e.g. when its workspace has nothing left to report.
+    pub fn clear_total_changes(&self, id: &str) -> Result<(), StoreError> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE sessions SET total_changes = NULL WHERE id = ?1",
+                params![id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Ongoing (active or paused) goals by session id, read in one pass from the stored scalar
+    /// state so the session list never opens a state per row.
+    pub fn session_goals(&self) -> std::collections::HashMap<String, crate::harness::Goal> {
+        let mut out = std::collections::HashMap::new();
+        let _ = self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, json_extract(state_json, '$.goal') FROM sessions
+                 WHERE json_type(state_json, '$.goal') = 'object'
+                   AND COALESCE(json_extract(state_json, '$.goal.status'), 'active')
+                       IN ('active', 'paused')",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                let json: String = row.get(1)?;
+                if let Ok(goal) = serde_json::from_str::<crate::harness::Goal>(&json) {
+                    out.insert(id, goal);
+                }
+            }
+            Ok(())
+        });
+        out
+    }
+
     /// Opt a session in or out of automatic settling. Returns whether it exists.
     pub fn set_session_keep_awake(&self, id: &str, on: bool) -> Result<bool, StoreError> {
         self.with_connection(|conn| {
