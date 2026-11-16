@@ -204,6 +204,11 @@ async fn handle_ws(
         let mut last_queue_revision = 0;
         let mut attach_revision: u64 = 0;
         let mut term_seq: u64 = 0;
+        let mut last_counts: Option<SessionCounts> = None;
+        let mut last_counts_bg_rev: u64 = 0;
+        let mut last_counts_pr_rev: u64 = 0;
+        let mut last_counts_check: Option<tokio::time::Instant> = None;
+        let mut workspace_dir: Option<PathBuf> = None;
         let mut last_frame_sent = tokio::time::Instant::now();
         let load_initial = |path: &Path| {
             let path = path.to_path_buf();
@@ -228,9 +233,36 @@ async fn handle_ws(
             } else {
                 None
             };
+            let state_changed = fingerprint.is_some_and(|fp| Some(fp) != last_state_fingerprint)
+                || queue_revision != last_queue_revision;
+            let bg_rev = crate::bg::revision();
+            let pr_rev = super::github_routes::pr_cache_revision();
+            let mut precomputed_counts: Option<SessionCounts> = None;
+            let mut counts_changed = false;
+            if check_state
+                && !state_changed
+                && let Some(ws) = workspace_dir.as_ref()
+                && (last_counts.is_none()
+                    || bg_rev != last_counts_bg_rev
+                    || pr_rev != last_counts_pr_rev
+                    || last_counts_check.is_none_or(|t| t.elapsed() >= COUNTS_TTL_CHECK))
+            {
+                let store = daemon.store.clone();
+                let sid = session.clone();
+                let ws = ws.clone();
+                if let Ok(counts) =
+                    tokio::task::spawn_blocking(move || compute_session_counts(&store, &sid, &ws))
+                        .await
+                {
+                    last_counts_bg_rev = bg_rev;
+                    last_counts_pr_rev = pr_rev;
+                    last_counts_check = Some(tokio::time::Instant::now());
+                    counts_changed = Some(counts) != last_counts;
+                    precomputed_counts = Some(counts);
+                }
+            }
             if let Some(fingerprint) = fingerprint
-                && (Some(fingerprint) != last_state_fingerprint
-                    || queue_revision != last_queue_revision)
+                && (state_changed || counts_changed)
             {
                 let resume = !last_events.is_empty();
                 let loaded = if resume {
@@ -266,6 +298,29 @@ async fn handle_ws(
                             .queued_inputs
                             .retain(|item| !hidden.contains(&item.id));
                     }
+                    workspace_dir =
+                        (!state.workspace.is_empty()).then(|| PathBuf::from(&state.workspace));
+                    let counts = match precomputed_counts {
+                        Some(c) => c,
+                        None => {
+                            let store = daemon.store.clone();
+                            let sid = session.clone();
+                            let ws = workspace_dir.clone();
+                            let computed = tokio::task::spawn_blocking(move || match ws {
+                                Some(ref dir) if dir.is_dir() => {
+                                    compute_session_counts(&store, &sid, dir)
+                                }
+                                _ => SessionCounts::default(),
+                            })
+                            .await
+                            .unwrap_or_default();
+                            last_counts_bg_rev = crate::bg::revision();
+                            last_counts_pr_rev = super::github_routes::pr_cache_revision();
+                            last_counts_check = Some(tokio::time::Instant::now());
+                            computed
+                        }
+                    };
+                    last_counts = Some(counts);
                     let events = std::mem::take(&mut state.events);
                     if let Ok(mut v) = serde_json::to_value(&state) {
                         if let Some(o) = v.as_object_mut() {
@@ -300,6 +355,7 @@ async fn handle_ws(
                         attach_revision = attach_revision.wrapping_add(1);
                         if let Some(o) = v.as_object_mut() {
                             o.insert("revision".into(), serde_json::json!(attach_revision));
+                            o.insert("counts".into(), serde_json::json!(counts));
                             if continuous {
                                 let tail = &events[last_events.len()..];
                                 let total_events = last_event_offset + events.len();
@@ -675,6 +731,44 @@ fn trim_finished_lanes(lanes: &mut [serde_json::Value], session: &str) {
 const HEARTBEAT: Duration = Duration::from_secs(5);
 // Backstop for writers that bypass the change signals (e.g. another process).
 const PUSH_FALLBACK_TICK: Duration = Duration::from_secs(1);
+const COUNTS_TTL_CHECK: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+struct SessionCounts {
+    changed_files: usize,
+    open_prs: usize,
+    processes: usize,
+}
+
+fn compute_session_counts(
+    store: &crate::store::Store,
+    session: &str,
+    workspace: &Path,
+) -> SessionCounts {
+    let changed_files = store
+        .get_session_row(session)
+        .ok()
+        .flatten()
+        .and_then(|row| {
+            let is_git = crate::session_stats::git_branch(workspace).is_some();
+            let raw = if is_git {
+                row.total_changes.or(row.last_changes)
+            } else {
+                row.last_changes
+            };
+            raw.as_deref()
+                .and_then(|j| serde_json::from_str::<crate::session_stats::Changes>(j).ok())
+        })
+        .map(|c| c.files as usize)
+        .unwrap_or(0);
+    let open_prs = super::github_routes::cached_open_pr_count(session, workspace);
+    let processes = crate::bg::running_count(workspace);
+    SessionCounts {
+        changed_files,
+        open_prs,
+        processes,
+    }
+}
 
 fn load_initial_state(path: &Path) -> Option<(crate::harness::HarnessState, usize)> {
     if let Some(mut meta) = crate::session::read_session_meta(path)
@@ -963,7 +1057,7 @@ fn stream_frame(
 
 #[cfg(test)]
 mod stream_frame_tests {
-    use super::stream_frame;
+    use super::{SessionCounts, compute_session_counts, stream_frame};
 
     #[test]
     fn voice_flag_only_on_voice_turns() {
@@ -972,5 +1066,39 @@ mod stream_frame_tests {
         let plain = stream_frame(true, "hi", "", true, false);
         assert!(plain.get("voice").is_none());
         assert_eq!(plain["append"], true);
+    }
+
+    #[test]
+    fn compute_session_counts_reads_diff_stats_and_bg_processes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store
+            .save_session_scalar(
+                "s1",
+                "k1",
+                &tmp.path().display().to_string(),
+                Some("t"),
+                "idle",
+                "{}",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+        store.record_turn_changes("s1", 4, 10, 2).unwrap();
+
+        let counts = compute_session_counts(&store, "s1", tmp.path());
+        assert_eq!(
+            counts,
+            SessionCounts {
+                changed_files: 4,
+                open_prs: 0,
+                processes: 0,
+            }
+        );
+
+        let pid = std::process::id();
+        crate::bg::record(tmp.path(), "p1", "sleep 10", None, pid).unwrap();
+        let counts = compute_session_counts(&store, "s1", tmp.path());
+        assert_eq!(counts.processes, 1);
     }
 }

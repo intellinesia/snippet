@@ -5,7 +5,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+static BG_REVISION: AtomicU64 = AtomicU64::new(0);
+
+pub fn revision() -> u64 {
+    BG_REVISION.load(Ordering::Acquire)
+}
 
 use serde::{Deserialize, Serialize};
 
@@ -90,6 +97,7 @@ fn fingerprint(procs: &[BgStatus]) -> String {
 }
 
 fn notify_changed(workspace: &Path) {
+    BG_REVISION.fetch_add(1, Ordering::Release);
     crate::session::emit_device_event(serde_json::json!({
         "kind": "process",
         "workspace": workspace.display().to_string(),
@@ -253,6 +261,15 @@ pub fn list(workspace: &Path) -> Vec<BgStatus> {
     }
     out.sort_by(|a, b| a.started_at.cmp(&b.started_at));
     out
+}
+
+/// Count currently running background processes for a workspace without reading
+/// when the workspace has no `.snippet/scratch/bg` directory.
+pub fn running_count(workspace: &Path) -> usize {
+    if !bg_dir(workspace).is_dir() {
+        return 0;
+    }
+    list(workspace).into_iter().filter(|p| p.running).count()
 }
 
 /// Terminate a recorded background process (its group if it leads one, else the

@@ -6,6 +6,7 @@
 use super::api_error;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
@@ -29,6 +30,12 @@ const BRANCH_PR_FIELDS: &str = "number,title,state,isDraft,mergeable,statusCheck
 
 static PR_CACHE: LazyLock<Mutex<PrCache>> = LazyLock::new(|| Mutex::new(PrCache::default()));
 static PR_SEMAPHORE: Semaphore = Semaphore::const_new(4);
+// Bumped whenever a cached PR changes, so attached sessions resend their counts.
+static PR_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn pr_cache_revision() -> u64 {
+    PR_CACHE_REVISION.load(Ordering::Acquire)
+}
 
 #[derive(Debug, Clone)]
 struct CachedPr {
@@ -244,6 +251,7 @@ fn spawn_pr_refresh(session_id: String, folder: String, branch: String) {
             now_unix(),
         );
         if changed {
+            PR_CACHE_REVISION.fetch_add(1, Ordering::Release);
             crate::session::emit_device_event(json!({
                 "kind": "session_pr",
                 "session": session_id,
@@ -282,6 +290,26 @@ pub(crate) fn attach_cached_prs(sessions: &mut [SessionInfo]) {
     }
 }
 
+/// Open PRs for the session's branch (0 or 1), read from the same cache as
+/// `attach_cached_prs`; never calls `gh` inline.
+pub(crate) fn cached_open_pr_count(session: &str, workspace: &Path) -> usize {
+    let Some(branch) = crate::session_stats::git_branch(workspace)
+        .filter(|b| !b.is_empty() && !matches!(b.as_str(), "main" | "master"))
+    else {
+        return 0;
+    };
+    let folder = workspace.display().to_string();
+    let (pr, needs_refresh) =
+        PR_CACHE
+            .lock()
+            .unwrap()
+            .lookup_and_queue(session, &folder, &branch, now_unix());
+    if needs_refresh {
+        spawn_pr_refresh(session.to_string(), folder, branch);
+    }
+    usize::from(pr.is_some_and(|p| matches!(p.state.as_str(), "open" | "draft")))
+}
+
 async fn refresh_session_pr_now(session_id: &str, dir: &Path) {
     let Some(branch) = crate::session_stats::git_branch(dir) else {
         return;
@@ -294,6 +322,7 @@ async fn refresh_session_pr_now(session_id: &str, dir: &Path) {
             .unwrap()
             .finish_refresh(session_id, &folder, &branch, result, now_unix());
     if changed {
+        PR_CACHE_REVISION.fetch_add(1, Ordering::Release);
         crate::session::emit_device_event(json!({
             "kind": "session_pr",
             "session": crate::conversations::canonical_session_id(session_id),
@@ -1135,6 +1164,49 @@ async fn commit_diff(Query(q): Query<CommitQuery>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_pr_count_reads_the_session_pr_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .status()
+                .unwrap()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        assert_eq!(cached_open_pr_count("counts-test", root), 0);
+        git(&["checkout", "-q", "-b", "feat/counts"]);
+        let folder = root.display().to_string();
+        let pr = |state: &str| SessionPr {
+            number: 7,
+            title: "t".into(),
+            state: state.into(),
+            checks: "none".into(),
+            mergeable: None,
+            url: String::new(),
+        };
+        let now = now_unix();
+        PR_CACHE.lock().unwrap().finish_refresh(
+            "counts-test",
+            &folder,
+            "feat/counts",
+            Ok(Some(pr("open"))),
+            now,
+        );
+        assert_eq!(cached_open_pr_count("counts-test", root), 1);
+        PR_CACHE.lock().unwrap().finish_refresh(
+            "counts-test",
+            &folder,
+            "feat/counts",
+            Ok(Some(pr("merged"))),
+            now,
+        );
+        assert_eq!(cached_open_pr_count("counts-test", root), 0);
+    }
 
     #[test]
     fn polling_skips_main_and_settled_branches_without_an_open_pr() {
