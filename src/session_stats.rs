@@ -179,7 +179,10 @@ pub fn refresh_worktree_totals(store: &crate::store::Store, active_since: Option
     let mut measured: std::collections::HashMap<String, Measured> =
         std::collections::HashMap::new();
     for row in rows {
-        if row.id.contains("/conversations/") {
+        // Seats share their parent's worktree and never carry a total, but one left over from
+        // an earlier branch still has to be cleared.
+        let seat = row.id.contains("/conversations/");
+        if seat && row.total_changes.is_none() {
             continue;
         }
         if let Some(since) = active_since
@@ -201,6 +204,9 @@ pub fn refresh_worktree_totals(store: &crate::store::Store, active_since: Option
             }
             Measured::Failed => continue,
         };
+        if seat {
+            continue;
+        }
         let stored = row
             .total_changes
             .as_deref()
