@@ -214,6 +214,34 @@ impl CodingHarness {
                         // Buffered /compact must actually run — `apply_input`
                         // treated it as a no-op, silently swallowing the request.
                         LoopInput::Compact => wants_compact = true,
+                        LoopInput::SpawnLane(spec) => {
+                            self.spawn_requested_lane(&mut state, &mut lanes, spec);
+                            needs_persist = true;
+                        }
+                        LoopInput::CancelLane {
+                            request_id,
+                            lane_id,
+                            reason,
+                        } => {
+                            needs_persist |= self.cancel_requested_lane(
+                                &mut state,
+                                &mut lanes,
+                                &request_id,
+                                &lane_id,
+                                &reason,
+                            );
+                        }
+                        LoopInput::RetryLane {
+                            request_id,
+                            lane_id,
+                        } => {
+                            needs_persist |= self.retry_requested_lane(
+                                &mut state,
+                                &mut lanes,
+                                &request_id,
+                                &lane_id,
+                            );
+                        }
                         LoopInput::Queue(_) | LoopInput::Unqueue(_) | LoopInput::DropQueued => {
                             needs_persist = true;
                             self.apply_input(&mut state, input);
@@ -727,6 +755,34 @@ impl CodingHarness {
                         Some(LoopInput::SpawnLane(spec)) => {
                             self.spawn_requested_lane(&mut state, &mut lanes, spec);
                             self.persist(&mut state, &lanes).await?;
+                        }
+                        Some(LoopInput::CancelLane {
+                            request_id,
+                            lane_id,
+                            reason,
+                        }) => {
+                            if self.cancel_requested_lane(
+                                &mut state,
+                                &mut lanes,
+                                &request_id,
+                                &lane_id,
+                                &reason,
+                            ) {
+                                self.persist(&mut state, &lanes).await?;
+                            }
+                        }
+                        Some(LoopInput::RetryLane {
+                            request_id,
+                            lane_id,
+                        }) => {
+                            if self.retry_requested_lane(
+                                &mut state,
+                                &mut lanes,
+                                &request_id,
+                                &lane_id,
+                            ) {
+                                self.persist(&mut state, &lanes).await?;
+                            }
                         }
                         None => {
                             state.status = HarnessStatus::Interrupted;

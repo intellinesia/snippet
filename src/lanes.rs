@@ -99,6 +99,91 @@ pub struct LaneRecord {
     pub paths: Vec<String>,
 }
 
+const RECENT_ACTIVITY_LIMIT: usize = 3;
+const RECENT_ACTIVITY_MAX_CHARS: usize = 160;
+
+impl LaneRecord {
+    /// Last 3 activity log lines collapsed to single lines and trimmed to 160 chars.
+    pub fn recent_lines(&self) -> Vec<String> {
+        recent_activity(&self.activity_log)
+    }
+}
+
+pub fn recent_activity(log: &[LaneActivity]) -> Vec<String> {
+    let start = log.len().saturating_sub(RECENT_ACTIVITY_LIMIT);
+    log[start..]
+        .iter()
+        .filter_map(|entry| {
+            let line = entry.text.split_whitespace().collect::<Vec<_>>().join(" ");
+            if line.is_empty() {
+                return None;
+            }
+            if line.chars().count() <= RECENT_ACTIVITY_MAX_CHARS {
+                Some(line)
+            } else {
+                let head: String = line.chars().take(RECENT_ACTIVITY_MAX_CHARS - 1).collect();
+                Some(format!("{head}…"))
+            }
+        })
+        .collect()
+}
+
+pub fn attach_recent(lane_json: &mut serde_json::Value, record: &LaneRecord) {
+    if let Some(o) = lane_json.as_object_mut() {
+        o.insert("recent".into(), serde_json::json!(record.recent_lines()));
+    }
+}
+
+/// Apply cancellation metadata to a lane record (shared by live and offline cancel).
+pub fn cancel_record(record: &mut LaneRecord, reason: &str) -> Result<String, String> {
+    if !matches!(record.status, LaneStatus::Running | LaneStatus::Paused) {
+        return Err(format!(
+            "delegated task `{}` is not running (status: {:?}).",
+            record.id, record.status
+        ));
+    }
+    record.status = LaneStatus::Cancelled;
+    record.error = Some(format!("cancelled by parent: {reason}"));
+    record.finished_at = Some(Utc::now().to_rfc3339());
+    let activity = LaneActivity {
+        at: Utc::now().to_rfc3339(),
+        kind: "cancelled".to_string(),
+        text: reason.to_string(),
+    };
+    record.activity = Some(activity.text.clone());
+    record.activity_kind = Some(activity.kind.clone());
+    record.activity_at = Some(activity.at.clone());
+    record.activity_log.push(activity);
+    const MAX_ACTIVITY: usize = 24;
+    if record.activity_log.len() > MAX_ACTIVITY {
+        let drop_count = record.activity_log.len() - MAX_ACTIVITY;
+        record.activity_log.drain(..drop_count);
+    }
+    Ok(record.title.clone())
+}
+
+static PENDING_CONTROLS: LazyLock<
+    Mutex<HashMap<String, tokio::sync::oneshot::Sender<Result<String, String>>>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub fn register_control(id: &str) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if let Ok(mut pending) = PENDING_CONTROLS.lock() {
+        pending.insert(id.to_string(), tx);
+    }
+    rx
+}
+
+pub fn complete_control(id: &str, result: Result<String, String>) {
+    let tx = PENDING_CONTROLS
+        .lock()
+        .ok()
+        .and_then(|mut pending| pending.remove(id));
+    if let Some(tx) = tx {
+        let _ = tx.send(result);
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct LaneFinding {
     pub claim: String,
@@ -732,24 +817,37 @@ impl LaneManager {
                 break;
             }
         }
-        record.status = LaneStatus::Cancelled;
-        record.error = Some(format!("cancelled by parent: {reason}"));
-        record.finished_at = Some(Utc::now().to_rfc3339());
-        let activity = LaneActivity {
-            at: Utc::now().to_rfc3339(),
-            kind: "cancelled".to_string(),
-            text: reason.to_string(),
+        cancel_record(record, reason)
+    }
+
+    /// Start a new lane copying brief, paths, access, profile, and agent from a
+    /// failed or cancelled lane. Returns `(new_lane_id, title)`.
+    pub fn retry(&mut self, lane_id: &str) -> Result<(String, String), String> {
+        let Some(record) = self.records.iter().find(|r| r.id == lane_id) else {
+            return Err(format!(
+                "no delegated task `{lane_id}` is known in this conversation."
+            ));
         };
-        record.activity = Some(activity.text.clone());
-        record.activity_kind = Some(activity.kind.clone());
-        record.activity_at = Some(activity.at.clone());
-        record.activity_log.push(activity);
-        const MAX_ACTIVITY: usize = 24;
-        if record.activity_log.len() > MAX_ACTIVITY {
-            let drop_count = record.activity_log.len() - MAX_ACTIVITY;
-            record.activity_log.drain(..drop_count);
+        if !matches!(record.status, LaneStatus::Failed | LaneStatus::Cancelled) {
+            return Err(format!(
+                "delegated task `{lane_id}` cannot be retried (status: {:?}).",
+                record.status
+            ));
         }
-        Ok(record.title.clone())
+        let title = record.title.clone();
+        let brief = record
+            .handoff
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("delegated task `{lane_id}` has no brief to retry."))?
+            .to_string();
+        let read_only = record.read_only;
+        let agent = record.agent.clone();
+        let profile = record.profile.clone();
+        let paths = record.paths.clone();
+        let new_id = self.spawn_scoped(&title, &brief, read_only, agent, profile, paths)?;
+        Ok((new_id, title))
     }
 
     /// Shared spawn: run the lane on a tokio task and report back over the channel.
@@ -2625,5 +2723,169 @@ Open: docs pending
         );
         let _ = std::fs::remove_dir_all(crate::checkpoint::shadow_dir(&tmp));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn recent_activity_keeps_last_three_single_line_trimmed_to_160() {
+        let long = "a\n  b\t".to_string() + &"x".repeat(200);
+        let log = vec![
+            LaneActivity {
+                at: "t1".into(),
+                kind: "tool_call".into(),
+                text: "first".into(),
+            },
+            LaneActivity {
+                at: "t2".into(),
+                kind: "tool_call".into(),
+                text: "   \n ".into(),
+            },
+            LaneActivity {
+                at: "t3".into(),
+                kind: "tool_call".into(),
+                text: "second\nline".into(),
+            },
+            LaneActivity {
+                at: "t4".into(),
+                kind: "tool_call".into(),
+                text: long,
+            },
+        ];
+        let recent = recent_activity(&log);
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0], "second line");
+        assert_eq!(recent[1].chars().count(), 160);
+        assert!(recent[1].starts_with("a b x"));
+        assert!(recent[1].ends_with('…'));
+
+        let mut rec = test_record();
+        rec.activity_log = log;
+        let mut val = serde_json::to_value(&rec).unwrap();
+        attach_recent(&mut val, &rec);
+        assert_eq!(val["recent"], serde_json::json!(recent));
+    }
+
+    #[test]
+    fn cancel_record_stops_running_and_rejects_completed() {
+        let mut rec = test_record();
+        assert_eq!(
+            cancel_record(&mut rec, "stopped by the user").unwrap(),
+            "audit"
+        );
+        assert_eq!(rec.status, LaneStatus::Cancelled);
+        assert_eq!(
+            rec.error.as_deref(),
+            Some("cancelled by parent: stopped by the user")
+        );
+        assert_eq!(rec.activity.as_deref(), Some("stopped by the user"));
+        assert!(cancel_record(&mut rec, "again").is_err());
+    }
+
+    #[tokio::test]
+    async fn retry_copies_brief_paths_access_profile_and_agent() {
+        use crate::llm::{GeneratedToolCall, HarnessMessage, ModelOutput};
+
+        struct StubModel(Option<ModelOutput>);
+
+        #[async_trait::async_trait]
+        impl AgentModel for StubModel {
+            async fn generate(
+                &mut self,
+                _messages: &[HarnessMessage],
+                _tools: &[NativeToolDefinition],
+                _force_tool: bool,
+                _sink: Option<crate::llm::StreamHandle>,
+            ) -> Result<ModelOutput, ToolError> {
+                Ok(self.0.take().expect("called once"))
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("snippet-lane-retry-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let (result_tx, _result_rx) = mpsc::unbounded_channel();
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let factory: ModelFactory = Arc::new(|_, _| {
+            Ok(Box::new(StubModel(Some(ModelOutput {
+                calls: vec![GeneratedToolCall {
+                    tool_name: "terminate_loop".into(),
+                    arguments: serde_json::json!({ "summary": "done" }),
+                    id: Some("c1".into()),
+                    origin_model: None,
+                    signature: None,
+                }],
+                ..Default::default()
+            }))))
+        });
+
+        let mut failed = test_record();
+        failed.id = "lane-1".into();
+        failed.status = LaneStatus::Failed;
+        failed.handoff = Some("fix the bug".into());
+        failed.paths = vec!["src/lanes.rs".into()];
+        failed.read_only = false;
+        failed.agent = Some("moss".into());
+        failed.profile = Some("claude-sonnet".into());
+
+        let mut cancelled = test_record();
+        cancelled.id = "lane-2".into();
+        cancelled.status = LaneStatus::Cancelled;
+        cancelled.handoff = Some("review diff".into());
+        cancelled.read_only = true;
+
+        let mut running = test_record();
+        running.id = "lane-3".into();
+        running.status = LaneStatus::Running;
+
+        let mut mgr = LaneManager::new(
+            Some(factory),
+            dir.clone(),
+            dir.clone(),
+            result_tx,
+            progress_tx,
+            None,
+        )
+        .with_records(vec![failed, cancelled, running]);
+
+        assert!(mgr.retry("lane-3").is_err());
+        assert!(mgr.retry("missing").is_err());
+
+        let (id1, title1) = mgr.retry("lane-1").unwrap();
+        assert_eq!(id1, "lane-4");
+        assert_eq!(title1, "audit");
+        let rec1 = mgr.records().iter().find(|r| r.id == id1).unwrap();
+        assert_eq!(rec1.status, LaneStatus::Running);
+        assert_eq!(rec1.handoff.as_deref(), Some("fix the bug"));
+        assert_eq!(rec1.paths, vec!["src/lanes.rs".to_string()]);
+        assert!(!rec1.read_only);
+        assert_eq!(rec1.agent.as_deref(), Some("moss"));
+        assert_eq!(rec1.profile.as_deref(), Some("claude-sonnet"));
+
+        let (id2, _) = mgr.retry("lane-2").unwrap();
+        assert_eq!(id2, "lane-5");
+        let rec2 = mgr.records().iter().find(|r| r.id == id2).unwrap();
+        assert!(rec2.read_only);
+        assert_eq!(rec2.handoff.as_deref(), Some("review diff"));
+
+        drop(mgr);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lane_spawned_retry_of_is_optional_on_wire() {
+        let old = serde_json::json!({"kind": "lane_spawned", "id": "lane-1", "title": "audit"});
+        let parsed: crate::harness::HarnessEvent = serde_json::from_value(old).unwrap();
+        assert!(matches!(
+            parsed,
+            crate::harness::HarnessEvent::LaneSpawned { retry_of: None, .. }
+        ));
+        let reencoded = serde_json::to_value(&parsed).unwrap();
+        assert!(reencoded.get("retry_of").is_none());
+
+        let retry = crate::harness::HarnessEvent::LaneSpawned {
+            id: "lane-2".into(),
+            title: "audit".into(),
+            retry_of: Some("lane-1".into()),
+        };
+        let v = serde_json::to_value(&retry).unwrap();
+        assert_eq!(v["retry_of"], "lane-1");
     }
 }

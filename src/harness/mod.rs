@@ -235,6 +235,8 @@ pub enum HarnessEvent {
     LaneSpawned {
         id: String,
         title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_of: Option<String>,
     },
     LaneCancelled {
         id: String,
@@ -770,6 +772,17 @@ pub enum LoopInput {
     KeepWarm(String),
     /// Start a lane on the session's behalf (the daemon starting a task review).
     SpawnLane(LaneSpawn),
+    /// Stop a running or paused lane on the user's behalf; answered via `lanes::complete_control`.
+    CancelLane {
+        request_id: String,
+        lane_id: String,
+        reason: String,
+    },
+    /// Retry a failed or cancelled lane; answered via `lanes::complete_control`.
+    RetryLane {
+        request_id: String,
+        lane_id: String,
+    },
 }
 
 /// What the daemon asks the session to delegate.

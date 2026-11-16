@@ -285,10 +285,13 @@ async fn handle_ws(
                                 o.remove("rate_limit");
                             }
                         }
-                        if compact
-                            && let Some(lanes) = v.get_mut("lanes").and_then(|l| l.as_array_mut())
-                        {
-                            trim_finished_lanes(lanes, &session);
+                        if let Some(lanes) = v.get_mut("lanes").and_then(|l| l.as_array_mut()) {
+                            for (lane_json, record) in lanes.iter_mut().zip(state.lanes.iter()) {
+                                crate::lanes::attach_recent(lane_json, record);
+                            }
+                            if compact {
+                                trim_finished_lanes(lanes, &session);
+                            }
                         }
                         let lanes_json = v
                             .get("lanes")
@@ -810,6 +813,43 @@ mod tests {
         );
         assert_eq!(lanes[1]["handoff"], "h");
         assert!(lanes[1].get("trimmed").is_none());
+    }
+
+    #[test]
+    fn attach_recent_survives_trim_finished_lanes() {
+        let mut record = crate::lanes::LaneRecord {
+            id: "lane-1".into(),
+            title: "audit".into(),
+            status: crate::lanes::LaneStatus::Completed,
+            handoff: Some("h".into()),
+            summary: Some("done".into()),
+            report: Some("r".into()),
+            structured: None,
+            error: None,
+            started_at: "2025-01-01T00:00:00Z".into(),
+            finished_at: Some("2025-01-01T00:01:00Z".into()),
+            activity: Some("last".into()),
+            activity_kind: None,
+            activity_at: None,
+            activity_log: vec![crate::lanes::LaneActivity {
+                at: "2025-01-01T00:00:10Z".into(),
+                kind: "tool_call".into(),
+                text: "Read src/lanes.rs".into(),
+            }],
+            read_only: true,
+            agent: None,
+            profile: None,
+            transcript: None,
+            paths: Vec::new(),
+        };
+        let mut v = serde_json::to_value(&record).unwrap();
+        crate::lanes::attach_recent(&mut v, &record);
+        let mut lanes = vec![v];
+        trim_finished_lanes(&mut lanes, "s1");
+        assert!(lanes[0].get("activity_log").is_none());
+        assert_eq!(lanes[0]["recent"], serde_json::json!(["Read src/lanes.rs"]));
+        record.status = crate::lanes::LaneStatus::Running;
+        assert_eq!(record.recent_lines(), vec!["Read src/lanes.rs".to_string()]);
     }
 
     fn signals_for(

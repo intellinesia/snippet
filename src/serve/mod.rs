@@ -69,6 +69,7 @@ pub(crate) use maintenance::*;
 mod mission_control;
 pub use mission_control::{mission_error, validated_owned_paths};
 mod agent_wakes;
+mod followups;
 mod goals;
 mod groups;
 mod keep_warm;
@@ -79,7 +80,6 @@ pub mod session_routes;
 mod settle_routes;
 mod stall;
 pub(crate) mod watches;
-mod followups;
 use crate::term::SessionTerms;
 pub(crate) use session_routes::*;
 pub mod sidecar;
@@ -1216,6 +1216,8 @@ pub async fn run_serve(
         .route("/git/discard", post(git_discard))
         .route("/session/checkpoint-stats", post(checkpoint_stats))
         .route("/session/lane", get(session_routes::lane_detail))
+        .route("/session/lane/cancel", post(session_routes::cancel_lane))
+        .route("/session/lane/retry", post(session_routes::retry_lane))
         .route("/git/init", post(git_init))
         .layer(axum::middleware::from_fn_with_state(
             daemon.clone(),

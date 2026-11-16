@@ -337,6 +337,7 @@ impl CodingHarness {
                                 state.events.push(HarnessEvent::LaneSpawned {
                                     id: lane_id.to_string(),
                                     title: title.clone(),
+                                    retry_of: None,
                                 });
                                 (
                                     json!({
@@ -449,6 +450,7 @@ impl CodingHarness {
                             state.events.push(HarnessEvent::LaneSpawned {
                                 id: id.clone(),
                                 title: brief.title.clone(),
+                                retry_of: None,
                             });
                             let mut data = json!({
                                 "delegated": true,
