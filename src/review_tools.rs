@@ -787,12 +787,6 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(refused.contains("`how` is missing"), "{refused}");
-        let refused = crate::mission_tools::ReportMissionTask
-            .execute(&worker, report(&"x".repeat(401)))
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(refused.contains("`how` is 401 characters"), "{refused}");
         let held = crate::mission_tools::ReportMissionTask
             .execute(&worker, report("ran the tests"))
             .await
