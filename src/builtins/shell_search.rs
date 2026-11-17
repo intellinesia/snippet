@@ -45,7 +45,7 @@ impl Tool for BashTool {
                 json!({
                     "command": {"type": "string"},
                     "label": {"type": "string", "description": "Command label."},
-                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 1800, "description": "Seconds to wait; timed-out commands continue in background."},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 1800, "description": "Seconds to wait (max 170), then it backgrounds with an id."},
                     "max_lines": {"type": "integer", "minimum": 1, "description": "Maximum output lines."},
                     "max_bytes": {"type": "integer", "minimum": 1, "default": 20000, "description": "Maximum output bytes."},
                     "background": {"type": "boolean", "default": false, "description": "Run detached."},
