@@ -301,6 +301,18 @@ pub fn set_order(provider: &str, order: Vec<String>) {
     edit(provider, |pool| pool.order = order);
 }
 
+/// Puts `id` first and forgets its recorded limit, so the user can retry an
+/// account whose limit was reset early; a real limit is re-recorded on the next call.
+pub fn make_primary(provider: &str, id: &str) {
+    edit(provider, |pool| {
+        let mut order = ids_in(provider, pool);
+        order.retain(|x| x != id);
+        order.insert(0, id.to_string());
+        pool.order = order;
+        pool.limited.remove(id);
+    });
+}
+
 pub fn set_label(provider: &str, id: &str, label: &str) {
     edit(provider, |pool| {
         if label.trim().is_empty() {
