@@ -346,3 +346,78 @@ pub(super) fn apply_turn_guards(
         }
     }
 }
+
+pub(super) const FAIL_WARN_AT: usize = 3;
+pub(super) const FAIL_STOP_AT: usize = 5;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum FailStreakAction {
+    Continue,
+    Warn(usize),
+    Stop(usize),
+}
+
+/// Identical tool calls that keep failing in a row: warn the model, then stop
+/// the turn so a stuck runtime cannot spin for minutes.
+#[derive(Default)]
+pub(super) struct FailStreak {
+    last: Option<String>,
+    count: usize,
+    pub tripped: Option<(String, usize)>,
+}
+
+impl FailStreak {
+    pub(super) fn observe(&mut self, name: &str, arguments: &Value, failed: bool) -> FailStreakAction {
+        if !failed {
+            self.last = None;
+            self.count = 0;
+            return FailStreakAction::Continue;
+        }
+        let signature = format!("{name}:{arguments}");
+        if self.last.as_deref() == Some(signature.as_str()) {
+            self.count += 1;
+        } else {
+            self.last = Some(signature);
+            self.count = 1;
+        }
+        if self.count >= FAIL_STOP_AT {
+            self.tripped = Some((name.to_string(), self.count));
+            self.last = None;
+            self.count = 0;
+            FailStreakAction::Stop(FAIL_STOP_AT)
+        } else if self.count >= FAIL_WARN_AT {
+            FailStreakAction::Warn(self.count)
+        } else {
+            FailStreakAction::Continue
+        }
+    }
+}
+
+#[cfg(test)]
+mod fail_streak_tests {
+    use super::*;
+
+    #[test]
+    fn identical_failing_calls_warn_then_stop_and_anything_else_resets() {
+        let mut streak = FailStreak::default();
+        let args = json!({});
+        let actions: Vec<_> = (0..5)
+            .map(|_| streak.observe("claim_and_dispatch_task", &args, true))
+            .collect();
+        assert_eq!(actions[1], FailStreakAction::Continue);
+        assert_eq!(actions[2], FailStreakAction::Warn(3));
+        assert_eq!(actions[4], FailStreakAction::Stop(FAIL_STOP_AT));
+        assert_eq!(streak.tripped.as_ref().map(|t| t.1), Some(5));
+
+        let mut streak = FailStreak::default();
+        for _ in 0..4 {
+            streak.observe("t", &args, true);
+        }
+        streak.observe("t", &args, false);
+        assert_eq!(streak.observe("t", &args, true), FailStreakAction::Continue);
+        for _ in 0..3 {
+            streak.observe("t", &json!({"a": 1}), true);
+        }
+        assert!(streak.tripped.is_none());
+    }
+}
