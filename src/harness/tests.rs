@@ -900,6 +900,77 @@ mod steer_and_interrupt_tests {
     }
 
     #[tokio::test]
+    async fn colleague_envelope_mid_tool_steers_without_user_framing_and_leaves_no_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let mut tools = ToolRegistry::new();
+        tools.insert(GateTool {
+            name: "work",
+            started: started.clone(),
+            release: Some(release.clone()),
+        });
+        let harness = Arc::new(CodingHarness::new(
+            HarnessConfig {
+                state_path: Some(dir.path().join("state.json")),
+                memory_enabled: false,
+                ..HarnessConfig::default()
+            },
+            tools,
+            ToolContext::new(dir.path())
+                .unwrap()
+                .with_store_path(dir.path().join("store.db")),
+        ));
+        let session_id = harness.session_id().unwrap();
+        let store = harness.store().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut model = ScriptedModel {
+            outputs: Mutex::new(VecDeque::from([
+                tool_call_output("work", "c1"),
+                text_output("Noted."),
+            ])),
+            seen_messages: seen.clone(),
+        };
+        let (tx, rx) = mpsc::unbounded_channel();
+        let run_harness = harness.clone();
+        let join = tokio::spawn(async move {
+            run_harness
+                .run_interactive(&mut model, Some("start migration".into()), rx, None, None)
+                .await
+                .unwrap()
+        });
+
+        let envelope = "[direct_message]\nfrom: agent:peer\nnote: steer: a colleague wrote while you were working; weigh it at your very next step and reply only if it needs one. \nbody: status update\n[/direct_message]";
+        started.notified().await;
+        tx.send(LoopInput::UserMessage(envelope.into())).unwrap();
+        tokio::task::yield_now().await;
+        release.notify_one();
+
+        wait_for_idle_final(&store, &session_id).await;
+        drop(tx);
+        let state = join.await.unwrap();
+
+        assert!(state.queued_inputs.is_empty());
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|e| matches!(e, HarnessEvent::Steer { text } if text == envelope))
+        );
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 2, "the envelope landed within one step");
+        assert!(
+            calls[1].iter().any(|m| matches!(
+                m,
+                HarnessMessage::User { content }
+                    if content == envelope && !content.contains("The user sent this")
+            )),
+            "{:?}",
+            calls[1]
+        );
+    }
+
+    #[tokio::test]
     async fn interrupt_then_user_message_ends_step_and_runs_message_next() {
         let dir = tempfile::tempdir().unwrap();
         let started = Arc::new(Notify::new());
