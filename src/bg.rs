@@ -489,3 +489,48 @@ mod tests {
 pub fn session_key(ctx: &crate::tools::ToolContext) -> &str {
     ctx.durable_session_id().unwrap_or_else(|| ctx.owner())
 }
+
+/// Reads only what a process's logs gained since the last call, so a match
+/// cannot scroll out of a fixed tail between polls.
+pub struct LogCursor {
+    paths: [PathBuf; 2],
+    offsets: [u64; 2],
+    carry: String,
+}
+
+impl LogCursor {
+    pub fn new(workspace: &Path, id: &str) -> Self {
+        Self {
+            paths: [log_path(workspace, id), err_path(workspace, id)],
+            offsets: [0, 0],
+            carry: String::new(),
+        }
+    }
+
+    /// New text since the previous call, prefixed by a short carry-over so a
+    /// pattern split across two reads still matches.
+    pub fn next_window(&mut self) -> String {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut fresh = String::new();
+        for (i, path) in self.paths.iter().enumerate() {
+            let Ok(mut file) = std::fs::File::open(path) else {
+                continue;
+            };
+            if file.seek(SeekFrom::Start(self.offsets[i])).is_err() {
+                continue;
+            }
+            let mut buf = Vec::new();
+            if file.read_to_end(&mut buf).is_ok() {
+                self.offsets[i] += buf.len() as u64;
+                fresh.push_str(&String::from_utf8_lossy(&buf));
+            }
+        }
+        let window = format!("{}{}", self.carry, fresh);
+        let keep = window.len().saturating_sub(4096);
+        let keep = (keep..=window.len())
+            .find(|i| window.is_char_boundary(*i))
+            .unwrap_or(window.len());
+        self.carry = window[keep..].to_string();
+        window
+    }
+}

@@ -6,6 +6,9 @@ use super::{expect_object, object_schema};
 use crate::llm::NativeToolDefinition;
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 
+/// Under the 200s limit CLI sessions put on any tool call, so a wait is never detached.
+const WAIT_CAP_SECS: u64 = 170;
+
 pub struct ManageProcessTool;
 
 #[derive(Debug, Deserialize)]
@@ -50,7 +53,7 @@ impl Tool for ManageProcessTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "manage_process".to_string(),
-            description: "Manage background processes (started via `bash {background: true}`, or a command that ran past the foreground limit). `list` shows this session's running processes, one line each (`all: true` for every process); `log` reads trailing lines; `wait` blocks until a process exits or `pattern` (a regex on its log) matches, up to `timeout_seconds` (default 300, max 1500), then returns the exit status and log tail. Use `wait` instead of sleeping and polling; `kill` terminates."
+            description: "Manage background processes (started via `bash {background: true}`, or a command that ran past the foreground limit). `list` shows this session's running processes, one line each (`all: true` for every process); `log` reads trailing lines; `wait` blocks until a process exits or `pattern` (a regex on its log) matches, up to `timeout_seconds` (default and max 170; on `timeout`, call it again), then returns the exit status and log tail. Use `wait` instead of sleeping and polling; `kill` terminates."
                 .to_string(),
             input_schema: object_schema(
                 json!({
@@ -74,8 +77,8 @@ impl Tool for ManageProcessTool {
                     "timeout_seconds": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 1500,
-                        "description": "wait: longest to block (default 300)."
+                        "maximum": 170,
+                        "description": "wait: longest to block (default and max 170)."
                     },
                     "lines": {
                         "type": "integer",
@@ -127,16 +130,17 @@ impl Tool for ManageProcessTool {
                         "Background process with ID '{id}' not found"
                     )));
                 }
-                let limit = std::time::Duration::from_secs(args.timeout_seconds.unwrap_or(300).clamp(1, 1500));
+                let limit = std::time::Duration::from_secs(
+                    args.timeout_seconds.unwrap_or(WAIT_CAP_SECS).clamp(1, WAIT_CAP_SECS),
+                );
+                let mut cursor = crate::bg::LogCursor::new(ctx.workspace_root(), id);
                 let lines_to_read = args.lines.unwrap_or(50).clamp(1, 1000);
                 let started = std::time::Instant::now();
                 let (outcome, status) = loop {
                     let current = crate::bg::find(ctx.workspace_root(), id);
-                    let log = crate::bg::tail_log(ctx.workspace_root(), id, 1000)
-                        .map(|(t, _)| t)
-                        .unwrap_or_default();
+                    let window = cursor.next_window();
                     if let Some(re) = pattern.as_ref()
-                        && re.is_match(&log)
+                        && re.is_match(&window)
                     {
                         break ("pattern", current.and_then(|p| p.status));
                     }
@@ -360,6 +364,27 @@ mod tests {
         assert_eq!(timed.value["data"]["outcome"], "timeout");
         let _ = slow.kill();
         let _ = slow.wait();
+    }
+
+    #[tokio::test]
+    async fn wait_matches_a_line_that_scrolled_past_the_tail() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(temp.path()).unwrap();
+        let ws = temp.path().to_path_buf();
+        let mut chatty = spawn_recorded(
+            &ws,
+            "chatty01",
+            "echo needle-found; i=0; while [ $i -lt 3000 ]; do echo noise $i; i=$((i+1)); done; sleep 30",
+            crate::bg::session_key(&ctx),
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let res = ManageProcessTool
+            .execute(&ctx, json!({"action": "wait", "id": "chatty01", "pattern": "needle-found", "timeout_seconds": 20}))
+            .await
+            .unwrap();
+        assert_eq!(res.value["data"]["outcome"], "pattern", "{}", res.value);
+        let _ = chatty.kill();
+        let _ = chatty.wait();
     }
 
     #[tokio::test]
