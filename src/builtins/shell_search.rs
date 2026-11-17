@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 use std::process::Stdio;
 use tokio::process::Command;
 
+/// Stays under the 200s MCP wait, so a long call always moves to the background with its id.
+const FOREGROUND_CAP_SECS: u64 = 170;
+
 pub struct BashTool;
 
 #[derive(Debug, Deserialize)]
@@ -92,7 +95,7 @@ impl Tool for BashTool {
                 .stderr(Stdio::from(log_err))
                 .spawn()?;
             let pid = child.id().unwrap_or(0);
-            crate::bg::record(ctx.workspace_root(), &id, &args.command, label, pid).ok();
+            crate::bg::record(ctx.workspace_root(), &id, &args.command, label, pid, Some(crate::bg::session_key(ctx))).ok();
             let status_path = crate::bg::status_path(ctx.workspace_root(), &id);
             tokio::spawn(async move {
                 let code = match child.wait().await {
@@ -157,13 +160,13 @@ impl Tool for BashTool {
             .stdout(Stdio::from(out_file))
             .stderr(Stdio::from(err_file))
             .spawn()?;
-        let timeout = std::time::Duration::from_secs(args.timeout_seconds.unwrap_or(120).min(1800));
+        let timeout = std::time::Duration::from_secs(args.timeout_seconds.unwrap_or(120).min(FOREGROUND_CAP_SECS));
         let status = match tokio::time::timeout(timeout, child.wait()).await {
             Ok(status) => status?,
             Err(_) => {
                 capture.keep = true;
                 let pid = child.id().unwrap_or(0);
-                crate::bg::record(ctx.workspace_root(), &id, &args.command, label, pid).ok();
+                crate::bg::record(ctx.workspace_root(), &id, &args.command, label, pid, Some(crate::bg::session_key(ctx))).ok();
                 let status_path = crate::bg::status_path(ctx.workspace_root(), &id);
                 tokio::spawn(async move {
                     let code = match child.wait().await {

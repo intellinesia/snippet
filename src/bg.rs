@@ -42,6 +42,8 @@ pub struct BgEntry {
     pub pid: u32,
     pub started_at: String,
     pub log: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 /// A short, file-safe id for a new background process.
@@ -61,6 +63,7 @@ pub fn record(
     command: &str,
     label: Option<&str>,
     pid: u32,
+    session: Option<&str>,
 ) -> std::io::Result<()> {
     let dir = bg_dir(workspace);
     std::fs::create_dir_all(&dir)?;
@@ -74,6 +77,7 @@ pub fn record(
         pid,
         started_at: chrono::Utc::now().to_rfc3339(),
         log: log_path(workspace, id).display().to_string(),
+        session: session.map(str::to_string),
     };
     std::fs::write(
         dir.join(format!("{id}.json")),
@@ -218,6 +222,8 @@ pub struct BgStatus {
     pub started_at: String,
     pub log: String,
     pub running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     /// Exit code / "signal" once it has exited; None while running.
     pub status: Option<String>,
 }
@@ -256,6 +262,7 @@ pub fn list(workspace: &Path) -> Vec<BgStatus> {
             started_at: entry.started_at,
             log: entry.log,
             running,
+            session: entry.session,
             status,
         });
     }
@@ -270,6 +277,11 @@ pub fn running_count(workspace: &Path) -> usize {
         return 0;
     }
     list(workspace).into_iter().filter(|p| p.running).count()
+}
+
+/// One recorded process by id, with its live state.
+pub fn find(workspace: &Path, id: &str) -> Option<BgStatus> {
+    list(workspace).into_iter().find(|p| p.id == id)
 }
 
 /// Terminate a recorded background process (its group if it leads one, else the
@@ -412,7 +424,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let ws = temp.path();
         let id = "test1234";
-        record(ws, id, "cargo run", Some("Start API Server"), 99999).unwrap();
+        record(ws, id, "cargo run", Some("Start API Server"), 99999, None).unwrap();
 
         let entries = list(ws);
         assert_eq!(entries.len(), 1);
@@ -434,6 +446,7 @@ mod tests {
             "cargo run --bin auth",
             Some("Start Auth Server"),
             77777,
+            None,
         )
         .unwrap();
         // Record is dead (pid 77777 doesn't exist), so render_live reports it exited
@@ -448,7 +461,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let ws = temp.path();
         let id = "logproc";
-        record(ws, id, "echo test", Some("Echo Test"), 12345).unwrap();
+        record(ws, id, "echo test", Some("Echo Test"), 12345, None).unwrap();
 
         let lpath = log_path(ws, id);
         let log_content = "line 1\nline 2\nline 3\nline 4\nline 5\n";
@@ -470,4 +483,9 @@ mod tests {
         let res = kill_by_id(ws, "nonexistent");
         assert!(res.is_err());
     }
+}
+
+/// The session a background process belongs to, for scoping `manage_process list`.
+pub fn session_key(ctx: &crate::tools::ToolContext) -> &str {
+    ctx.durable_session_id().unwrap_or_else(|| ctx.owner())
 }
