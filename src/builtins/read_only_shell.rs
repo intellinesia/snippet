@@ -29,6 +29,35 @@ const GIT_READS: &[&str] = &[
     "shortlog",
 ];
 
+fn split_segments(command: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (None, '\\') | (Some('"'), '\\') => {
+                current.push(c);
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                current.push(c);
+            }
+            (Some(q), _) if c == q => {
+                quote = None;
+                current.push(c);
+            }
+            (None, '|' | ';' | '&' | '\n') => segments.push(std::mem::take(&mut current)),
+            _ => current.push(c),
+        }
+    }
+    segments.push(current);
+    segments
+}
+
 /// Why a command is refused, or `Ok` when it only reads.
 pub fn read_only_verdict(command: &str) -> Result<(), String> {
     if command.contains('`')
@@ -49,7 +78,7 @@ pub fn read_only_verdict(command: &str) -> Result<(), String> {
                 .into(),
         );
     }
-    for segment in stripped.split(['|', ';', '&', '\n']) {
+    for segment in split_segments(&stripped) {
         let words: Vec<&str> = segment
             .split_whitespace()
             .skip_while(|w| w.contains('=') && !w.starts_with('-'))
@@ -383,6 +412,8 @@ mod tests {
             "git -C /repo log --oneline -3",
             "git diff --stat HEAD~1",
             "snippet history search timeout",
+            "rg -n 'Marco Krauss|2026-11-15' file",
+            "rg -n \"a;b|c\" src | head",
         ] {
             assert!(read_only_verdict(ok).is_ok(), "{ok}");
         }
@@ -398,6 +429,9 @@ mod tests {
             "python3 -c 'open(1)'",
             "cat a | tee b",
             "tee out.txt",
+            "rg 'a|b' f | tee out",
+            "rg \"x\" f; rm -rf target",
+            "rg 'x' f && cargo build",
             "sed -n '1w out.txt' a",
             "sed -n '/x/W out.txt' a",
             "sed '1e id' a",
