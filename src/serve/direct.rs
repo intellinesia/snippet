@@ -772,6 +772,7 @@ fn canonical_session_id(id: &str) -> Option<String> {
     Some(crate::session::session_id_for_state_path(&path))
 }
 
+const COLLEAGUE_STEER_NOTE_PREFIX: &str = "steer: a colleague wrote while you were working; weigh it at your very next step and reply only if it needs one. ";
 const STEER_NOTE_PREFIX: &str = "steer: the user wrote while you were working; let it shape your very next step and acknowledge it in one line. ";
 const STOP_NOTE_PREFIX: &str =
     "stop: the user asked you to stop; report where you stopped and what is left, then wait.";
@@ -931,11 +932,9 @@ pub(super) async fn deliver_by_urgency(
             }
         }
         crate::coordination::typed::Urgency::Normal if busy => {
-            let item = crate::harness::QueuedInput {
-                id: uuid::Uuid::new_v4().to_string(),
-                text: envelope,
-            };
-            d.deliver(session_id, LoopInput::Queue(item)).await;
+            let envelope = prefix_envelope_note(envelope, COLLEAGUE_STEER_NOTE_PREFIX);
+            d.deliver(session_id, LoopInput::UserMessage(envelope))
+                .await;
         }
         crate::coordination::typed::Urgency::Normal => {
             crate::session::wake_settled(session_id);
@@ -2846,7 +2845,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deliver_by_urgency_steers_human_queues_agent_and_interrupts_on_stop() {
+    async fn deliver_by_urgency_steers_human_and_agent_and_interrupts_on_stop() {
         let d = test_daemon();
         let mut rx = fake_busy_session(&d, "busy-s").await;
 
@@ -2868,12 +2867,15 @@ mod tests {
         agent_ev.actor_kind = "agent".into();
         let agent_env = direct_message_envelope(&agent_ev, &[]);
         super::deliver_by_urgency(&d, "busy-s", agent_env, &agent_ev.payload, false).await;
-        match rx.try_recv().expect("agent normal message queued") {
-            LoopInput::Queue(item) => {
-                assert!(item.text.contains("body: status update"), "{}", item.text);
-                assert!(!item.text.contains("note: steer:"));
+        match rx.try_recv().expect("agent normal message steers") {
+            LoopInput::UserMessage(text) => {
+                assert!(text.contains("body: status update"), "{text}");
+                assert!(
+                    text.contains("note: steer: a colleague wrote while you were working;"),
+                    "{text}"
+                );
             }
-            other => panic!("expected Queue for agent normal message, got {other:?}"),
+            other => panic!("expected a steer for agent normal message, got {other:?}"),
         }
         assert!(rx.try_recv().is_err());
 

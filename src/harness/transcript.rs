@@ -264,6 +264,9 @@ pub(super) fn empty_turn_needs_reply(events: &[HarnessEvent], mission_control: b
 /// still persist (empty content when redundant) so pairing stays valid.
 /// A message the user sent while the agent was working, as the model sees it.
 pub(super) fn steer_message(text: &str) -> String {
+    if !text.is_empty() && crate::harness::is_daemon_envelope(text) {
+        return text.to_string();
+    }
     format!("(The user sent this while you were working.)\n{text}")
 }
 
