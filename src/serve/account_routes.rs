@@ -14,6 +14,8 @@ pub(crate) struct AccountReq {
     code: Option<String>,
     #[serde(default)]
     order: Option<Vec<String>>,
+    #[serde(default)]
+    primary: bool,
 }
 
 fn pooled(provider: &str) -> Result<(), Response> {
@@ -182,6 +184,9 @@ pub(crate) async fn update_account(Json(req): Json<AccountReq>) -> Response {
     }
     if let (Some(id), Some(label)) = (req.id.as_deref(), req.label.as_deref()) {
         crate::accounts::set_label(&req.provider, id, label);
+    }
+    if let (true, Some(id)) = (req.primary, req.id.as_deref()) {
+        crate::accounts::make_primary(&req.provider, id);
     }
     Json(listing()).into_response()
 }
