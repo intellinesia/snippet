@@ -248,7 +248,7 @@ impl CodingHarness {
                     .trim()
                     .to_string();
                 match state.goal.as_mut() {
-                    Some(goal) if goal.status == GoalStatus::Active => {
+                    Some(goal) if matches!(goal.status, GoalStatus::Active | GoalStatus::Paused) => {
                         goal.status = GoalStatus::Complete;
                         let text = goal.text.clone();
                         state.events.push(HarnessEvent::SystemDecision {
@@ -717,6 +717,56 @@ mod tests {
                 ..ModelOutput::default()
             })
         }
+    }
+
+    #[tokio::test]
+    async fn complete_goal_accepts_a_paused_goal_but_not_a_finished_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                memory_enabled: false,
+                ..HarnessConfig::default()
+            },
+            ToolRegistry::new(),
+            ToolContext::new(dir.path()).unwrap(),
+        );
+        let mut state = HarnessState::blank(&dir.path().display().to_string(), None);
+        let (result_tx, _result_rx) = mpsc::unbounded_channel();
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let (watch_tx, _watch_rx) = mpsc::unbounded_channel();
+        let mut watches = WatchManager::new(dir.path().to_path_buf(), watch_tx);
+        let mut lanes = LaneManager::new(
+            None,
+            dir.path().to_path_buf(),
+            dir.path().join("lanes"),
+            result_tx,
+            progress_tx,
+            None,
+        );
+        state.goal = Some(Goal {
+            text: "sync".to_string(),
+            dir: String::new(),
+            status: GoalStatus::Paused,
+            autonomous_turns: 0,
+            resume_at: 0,
+        });
+        let (done, _) = harness.dispatch_meta(
+            &mut state,
+            &mut lanes,
+            &mut watches,
+            "complete_goal",
+            &json!({"summary": "finished"}),
+        );
+        assert_eq!(done["status"], "success", "{done}");
+        assert_eq!(state.goal.as_ref().unwrap().status, GoalStatus::Complete);
+        let (again, _) = harness.dispatch_meta(
+            &mut state,
+            &mut lanes,
+            &mut watches,
+            "complete_goal",
+            &json!({}),
+        );
+        assert_eq!(again["status"], "error");
     }
 
     #[tokio::test]
