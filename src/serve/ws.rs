@@ -360,7 +360,14 @@ async fn handle_ws(
                                 let tail = &events[last_events.len()..];
                                 let total_events = last_event_offset + events.len();
                                 o.insert("wire".into(), serde_json::json!("delta"));
-                                o.insert("new_events".into(), wire_events(tail, compact));
+                                let mut added = wire_events(tail, compact);
+                                stamp_event_times(
+                                    &state_path,
+                                    last_event_offset + last_events.len(),
+                                    &mut added,
+                                )
+                                .await;
+                                o.insert("new_events".into(), added);
                                 o.insert("event_count".into(), serde_json::json!(events.len()));
                                 o.insert("total_events".into(), serde_json::json!(total_events));
                                 if last_lanes_json.as_deref() == Some(lanes_json.as_str()) {
@@ -374,10 +381,9 @@ async fn handle_ws(
                                 let start = base_offset + rel_start;
                                 last_event_offset = start;
                                 o.insert("wire".into(), serde_json::json!("snapshot"));
-                                o.insert(
-                                    "events".into(),
-                                    wire_events(&events[rel_start..], compact),
-                                );
+                                let mut window = wire_events(&events[rel_start..], compact);
+                                stamp_event_times(&state_path, start, &mut window).await;
+                                o.insert("events".into(), window);
                                 o.insert("event_offset".into(), serde_json::json!(start));
                                 last_events = events[rel_start..].to_vec();
                             }
@@ -478,10 +484,12 @@ async fn handle_ws(
                 None => None,
             };
             if let Some((index, state)) = event_request {
+                let mut one = serde_json::json!([state.events.first()]);
+                stamp_event_times(&state_path, index, &mut one).await;
                 let frame = serde_json::json!({
                     "wire": "event",
                     "index": index,
-                    "event": state.events.first(),
+                    "event": one[0],
                 });
                 if sender
                     .send(Message::Text(frame.to_string().into()))
@@ -528,9 +536,11 @@ async fn handle_ws(
                 };
                 if let Some((events, start, end)) = paged {
                     let has_older = start > 0;
+                    let mut page = wire_events(&events, compact);
+                    stamp_event_times(&state_path, start, &mut page).await;
                     let frame = serde_json::json!({
                         "wire": "history",
-                        "events": wire_events(&events, compact),
+                        "events": page,
                         "start": start,
                         "end": end,
                         "has_older": has_older,
@@ -784,6 +794,31 @@ fn compute_session_counts(
         changed_files,
         open_prs,
         processes,
+    }
+}
+
+/// Adds each wire event's persisted write time (`at_ms`, unix ms) so clients
+/// can time a turn from its events; `start` is the first event's absolute
+/// index. A separate key, because `Decision` and `SessionHandoff` already
+/// carry their own `at` in seconds.
+async fn stamp_event_times(path: &Path, start: usize, events: &mut serde_json::Value) {
+    let Some(list) = events.as_array_mut() else {
+        return;
+    };
+    if list.is_empty() {
+        return;
+    }
+    let (path, len) = (path.to_path_buf(), list.len());
+    let times =
+        tokio::task::spawn_blocking(move || crate::session::read_event_times(&path, start, len))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+    for (event, at) in list.iter_mut().zip(times) {
+        if let (Some(o), Some(at)) = (event.as_object_mut(), at) {
+            o.insert("at_ms".into(), serde_json::json!(at));
+        }
     }
 }
 
