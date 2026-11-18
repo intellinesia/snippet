@@ -1262,12 +1262,33 @@ impl Store {
         let _signal = SessionChangeSignal;
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
+            // Unchanged rows keep their original time, so a rewind or a title edit
+            // does not restamp the whole history with "now".
+            let prior: std::collections::HashMap<i64, (String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT ordinal, payload_json, created_at FROM session_events
+                     WHERE session_id = ?1",
+                )?;
+                stmt.query_map(params![session_id], |row| {
+                    Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))
+                })?
+                .collect::<Result<_, _>>()?
+            };
             tx.execute(
                 "DELETE FROM session_events WHERE session_id = ?1",
                 params![session_id],
             )?;
             for (ordinal, event) in events.iter().enumerate() {
-                insert_event(&tx, session_id, ordinal as i64, event, now)?;
+                let ordinal = ordinal as i64;
+                let stamp = match prior.get(&ordinal) {
+                    Some((payload, at))
+                        if serde_json::to_string(event).ok().as_deref() == Some(payload) =>
+                    {
+                        at.as_str()
+                    }
+                    _ => now,
+                };
+                insert_event(&tx, session_id, ordinal, event, stamp)?;
             }
             tx.commit()?;
             Ok(())
@@ -1332,6 +1353,39 @@ impl Store {
             }
             tx.commit()?;
             Ok(())
+        })
+    }
+
+    /// Write time (unix ms) of each event ordinal in `[start, end)`; `None`
+    /// where the row is missing or its stamp is not RFC 3339.
+    pub fn event_times(
+        &self,
+        session_id: &str,
+        start: usize,
+        end: usize,
+    ) -> Result<Vec<Option<i64>>, StoreError> {
+        let mut out = vec![None; end.saturating_sub(start)];
+        if out.is_empty() {
+            return Ok(out);
+        }
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT ordinal, created_at FROM session_events
+                 WHERE session_id = ?1 AND ordinal >= ?2 AND ordinal < ?3",
+            )?;
+            let rows = stmt.query_map(params![session_id, start as i64, end as i64], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (ordinal, at) = row?;
+                if let (Some(slot), Ok(t)) = (
+                    out.get_mut((ordinal as usize).wrapping_sub(start)),
+                    chrono::DateTime::parse_from_rfc3339(&at),
+                ) {
+                    *slot = Some(t.timestamp_millis());
+                }
+            }
+            Ok(out)
         })
     }
 
@@ -1767,6 +1821,34 @@ mod tests {
         assert!(db.delete_conversation("s1").unwrap());
         assert_eq!(db.conversation_message_count("s1").unwrap(), 0);
         assert!(db.get_session_row("s1").unwrap().is_none());
+    }
+
+    #[test]
+    fn event_times_survive_a_rewrite_of_unchanged_rows() {
+        let db = db();
+        db.create_conversation(&session("s1"), &[user("a")], "[]")
+            .unwrap();
+        let ev = |t: &str| HarnessEvent::UserInput { text: t.into() };
+        db.append_conversation_events("s1", &[ev("one")], "2026-01-01T00:00:01Z")
+            .unwrap();
+        db.append_conversation_events("s1", &[ev("two")], "2026-01-01T00:00:05Z")
+            .unwrap();
+        assert_eq!(
+            db.event_times("s1", 0, 3).unwrap(),
+            [Some(1_767_225_601_000), Some(1_767_225_605_000), None]
+        );
+
+        db.replace_conversation_events("s1", &[ev("one"), ev("changed")], "2026-01-01T00:00:09Z")
+            .unwrap();
+        assert_eq!(
+            db.event_times("s1", 0, 2).unwrap(),
+            [Some(1_767_225_601_000), Some(1_767_225_609_000)],
+            "the unchanged row keeps its time; the changed one is restamped"
+        );
+        assert_eq!(
+            db.event_times("s1", 1, 2).unwrap(),
+            [Some(1_767_225_609_000)]
+        );
     }
 
     #[test]

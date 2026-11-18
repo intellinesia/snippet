@@ -1611,6 +1611,15 @@ pub fn read_session_event_page(
     store.load_conversation_event_page(&id, before, size).ok()
 }
 
+/// Persisted write times (unix ms) for events `[start, start + len)`; `None`
+/// for a session with no store row.
+pub fn read_event_times(state_path: &Path, start: usize, len: usize) -> Option<Vec<Option<i64>>> {
+    let id = session_id_for_state_path(state_path);
+    store_for_sessions()?
+        .event_times(&id, start, start + len)
+        .ok()
+}
+
 /// Open the session store, if one exists at the canonical path.
 pub(crate) fn store_for_sessions() -> Option<crate::store::Store> {
     crate::store::Store::open_cached(crate::store::default_db_path()).ok()
