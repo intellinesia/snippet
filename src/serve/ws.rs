@@ -1149,7 +1149,7 @@ mod stream_frame_tests {
         );
 
         let pid = std::process::id();
-        crate::bg::record(tmp.path(), "p1", "sleep 10", None, pid).unwrap();
+        crate::bg::record(tmp.path(), "p1", "sleep 10", None, pid, None).unwrap();
         let counts = compute_session_counts(&store, "s1", tmp.path());
         assert_eq!(counts.processes, 1);
     }
