@@ -944,50 +944,6 @@ pub(super) async fn deliver_by_urgency(
     }
 }
 
-/// Hand a human message to the agent's single in-progress task session instead
-/// of its desk. False when there is no such task or its session will not start.
-async fn route_to_working_task(
-    d: &Shared,
-    event: &crate::coordination::types::CoordinationEvent,
-    history: &[crate::coordination::types::CoordinationEvent],
-    agent_id: &str,
-    desk_session_id: &str,
-) -> bool {
-    let Ok(Some(task)) = d.store.working_task_of_agent(agent_id) else {
-        return false;
-    };
-    let Some((tx, _path, _stream)) = d.ensure_live(&task.session_id).await else {
-        eprintln!("[coordination] route to task session failed, desk instead");
-        return false;
-    };
-    drop(tx);
-    let prefix = format!(
-        "note: about task {} ({}); routed to the session doing it. ",
-        task.id, task.title
-    );
-    let envelope = direct_message_envelope(event, history).replacen("note: ", &prefix, 1);
-    deliver_by_urgency(
-        d,
-        &task.session_id,
-        envelope,
-        &event.payload,
-        event.actor_kind == "human",
-    )
-    .await;
-    let body = event
-        .payload
-        .get("body")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    let quoted: String = body.chars().take(120).collect();
-    let notice = format!(
-        "{quoted}  routed to task {}'s session; its reply goes to the user directly.",
-        task.id
-    );
-    super::record_agent_message(d, desk_session_id, "daemon", &notice, false).await;
-    true
-}
-
 async fn deliver_direct(
     d: &Shared,
     pending: &crate::coordination::PendingDirectMessage,
@@ -1223,10 +1179,8 @@ async fn deliver_direct(
     // The user is talking to the agent: steer a running desk turn rather than
     // wait behind it, as an agent's reply already does.
     if event.actor_kind == "human" {
-        if !route_to_working_task(d, event, &history, agent_id, &session_id).await {
-            let envelope = desk_open_tasks_envelope(&d.store, agent_id, envelope);
-            deliver_by_urgency(d, &session_id, envelope, &event.payload, true).await;
-        }
+        let envelope = desk_open_tasks_envelope(&d.store, agent_id, envelope);
+        deliver_by_urgency(d, &session_id, envelope, &event.payload, true).await;
     } else {
         deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
     }
@@ -2300,37 +2254,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn human_dm_goes_to_the_single_working_task_session() {
+    async fn human_dm_goes_to_the_desk_even_with_one_working_task() {
         let d = test_daemon();
         d.store.create_agent(&agent("a")).unwrap();
         working_task(&d.store, "t1", "task-session");
         let mut task_rx = fake_session(&d, "task-session").await;
         let mut desk_rx = fake_session(&d, "inbox-a").await;
         let event = human_says(&d.store, "how is it going", "k1");
-
-        assert!(super::route_to_working_task(&d, &event, &[], "a", "inbox-a").await);
-
-        match task_rx.try_recv().expect("task session got the message") {
-            LoopInput::UserMessage(text)
-            | LoopInput::Queue(crate::harness::QueuedInput { text, .. }) => {
-                assert!(text.contains("note: about task t1 (Task t1); routed to the session doing it. The user wrote directly"), "{text}");
-                assert!(text.contains("from_kind: human") && text.contains("reply_to: human"));
-                assert_eq!(
-                    crate::serve::human_dm_thread(&text),
-                    Some(event.thread_id.clone())
-                );
-            }
-            _ => panic!("unexpected input"),
-        }
-        match desk_rx.try_recv().expect("desk got a notice") {
-            LoopInput::Notice(crate::harness::HarnessEvent::AgentMessage { body, .. }) => {
+        super::deliver_direct(
+            &d,
+            &crate::coordination::PendingDirectMessage {
+                event: event.clone(),
+                recipient_kind: "agent".into(),
+                recipient_id: "a".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(task_rx.try_recv().is_err(), "the task session hears it only through the desk");
+        match desk_rx.try_recv().expect("desk got the message") {
+            LoopInput::UserMessage(text) => {
+                assert!(text.contains("body: how is it going"), "{text}");
                 assert!(
-                    body.contains("how is it going")
-                        && body.contains("routed to task t1's session"),
-                    "{body}"
+                    text.contains("  t1  in_progress  Task t1  session:task-session\n"),
+                    "{text}"
                 );
             }
-            _ => panic!("desk should only get a notice"),
+            other => panic!("expected the message on the desk, got {other:?}"),
         }
     }
 
@@ -2896,25 +2846,6 @@ mod tests {
             other => panic!("expected UserMessage after Interrupt, got {other:?}"),
         }
         assert!(rx.try_recv().is_err());
-
-        d.store.create_agent(&agent("a")).unwrap();
-        working_task(&d.store, "t1", "busy-s");
-        let _desk_rx = fake_session(&d, "inbox-a").await;
-        let routed_ev = human_says(&d.store, "check edge cases too", "k-route");
-        assert!(super::route_to_working_task(&d, &routed_ev, &[], "a", "inbox-a").await);
-        match rx.try_recv().expect("busy task session steered") {
-            LoopInput::UserMessage(text) => {
-                assert!(
-                    text.contains("note: steer: the user wrote while you were working;"),
-                    "{text}"
-                );
-                assert!(
-                    text.contains("about task t1 (Task t1); routed to the session doing it."),
-                    "{text}"
-                );
-            }
-            other => panic!("expected UserMessage steer on busy task session, got {other:?}"),
-        }
     }
 
     fn force_quiet_hours(store: &crate::store::Store, quiet: bool) {
