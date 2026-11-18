@@ -626,6 +626,18 @@ impl LaneManager {
         self
     }
 
+    /// A short id no record in this session uses yet; grows a character if
+    /// four keep colliding.
+    fn fresh_lane_id(&self) -> String {
+        for attempt in 0..32 {
+            let id = random_lane_id(if attempt < 16 { 4 } else { 6 });
+            if !self.records.iter().any(|r| r.id == id) {
+                return id;
+            }
+        }
+        random_lane_id(10)
+    }
+
     /// Restore prior records (e.g. on resume) so the display reflects history.
     /// Runs housekeeping so aged-out finished lanes (and orphan disk files) do not
     /// accumulate across resumes.
@@ -697,7 +709,7 @@ impl LaneManager {
             return Err(clash);
         }
         self.counter += 1;
-        let id = format!("lane-{}", self.counter);
+        let id = self.fresh_lane_id();
         self.records.push(LaneRecord {
             id: id.clone(),
             title: title.to_string(),
@@ -1165,11 +1177,28 @@ fn parse_rfc3339(s: &str) -> Option<chrono::DateTime<Utc>> {
 }
 
 fn is_safe_lane_file_id(id: &str) -> bool {
-    // lane-<digits> only — never allow path separators or `..`.
+    // lane-<lowercase letters and digits> only — never path separators or `..`.
     let Some(rest) = id.strip_prefix("lane-") else {
         return false;
     };
-    !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+    !rest.is_empty()
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
+}
+
+/// Letters and digits that cannot be misread for one another (no 0/o, 1/l/i).
+const LANE_ID_ALPHABET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyz";
+
+/// A short random lane id such as `lane-k3f9`.
+fn random_lane_id(len: usize) -> String {
+    let bytes = uuid::Uuid::new_v4().into_bytes();
+    let tail: String = bytes
+        .iter()
+        .take(len)
+        .map(|b| LANE_ID_ALPHABET[*b as usize % LANE_ID_ALPHABET.len()] as char)
+        .collect();
+    format!("lane-{tail}")
 }
 
 pub(crate) fn lane_tool_registry(
@@ -2414,6 +2443,21 @@ mod tests {
     }
 
     #[test]
+    fn lane_ids_are_short_safe_and_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let id = random_lane_id(4);
+            assert_eq!(id.len(), "lane-".len() + 4);
+            assert!(is_safe_lane_file_id(&id), "{id}");
+            seen.insert(id);
+        }
+        assert!(seen.len() > 150);
+        assert!(!is_safe_lane_file_id("lane-../x"));
+        assert!(!is_safe_lane_file_id("lane-AB"));
+        assert!(is_safe_lane_file_id("lane-304"));
+    }
+
+    #[test]
     fn with_records_preserves_counter_past_pruned_ids() {
         let dir = std::env::temp_dir().join(format!("snippet-lane-hk-ctr-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -2850,7 +2894,9 @@ Open: docs pending
         assert!(mgr.retry("missing").is_err());
 
         let (id1, title1) = mgr.retry("lane-1").unwrap();
-        assert_eq!(id1, "lane-4");
+        assert!(
+            is_safe_lane_file_id(&id1) && !["lane-1", "lane-2", "lane-3"].contains(&id1.as_str())
+        );
         assert_eq!(title1, "audit");
         let rec1 = mgr.records().iter().find(|r| r.id == id1).unwrap();
         assert_eq!(rec1.status, LaneStatus::Running);
@@ -2861,7 +2907,7 @@ Open: docs pending
         assert_eq!(rec1.profile.as_deref(), Some("claude-sonnet"));
 
         let (id2, _) = mgr.retry("lane-2").unwrap();
-        assert_eq!(id2, "lane-5");
+        assert!(is_safe_lane_file_id(&id2) && id2 != id1);
         let rec2 = mgr.records().iter().find(|r| r.id == id2).unwrap();
         assert!(rec2.read_only);
         assert_eq!(rec2.handoff.as_deref(), Some("review diff"));
