@@ -230,6 +230,15 @@ pub enum HarnessEvent {
         summary: String,
         index: usize,
         total: usize,
+        /// Short headline: bash's `label`, else the call's `title` argument.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        /// Why the agent needs this, from the call's `reason` argument.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// The session allow-rule `approve_rule` would grant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule: Option<allow_rules::AllowRule>,
     },
     /// Record of how an approval or question request was resolved.
     Decision {
@@ -245,6 +254,9 @@ pub enum HarnessEvent {
         by: String,
         via: String,
         at: i64,
+        /// Label of the allow-rule granted with, or that auto-approved, the call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule: Option<String>,
     },
     /// A delegated lane was started.
     LaneSpawned {
@@ -350,6 +362,8 @@ pub enum ApprovalDecision {
     Approve,
     /// Approve this call and switch to Auto for the rest of the run.
     ApproveAll,
+    /// Approve this call and grant the request's allow-rule for the session.
+    ApproveRule,
     Deny,
 }
 
@@ -569,6 +583,10 @@ pub struct HarnessState {
     /// Auto (run mutating tools freely) vs Manual (per-call approval).
     #[serde(default)]
     pub approval_mode: ApprovalMode,
+    /// Allow-rules granted with `approve_rule`; in Manual mode a call they
+    /// cover runs without asking. Survive mode switches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_rules: Vec<allow_rules::AllowRule>,
     /// Cumulative model token usage for this session (across all turns).
     #[serde(default)]
     pub total_tokens: u64,
@@ -759,6 +777,8 @@ pub enum LoopInput {
     Approve,
     /// Approve the pending call and switch to Auto for the rest of the run.
     ApproveAll,
+    /// Approve the pending call and grant its allow-rule for the session.
+    ApproveRule,
     Deny,
     /// Switch between Auto and Manual (approval) mode.
     SetMode(ApprovalMode),
@@ -1013,6 +1033,7 @@ pub struct CodingHarness {
     presence: std::sync::Mutex<presence::Presence>,
 }
 
+pub mod allow_rules;
 mod cli_agent;
 pub(crate) use cli_agent::{claude_binary, claude_supported_models};
 mod compactor;

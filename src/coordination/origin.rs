@@ -325,19 +325,26 @@ fn sweep_attention(store: &Store) {
                 ),
             )
         } else {
+            let mut card = serde_json::json!({
+                "session": session,
+                "approval_id": attention.id,
+                "tool": attention.payload.get("tool_name").cloned().unwrap_or(serde_json::Value::Null),
+                "summary": attention.payload.get("summary").cloned().unwrap_or(serde_json::Value::Null),
+                "index": attention.payload.get("index").cloned().unwrap_or(serde_json::Value::Null),
+                "total": attention.payload.get("total").cloned().unwrap_or(serde_json::Value::Null),
+                "task_id": task.id,
+                "task_title": task.title,
+                "session_title": attention.session_title,
+            });
+            // The card's headline, reason line and "Always allow" link.
+            for field in ["title", "reason", "rule"] {
+                if let Some(value) = attention.payload.get(field).filter(|v| !v.is_null()) {
+                    card[field] = value.clone();
+                }
+            }
             (
                 "approval",
-                serde_json::json!({
-                    "session": session,
-                    "approval_id": attention.id,
-                    "tool": attention.payload.get("tool_name").cloned().unwrap_or(serde_json::Value::Null),
-                    "summary": attention.payload.get("summary").cloned().unwrap_or(serde_json::Value::Null),
-                    "index": attention.payload.get("index").cloned().unwrap_or(serde_json::Value::Null),
-                    "total": attention.payload.get("total").cloned().unwrap_or(serde_json::Value::Null),
-                    "task_id": task.id,
-                    "task_title": task.title,
-                    "session_title": attention.session_title,
-                }),
+                card,
                 format!(
                     "\"{}\" is waiting on an approval: {}",
                     task.title,
@@ -896,6 +903,12 @@ mod tests {
                     summary: "run the deploy".into(),
                     index: 1,
                     total: 1,
+                    title: Some("Deploy staging".into()),
+                    reason: Some("The fix needs a live check.".into()),
+                    rule: Some(crate::harness::allow_rules::AllowRule {
+                        id: "bash:make deploy".into(),
+                        label: "make deploy".into(),
+                    }),
                 }],
                 now,
             )
@@ -912,6 +925,12 @@ mod tests {
         assert_eq!(card["session"], "worker");
         assert_eq!(card["tool"], "bash");
         assert_eq!(card["task_id"], "t1");
+        assert_eq!(card["title"], "Deploy staging");
+        assert_eq!(card["reason"], "The fix needs a live check.");
+        assert_eq!(
+            card["rule"],
+            serde_json::json!({"id": "bash:make deploy", "label": "make deploy"})
+        );
         // Human-only delivery: no agent wake rows for the card.
         let wakes: i64 = store
             .with_connection(|conn| {
@@ -980,6 +999,9 @@ mod tests {
                 summary: "run ls".into(),
                 index: 1,
                 total: 1,
+                title: None,
+                reason: None,
+                rule: None,
             },
         ]
     }
@@ -1099,6 +1121,9 @@ mod tests {
                     summary: "write a file".into(),
                     index: 1,
                     total: 1,
+                    title: None,
+                    reason: None,
+                    rule: None,
                 }],
                 "2026-01-01T01:05:00Z",
             )
@@ -1263,6 +1288,9 @@ mod tests {
                         summary: "run it".into(),
                         index: 1,
                         total: 1,
+                        title: None,
+                        reason: None,
+                        rule: None,
                     },
                     HarnessEvent::ToolResult {
                         tool_name: "bash".into(),

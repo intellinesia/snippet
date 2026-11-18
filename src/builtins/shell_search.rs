@@ -45,7 +45,8 @@ impl Tool for BashTool {
                     "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 1800, "description": "Seconds to wait; timed-out commands continue in background."},
                     "max_lines": {"type": "integer", "minimum": 1, "description": "Maximum output lines."},
                     "max_bytes": {"type": "integer", "minimum": 1, "default": 20000, "description": "Maximum output bytes."},
-                    "background": {"type": "boolean", "default": false, "description": "Run detached."}
+                    "background": {"type": "boolean", "default": false, "description": "Run detached."},
+                    "reason": {"type": "string", "description": REASON_DESCRIPTION}
                 }),
                 &["command", "label"],
             ),

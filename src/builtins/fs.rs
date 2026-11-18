@@ -244,7 +244,8 @@ impl Tool for ChangeFilesTool {
                             },
                             "required": ["action", "path"]
                         }
-                    }
+                    },
+                    "reason": {"type": "string", "description": super::REASON_DESCRIPTION}
                 }),
                 &["changes"],
             ),

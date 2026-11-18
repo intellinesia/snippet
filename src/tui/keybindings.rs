@@ -82,6 +82,11 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
                     let _ = app.send_loop_input(LoopInput::ApproveAll);
                 }
             }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                if app.pending_rule_label().is_some() {
+                    let _ = app.send_loop_input(LoopInput::ApproveRule);
+                }
+            }
             KeyCode::Char('n') | KeyCode::Char('N') => {
                 let _ = app.send_loop_input(LoopInput::Deny);
             }

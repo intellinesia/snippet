@@ -696,13 +696,26 @@ impl CodingHarness {
             return None;
         }
         let force_vault_approval = !vault_secrets_used.is_empty() || first_run;
+        let manual_gated = state.approval_mode == ApprovalMode::Manual
+            && (MUTATING_TOOLS.contains(&tool_name.as_str()) || custom.is_some());
+        // Vault and first-run calls never offer or match a rule.
+        let rule_eligible = !lane_approved && !force_vault_approval && manual_gated;
 
-        // Manual mode (or any vault-secret call): pause for the user's decision.
-        if !lane_approved
-            && (force_vault_approval
-                || (state.approval_mode == ApprovalMode::Manual
-                    && (MUTATING_TOOLS.contains(&tool_name.as_str()) || custom.is_some())))
+        if rule_eligible
+            && let Some(label) = super::allow_rules::covering(
+                &state.allow_rules,
+                &tool_name,
+                &call.arguments,
+                custom.is_some(),
+            )
         {
+            let summary = match custom.as_ref() {
+                Some(custom) => crate::agent_tools::approval_summary(custom),
+                None => approval_summary(&tool_name, &call.arguments),
+            };
+            Self::record_rule_decision(state, &tool_name, summary, label);
+        } else if !lane_approved && (force_vault_approval || manual_gated) {
+            // Manual mode (or any vault-secret call): pause for the user's decision.
             *approval_index += 1;
             // Discard stale decisions queued before this prompt existed — an
             // unconsumed leftover would instantly "approve" an unseen action.
@@ -716,11 +729,17 @@ impl CodingHarness {
                 ),
                 None => approval_summary(&tool_name, &call.arguments),
             };
+            let rule = rule_eligible
+                .then(|| super::allow_rules::offer(&tool_name, &call.arguments, custom.is_some()))
+                .flatten();
             state.events.push(HarnessEvent::ApprovalRequest {
                 tool_name: tool_name.clone(),
                 summary,
                 index: *approval_index,
                 total: total_mutating.max(*approval_index),
+                title: super::allow_rules::title(&tool_name, &call.arguments),
+                reason: super::allow_rules::reason(&call.arguments),
+                rule,
             });
             state.status = HarnessStatus::WaitingForInput;
             let _ = self.persist(state, lanes).await;
@@ -735,12 +754,15 @@ impl CodingHarness {
                 None => ("human".to_string(), "app".to_string()),
             };
             let outcome = match decision {
-                Some(ApprovalDecision::Approve) => "approved",
+                Some(ApprovalDecision::Approve | ApprovalDecision::ApproveRule) => "approved",
                 Some(ApprovalDecision::ApproveAll) => "approved_all",
                 Some(ApprovalDecision::Deny) => "denied",
                 None => "outdated",
             };
-            self.record_decision(state, "approval", outcome, None, &by, &via);
+            let granted = matches!(decision, Some(ApprovalDecision::ApproveRule))
+                .then(|| Self::grant_pending_rule(state))
+                .flatten();
+            self.record_decision_with_rule(state, "approval", outcome, None, &by, &via, granted);
             // Approve-All flips to Auto for ordinary mutating calls — never off a
             // vault prompt, which must not authorize an unattended mode.
             if matches!(decision, Some(ApprovalDecision::ApproveAll)) && !force_vault_approval {
@@ -748,7 +770,11 @@ impl CodingHarness {
             }
             let approved = matches!(
                 decision,
-                Some(ApprovalDecision::Approve | ApprovalDecision::ApproveAll)
+                Some(
+                    ApprovalDecision::Approve
+                        | ApprovalDecision::ApproveAll
+                        | ApprovalDecision::ApproveRule
+                )
             );
             if approved
                 && let (Some(custom), Some(dir)) = (custom.as_ref(), self.tools.custom_dir())

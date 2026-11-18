@@ -616,6 +616,7 @@ async fn handle_ws(
                                 | "answer"
                                 | "approve"
                                 | "approve_all"
+                                | "approve_rule"
                                 | "deny"
                                 | "queue"
                                 | "unqueue"
@@ -658,6 +659,7 @@ async fn handle_ws(
                             | LoopInput::SteerQueued(_)
                             | LoopInput::Approve
                             | LoopInput::ApproveAll
+                            | LoopInput::ApproveRule
                             | LoopInput::Deny
                     ) {
                         let _ = daemon
@@ -694,6 +696,7 @@ async fn handle_ws(
                     let input = match input {
                         LoopInput::Approve
                         | LoopInput::ApproveAll
+                        | LoopInput::ApproveRule
                         | LoopInput::Deny
                         | LoopInput::Answer(_)
                         | LoopInput::UserMessage(_)

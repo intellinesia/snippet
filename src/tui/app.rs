@@ -470,11 +470,13 @@ impl App {
                     | LoopInput::SteerQueued(_)
                     | LoopInput::Approve
                     | LoopInput::ApproveAll
+                    | LoopInput::ApproveRule
                     | LoopInput::Deny
             );
             let tagged = match input {
                 LoopInput::Approve
                 | LoopInput::ApproveAll
+                | LoopInput::ApproveRule
                 | LoopInput::Deny
                 | LoopInput::Answer(_)
                 | LoopInput::UserMessage(_)
@@ -540,7 +542,19 @@ impl App {
                 summary,
                 index,
                 total,
+                ..
             }) => Some((tool_name.clone(), summary.clone(), *index, *total)),
+            _ => None,
+        }
+    }
+
+    /// The label of the allow-rule the pending approval offers, if any.
+    pub(crate) fn pending_rule_label(&self) -> Option<String> {
+        self.pending_approval()?;
+        match self.state.as_ref()?.events.last() {
+            Some(HarnessEvent::ApprovalRequest {
+                rule: Some(rule), ..
+            }) => Some(rule.label.clone()),
             _ => None,
         }
     }

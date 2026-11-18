@@ -1819,6 +1819,9 @@ mod tests {
                     summary: "git push --force-with-lease".into(),
                     index: 1,
                     total: 1,
+                    title: None,
+                    reason: None,
+                    rule: None,
                 },
                 crate::harness::HarnessEvent::Decision {
                     request: "approval".into(),
@@ -1830,6 +1833,7 @@ mod tests {
                     by: "human".into(),
                     via: "desk".into(),
                     at: 1763286720,
+                    rule: None,
                 },
                 crate::harness::HarnessEvent::UserQuestion {
                     questions: serde_json::json!({"questions": [{"id": "q1", "text": "Which?"}]}),
@@ -1844,6 +1848,7 @@ mod tests {
                     by: "human".into(),
                     via: "app".into(),
                     at: 1763286780,
+                    rule: None,
                 },
             ],
             "2026-11-16T09:52:00Z",

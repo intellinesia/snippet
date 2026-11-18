@@ -181,6 +181,8 @@ pub fn build_forked_state(source: &HarnessState, point: ForkPoint) -> HarnessSta
     forked.final_text = None;
     forked.status = HarnessStatus::Idle;
     forked.approval_mode = ApprovalMode::Auto;
+    // Allow-rules were granted for the source session only.
+    forked.allow_rules.clear();
     // Fresh usage accounting for the branch (history is what matters).
     forked.total_tokens = 0;
     forked.prompt_tokens = 0;
