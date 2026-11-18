@@ -740,6 +740,39 @@ fn sanitize_key(id: &str) -> String {
         .collect()
 }
 
+/// Claude Code only accepts the callable `mcp__snippet__<name>`; a bare `bash`
+/// in the shared prompt layers is rejected as "No such tool available".
+fn prefix_tool_names(text: &str, names: &[String]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('`') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('`') {
+            Some(end) => {
+                let span = &after[..end];
+                if names.iter().any(|n| n == span) {
+                    out.push('`');
+                    out.push_str(MCP_PREFIX);
+                    out.push_str(span);
+                    out.push('`');
+                } else {
+                    out.push('`');
+                    out.push_str(span);
+                    out.push('`');
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[start..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn tool_prompt_preamble(kind: CliKind) -> String {
     match kind {
         CliKind::ClaudeCode => format!(
@@ -1453,6 +1486,18 @@ impl CodingHarness {
                 _ => None,
             })
             .unwrap_or_else(|| self.config.system_prompt.clone());
+        let system = if kind == CliKind::ClaudeCode {
+            let names: Vec<String> = self
+                .tools
+                .definitions()
+                .into_iter()
+                .chain(cli_meta_tool_definitions(false, true, &[]))
+                .map(|d| d.name)
+                .collect();
+            prefix_tool_names(&system, &names)
+        } else {
+            system
+        };
         let mut prompt = format!("{system}\n\n{}", tool_prompt_preamble(kind));
         if !session.tool_guide.is_empty() {
             prompt.push_str("\n\n");
@@ -4189,6 +4234,18 @@ mod goal_tests {
             }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn claude_prompt_names_tools_by_their_callable_name() {
+        let names = vec!["bash".to_string(), "delegate_task".to_string()];
+        let text = "Use `bash` to read, `delegate_task` for lanes, `ls` for listing and `bash {background: true}` stays.";
+        let out = prefix_tool_names(text, &names);
+        assert!(out.contains("`mcp__snippet__bash` to read"));
+        assert!(out.contains("`mcp__snippet__delegate_task` for lanes"));
+        assert!(out.contains("`ls` for listing"));
+        assert!(out.contains("`bash {background: true}`"));
+        assert_eq!(prefix_tool_names(&out, &names), out.replace("mcp__snippet__mcp__snippet__", "mcp__snippet__"));
     }
 
     #[test]
