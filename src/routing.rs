@@ -192,6 +192,8 @@ pub fn is_limit_error(message: &str) -> bool {
         || m.starts_with("429")
 }
 
+const SHORT_WINDOW_MINUTES: i64 = 300;
+
 pub fn reset_from(snapshot: Option<&RateLimitSnapshot>) -> i64 {
     let fallback = now() + 3600;
     let Some(snap) = snapshot else {
@@ -207,7 +209,13 @@ pub fn reset_from(snapshot: Option<&RateLimitSnapshot>) -> i64 {
         .filter(|w| w.used_percent >= 95.0)
         .map(|w| w.resets_at)
         .max()
-        .or_else(|| windows.iter().map(|w| w.resets_at).min())
+        .or_else(|| {
+            windows
+                .iter()
+                .filter(|w| w.window_minutes <= SHORT_WINDOW_MINUTES)
+                .map(|w| w.resets_at)
+                .min()
+        })
         .unwrap_or(fallback)
 }
 

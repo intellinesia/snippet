@@ -226,6 +226,19 @@ pub fn label(provider: &str, id: &str) -> String {
     format!("Account {position}")
 }
 
+fn current_usage(mut snapshot: RateLimitSnapshot) -> RateLimitSnapshot {
+    for window in [snapshot.primary.as_mut(), snapshot.secondary.as_mut()]
+        .into_iter()
+        .flatten()
+    {
+        if window.resets_at > 0 && window.resets_at <= now() {
+            window.used_percent = 0.0;
+            window.resets_at = 0;
+        }
+    }
+    snapshot
+}
+
 pub fn list(provider: &str) -> Vec<AccountView> {
     let current = active(provider);
     let pool = load(provider);
@@ -235,7 +248,7 @@ pub fn list(provider: &str) -> Vec<AccountView> {
             label: label(provider, &id),
             active: current.as_deref() == Some(id.as_str()),
             limited_until: limited_in(&pool, &id),
-            usage: pool.usage.get(&id).cloned(),
+            usage: pool.usage.get(&id).cloned().map(current_usage),
             id,
         })
         .collect()
