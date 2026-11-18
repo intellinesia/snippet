@@ -4359,8 +4359,6 @@ struct ReportArgs {
     artifacts: Vec<String>,
 }
 
-const REPORT_PART_CHARS: usize = 400;
-
 /// A done report is its three short parts; blocked and failed reports, and
 /// Mission Control's own, may be a plain summary.
 fn report_text(args: &ReportArgs, status: &TaskStatus, is_mc: bool) -> Result<String, ToolError> {
@@ -4382,16 +4380,6 @@ fn report_text(args: &ReportArgs, status: &TaskStatus, is_mc: bool) -> Result<St
         return Err(ToolError::msg(format!(
             "report refused: `{}` is missing. A done report needs scope, done and how, a sentence or two each.",
             label.to_lowercase()
-        )));
-    }
-    if let Some((label, text)) = parts
-        .iter()
-        .find(|(_, text)| text.chars().count() > REPORT_PART_CHARS)
-    {
-        return Err(ToolError::msg(format!(
-            "report refused: `{}` is {} characters; keep each part under {REPORT_PART_CHARS}. Changed files and commits are measured for you, so leave them out.",
-            label.to_lowercase(),
-            text.chars().count()
         )));
     }
     Ok(parts
