@@ -1405,6 +1405,8 @@ fn cli_meta_tool_definitions(
     defs
 }
 
+type StreakCell = std::sync::Arc<std::sync::Mutex<super::guards::FailStreak>>;
+
 const CLI_STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 const MCP_SYNC_WAIT: std::time::Duration = std::time::Duration::from_secs(200);
 
@@ -2120,6 +2122,7 @@ impl CodingHarness {
         let mut pending_vault = false;
         let mut pending_custom: Option<crate::agent_tools::CustomTool> = None;
         let mut approval_index = 0usize;
+        let streak: StreakCell = Default::default();
         let mut running: FuturesUnordered<
             std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>,
         > = FuturesUnordered::new();
@@ -2622,7 +2625,7 @@ impl CodingHarness {
                                     "The user denied this action. Retrying it as-is would just meet the same answer, so adjust your approach or ask what they'd prefer.",
                                 ));
                             } else {
-                                running.push(Box::pin(self.execute_cli_call(call)));
+                                running.push(Box::pin(self.execute_cli_call(call, &streak)));
                             }
                             self.persist(&mut state, &lanes).await?;
                         }
@@ -3094,7 +3097,7 @@ impl CodingHarness {
                                 Some(route) => {
                                     let summary = crate::agent_tools::approval_summary(&custom);
                                     let first = custom.needs_first_approval.then(|| custom.tool.clone());
-                                    running.push(Box::pin(self.lane_gated_call(call, route, summary, first)));
+                                    running.push(Box::pin(self.lane_gated_call(call, route, summary, first, &streak)));
                                 }
                                 None => {
                                     let _ = call.reply.send(error_result(
@@ -3109,7 +3112,7 @@ impl CodingHarness {
                         {
                             Self::record_rule_decision(&mut state, &call.name, crate::agent_tools::approval_summary(&custom), label);
                             self.persist(&mut state, &lanes).await?;
-                            running.push(Box::pin(self.execute_cli_call(call)));
+                            running.push(Box::pin(self.execute_cli_call(call, &streak)));
                         } else if gated || state.approval_mode == ApprovalMode::Manual {
                             if pending_approval.take().is_some() || lane_prompt_shown {
                                 self.record_outdated_approval(&mut state, "human", "app");
@@ -3133,7 +3136,7 @@ impl CodingHarness {
                             pending_approval = Some(call);
                             self.persist(&mut state, &lanes).await?;
                         } else {
-                            running.push(Box::pin(self.execute_cli_call(call)));
+                            running.push(Box::pin(self.execute_cli_call(call, &streak)));
                         }
                         continue;
                     }
@@ -3204,7 +3207,7 @@ impl CodingHarness {
                                             "⚠ uses vault secret(s) [{names}] — {}",
                                             super::prompts::approval_summary("bash", &call.arguments)
                                         );
-                                        running.push(Box::pin(self.lane_gated_call(call, route, summary, None)));
+                                        running.push(Box::pin(self.lane_gated_call(call, route, summary, None, &streak)));
                                     }
                                     None => {
                                         let _ = call.reply.send(error_result(
@@ -3246,7 +3249,7 @@ impl CodingHarness {
                                 .unwrap_or_default();
                             Self::record_rule_decision(&mut state, name, summary, label);
                             self.persist(&mut state, &lanes).await?;
-                            running.push(Box::pin(self.execute_cli_call(call)));
+                            running.push(Box::pin(self.execute_cli_call(call, &streak)));
                         }
                         name if state.approval_mode == ApprovalMode::Manual && MUTATING_TOOLS.contains(&name) => {
                             if pending_approval.take().is_some() || lane_prompt_shown {
@@ -3267,11 +3270,39 @@ impl CodingHarness {
                             pending_approval = Some(call);
                             self.persist(&mut state, &lanes).await?;
                         }
-                        _ => running.push(Box::pin(self.execute_cli_call(call))),
+                        _ => running.push(Box::pin(self.execute_cli_call(call, &streak))),
                     }
                 }
                 Some(()) = running.next(), if !running.is_empty() => {
                     last_heard = tokio::time::Instant::now();
+                    let tripped = streak.lock().ok().and_then(|mut s| s.tripped.take());
+                    if let Some((tool, count)) = tripped {
+                        if let Some(mut p) = process.take() {
+                            let _ = p.child.start_kill();
+                        }
+                        generation += 1;
+                        running.clear();
+                        outbox.clear();
+                        if let Ok(mut queue) = steers.lock() {
+                            queue.clear();
+                        }
+                        if let Some(s) = sink.as_ref() {
+                            StreamBuffer::clear(s);
+                        }
+                        let message = format!(
+                            "Stopped: `{tool}` failed {count} times in a row with identical arguments. Send a message to carry on."
+                        );
+                        state.events.push(HarnessEvent::SystemDecision {
+                            step: "stopped_repeating_failure".to_string(),
+                            reasoning: message.clone(),
+                        });
+                        state.events.push(HarnessEvent::ModelError { message });
+                        state.status = HarnessStatus::Failed;
+                        self.persist(&mut state, &lanes).await?;
+                        if once {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -3300,6 +3331,7 @@ impl CodingHarness {
         route: crate::lanes::LaneApprovalRoute,
         summary: String,
         first_run: Option<crate::agent_tools::CustomTool>,
+        streak: &StreakCell,
     ) {
         if !route.ask(&call.name, &summary).await {
             let _ = call.reply.send(error_result(
@@ -3311,13 +3343,14 @@ impl CodingHarness {
         if let (Some(tool), Some(dir)) = (first_run.as_ref(), self.tools.custom_dir()) {
             crate::agent_tools::approve(dir, tool);
         }
-        self.execute_cli_call(call).await;
+        self.execute_cli_call(call, streak).await;
     }
 
-    async fn execute_cli_call(&self, call: McpCall) {
+    async fn execute_cli_call(&self, call: McpCall, streak: &StreakCell) {
+        let arguments = call.arguments.clone();
         let value = match self
             .tools
-            .execute(&self.context, &call.name, call.arguments)
+            .execute(&self.context, &call.name, call.arguments.clone())
             .await
         {
             Ok(mut result) if call.name == "view_image" => {
@@ -3387,6 +3420,25 @@ impl CodingHarness {
                 error_result("tool_error", &message)
             }
         };
+        let mut value = value;
+        let failed = value.get("error").is_some()
+            || value.get("status").and_then(Value::as_str) == Some("error");
+        let action = streak
+            .lock()
+            .map(|mut s| s.observe(&call.name, &arguments, failed))
+            .unwrap_or(super::guards::FailStreakAction::Continue);
+        let note = match action {
+            super::guards::FailStreakAction::Warn(n) => Some(format!(
+                "This exact call has now failed {n} times in a row with the same arguments. Do not send it again unchanged: fix the arguments or stop and tell the user what is blocking you."
+            )),
+            super::guards::FailStreakAction::Stop(n) => Some(format!(
+                "Stopped: this exact call failed {n} times in a row. The turn is being ended; do not retry."
+            )),
+            super::guards::FailStreakAction::Continue => None,
+        };
+        if let (Some(note), Some(object)) = (note, value.as_object_mut()) {
+            object.insert("loop_warning".to_string(), json!(note));
+        }
         let _ = call.reply.send(value);
     }
 
