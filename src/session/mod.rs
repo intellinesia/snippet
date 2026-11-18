@@ -934,7 +934,6 @@ pub fn compute_session_plan(
         current,
         step_started_at,
     })
-
 }
 
 /// Resolve the owning agent for a session row or id.
@@ -1791,7 +1790,10 @@ fn notification_candidate(event: &serde_json::Value) -> Option<serde_json::Value
         && event
             .get("session")
             .and_then(|s| s.as_str())
-            .is_some_and(|id| is_inbox_session_id(id.split('/').next().unwrap_or(id)))
+            .is_some_and(|id| {
+                // A lane reports to its parent session, which tells the user what matters.
+                is_inbox_session_id(id.split('/').next().unwrap_or(id)) || is_lane_session_id(id)
+            })
     {
         return None;
     }

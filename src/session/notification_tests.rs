@@ -123,3 +123,14 @@ fn finished_notifications_skip_inbox_sessions_and_their_lanes() {
             .is_some()
     );
 }
+
+#[test]
+fn finished_notifications_skip_project_lanes() {
+    let lane = "project-1/conversations/abc/lanes/lane-355";
+    for kind in ["done", "idle"] {
+        assert!(
+            notification_candidate(&json!({"kind": kind, "session": lane})).is_none(),
+            "{kind}"
+        );
+    }
+}
