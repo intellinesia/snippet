@@ -608,7 +608,11 @@ pub fn apply_verdict(
             },
         );
     }
-    let by = if reviewer == "user" { "human" } else { reviewer };
+    let by = if reviewer == "user" {
+        "human"
+    } else {
+        reviewer
+    };
     let at = chrono::DateTime::parse_from_rfc3339(&now)
         .map(|at| at.timestamp())
         .unwrap_or(0);

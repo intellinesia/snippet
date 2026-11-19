@@ -169,7 +169,7 @@ fn identity_overlay(agent_id: &str, identity: &str) -> String {
 
 /// A delegated lane's prompt: the execution contract, plus the identity of the
 /// agent it was assigned, when there is one.
-const LANE_NOTE: &str = "## Working as a lane\n\nYou've taken one piece of a colleague's work: the agent that handed it to you carries on with the rest, and you run until your piece is done, then report once with `terminate_loop`. The brief's footer says who handed it over, what it's part of and which other lanes are working beside you.\n\nThe user isn't here, and a lane has no `monitor`, `update_plan`, `present_file`, `keep_warm`, board, chat or wake tools, so where the guidance above mentions them, adapt: run a long command in the foreground with a generous timeout (or poll its log a few times) rather than ending your turn to wait. You do have colleagues. The agent that handed you this is a `message_parent` away: ask it what you can't settle yourself (wait for the answer when you can't sensibly go on without it), and tell it early about anything that changes its plan or another lane's piece. An agent's reply can take a few minutes: carry on with your piece meanwhile, and when only waiting is left, wait in the shell (`sleep 30`, a few times) rather than asking again. For everything else, apply \"Decide or ask\" with the agent that handed you this standing in for the user: decide, and say in your report what you assumed; a real fork or an irreversible step is a question to it, and if only the user can decide, stop and report it as the blocker.";
+const LANE_NOTE: &str = "## Working as a lane\n\nYou've taken one piece of a colleague's work: the agent that handed it to you carries on with the rest, and you run until your piece is done, then report once with `terminate_loop`. The brief's footer says who handed it over, what it's part of and which other lanes are working beside you.\n\nThe user isn't here, and a lane has no `process.watch`, `update_plan`, `present.show`, board, chat, message or wake tools, so where the guidance above mentions them, adapt: run a long command in the foreground with a generous timeout (or poll its log a few times) rather than ending your turn to wait. You do have colleagues. The agent that handed you this is a `message_parent` away: ask it what you can't settle yourself (wait for the answer when you can't sensibly go on without it), and tell it early about anything that changes its plan or another lane's piece. An agent's reply can take a few minutes: carry on with your piece meanwhile, and when only waiting is left, wait in the shell (`sleep 30`, a few times) rather than asking again. For everything else, apply \"Decide or ask\" with the agent that handed you this standing in for the user: decide, and say in your report what you assumed; a real fork or an irreversible step is a question to it, and if only the user can decide, stop and report it as the blocker.";
 
 pub fn lane_prompt(context: &PromptContext, identity: Option<(&str, &str)>) -> String {
     let base = format!("{}\n\n{LANE_NOTE}", coding_prompt(context));
@@ -321,8 +321,19 @@ mod seat_layer_tests {
         for role in ["work", "mission_control", "desk", "lane"] {
             let (defs, _) = crate::lanes::role_tool_definitions(role, None)
                 .unwrap_or_else(|| panic!("missing role_tool_definitions for {role}"));
-            let mut names: BTreeSet<String> = defs.into_iter().map(|d| d.name).collect();
-            names.extend(crate::lanes::role_internal_tool_names(role));
+            let mut names: BTreeSet<String> = BTreeSet::new();
+            for d in defs {
+                if let Some(actions) = d
+                    .input_schema
+                    .pointer("/properties/action/enum")
+                    .and_then(serde_json::Value::as_array)
+                {
+                    for a in actions.iter().filter_map(serde_json::Value::as_str) {
+                        names.insert(format!("{}.{a}", d.name));
+                    }
+                }
+                names.insert(d.name);
+            }
             all_known.extend(names.iter().cloned());
             role_tools.insert(role, names);
         }
@@ -362,82 +373,38 @@ mod seat_layer_tests {
             "thumbs_up",
             "updated_at",
             "verify_mode",
+            "wake",
             "waiting_on",
             "wake_at",
         ]
         .into_iter()
         .collect();
 
+        let shared_core = [
+            "process.watch",
+            "update_plan",
+            "task.follow_up",
+            "task.pass",
+            "task.invite",
+            "wake.once",
+            "wake.every",
+            "wake.watch",
+        ];
         let exemptions_for = |role: &str| -> BTreeSet<&'static str> {
-            match role {
-                "work" => [
-                    // coding_agent_layer scopes terminate_loop to delegated lanes and one-shot jobs.
-                    "terminate_loop",
-                    // harness_core / task_layer describe sibling-branch chat and MC one-shot wake tools.
-                    "read_chat",
-                    "post_chat",
-                    // Removed tools still referenced by unrewritten prompt prose.
-                    "report_progress",
-                    "set_session_title",
-                ]
-                .into_iter()
-                .collect(),
-                "desk" => [
-                    // coordination_layer explicitly states ask_user and present_file are refused here.
-                    "ask_user",
-                    "present_file",
-                    // harness_core describes tools of work sessions and MC (desk hides update_plan).
-                    "file_follow_up_task",
-                    "invite_task_agent",
-                    "monitor",
-                    "pass_turn",
-                    "post_chat",
-                    "read_chat",
-                    "report_progress",
-                    "update_plan",
-                ]
-                .into_iter()
-                .collect(),
-                "mission_control" => [
-                    // harness_core / mission_control_layer describe worker, room, and desk tools MC lacks.
-                    "file_follow_up_task",
-                    "invite_task_agent",
-                    "pass_turn",
-                    "post_chat",
-                    "read_chat",
-                    "record_coordination_note",
-                    "report_progress",
-                    "wake",
-                ]
-                .into_iter()
-                .collect(),
-                "lane" => [
-                    // LANE_NOTE explicitly states a lane has no monitor, update_plan, present_file, keep_warm, board, chat, or wake tools.
-                    "keep_warm",
-                    "monitor",
-                    "present_file",
-                    "chats",
-                    "post_chat",
-                    "read_chat",
-                    "record_coordination_note",
-                    "report_progress",
-                    "schedule_wake",
-                    "update_plan",
-                    "wake_schedule",
-                    "watch",
-                    // harness_core describes task-session tools a lane lacks.
-                    "file_follow_up_task",
-                    "invite_task_agent",
-                    "pass_turn",
-                    // Removed from lanes; prompt prose rewrite owned by parent.
-                    "send_agent_message",
-                    "read_coordination_board",
-                    "list_profiles",
-                ]
-                .into_iter()
-                .collect(),
-                _ => BTreeSet::new(),
-            }
+            let extra: &[&'static str] = match role {
+                "work" => &["terminate_loop"],
+                "desk" => &["ask_user", "present.show"],
+                "lane" => &[
+                    "present.show",
+                    "read.chats",
+                    "read.thread",
+                    "read.board",
+                    "message.post",
+                    "message.send",
+                ],
+                _ => &[],
+            };
+            shared_core.iter().chain(extra).copied().collect()
         };
 
         let default_ctx = PromptContext::default();
@@ -496,9 +463,13 @@ mod seat_layer_tests {
                 if parts.next().is_none() {
                     break;
                 }
-                let looks_like_tool = (span.contains('_')
-                    && !span.is_empty()
-                    && span.bytes().all(|b| matches!(b, b'a'..=b'z' | b'_')))
+                let dotted = span
+                    .split_once('.')
+                    .is_some_and(|(t, _)| crate::surface::is_surface(t));
+                let looks_like_tool = dotted
+                    || (span.contains('_')
+                        && !span.is_empty()
+                        && span.bytes().all(|b| matches!(b, b'a'..=b'z' | b'_')))
                     || all_known.contains(span);
                 if looks_like_tool
                     && !tools.contains(span)

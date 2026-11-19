@@ -583,7 +583,7 @@ impl LaneManager {
             ));
         }
         context.push_str(
-            "\n\nYou aren't on your own. When you hit a question you can't settle, find something that changes the plan or touches another lane's piece, or are about to do something hard to undo, tell the agent that handed you this with `message_parent`. When something needs a peer, Mission Control, or the rest of your own work (your inbox knows it), use `send_agent_message`; the answer comes back to you here. Keep it to what matters: most of the job is doing your piece well.",
+            "\n\nYou aren't on your own. When you hit a question you can't settle, find something that changes the plan or touches another lane's piece, or are about to do something hard to undo, tell the agent that handed you this with `message_parent`. Anything for a peer, Mission Control or the user goes through it too. Keep it to what matters: most of the job is doing your piece well.",
         );
         LaneLink {
             origin_session,

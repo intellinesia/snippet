@@ -82,8 +82,8 @@ fn decision(raw: &str, in_snippet: bool) -> Value {
         "view_file" | "list_dir" | "find_by_name" | "grep_search" | "command_status" => {
             "the snippet `bash` tool (cat, sed -n, ls, rg)"
         }
-        "search_web" => "the snippet `web_search` tool",
-        "read_url_content" => "the snippet `web_read` tool",
+        "search_web" => "the snippet `web` tool (`action: \"search\"`)",
+        "read_url_content" => "the snippet `web` tool (`action: \"read\"`)",
         "run_command" | "send_command_input" => "the snippet `bash` tool",
         "write_to_file"
         | "replace_file_content"
@@ -94,12 +94,12 @@ fn decision(raw: &str, in_snippet: bool) -> Value {
             "the snippet `ask_user` tool"
         }
         "invoke_subagent" | "define_subagent" | "manage_subagents" | "browser_subagent" => {
-            "the snippet `delegate_task` tool"
+            "the snippet `delegate` tool (`action: \"run\"`)"
         }
         "schedule" | "manage_task" | "manage_inbox" | "send_message" | "run_workflow" => {
             return json!({
                 "decision": "deny",
-                "reason": format!("`{name}` is off in this snippet session. To wait for a delegated lane or a watched file, just end your turn: snippet delivers the report to you as a new message. For a file to follow, use the snippet `monitor` tool."),
+                "reason": format!("`{name}` is off in this snippet session. To wait for a delegated lane or a watched file, just end your turn: snippet delivers the report to you as a new message. For a file to follow, use the snippet `process` tool (`action: \"watch\"`)."),
             });
         }
         _ => "the matching snippet tool",

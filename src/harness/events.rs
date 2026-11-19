@@ -650,7 +650,7 @@ impl CodingHarness {
             .unwrap_or_else(|| progress.id.clone());
         state.messages.push(HarnessMessage::User {
             content: format!(
-                "[lane_message]\nlane: \"{title}\" ({id})\nnote: one of your lanes wrote to you while working. If it asks something, answer with delegate_task, lane_id {id}, and your answer as the description; it may be waiting on you. If it's an update, use it; no reply is needed.\nbody: {body}\n[/lane_message]",
+                "[lane_message]\nlane: \"{title}\" ({id})\nnote: one of your lanes wrote to you while working. If it asks something, answer with delegate.run, lane_id {id}, and your answer as the description; it may be waiting on you. If it's an update, use it; no reply is needed.\nbody: {body}\n[/lane_message]",
                 id = progress.id,
                 body = progress.text.trim(),
             ),
@@ -1216,14 +1216,14 @@ pub(crate) fn render_lane_report(result: &LaneResult, outstanding: usize) -> Str
         LaneStatus::Failed => {
             let err = result.error.as_deref().unwrap_or("unknown error");
             lines.push(format!(
-                "FAILED: {err}. Follow up this lane (`delegate_task` with `lane_id=\"{}\"`) with a narrower or corrected brief, or handle the slice yourself; do not drop it.",
+                "FAILED: {err}. Follow up this lane (`delegate.run` with `lane_id=\"{}\"`) with a narrower or corrected brief, or handle the slice yourself; do not drop it.",
                 result.id
             ));
         }
         LaneStatus::Paused => {
             let err = result.error.as_deref().unwrap_or("hit the lane time limit");
             lines.push(format!(
-                "PAUSED: {err}. Context and partial work are saved; continue it (`delegate_task` with `lane_id=\"{}\"`), take the slice over, or call `cancel_delegated_task`.",
+                "PAUSED: {err}. Context and partial work are saved; continue it (`delegate.run` with `lane_id=\"{}\"`), take the slice over, or `delegate.cancel` it.",
                 result.id
             ));
         }
@@ -1640,7 +1640,7 @@ All lanes reported; integrate and check the findings you rely on.
         );
         assert!(failed.contains("lane: lane-5  subject: broken slice  status: failed"));
         assert!(failed.contains("FAILED: compile error."));
-        assert!(failed.contains("delegate_task"));
+        assert!(failed.contains("delegate.run"));
 
         let paused = render_lane_report(
             &LaneResult {
@@ -1656,7 +1656,7 @@ All lanes reported; integrate and check the findings you rely on.
         );
         assert!(paused.contains("lane: lane-6  subject: slow slice  status: paused"));
         assert!(paused.contains("PAUSED: timed out."));
-        assert!(paused.contains("cancel_delegated_task"));
+        assert!(paused.contains("delegate.cancel"));
     }
 
     #[test]

@@ -753,7 +753,8 @@ fn prefix_tool_names(text: &str, names: &[String]) -> String {
         match after.find('`') {
             Some(end) => {
                 let span = &after[..end];
-                if names.iter().any(|n| n == span) {
+                let tool = span.split_once('.').map_or(span, |(t, _)| t);
+                if names.iter().any(|n| n == tool) {
                     out.push('`');
                     out.push_str(MCP_PREFIX);
                     out.push_str(span);

@@ -123,18 +123,18 @@ pub fn decision(raw: &str, in_snippet: bool) -> Value {
             "the snippet `change_files` tool (`mcp__snippet__change_files`)"
         }
         "webfetch" | "web_search" => {
-            "the snippet `web_search` or `web_read` tool (`mcp__snippet__web_search`, `mcp__snippet__web_read`)"
+            "the snippet `web` tool (`mcp__snippet__web`, action `search` or `read`)"
         }
         "ask_user_question" | "request_permission" => {
             "the snippet `ask_user` tool (`mcp__snippet__ask_user`)"
         }
         "run_subagent" | "read_subagent" => {
-            "the snippet `delegate_task` tool (`mcp__snippet__delegate_task`)"
+            "the snippet `delegate` tool (`mcp__snippet__delegate`, action `run`)"
         }
         "todo_write" | "exit_plan_mode" => {
             "the snippet `update_plan` tool (`mcp__snippet__update_plan`)"
         }
-        "skill" => "the snippet `search_skills` and `skill` tools",
+        "skill" => "the snippet `skill` tool (action `search` or `load`)",
         _ => "the matching `mcp__snippet__<tool>` tool",
     };
     json!({

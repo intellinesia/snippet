@@ -28,7 +28,11 @@ struct ManageProcessArgs {
 
 fn age_text(started_at: &str) -> String {
     let secs = chrono::DateTime::parse_from_rfc3339(started_at)
-        .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds().max(0))
+        .map(|t| {
+            (chrono::Utc::now() - t.with_timezone(&chrono::Utc))
+                .num_seconds()
+                .max(0)
+        })
         .unwrap_or(0);
     match secs {
         0..=119 => format!("{secs}s"),
@@ -118,7 +122,12 @@ impl Tool for ManageProcessTool {
                         "Missing required argument 'id' for action 'wait'",
                     ));
                 };
-                let pattern = match args.pattern.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                let pattern = match args
+                    .pattern
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                {
                     Some(p) => Some(
                         regex::Regex::new(p)
                             .map_err(|e| ToolError::msg(format!("invalid pattern: {e}")))?,
@@ -131,7 +140,9 @@ impl Tool for ManageProcessTool {
                     )));
                 }
                 let limit = std::time::Duration::from_secs(
-                    args.timeout_seconds.unwrap_or(WAIT_CAP_SECS).clamp(1, WAIT_CAP_SECS),
+                    args.timeout_seconds
+                        .unwrap_or(WAIT_CAP_SECS)
+                        .clamp(1, WAIT_CAP_SECS),
                 );
                 let mut cursor = crate::bg::LogCursor::new(ctx.workspace_root(), id);
                 let lines_to_read = args.lines.unwrap_or(50).clamp(1, 1000);
@@ -154,8 +165,8 @@ impl Tool for ManageProcessTool {
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 };
-                let (log, truncated) =
-                    crate::bg::tail_log(ctx.workspace_root(), id, lines_to_read).unwrap_or_default();
+                let (log, truncated) = crate::bg::tail_log(ctx.workspace_root(), id, lines_to_read)
+                    .unwrap_or_default();
                 Ok(ToolResult::success(json!({
                     "id": id,
                     "outcome": outcome,
@@ -280,7 +291,15 @@ mod tests {
         let tool = ManageProcessTool;
 
         let id = "testlog1";
-        crate::bg::record(temp.path(), id, "npm run dev", Some("Dev Server"), 88888, None).unwrap();
+        crate::bg::record(
+            temp.path(),
+            id,
+            "npm run dev",
+            Some("Dev Server"),
+            88888,
+            None,
+        )
+        .unwrap();
         let log_file = crate::bg::log_path(temp.path(), id);
         std::fs::write(&log_file, "server starting...\nlistening on port 3000\n").unwrap();
 
@@ -335,21 +354,39 @@ mod tests {
         let ws = temp.path().to_path_buf();
         let tool = ManageProcessTool;
 
-        let mut quick = spawn_recorded(&ws, "quick001", "echo done-line; sleep 1", crate::bg::session_key(&ctx));
+        let mut quick = spawn_recorded(
+            &ws,
+            "quick001",
+            "echo done-line; sleep 1",
+            crate::bg::session_key(&ctx),
+        );
         let status_path = crate::bg::status_path(&ws, "quick001");
         std::thread::spawn(move || {
             let code = quick.wait().unwrap().code().unwrap_or(-1);
             std::fs::write(status_path, code.to_string()).unwrap();
         });
         let res = tool
-            .execute(&ctx, json!({"action": "wait", "id": "quick001", "timeout_seconds": 20}))
+            .execute(
+                &ctx,
+                json!({"action": "wait", "id": "quick001", "timeout_seconds": 20}),
+            )
             .await
             .unwrap();
         assert_eq!(res.value["data"]["outcome"], "exited", "{}", res.value);
         assert_eq!(res.value["data"]["exit_status"], "0");
-        assert!(res.value["data"]["log"].as_str().unwrap().contains("done-line"));
+        assert!(
+            res.value["data"]["log"]
+                .as_str()
+                .unwrap()
+                .contains("done-line")
+        );
 
-        let mut slow = spawn_recorded(&ws, "slow0001", "echo booting; echo ready now; sleep 30", crate::bg::session_key(&ctx));
+        let mut slow = spawn_recorded(
+            &ws,
+            "slow0001",
+            "echo booting; echo ready now; sleep 30",
+            crate::bg::session_key(&ctx),
+        );
         let begun = std::time::Instant::now();
         let res = tool
             .execute(&ctx, json!({"action": "wait", "id": "slow0001", "pattern": "ready\\s+now", "timeout_seconds": 20}))
@@ -358,7 +395,10 @@ mod tests {
         assert_eq!(res.value["data"]["outcome"], "pattern", "{}", res.value);
         assert!(begun.elapsed().as_secs() < 10);
         let timed = tool
-            .execute(&ctx, json!({"action": "wait", "id": "slow0001", "timeout_seconds": 1}))
+            .execute(
+                &ctx,
+                json!({"action": "wait", "id": "slow0001", "timeout_seconds": 1}),
+            )
             .await
             .unwrap();
         assert_eq!(timed.value["data"]["outcome"], "timeout");
@@ -405,7 +445,10 @@ mod tests {
         assert!(lines[0].as_str().unwrap().starts_with("mine0001 "));
         assert!(lines[0].as_str().unwrap().ends_with("running"));
 
-        let all = tool.execute(&ctx, json!({"action": "list", "all": true})).await.unwrap();
+        let all = tool
+            .execute(&ctx, json!({"action": "list", "all": true}))
+            .await
+            .unwrap();
         assert_eq!(all.value["data"]["total"], 3);
         let _ = a.kill();
         let _ = b.kill();

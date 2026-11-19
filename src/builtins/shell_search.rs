@@ -120,7 +120,7 @@ impl Tool for BashTool {
                 "id": id,
                 "pid": pid,
                 "log": log_path.display().to_string(),
-                "note": "started in the background and still running. Use `manage_process` to inspect logs or terminate it, or tail the log file directly. It appears in your [background_processes] list.",
+                "note": "started in the background and still running. Use `process` (list, log, wait, kill) to inspect logs or terminate it, or tail the log file directly. It appears in your [background_processes] list.",
             });
             if let Some(lbl) = label {
                 res["label"] = json!(lbl);

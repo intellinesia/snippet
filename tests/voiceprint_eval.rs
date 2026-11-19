@@ -9,7 +9,10 @@ fn load(path: &str) -> Vec<f32> {
 }
 
 fn legacy(clip: &[f32]) -> Option<Vec<f32>> {
-    let bytes: Vec<u8> = clip.iter().flat_map(|s| (*s as i16).to_le_bytes()).collect();
+    let bytes: Vec<u8> = clip
+        .iter()
+        .flat_map(|s| (*s as i16).to_le_bytes())
+        .collect();
     let mut acc = VoiceprintAccumulator::default();
     acc.feed_pcm(&bytes);
     acc.finish_vector()
@@ -18,7 +21,11 @@ fn legacy(clip: &[f32]) -> Option<Vec<f32>> {
 fn rss_kb() -> u64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
-        .and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| l.split_whitespace().nth(1)?.parse().ok()))
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
+        })
         .unwrap_or(0)
 }
 
@@ -33,13 +40,21 @@ fn cpu_secs() -> f64 {
 #[test]
 #[ignore]
 fn eval_embeddings() {
-    let (Ok(manifest), Ok(out)) = (std::env::var("VP_MANIFEST"), std::env::var("VP_OUT")) else { return };
+    let (Ok(manifest), Ok(out)) = (std::env::var("VP_MANIFEST"), std::env::var("VP_OUT")) else {
+        return;
+    };
     let mut m = neural::Embedder::load().unwrap();
     let mut w = std::io::BufWriter::new(std::fs::File::create(out).unwrap());
     for line in std::fs::read_to_string(manifest).unwrap().lines() {
         let (path, spk) = line.split_once(' ').unwrap();
         let x = load(path);
-        for (crop, secs) in [("enrol", 20.0f32), ("1", 1.0), ("2", 2.0), ("3", 3.0), ("6", 6.0)] {
+        for (crop, secs) in [
+            ("enrol", 20.0f32),
+            ("1", 1.0),
+            ("2", 2.0),
+            ("3", 3.0),
+            ("6", 6.0),
+        ] {
             let (voiced, clip) = neural::voiced(&x, secs);
             let row = serde_json::json!({
                 "path": path, "spk": spk, "crop": crop, "voiced": voiced, "clip_secs": clip.len() as f32 / 16000.0,
@@ -54,18 +69,29 @@ fn eval_embeddings() {
 #[test]
 #[ignore]
 fn fbank_dump() {
-    let (Ok(input), Ok(out)) = (std::env::var("VP_FBANK_IN"), std::env::var("VP_FBANK_OUT")) else { return };
+    let (Ok(input), Ok(out)) = (std::env::var("VP_FBANK_IN"), std::env::var("VP_FBANK_OUT")) else {
+        return;
+    };
     let x = load(&input);
     let mut feats = Vec::new();
     Fbank::new().compute(&x, &mut feats);
-    std::fs::write(out, feats.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
+    std::fs::write(
+        out,
+        feats
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<u8>>(),
+    )
+    .unwrap();
 }
 
 /// VP_BENCH_WAV=<a long wav> prints cold load, warm latency percentiles, CPU per call and RSS growth.
 #[test]
 #[ignore]
 fn bench() {
-    let Ok(path) = std::env::var("VP_BENCH_WAV") else { return };
+    let Ok(path) = std::env::var("VP_BENCH_WAV") else {
+        return;
+    };
     let x = load(&path);
     let rss0 = rss_kb();
     let t = Instant::now();
@@ -74,7 +100,11 @@ fn bench() {
     let rss1 = rss_kb();
     let t = Instant::now();
     m.embed(&x[..48000]).unwrap();
-    println!("cold: load {load_ms:.0}ms, first 3s call {:.1}ms, rss +{}MB after load", t.elapsed().as_secs_f64() * 1000.0, (rss1 - rss0) / 1024);
+    println!(
+        "cold: load {load_ms:.0}ms, first 3s call {:.1}ms, rss +{}MB after load",
+        t.elapsed().as_secs_f64() * 1000.0,
+        (rss1 - rss0) / 1024
+    );
     for secs in [1usize, 3, 6] {
         let clip = &x[..secs * 16000];
         for _ in 0..5 {
@@ -91,7 +121,11 @@ fn bench() {
         }
         let cpu = (cpu_secs() - cpu0) * 1000.0 / n as f64;
         ms.sort_by(|a, b| a.total_cmp(b));
-        println!("{secs}s: p50 {:.1}ms p95 {:.1}ms cpu {cpu:.1}ms/call", ms[n / 2], ms[n * 95 / 100]);
+        println!(
+            "{secs}s: p50 {:.1}ms p95 {:.1}ms cpu {cpu:.1}ms/call",
+            ms[n / 2],
+            ms[n * 95 / 100]
+        );
     }
     let t = Instant::now();
     let mut feats = Vec::new();
@@ -99,6 +133,13 @@ fn bench() {
     for _ in 0..50 {
         fb.compute(&x[..48000], &mut feats);
     }
-    println!("fbank 3s: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0 / 50.0);
-    println!("rss total +{}MB (load + {} warm calls)", (rss_kb() - rss0) / 1024, 165);
+    println!(
+        "fbank 3s: {:.2}ms",
+        t.elapsed().as_secs_f64() * 1000.0 / 50.0
+    );
+    println!(
+        "rss total +{}MB (load + {} warm calls)",
+        (rss_kb() - rss0) / 1024,
+        165
+    );
 }
