@@ -261,7 +261,7 @@ pub(crate) fn task_awareness(ctx: &ToolContext) -> String {
     }
     if !current.is_empty() {
         out.push(
-            "Share milestones and blockers with everyone on the task via post_task_coordination; report with report_mission_task when done.".to_string(),
+            "Share milestones and blockers with everyone on the task via message.task; report with task.report when done.".to_string(),
         );
     }
 
@@ -295,7 +295,7 @@ pub(crate) fn task_awareness(ctx: &ToolContext) -> String {
             .collect();
         if !others.is_empty() {
             out.push(format!(
-                "Your other open tasks as {agent} (inspect_task for detail; send_agent_message to task:<id> reaches the session doing it):\n{}",
+                "Your other open tasks as {agent} (task.inspect for detail; message.send to task:<id> reaches the session doing it):\n{}",
                 others.join("\n")
             ));
         }
@@ -764,7 +764,7 @@ impl Tool for SendAgentMessage {
             {
                 None => {
                     return Err(ToolError::msg(format!(
-                        "unknown agent `{to_id}` — list_coordination_agents shows the directory. Use `human` to reply to the person."
+                        "unknown agent `{to_id}` — snippet tool list_coordination_agents shows the directory. Use `human` to reply to the person."
                     )));
                 }
                 Some(agent)
@@ -1429,7 +1429,7 @@ impl Tool for PostTaskCoordination {
                         .any(|m| m.agent_id == **a && m.removed_at.is_none())
             }) {
                 return Err(ToolError::msg(format!(
-                    "`{stranger}` isn't on this task. Use invite_task_agent to bring them in."
+                    "`{stranger}` isn't on this task. Use task.invite to bring them in."
                 )));
             }
             crate::members::seat_holder(&db, &task);
@@ -1505,7 +1505,7 @@ impl Tool for PostTaskCoordination {
                 });
             }
             out["note"] = json!(
-                "Posted to the task room. Note: a room post does not complete the task; call report_mission_task when the work is finished."
+                "Posted to the task room. Note: a room post does not complete the task; call task.report when the work is finished."
             );
         }
         Ok(ToolResult::success(out))
@@ -1783,7 +1783,7 @@ impl Tool for ClaimAndDispatchTask {
         }
         if actor_id == crate::mission_control::SESSION_ID {
             return Err(ToolError::msg(
-                "Mission Control routes work and never takes a task's lease. To send a blocked or failed task to its session again, use retry_mission_task (pass profile to switch the worker's model).",
+                "Mission Control routes work and never takes a task's lease. To send a blocked or failed task to its session again, use tasks.retry (pass profile to switch the worker's model).",
             ));
         }
         crate::mission_tools::require_working_agent(&db, &actor_id)?;
@@ -2112,7 +2112,7 @@ fn check_group_post_chatter(body: &str) -> Result<(), &'static str> {
         .sum();
     if unquoted > 700 || trimmed.chars().count() > 3000 {
         return Err(
-            "Too long for one post. Send several short posts, one point each: only your first after the user's post reaches the room, later ones wake only whom they name. Long material goes in a file shared with share_artifact (path, to: the group).",
+            "Too long for one post. Send several short posts, one point each: only your first after the user's post reaches the room, later ones wake only whom they name. Long material goes in a file shared with present.share (or snippet tool share_artifact on a desk; path, to: the group).",
         );
     }
     let stripped = strip_leading_mentions(trimmed).trim_end();
@@ -2507,7 +2507,7 @@ impl Tool for ShareArtifactTool {
         let session = ctx
             .durable_session_id()
             .filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| ToolError::msg("share_artifact requires a durable session"))?;
+            .ok_or_else(|| ToolError::msg("present.share requires a durable session"))?;
         let artifact = match (artifact_id, path) {
             (Some(_), Some(_)) => {
                 return Err(ToolError::msg(

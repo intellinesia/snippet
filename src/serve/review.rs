@@ -30,7 +30,12 @@ fn git(workspace: &std::path::Path, args: &[&str]) -> String {
 
 /// The brief a reviewer starts from: the ledger, what the worker claims, which
 /// commits and files changed, where to read the details and what to check.
-pub(super) fn review_brief(task: &Task, state: &TaskState, workspace: &std::path::Path) -> String {
+pub(super) fn review_brief(
+    task: &Task,
+    state: &TaskState,
+    workspace: &std::path::Path,
+    seated: bool,
+) -> String {
     let base = if state.dispatch_rev.is_empty() {
         "HEAD"
     } else {
@@ -40,19 +45,29 @@ pub(super) fn review_brief(task: &Task, state: &TaskState, workspace: &std::path
     let commits = git(workspace, &["log", "--oneline", &format!("{base}..HEAD")]);
     let untracked = git(workspace, &["ls-files", "--others", "--exclude-standard"]);
     let report = state.pending_report.clone().unwrap_or_default();
+    let review_tool = if seated {
+        "task.review"
+    } else {
+        "submit_review"
+    };
+    let room = if seated {
+        format!("read.room with thread_id `task:{}`", task.id)
+    } else {
+        format!("message_parent asking for the room of task `{}`", task.id)
+    };
     format!(
         "Review task \"{title}\" (task {id}) before it is accepted. You are read-only: do not change files. The worker says it is done; your job is to find out whether that is true.\n\n\
          {ledger}\n\n\
          worker's report:\n{summary}\n\n\
          workspace: {workspace}\ncommits since dispatch ({base}):\n{commits}\nfiles changed:\n{stat}\nnew untracked files:\n{untracked}\n\n\
-         Read the work yourself: `git -C {workspace} diff {base} -- <path>` for the changes, and read_coordination_thread with thread_id `task:{id}` for the conversation behind them, including decisions and clarifications made along the way. Don't rely on the report alone.\n\n\
+         Read the work yourself: `git -C {workspace} diff {base} -- <path>` for the changes, and {room} for the conversation behind them, including decisions and clarifications made along the way. Don't rely on the report alone.\n\n\
          Checklist:\n\
          1. Is the report true? Re-run what it cites and compare, open any artifact, look at any screenshot with view_image.\n\
          2. Is the scope delivered, and only that? A scope change or something left out needs a good reason in the report or the room. Flag unrelated files, leftovers and anything half-done.\n\
          3. Are there tests for new behaviour, and do they pass?\n\
          4. Anything unsafe, hard-coded or fragile; any claim in the report the diff does not support.\n\
          5. Content work: does it fit the audience, length, tone and definition of good in the ledger? Would its real reader accept it? For ideas and proposals, is each one specific and worth paying for?\n\n\
-         Finish by calling submit_review (task_id {id}): verdict approve only if the scope is delivered and the report holds up, and say what you ran; otherwise changes with one finding per problem (file:line, what is wrong, what to do).",
+         Finish by calling {review_tool} (task_id {id}): verdict approve only if the scope is delivered and the report holds up, and say what you ran; otherwise changes with one finding per problem (file:line, what is wrong, what to do).",
         title = task.title,
         id = task.id,
         ledger = state.render(true),
@@ -141,7 +156,7 @@ pub(super) async fn drive_reviews(d: &Shared) {
             crate::review_tools::escalate(
                 &d.store,
                 &task.id,
-                "the reviewer gave no verdict in time; check the work and submit_review yourself",
+                "the reviewer gave no verdict in time; check the work and tasks.review yourself",
                 &stamp,
             );
         }
@@ -175,7 +190,7 @@ async fn review_due(
                 .store
                 .modify_task_state(&task.id, &stamp, |s| s.review_nudges = nudges);
             let envelope = format!(
-                "[review_due]\ntask_id: {}\ntitle: {}\nin review for: {age_minutes} minutes\nworker's report:\n{report}\nNo verdict has arrived. Call submit_review with verdict approve, or changes with findings; if neither fits, hand it to the user.\n[/review_due]",
+                "[review_due]\ntask_id: {}\ntitle: {}\nin review for: {age_minutes} minutes\nworker's report:\n{report}\nNo verdict has arrived. Call tasks.review with verdict approve, or changes with findings; if neither fits, hand it to the user.\n[/review_due]",
                 task.id, task.title
             );
             super::autonomy::deliver_to_mission_control(d, envelope).await;
@@ -222,9 +237,9 @@ async fn start_review(d: &Daemon, task: &Task, state: &TaskState, now: &str) {
                 let _ = d
                     .store
                     .modify_task_state(&task.id, now, |s| s.review_started_at = now.to_string());
-                let brief = review_brief(task, state, &workspace);
+                let brief = review_brief(task, state, &workspace, true);
                 let envelope = format!(
-                    "[review_request]\ntask_id: {}\nround: {}\nYou are the reviewer seated on this task, in your own conversation. Only your approval finishes the work. Ask the worker anything you need in the room (post_task_coordination with `to`).\n\n{brief}\n[/review_request]",
+                    "[review_request]\ntask_id: {}\nround: {}\nYou are the reviewer seated on this task, in your own conversation. Only your approval finishes the work. Ask the worker anything you need in the room (message.task with `to`).\n\n{brief}\n[/review_request]",
                     task.id,
                     state.review_rounds + 1,
                 );
@@ -234,7 +249,7 @@ async fn start_review(d: &Daemon, task: &Task, state: &TaskState, now: &str) {
                 &d.store,
                 &task.id,
                 &format!(
-                    "the seated reviewer {} couldn't start: {error}; check the work and submit_review yourself.",
+                    "the seated reviewer {} couldn't start: {error}; check the work and tasks.review yourself.",
                     member.agent_id
                 ),
                 now,
@@ -246,7 +261,7 @@ async fn start_review(d: &Daemon, task: &Task, state: &TaskState, now: &str) {
         crate::review_tools::escalate(
             &d.store,
             &task.id,
-            "this task has no agent to review it; check the work and submit_review yourself",
+            "this task has no agent to review it; check the work and tasks.review yourself",
             now,
         );
         return;
@@ -254,7 +269,7 @@ async fn start_review(d: &Daemon, task: &Task, state: &TaskState, now: &str) {
     let profile = d.store.agent_profile(&reviewer).ok().flatten();
     let spec = LaneSpawn {
         title: format!("Review: {}", task.title),
-        brief: review_brief(task, state, &workspace),
+        brief: review_brief(task, state, &workspace, false),
         read_only: true,
         agent: Some(reviewer),
         profile,
@@ -308,13 +323,13 @@ mod tests {
             summary: "changed a".into(),
             artifacts: vec![],
         });
-        let brief = review_brief(&task, &state, dir.path());
+        let brief = review_brief(&task, &state, dir.path(), true);
         for needle in [
             "[task_ledger v1]",
             "worker's report:\nchanged a",
             "a.txt",
             "thread_id `task:r1`",
-            "submit_review (task_id r1)",
+            "task.review (task_id r1)",
             "Checklist",
         ] {
             assert!(brief.contains(needle), "missing {needle}: {brief}");

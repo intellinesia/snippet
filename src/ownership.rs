@@ -106,7 +106,7 @@ fn task_gate(ctx: &ToolContext, targets: &[PathBuf]) -> Gate {
         && member.status != "active"
     {
         return Gate::Refuse(format!(
-            "`{}` doesn't hold the turn on task `{}`; only the holder changes files. Say what you need in the room, or ask the holder to pass_turn to you.",
+            "`{}` doesn't hold the turn on task `{}`; only the holder changes files. Say what you need in the room, or ask the holder to task.pass to you.",
             member.agent_id, member.task_id
         ));
     }

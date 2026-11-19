@@ -39,7 +39,7 @@ impl Tool for SearchSkillsTool {
         let note = if skills.is_empty() {
             "no skills installed"
         } else {
-            "call skill(name) to load a skill's full instructions"
+            "call skill.load with its name to load a skill's full instructions"
         };
         Ok(ToolResult::success(json!({
             "query": args.query,

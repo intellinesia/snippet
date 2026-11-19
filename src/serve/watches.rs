@@ -182,8 +182,13 @@ pub fn watch_envelope(watch: &cw::Watch, event: &str, body: &[String], held: usi
     if held > 0 {
         out.push_str(&format!("\nheld: {held}"));
     }
+    let watch_tool = if watch.owner == crate::mission_control::SESSION_ID {
+        "schedule.watch"
+    } else {
+        "wake.watch"
+    };
     out.push_str(&format!(
-        "\n---\n{text}\n---\nnote: your own watch fired. Act on what matters (answer, file a task, tell the user per your reach policy); otherwise end quietly. If it misfires, fix it with watch update or remove it.\n[/watch]"
+        "\n---\n{text}\n---\nnote: your own watch fired. Act on what matters (answer, file a task, tell the user per your reach policy); otherwise end quietly. If it misfires, fix it with {watch_tool} (op: update) or remove it.\n[/watch]"
     ));
     out
 }

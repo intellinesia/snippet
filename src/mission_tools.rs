@@ -1117,7 +1117,7 @@ impl Tool for PingUser {
             "disabled" => {
                 "Push notifications are disabled for this agent; delivered on fallback channels."
             }
-            _ => "Delivered according to reach_policy.",
+            _ => "Delivered according to snippet tool reach_policy.",
         };
         Ok(ToolResult::success(json!({
             "ping": outcome,
@@ -1376,7 +1376,7 @@ impl Tool for InspectSession {
         // not fail just because it has no state file.
         let state = read_session_state(&path)
             .ok_or_else(|| ToolError::msg(format!(
-                "no session `{}`: it may have been deleted, or the id was not copied from list_sessions. Use an id exactly as list_sessions returns it, or open a new session in that folder with create_mission_session.",
+                "no session `{}`: it may have been deleted, or the id was not copied from read.sessions. Use an id exactly as read.sessions returns it, or open a new session in that folder with sessions.create.",
                 args.session_id
             )))?;
         let from = state.events.len().saturating_sub(args.event_limit.min(100));
@@ -1633,7 +1633,7 @@ impl Tool for CreateMissionSession {
                     "title": {"type": "string"},
                     "new_conversation": {"type": "boolean"},
                     "workspace": {"type": "string", "enum": ["worktree", "folder"]},
-                    "profile": {"type": "string", "description": "optional; pin the session to this inference profile (list_profiles), for work that needs that model"},
+                    "profile": {"type": "string", "description": "optional; pin the session to this inference profile (snippet tool list_profiles), for work that needs that model"},
                     "force_new": {"type": "boolean", "description": "open one even though a session in this folder was active in the last 7 days"}
                 }),
                 &["folder", "workspace"],
@@ -1708,11 +1708,11 @@ async fn open_folder_session(
     }
     let note = if moved {
         format!(
-            "Created idle in {} — sessions never run in Mission Control's own folder. Give it work with create_mission_task(session, handoff_mode=fresh); the work itself happens in that session.",
+            "Created idle in {} — sessions never run in Mission Control's own folder. Give it work with tasks.create(session, handoff_mode=fresh); the work itself happens in that session.",
             folder.display()
         )
     } else {
-        "Created idle. Give it work with create_mission_task(session, handoff_mode=fresh); the work itself happens in that session.".to_string()
+        "Created idle. Give it work with tasks.create(session, handoff_mode=fresh); the work itself happens in that session.".to_string()
     };
     Ok((session, note))
 }
@@ -1788,7 +1788,7 @@ pub struct CreateMissionTask;
 #[async_trait]
 impl Tool for CreateMissionTask {
     fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition { name: "create_mission_task".into(), description: "Create a task for project work requested by the user or an agent. File dependent steps together and link prerequisites with `blocked_by`. The description is the worker's full brief and scope. Choose `resume` if the target has context, otherwise `fresh`. Use `agent_id` for a matching specialist; use `crew` to seat reviewers or advisors before work starts.".into(), input_schema: schema(json!({"title":{"type":"string"}, "description":{"type":"string"}, "session":{"type":"string","description":"Session id, title fragment or workspace path; `latest` selects the most recent match."}, "supersedes":{"type":"string","description":"optional; id of the cancelled task this one replaces"}, "handoff_mode":{"type":"string","enum":["resume","fresh"]}, "owned_paths":{"type":"array","items":{"type":"string"}}, "agent_id":{"type":"string","description":"Specialist agent id from list_coordination_agents."}, "crew":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"role":{"type":"string","description":"reviewer (default), advisor or tester"}},"required":["agent_id"]},"description":"Agents seated beside the worker; they wait until called."}, "profile":{"type":"string","description":"Profile from list_profiles. Overrides the session model and restarts it, losing its prompt cache; use only to rescue a rate-limited session."}, "reply_to":{"type":"string","description":"Exact `reply_to` value from the request message, such as `session:<id>` or `agent:<id>`."}, "blocked_by":{"type":"array","items":{"type":"string"},"description":"Task ids that must finish first."}, "read_only":{"type":"boolean","description":"investigation that changes nothing"}, "verify_mode":{"type":"string","enum":["self","reviewer","mission_control","user"],"description":"Who confirms completion. `self` skips review; `reviewer` uses a read-only agent; `mission_control` or `user` leaves the verdict with you. Defaults to reviewer (self when read_only)."}, "reviewer":{"type":"string","description":"Agent id for the reviewer; defaults to the worker in a fresh lane."}, "revises_task_id":{"type":"string","description":"optional; the finished task this one revises"}, "audience":{"type":"string","description":"Intended audience for content work."}, "definition_of_good":{"type":"string","description":"Quality bar for content work."}, "goal":{"type":"string","description":"Open goal id this task serves."}, "expected_minutes":{"type":"integer","description":"Expected duration in minutes; flagged stalled after twice this (minimum 20). Defaults by verify_mode."}, "report_to":{"type":"string","description":"`group:<id>`/`direct:` chat"}}), &["title","description","session"]) }
+        NativeToolDefinition { name: "create_mission_task".into(), description: "Create a task for project work requested by the user or an agent. File dependent steps together and link prerequisites with `blocked_by`. The description is the worker's full brief and scope. Choose `resume` if the target has context, otherwise `fresh`. Use `agent_id` for a matching specialist; use `crew` to seat reviewers or advisors before work starts.".into(), input_schema: schema(json!({"title":{"type":"string"}, "description":{"type":"string"}, "session":{"type":"string","description":"Session id, title fragment or workspace path; `latest` selects the most recent match."}, "supersedes":{"type":"string","description":"optional; id of the cancelled task this one replaces"}, "handoff_mode":{"type":"string","enum":["resume","fresh"]}, "owned_paths":{"type":"array","items":{"type":"string"}}, "agent_id":{"type":"string","description":"Specialist agent id from snippet tool list_coordination_agents."}, "crew":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"role":{"type":"string","description":"reviewer (default), advisor or tester"}},"required":["agent_id"]},"description":"Agents seated beside the worker; they wait until called."}, "profile":{"type":"string","description":"Profile from snippet tool list_profiles. Overrides the session model and restarts it, losing its prompt cache; use only to rescue a rate-limited session."}, "reply_to":{"type":"string","description":"Exact `reply_to` value from the request message, such as `session:<id>` or `agent:<id>`."}, "blocked_by":{"type":"array","items":{"type":"string"},"description":"Task ids that must finish first."}, "read_only":{"type":"boolean","description":"investigation that changes nothing"}, "verify_mode":{"type":"string","enum":["self","reviewer","mission_control","user"],"description":"Who confirms completion. `self` skips review; `reviewer` uses a read-only agent; `mission_control` or `user` leaves the verdict with you. Defaults to reviewer (self when read_only)."}, "reviewer":{"type":"string","description":"Agent id for the reviewer; defaults to the worker in a fresh lane."}, "revises_task_id":{"type":"string","description":"optional; the finished task this one revises"}, "audience":{"type":"string","description":"Intended audience for content work."}, "definition_of_good":{"type":"string","description":"Quality bar for content work."}, "goal":{"type":"string","description":"Open goal id this task serves."}, "expected_minutes":{"type":"integer","description":"Expected duration in minutes; flagged stalled after twice this (minimum 20). Defaults by verify_mode."}, "report_to":{"type":"string","description":"`group:<id>`/`direct:` chat"}}), &["title","description","session"]) }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let mut args: CreateTaskArgs = serde_json::from_value(arguments)?;
@@ -1858,12 +1858,12 @@ impl Tool for StartTask {
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let Some(("agent", agent_id)) = crate::coordination_tools::speaks_as(ctx) else {
             return Err(ToolError::msg(
-                "start_task needs an agent identity; this session has none",
+                "task.start needs an agent identity; this session has none",
             ));
         };
         if agent_id == crate::mission_control::SESSION_ID {
             return Err(ToolError::msg(
-                "Mission Control routes work and never starts tasks itself; use create_mission_task",
+                "Mission Control routes work and never starts tasks itself; use tasks.create",
             ));
         }
         let session_query = args
@@ -1881,7 +1881,7 @@ impl Tool for StartTask {
                     .filter(|f| !f.is_empty())
                     .ok_or_else(|| {
                         ToolError::msg(
-                            "start_task needs `session`, or `folder` + `workspace` for a new session",
+                            "task.start needs `session`, or `folder` + `workspace` for a new session",
                         )
                     })?;
                 let workspace = args
@@ -1934,7 +1934,7 @@ impl Tool for StartTask {
             "expected_minutes": args.expected_minutes,
             "verify_mode": args.verify_mode.or_else(|| Some("self".to_string())),
         }))
-        .map_err(|e| ToolError::msg(format!("start_task arguments: {e}")))?;
+        .map_err(|e| ToolError::msg(format!("task.start arguments: {e}")))?;
         task_args.self_claim = true;
         let out = create_task(ctx, task_args, ("agent", &agent_id)).await?;
         let data = out.value.get("data").cloned().unwrap_or(Value::Null);
@@ -2011,7 +2011,7 @@ pub(crate) async fn create_task_value(ctx: &ToolContext, args: Value) -> Result<
 
 fn candidate_list(candidates: &[crate::session_resolve::Candidate]) -> String {
     if candidates.is_empty() {
-        return "none; open one with create_mission_session".into();
+        return "none; open one with sessions.create".into();
     }
     let now = chrono::Utc::now().timestamp();
     candidates
@@ -2037,11 +2037,11 @@ pub(crate) fn open_goal_id(store: &Store, goal: Option<&str>) -> Result<Option<S
         .get_goal(id)
         .map_err(|e| ToolError::msg(format!("look up goal: {e}")))?
         .ok_or_else(|| {
-            ToolError::msg(format!("goal names no goal `{id}`; list_goals shows them"))
+            ToolError::msg(format!("goal names no goal `{id}`; goals.list shows them"))
         })?;
     if found.status != crate::coordination::GoalStatus::Open {
         return Err(ToolError::msg(format!(
-            "goal `{id}` is {}; reopen it with update_goal first",
+            "goal `{id}` is {}; reopen it with goals.update first",
             found.status.as_str()
         )));
     }
@@ -2074,7 +2074,7 @@ async fn create_task(
         if crate::session::is_inbox_session_id(&resolved) {
             return Err(ToolError::msg(
                 "that session is an agent's inbox — it answers messages and routes work, it cannot \
-                 do work. Dispatch to a session in the target workspace instead; list_sessions \
+                 do work. Dispatch to a session in the target workspace instead; read.sessions \
                  does not offer inboxes.",
             ));
         }
@@ -2439,7 +2439,7 @@ async fn create_task(
             ) == "cold"
             {
                 note.push_str(&format!(
-                    " Advisory: the target session was idle {} min, so its prompt cache is cold and the next turn re-reads its whole history at full price; a fresh session (create_mission_session, handoff_mode fresh) pointed at this one's saved memory may be cheaper.",
+                    " Advisory: the target session was idle {} min, so its prompt cache is cold and the next turn re-reads its whole history at full price; a fresh session (sessions.create, handoff_mode fresh) pointed at this one's saved memory may be cheaper.",
                     idle / 60
                 ));
             }
@@ -2621,7 +2621,7 @@ impl Tool for DeliverToSession {
             "task": task_view(&task),
             "session_id": session_id,
             "agent_id": agent_id,
-            "note": "Delivered: the session starts a turn on it within a second and reports with report_mission_task.",
+            "note": "Delivered: the session starts a turn on it within a second and reports with task.report.",
         })))
     }
 }
@@ -2751,7 +2751,7 @@ fn bind_direct_delivery(
 
 fn direct_brief_envelope(task: &Task, brief: &str, workspace: &str, ledger: &str) -> String {
     format!(
-        "[mission_control_task]\ntask_id: {}\ntitle: {}\nrequested_by: agent mission-control (delivered directly)\nworkspace: {workspace}\nscope:\n{brief}\n{ledger}\n\nThis is yours now. If the scope is wrong or unclear, tell Mission Control before building. Report done, blocked or failed with report_mission_task (task_id {}).\n[/mission_control_task]",
+        "[mission_control_task]\ntask_id: {}\ntitle: {}\nrequested_by: agent mission-control (delivered directly)\nworkspace: {workspace}\nscope:\n{brief}\n{ledger}\n\nThis is yours now. If the scope is wrong or unclear, tell Mission Control before building. Report done, blocked or failed with task.report (task_id {}).\n[/mission_control_task]",
         task.id, task.title, task.id
     )
 }
@@ -2787,7 +2787,7 @@ impl Tool for FileFollowUpTask {
         let own = ctx
             .durable_session_id()
             .or(ctx.lane_origin().map(|(session, _)| session))
-            .ok_or_else(|| ToolError::msg("file_follow_up_task needs a session"))?
+            .ok_or_else(|| ToolError::msg("task.follow_up needs a session"))?
             .to_string();
         let current = crate::coordination_tools::session_task(ctx, &own);
         let after_current = arguments
@@ -2888,7 +2888,7 @@ pub(crate) fn require_working_agent(store: &Store, agent_id: &str) -> Result<(),
         .map_err(|e| ToolError::msg(format!("look up agent: {e}")))?
     {
         None => Err(ToolError::msg(format!(
-            "unknown agent `{agent_id}` — list_coordination_agents shows the directory"
+            "unknown agent `{agent_id}` — snippet tool list_coordination_agents shows the directory"
         ))),
         Some(agent) if agent.status != crate::coordination::types::AgentStatus::Active => {
             Err(ToolError::msg(format!(
@@ -2909,7 +2909,7 @@ pub(crate) async fn check_profile(name: &str) -> Result<(), ToolError> {
         .map_err(|e| ToolError::msg(format!("read config: {e}")))?;
     if !config.profile_names().iter().any(|known| known == name) {
         return Err(ToolError::msg(format!(
-            "unknown profile `{name}` — list_profiles shows the available names"
+            "unknown profile `{name}` — snippet tool list_profiles shows the available names"
         )));
     }
     Ok(())
@@ -3238,7 +3238,7 @@ impl Tool for InviteTaskAgent {
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string"},
-                    "agent_id": {"type": "string", "description": "from list_coordination_agents"},
+                    "agent_id": {"type": "string", "description": "from snippet tool list_coordination_agents"},
                     "role": {"type": "string", "description": "e.g. reviewer, advisor, planner. Default reviewer."},
                     "ask": {"type": "string", "description": "what you need from them, self-contained: what to look at and what answer you want"}
                 }),
@@ -3257,7 +3257,7 @@ impl Tool for InviteTaskAgent {
         }
         if agent_id == crate::mission_control::SESSION_ID {
             return Err(ToolError::msg(
-                "Mission Control is not a task collaborator; send_agent_message to mission-control instead",
+                "Mission Control is not a task collaborator; message.send to mission-control instead",
             ));
         }
         let Some(caller) = ctx.durable_session_id() else {
@@ -3346,7 +3346,7 @@ impl Tool for InviteTaskAgent {
             "task_id": task_id,
             "role": role,
             "seated": seated.is_ok(),
-            "note": "They have their own conversation on this task in the same worktree and are woken with your ask; they answer in the room. You keep the turn: pass_turn when it should move.",
+            "note": "They have their own conversation on this task in the same worktree and are woken with your ask; they answer in the room. You keep the turn: task.pass when it should move.",
         })))
     }
 }
@@ -3395,7 +3395,7 @@ impl Tool for TransferMissionTaskLease {
             .unwrap_or("none");
         if task.status != TaskStatus::InProgress || current_active == "none" {
             return Err(ToolError::msg(
-                "a lease hands running work from one agent to another. This task hasn't been claimed yet: the offered agent takes it on from its inbox. To give it to someone else instead, assign that agent (assign_task_agent) and retry the task.",
+                "a lease hands running work from one agent to another. This task hasn't been claimed yet: the offered agent takes it on from its inbox. To give it to someone else instead, assign that agent (tasks.assign) and retry the task.",
             ));
         }
         let now = now_rfc3339();
@@ -3476,7 +3476,7 @@ impl Tool for RetryMissionTask {
         NativeToolDefinition {
             name: "retry_mission_task".into(),
             description: "Re-queue a blocked, failed, or stuck in-progress Mission Control task (rate limit, dispatch error, a worker that stopped without reporting). The task is delivered to its session again. Does not create a new task. Refuses done/cancelled work. Pass profile only to move the worker onto another model, e.g. when its own is rate limited.".into(),
-            input_schema: schema(json!({"task_id":{"type":"string"}, "profile":{"type":"string","description":"optional; an inference profile named exactly as list_profiles returns it. The worker session restarts on that model."}}), &["task_id"]),
+            input_schema: schema(json!({"task_id":{"type":"string"}, "profile":{"type":"string","description":"optional; an inference profile named exactly as snippet tool list_profiles returns it. The worker session restarts on that model."}}), &["task_id"]),
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
@@ -3532,9 +3532,7 @@ impl Tool for CancelMissionTask {
         let args: CancelTaskArgs = serde_json::from_value(arguments)?;
         let (task_id, reason) = (args.task_id.trim(), args.reason.trim());
         if task_id.is_empty() || reason.is_empty() {
-            return Err(ToolError::msg(
-                "cancel_mission_task needs task_id and reason",
-            ));
+            return Err(ToolError::msg("tasks.cancel needs task_id and reason"));
         }
         let store = db(ctx)?;
         let superseded_by = args
@@ -3819,7 +3817,7 @@ impl Tool for StopSession {
             description: "Stop a session that is working: its current run ends the way the stop button ends it, keeping everything done so far, and the session waits for its next message. Use it when a session is stuck in a loop, burning time on the wrong thing, or the user asks you to stop it. Give a short reason; it's recorded in that session's transcript. A task the session holds stays on the board, so cancel, retry or reassign it separately. To restart the session, message it (send_agent_message to session:<id>).".into(),
             input_schema: schema(
                 json!({
-                    "session_id": {"type": "string", "description": "exactly as list_sessions shows it"},
+                    "session_id": {"type": "string", "description": "exactly as read.sessions shows it"},
                     "reason": {"type": "string", "description": "one line on why, shown in that session"}
                 }),
                 &["session_id", "reason"],
@@ -3838,7 +3836,7 @@ impl Tool for StopSession {
             .map(str::trim)
             .unwrap_or("");
         if id.is_empty() || reason.is_empty() {
-            return Err(ToolError::msg("stop_session needs session_id and reason"));
+            return Err(ToolError::msg("sessions.stop needs session_id and reason"));
         }
         if id == crate::mission_control::SESSION_ID {
             return Err(ToolError::msg(
@@ -3873,7 +3871,7 @@ async fn session_post(path: &str, id: &str, body_in: Value) -> Result<Value, Too
         ))
         .send()
         .await
-        .map_err(|e| ToolError::msg(format!("session_state failed: {e}")))?;
+        .map_err(|e| ToolError::msg(format!("sessions.state failed: {e}")))?;
     let status = response.status();
     let body: Value = response.json().await.unwrap_or_default();
     if status == reqwest::StatusCode::NOT_FOUND {
@@ -3897,7 +3895,7 @@ impl Tool for SessionState {
             name: "session_state".into(),
             description: "Settle or unsettle a session, exempt it from automatic settling, or rename it (title). Settling parks a finished session (memory saved first, deleted 15 days later) and is refused with a reason for a busy session; any message to a settled session wakes it. Omitted fields stay unchanged.".into(),
             input_schema: schema(json!({
-                "session_id": {"type": "string", "description": "Exactly as list_sessions shows it."},
+                "session_id": {"type": "string", "description": "Exactly as read.sessions shows it."},
                 "settled": {"type": "boolean", "description": "true parks the session, false wakes it."},
                 "keep_awake": {"type": "boolean", "description": "true stops automatic settling after 12 hours idle."},
                 "title": {"type": "string", "description": "renames the session; say what it is for now, so later routing can trust it."}
@@ -3911,7 +3909,7 @@ impl Tool for SessionState {
             .map(str::trim)
             .unwrap_or("");
         if id.is_empty() {
-            return Err(ToolError::msg("session_state needs session_id"));
+            return Err(ToolError::msg("sessions.state needs session_id"));
         }
         if id == crate::mission_control::SESSION_ID {
             return Err(ToolError::msg("that's your own session"));
@@ -3984,7 +3982,7 @@ impl Tool for RegisterAgent {
                     "display_name": {"type": "string"},
                     "capabilities": {"type": "array", "items": {"type": "string"}, "description": "short tags, e.g. rust, code-review"},
                     "identity": {"type": "string", "description": "identity.md in markdown: who the agent is, its mandate, how it works, what it checks, how it reports"},
-                    "profile": {"type": "string", "description": "optional; the inference profile this agent always works on, exactly as list_profiles names it: cheaper for routine work, stronger for hard reasoning. Omit to keep the current one."},
+                    "profile": {"type": "string", "description": "optional; the inference profile this agent always works on, exactly as snippet tool list_profiles names it: cheaper for routine work, stronger for hard reasoning. Omit to keep the current one."},
                     "nickname": {"type": "string", "description": "optional; a short name shown instead of the display name, if the user asked for one."},
                     "character": {"type": "string", "description": "optional; avatar id 01..36, if the user picked one."}
                 }),
@@ -4218,7 +4216,7 @@ impl Tool for ReportMissionTask {
         // binding. Any other session is rejected.
         let Some(caller) = ctx.durable_session_id() else {
             return Err(ToolError::msg(
-                "this session is not bound to a Mission Control task; report_mission_task is only available to dispatched task sessions",
+                "this session is not bound to a Mission Control task; task.report is only available to dispatched task sessions",
             ));
         };
         let status = match args.status.as_str() {
@@ -4473,12 +4471,12 @@ impl Tool for CreateRecurringJob {
         let session_id = target_session_id.as_str();
         if crate::mission_control::is_session_id(session_id) {
             return Err(ToolError::msg(
-                "a recurring job can't run in Mission Control's own chat: pass session_id of a worker session (list_sessions, or create one), and the run reports back to you",
+                "a recurring job can't run in Mission Control's own chat: pass session_id of a worker session (read.sessions, or create one), and the run reports back to you",
             ));
         }
         if state_path_for_id(session_id).is_none() {
             return Err(ToolError::msg(
-                "unknown target session — pass an id from list_sessions or omit to target current session",
+                "unknown target session — pass an id from read.sessions or omit to target current session",
             ));
         }
         let schedule = crate::recurring::Schedule::parse(&args.schedule).map_err(ToolError::msg)?;
@@ -4511,7 +4509,7 @@ impl Tool for CreateRecurringJob {
                     || (plan.is_some() && job.plan_path.as_deref() == plan))
         }) {
             return Err(ToolError::msg(format!(
-                "session `{session_id}` already has a recurring job for this: `{}` ({}, {}). Keep it, or cancel_recurring_job it first if this one should replace it.",
+                "session `{session_id}` already has a recurring job for this: `{}` ({}, {}). Keep it, or schedule.job_cancel it first if this one should replace it.",
                 twin.title,
                 twin.id,
                 twin.schedule.display()
@@ -5242,7 +5240,7 @@ mod tests {
         assert_eq!(db.list_task_agents(&filed.id).unwrap()[0].status, "active");
         assert!(
             direct_brief_envelope(&filed, "Fix the header", "/w", "")
-                .contains(&format!("report_mission_task (task_id {})", filed.id))
+                .contains(&format!("task.report (task_id {})", filed.id))
         );
 
         let mut blocked = queued.clone();

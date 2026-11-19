@@ -42,9 +42,7 @@ impl CodingHarness {
                         Err(error) => (tool_error(error), MetaControl::Continue),
                     },
                     _ => (
-                        tool_error(
-                            "cancel_delegated_task requires non-empty `lane_id` and `reason`.",
-                        ),
+                        tool_error("delegate.cancel requires non-empty `lane_id` and `reason`."),
                         MetaControl::Continue,
                     ),
                 }
@@ -91,7 +89,7 @@ impl CodingHarness {
                 };
                 let Some(path) = text("path") else {
                     return (
-                        tool_error("present_file requires a `path`."),
+                        tool_error("present.show requires a `path`."),
                         MetaControl::Continue,
                     );
                 };
@@ -103,7 +101,7 @@ impl CodingHarness {
                 if !resolved.exists() {
                     return (
                         tool_error(format!(
-                            "present_file: `{path}` does not exist — write it before presenting it."
+                            "present.show: `{path}` does not exist — write it before presenting it."
                         )),
                         MetaControl::Continue,
                     );
@@ -118,7 +116,7 @@ impl CodingHarness {
                 if title.is_some() || artifact_id.is_some() || resolved.is_dir() {
                     let Some(session) = self.session_id() else {
                         return (
-                            tool_error("present_file: artifacts need a saved session."),
+                            tool_error("present.show: artifacts need a saved session."),
                             MetaControl::Continue,
                         );
                     };
@@ -181,7 +179,7 @@ impl CodingHarness {
                             )
                         }
                         Err(error) => (
-                            tool_error(format!("present_file: {error}")),
+                            tool_error(format!("present.show: {error}")),
                             MetaControl::Continue,
                         ),
                     };
@@ -447,7 +445,7 @@ impl CodingHarness {
                                 "lane_id": id,
                                 "title": brief.title,
                                 "access": if read_only { "read_only" } else { "full" },
-                                "note": "Lane runs in the background; its report will arrive as a [lane_report] message. Follow up later by re-calling delegate_task with this lane_id.",
+                                "note": "Lane runs in the background; its report will arrive as a [lane_report] message. Follow up later by re-calling delegate.run with this lane_id.",
                             });
                             if let Some(ref agent) = brief.agent {
                                 data["agent"] = json!(agent);
@@ -483,7 +481,7 @@ impl CodingHarness {
                             .filter(|s| !s.is_empty())
                         else {
                             return (
-                                tool_error("monitor add requires a `path`."),
+                                tool_error("process.watch requires a `path`."),
                                 MetaControl::Continue,
                             );
                         };
@@ -537,7 +535,7 @@ impl CodingHarness {
                         let Some(key) = key else {
                             return (
                                 tool_error(
-                                    "monitor remove needs a `watch_id`, `path`, or `label`.",
+                                    "process.unwatch needs a `watch_id`, `path`, or `label`.",
                                 ),
                                 MetaControl::Continue,
                             );
@@ -578,7 +576,7 @@ impl CodingHarness {
                     ),
                     other => (
                         tool_error(format!(
-                            "monitor action must be add | remove | list, got `{other}`."
+                            "process watch action must be watch | unwatch | watches, got `{other}`."
                         )),
                         MetaControl::Continue,
                     ),

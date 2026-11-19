@@ -345,7 +345,7 @@ fn delegate_task_tool() -> NativeToolDefinition {
                 },
                 "profile": {
                     "type": "string",
-                    "description": "A name from list_profiles; omitted, the lane runs on your profile."
+                    "description": "A name from delegate.profiles; omitted, the lane runs on your profile."
                 }
             },
             "required": ["description"],
@@ -417,7 +417,7 @@ pub fn parse_delegate_brief(arguments: &Value) -> Result<DelegateBrief, String> 
         Some("read_only") => true,
         Some(other) => {
             return Err(format!(
-                "delegate_task `access` must be `full` or `read_only`, not `{other}`."
+                "delegate.run `access` must be `full` or `read_only`, not `{other}`."
             ));
         }
     };
@@ -430,7 +430,7 @@ pub fn parse_delegate_brief(arguments: &Value) -> Result<DelegateBrief, String> 
     // A follow-up reuses the existing lane's title; a new lane needs one.
     if title.is_empty() && lane_id.is_none() {
         return Err(
-            "delegate_task requires a non-empty `title` (or a `lane_id` to follow up).".to_string(),
+            "delegate.run requires a non-empty `title` (or a `lane_id` to follow up).".to_string(),
         );
     }
 
@@ -451,13 +451,13 @@ pub fn parse_delegate_brief(arguments: &Value) -> Result<DelegateBrief, String> 
         .count();
     if lane_id.is_some() && description.is_empty() {
         return Err(
-            "delegate_task with a lane_id needs a description: the message for that lane."
+            "delegate.run with a lane_id needs a description: the message for that lane."
                 .to_string(),
         );
     }
     if lane_id.is_none() && collapsed_len < MIN_DELEGATE_DESCRIPTION_CHARS {
         return Err(format!(
-            "delegate_task needs a brief describing what the lane should do and what it should \
+            "delegate.run needs a brief describing what the lane should do and what it should \
              produce (at least {MIN_DELEGATE_DESCRIPTION_CHARS} characters — a sentence or two)."
         ));
     }

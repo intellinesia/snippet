@@ -1086,7 +1086,7 @@ impl CodingHarness {
         let appended = crate::vault::Vault::load().scrub_str(event.appended.trim_end());
         state.messages.push(HarnessMessage::User {
             content: format!(
-                "[file_watch]\nsubject = \"{}\"\npath = \"{}\"\nappended:{skipped_note}\n{}\n[orchestration] Act if needed; otherwise end quietly. Remove this watch when done.\n[follow_up_id = \"{}\"]  # internal handle for monitor remove; to the user, call this work by its subject\n[/file_watch]",
+                "[file_watch]\nsubject = \"{}\"\npath = \"{}\"\nappended:{skipped_note}\n{}\n[orchestration] Act if needed; otherwise end quietly. Remove this watch when done.\n[follow_up_id = \"{}\"]  # internal handle for process.unwatch; to the user, call this work by its subject\n[/file_watch]",
                 event.label, event.path, appended, event.id
             ),
         });

@@ -695,7 +695,7 @@ impl LaneManager {
     ) -> Result<String, String> {
         if self.factory.is_none() {
             return Err(
-                "delegate_task is unavailable in this run (no model factory; interactive mode only)."
+                "delegate.run is unavailable in this run (no model factory; interactive mode only)."
                     .to_string(),
             );
         };
@@ -764,7 +764,7 @@ impl LaneManager {
     ) -> Result<String, String> {
         if self.factory.is_none() {
             return Err(
-                "delegate_task is unavailable in this run (no model factory; interactive mode only)."
+                "delegate.run is unavailable in this run (no model factory; interactive mode only)."
                     .to_string(),
             );
         }

@@ -178,7 +178,7 @@ fn group_added_envelope(group: &crate::coordination::GroupSummary) -> String {
     format!(
         "[group_added]\nthread_id: {}\ntitle: {}\nmembers: {}\nlead: {}\n\
          note: you were added to this group chat. Nothing to do now: do not post and write \
-         nothing, just end your turn. Posts reach you as [group_message]; answer with group_thread post.\n\
+         nothing, just end your turn. Posts reach you as [group_message]; answer with message.group (op: post).\n\
          [/group_added]",
         group.id,
         group.title,
@@ -479,7 +479,7 @@ fn group_message_envelope(
         }
     }
     envelope.push_str(&format!(
-        "reply_expected: {}\nnote: {} Recent history only; use read_chat for more.\n\
+        "reply_expected: {}\nnote: {} Recent history only; use read.thread for more.\n\
          {digest}body: {body}\n{answered}[/group_message]",
         if reply_expected { "true" } else { "false" },
         if wake == GroupWakeKind::Peer {
@@ -494,7 +494,7 @@ fn group_message_envelope(
              Otherwise end your turn without writing anything, not even that you are staying quiet."
         } else if reply_expected {
             "this post is waiting on the group; answer in the thread with \
-             group_thread post, setting in_reply_to to the event you answer. \
+             message.group (op: post), setting in_reply_to to the event you answer. \
              One reply per agent per post. Before doing work from it, say in one line \
              what you are taking; hand the parts another member is better placed for \
              to them by naming them, instead of doing everything yourself."
@@ -522,7 +522,7 @@ fn group_unanswered_envelope(
     format!(
         "[owed_reply]\nfrom: {}:{}\nthread_id: {}\nevent_id: {}\nwaiting_minutes: {waiting_minutes}\n\
          note: nobody in the group has answered this post and you lead the group. \
-         Answer it with group_thread post (in_reply_to this event), or name in one line \
+         Answer it with message.group (op: post, in_reply_to this event), or name in one line \
          the member who should and mention them.\nbody: {body}\n[/owed_reply]",
         event.actor_kind, event.actor_id, event.thread_id, event.event_id
     )
@@ -1086,7 +1086,7 @@ mod tests {
         assert!(env.contains("  1 [agent] a: first post"));
         assert!(env.contains("  2 [human] human: second post"));
         assert!(!env.contains("auto ack"));
-        assert!(env.contains("Recent history only; use read_chat for more."));
+        assert!(env.contains("Recent history only; use read.thread for more."));
         let digest_at = env.find("history:").expect("digest present");
         let body_at = env.find("body: wake body").expect("body present");
         assert!(digest_at < body_at, "body must stay last: {env}");

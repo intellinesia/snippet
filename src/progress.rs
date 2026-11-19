@@ -220,7 +220,7 @@ pub fn ledger_log(db: &Store, task_id: &str) -> String {
     }
     lines.reverse();
     format!(
-        "\nprogress log so far (read_coordination_board with task_id for more):\n{}",
+        "\nprogress log so far (read.board with task_id for more):\n{}",
         lines.join("\n")
     )
 }
@@ -251,7 +251,7 @@ pub fn inbox_digest(db: &Store, agent: &str) -> String {
         return String::new();
     }
     format!(
-        "What your sessions reported most recently (read_coordination_board for more):\n{}",
+        "What your sessions reported most recently (read.board for more):\n{}",
         lines.join("\n")
     )
 }

@@ -200,7 +200,7 @@ fn board_message_envelope_carries_sender_thread_and_reply_rule() {
     assert!(envelope.contains("from_kind: human"));
     assert!(envelope.contains("body: please investigate X"));
     // The reply contract is what stops a silent no-op.
-    assert!(envelope.contains("send_agent_message to the sender"));
+    assert!(envelope.contains("message.send to the sender"));
     assert!(envelope.contains("[/coordination_board_message]"));
 }
 
