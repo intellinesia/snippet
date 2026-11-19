@@ -799,6 +799,7 @@ mod tests {
             finished_at: None,
             result_summary: None,
             pending_handoff: None,
+            managed_by: "human".into(),
         };
         store.create_conversation(&row, &[], "{}").unwrap();
         let user = |text: &str| crate::llm::HarnessMessage::User {

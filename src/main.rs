@@ -174,6 +174,8 @@ enum AgentAction {
         #[arg(long)]
         json: bool,
     },
+    #[command(about = "Undo the last change to an agent's identity.")]
+    Revert { agent_id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -390,12 +392,24 @@ async fn daemon_http(
 /// daemon owns delivery, wake-up, and the retry ledger, so a message this CLI
 /// accepts is still delivered after a restart.
 async fn agent_cli(action: AgentAction) -> Result<(), Box<dyn std::error::Error>> {
+    if let AgentAction::Revert { agent_id } = action {
+        let mc_root = snippet::mission_control::MissionControlStore::default_root(None);
+        let agents_root = snippet::coordination::agents_root(&mc_root);
+        let home = snippet::coordination::AgentHome::new(agents_root, &agent_id)
+            .map_err(|error| error.to_string())?;
+        let summary = home
+            .revert_last_identity_change()
+            .map_err(|error| error.to_string())?;
+        println!("{summary}");
+        return Ok(());
+    }
     let state = serve_connection().map_err(|error| {
         format!(
             "{error}\n\nis the daemon running? start it with `snippet serve`, then check `snippet serve --status`"
         )
     })?;
     match action {
+        AgentAction::Revert { .. } => unreachable!(),
         AgentAction::List { json } => {
             let value = daemon_http(&state, "GET", "agents", &[], None).await?;
             if json {

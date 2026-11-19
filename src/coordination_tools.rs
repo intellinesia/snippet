@@ -1946,6 +1946,17 @@ impl Tool for DeclineTask {
             t.notify_once("declined", &message);
         })
         .map_err(|e| ToolError::msg(format!("notify Mission Control: {e}")))?;
+        let _ = db.record_board_entry(
+            &actor_id,
+            crate::coordination::BoardEntryKind::Noted,
+            &crate::coordination::NewBoardEntry {
+                session_id: Some(&task.session_id),
+                workspace: None,
+                summary: &format!("{task_id} — declined: {reason}"),
+                correlation_id: Some(task_id),
+                created_at: &now,
+            },
+        );
         let event = CoordinationEvent {
             event_id: Uuid::new_v4().to_string(),
             thread_id: task.thread_id.clone(),

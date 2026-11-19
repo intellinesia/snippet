@@ -937,6 +937,7 @@ mod owner_and_came_back_tests {
             finished_at: None,
             result_summary: None,
             pending_handoff: None,
+            managed_by: "human".into(),
         }
     }
 

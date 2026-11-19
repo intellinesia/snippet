@@ -1523,6 +1523,7 @@ fn insert_test_session(
                 finished_at: None,
                 result_summary: None,
                 pending_handoff: None,
+                managed_by: "human".into(),
             },
             &[],
             "[]",

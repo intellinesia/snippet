@@ -1346,6 +1346,7 @@ pub async fn run_serve(
         .route("/session/delete", post(delete_session))
         .route("/session/settle", post(settle_routes::settle_route))
         .route("/session/keep_awake", post(settle_routes::keep_awake_route))
+        .route("/session/managed_by", post(settle_routes::managed_by_route))
         .route(
             "/session/resume_mode",
             post(settle_routes::resume_mode_route),

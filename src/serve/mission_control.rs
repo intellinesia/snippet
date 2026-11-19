@@ -804,6 +804,17 @@ fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, Str
             now,
         )
         .map_err(|error| error.to_string())?;
+    let _ = d.store.record_board_entry(
+        &agent,
+        crate::coordination::BoardEntryKind::Noted,
+        &crate::coordination::NewBoardEntry {
+            session_id: Some(&task.session_id),
+            workspace: None,
+            summary: &format!("{} — offered to you: {}", task.id, task.title),
+            correlation_id: Some(&task.id),
+            created_at: now,
+        },
+    );
     d.store
         .update_task_in(task_id, now, |t| {
             t.notifications
