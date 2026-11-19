@@ -775,13 +775,40 @@ fn prefix_tool_names(text: &str, names: &[String]) -> String {
     out
 }
 
+fn empty_call_example(name: &str, schema: &Value) -> Value {
+    let props = schema.get("properties").and_then(Value::as_object);
+    let arguments: serde_json::Map<String, Value> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|field| {
+            let kind = props
+                .and_then(|p| p.get(field))
+                .and_then(|p| p.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("string");
+            let placeholder = match kind {
+                "array" => json!([]),
+                "object" => json!({}),
+                "integer" | "number" => json!(1),
+                "boolean" => json!(true),
+                _ => json!(format!("<{field}>")),
+            };
+            (field.to_string(), placeholder)
+        })
+        .collect();
+    json!({"server_name": MCP_SERVER, "tool_name": name, "arguments": arguments})
+}
+
 fn tool_prompt_preamble(kind: CliKind) -> String {
     match kind {
         CliKind::ClaudeCode => format!(
             "## Tools in this runtime\n\nThe tools named in this prompt are served to you as `{MCP_PREFIX}<name>`: where it says `bash`, call `{MCP_PREFIX}bash`, and so on. These are your only tools: you have no built-in ones in this session. Read and search files with `bash` (cat, sed -n, rg, ls), and make every change, command, question and delegation through the snippet tools."
         ),
         CliKind::Devin => format!(
-            "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{MCP_SERVER}` MCP server. Call them via `mcp_call_tool` with `server_name: \"{MCP_SERVER}\"`, `tool_name` set to the exact tool name (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate_task`, and the rest), and `arguments` matching its schema (call `mcp_list_tools` for `{MCP_SERVER}` once first if your runtime requires it). Every built-in tool of yours (`exec`, `read`, `write`, `edit`, `grep`, `glob`, `skill`, `ask_user_question`, `todo_write`) is disabled in this session: read and search files with `bash` (`cat`, `sed -n`, `rg`, `ls`), edit files with `change_files`, and make every command, question and delegation through the `{MCP_SERVER}` MCP tools."
+            "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{MCP_SERVER}` MCP server. Call them via `mcp_call_tool` with `server_name: \"{MCP_SERVER}\"`, `tool_name` set to the exact tool name (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate_task`, and the rest), and `arguments` matching its schema (call `mcp_list_tools` for `{MCP_SERVER}` once first if your runtime requires it). The nested `arguments` object is required on every call and carries the tool's own fields, written out in full each time, for example `{{\"server_name\": \"{MCP_SERVER}\", \"tool_name\": \"bash\", \"arguments\": {{\"command\": \"ls\", \"label\": \"list files\"}}}}`; a call without it reaches the tool empty and fails. Every built-in tool of yours (`exec`, `read`, `write`, `edit`, `grep`, `glob`, `skill`, `ask_user_question`, `todo_write`) is disabled in this session: read and search files with `bash` (`cat`, `sed -n`, `rg`, `ls`), edit files with `change_files`, and make every command, question and delegation through the `{MCP_SERVER}` MCP tools."
         ),
         CliKind::Antigravity => format!(
             "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{}` MCP server: call them with call_mcp_tool, ServerName `{}` and ToolName exactly as named here (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate_task`, and the rest). These are your only working tools: every built-in tool of yours is switched off in this session. Read and search files with the snippet `bash` tool (cat, sed -n, rg, ls), research with its `web_search` and `web_read`, and make every change, command, question and delegation through the snippet tools. The one exception: when a tool result says its output was saved to a file inside your own Antigravity folder, read that file with view_file.",
@@ -3512,7 +3539,13 @@ impl CodingHarness {
                     .into_iter()
                     .find(|d| argument_error && d.name == call.name)
                     .map(|d| d.input_schema);
+                let empty = arguments.as_object().is_none_or(|o| o.is_empty());
                 let message = match schema {
+                    Some(schema) if empty => format!(
+                        "Your call to `{name}` arrived with no arguments: the `arguments` object was missing or empty, so nothing reached the tool. If you call through a wrapper such as `mcp_call_tool`, the tool's own arguments go inside its nested `arguments` field, written out in full on every call, for example: {example}\nDo not resend the previous call unchanged. Schema of `{name}`: {schema}",
+                        name = call.name,
+                        example = empty_call_example(&call.name, &schema),
+                    ),
                     Some(schema) => format!(
                         "{error}\nCall `{}` again with arguments matching this schema: {schema}",
                         call.name
