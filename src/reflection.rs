@@ -84,7 +84,6 @@ impl Store {
                 })
             })?
             .collect::<Result<_, _>>()
-            .map_err(Into::into)
         })
     }
 }
