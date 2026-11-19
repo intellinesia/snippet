@@ -26,6 +26,21 @@ pub struct AgentHome {
 }
 
 impl AgentHome {
+    pub fn last_identity_commit(&self) -> Option<(String, String)> {
+        let out = git_output(
+            &self.root,
+            &["log", "-n", "1", "--format=%h%n%s", "--", "identity.md"],
+        )
+        .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let mut lines = text.lines();
+        let hash = lines.next()?.trim().to_string();
+        (!hash.is_empty()).then(|| (hash, lines.next().unwrap_or("").trim().to_string()))
+    }
+
     pub fn new(root: impl AsRef<Path>, agent_id: &str) -> Result<Self, IdentityError> {
         validate_agent_id(agent_id)?;
         Ok(Self {
@@ -88,7 +103,7 @@ impl AgentHome {
         Ok(())
     }
 
-    fn ensure_repo(&self) -> Result<(), IdentityError> {
+    pub fn ensure_repo(&self) -> Result<(), IdentityError> {
         if self.root.join(".git").exists() {
             return Ok(());
         }

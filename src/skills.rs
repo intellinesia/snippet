@@ -36,11 +36,19 @@ pub fn skills_roots() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    vec![
-        skills_root(),
-        home.join(".claude").join("skills"),
-        home.join(".codex").join("skills"),
-    ]
+    let mut roots = vec![skills_root()];
+    if let Ok(entries) = std::fs::read_dir(home.join(".snippet").join("agents")) {
+        let mut agent_roots: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path().join("skills"))
+            .filter(|p| p.is_dir())
+            .collect();
+        agent_roots.sort();
+        roots.extend(agent_roots);
+    }
+    roots.push(home.join(".claude").join("skills"));
+    roots.push(home.join(".codex").join("skills"));
+    roots
 }
 
 /// Discover every skill across all roots, deduped by name (first root wins).
