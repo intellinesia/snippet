@@ -455,10 +455,7 @@ impl AgentRuntime {
 
         let tools = coordination_tool_registry(i.exa_api_key.clone());
 
-        // The environment layer claims a full shell and filesystem; the flag keeps
-        // that out of the prompt.
-        let mut prompt_ctx = i.prompt_ctx;
-        prompt_ctx.coordination = true;
+        let prompt_ctx = i.prompt_ctx;
 
         Ok(Self {
             factory: None,
@@ -634,10 +631,10 @@ fn start_session_with_role(
             memory_writable: memory_enabled,
             skills: !crate::skills::discover().is_empty(),
             vault: !crate::vault::Vault::load().is_empty(),
-            // Set by the role, once it is known: only a coordination runtime
-            // wants that layer, and it is the reason the environment layer is
-            // dropped from its prompt.
-            coordination: false,
+            agent_managed: durable_id
+                .as_deref()
+                .and_then(|id| store_for_sessions()?.session_managed_by(id).ok().flatten())
+                .is_some_and(|m| m == "agent"),
             images: model.supports_images(),
         };
         let runtime = AgentRuntime::resolve(
@@ -727,7 +724,7 @@ pub async fn reflect_stored_session(
         memory_writable: config.memory_enabled,
         skills: false,
         vault: false,
-        coordination: false,
+        agent_managed: false,
         images: model.supports_images(),
     };
     let runtime = AgentRuntime::resolve(
