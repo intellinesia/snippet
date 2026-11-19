@@ -39,7 +39,6 @@ pub fn add_coordination_tools(registry: &mut ToolRegistry) {
     registry.insert(crate::agent_context::ContextLimitTool);
     registry.insert(crate::keep_warm::KeepWarmTool);
     registry.insert(crate::mission_tools::ReachPolicyTool);
-    registry.insert(crate::harness_map::HarnessMapTool);
     registry.insert(ShareArtifactTool);
     registry.insert(GroupThread);
     // One chat surface over every thread kind: list them, read any, post to any.

@@ -33,7 +33,6 @@ pub mod gemini;
 pub mod goal_plan;
 pub mod goal_tools;
 pub mod harness;
-pub mod harness_map;
 pub mod history_archive;
 pub mod inline;
 pub mod keep_warm;
