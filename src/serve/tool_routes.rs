@@ -47,14 +47,12 @@ impl Seat {
             Self::Desk => &[
                 "record_coordination_note",
                 "list_coordination_agents",
-                "list_profiles",
                 "keep_warm",
                 "context_limit",
                 "reach_policy",
                 "share_artifact",
             ],
             Self::MissionControl => &[
-                "record_coordination_note",
                 "list_coordination_agents",
                 "list_profiles",
                 "keep_warm",
