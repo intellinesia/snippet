@@ -1728,6 +1728,8 @@ struct ClaimAndDispatchArgs {
     profile: Option<String>,
     #[serde(default)]
     report_to: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
 }
 
 pub struct ClaimAndDispatchTask;
@@ -1741,7 +1743,8 @@ impl Tool for ClaimAndDispatchTask {
                 json!({
                     "task_id": {"type": "string", "description": "The task ID to claim"},
                     "profile": {"type": "string", "description": "Optional inference profile name. Omit to preserve prompt cache affinity."},
-                    "report_to": {"type": "string", "description": "`group:<id>` or `direct:<thread>`"}
+                    "report_to": {"type": "string", "description": "`group:<id>` or `direct:<thread>`"},
+                    "context": {"type": "string", "description": "Lane offers: what the lane should know from your memory, skills or past work; added to its brief."}
                 }),
                 &["task_id"],
             ),
@@ -1754,6 +1757,21 @@ impl Tool for ClaimAndDispatchTask {
         let task_id = args.task_id.trim();
         if task_id.is_empty() {
             return Err(ToolError::msg("task_id must not be empty"));
+        }
+        if crate::lane_offers::is_offer_id(task_id) {
+            let (_, actor_id) = actor(ctx)?;
+            let db = db(ctx)?;
+            let note = crate::lane_offers::claim_or_decline(
+                &db,
+                task_id,
+                &actor_id,
+                true,
+                args.context.as_deref(),
+            )
+            .map_err(ToolError::msg)?;
+            return Ok(ToolResult::success(
+                json!({"claimed": true, "offer_id": task_id, "note": note}),
+            ));
         }
         let profile = args
             .profile
@@ -1919,6 +1937,14 @@ impl Tool for DeclineTask {
             ));
         }
         let db = db(ctx)?;
+        if crate::lane_offers::is_offer_id(task_id) {
+            let note =
+                crate::lane_offers::claim_or_decline(&db, task_id, &actor_id, false, Some(reason))
+                    .map_err(ToolError::msg)?;
+            return Ok(ToolResult::success(
+                json!({"declined": true, "offer_id": task_id, "note": note}),
+            ));
+        }
         let task = db
             .get_task(task_id)
             .map_err(|e| ToolError::msg(format!("lookup task: {e}")))?

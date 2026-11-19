@@ -273,6 +273,7 @@ async fn start_review(d: &Daemon, task: &Task, state: &TaskState, now: &str) {
         read_only: true,
         agent: Some(reviewer),
         profile,
+        paths: Vec::new(),
     };
     let _ = d
         .store

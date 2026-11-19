@@ -735,12 +735,13 @@ impl CodingHarness {
         lanes: &mut LaneManager,
         spec: super::LaneSpawn,
     ) {
-        match lanes.spawn(
+        match lanes.spawn_scoped(
             &spec.title,
             &spec.brief,
             spec.read_only,
             spec.agent,
             spec.profile,
+            spec.paths,
         ) {
             Ok(id) => state.events.push(HarnessEvent::LaneSpawned {
                 id,

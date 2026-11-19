@@ -884,6 +884,8 @@ pub struct LaneSpawn {
     pub read_only: bool,
     pub agent: Option<String>,
     pub profile: Option<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 // --- Runtime corrections ---

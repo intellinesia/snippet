@@ -715,7 +715,6 @@ impl Store {
                 |row| row.get(0),
             )
             .optional()
-            .map_err(Into::into)
         })
     }
 

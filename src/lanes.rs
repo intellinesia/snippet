@@ -340,7 +340,7 @@ impl Tool for MessageParent {
 
     async fn execute(
         &self,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
         arguments: serde_json::Value,
     ) -> Result<ToolResult, ToolError> {
         let args: MessageParentArgs =
@@ -358,6 +358,27 @@ impl Tool for MessageParent {
             .map_err(|_| {
                 ToolError::msg("the agent that handed you this has gone; put it in your report")
             })?;
+        if let Some(Ok(store)) = bound_store(ctx.store_path()) {
+            let flat: String = message
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(240)
+                .collect();
+            let _ = store.record_board_entry(
+                ctx.agent_id()
+                    .unwrap_or(crate::coordination::SNIPPET_AGENT_ID),
+                crate::coordination::BoardEntryKind::Progress,
+                &crate::coordination::NewBoardEntry {
+                    session_id: ctx.lane_origin().map(|(session, _)| session),
+                    workspace: None,
+                    summary: &format!("lane {} to its session: {flat}", self.lane_id),
+                    correlation_id: Some(&self.lane_id),
+                    created_at: &chrono::Utc::now().to_rfc3339(),
+                },
+            );
+        }
         if !args.wait {
             return Ok(ToolResult::success(serde_json::json!({
                 "sent": true,
@@ -377,6 +398,13 @@ impl Tool for MessageParent {
             "answer": answers.join("\n\n"),
         })))
     }
+}
+
+pub(crate) fn bound_store(
+    path: Option<PathBuf>,
+) -> Option<Result<crate::store::Store, crate::store::StoreError>> {
+    path.or_else(|| (!cfg!(test)).then(crate::store::default_db_path))
+        .map(crate::store::Store::open_cached)
 }
 
 /// Who a lane works for, gathered from the parent session when the lane starts.
@@ -863,6 +891,29 @@ impl LaneManager {
     }
 
     /// Shared spawn: run the lane on a tokio task and report back over the channel.
+    fn log_to_board(&self, agent: Option<&str>, lane_id: &str, summary: &str) {
+        let Some(parent) = self.parent.as_ref() else {
+            return;
+        };
+        let Some(Ok(store)) = bound_store(parent.store_path()) else {
+            return;
+        };
+        let agent = agent
+            .or_else(|| parent.agent_id())
+            .unwrap_or(crate::coordination::SNIPPET_AGENT_ID);
+        let _ = store.record_board_entry(
+            agent,
+            crate::coordination::BoardEntryKind::Progress,
+            &crate::coordination::NewBoardEntry {
+                session_id: parent.durable_session_id(),
+                workspace: Some(&self.workspace_root.display().to_string()),
+                summary,
+                correlation_id: Some(lane_id),
+                created_at: &Utc::now().to_rfc3339(),
+            },
+        );
+    }
+
     fn launch(
         &mut self,
         id: &str,
@@ -873,6 +924,8 @@ impl LaneManager {
         agent: Option<String>,
         profile: Option<String>,
     ) {
+        let verb = if resume { "resumed" } else { "started" };
+        self.log_to_board(agent.as_deref(), id, &format!("lane {id} {verb}: {title}"));
         let factory = self.factory.clone().expect("checked by callers");
         let result_tx = self.result_tx.clone();
         let progress_tx = self.progress_tx.clone();
@@ -1047,6 +1100,30 @@ impl LaneManager {
                 let drop_count = record.activity_log.len() - MAX_ACTIVITY;
                 record.activity_log.drain(..drop_count);
             }
+        }
+        if result.status != LaneStatus::Running {
+            let agent = self
+                .records
+                .iter()
+                .find(|r| r.id == result.id)
+                .and_then(|r| r.agent.clone());
+            let outcome = result
+                .summary
+                .as_deref()
+                .or(result.error.as_deref())
+                .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+                .unwrap_or_default();
+            let outcome: String = outcome.chars().take(240).collect();
+            self.log_to_board(
+                agent.as_deref(),
+                &result.id,
+                &format!(
+                    "lane {} {}: {} — {outcome}",
+                    result.id,
+                    format!("{:?}", result.status).to_lowercase(),
+                    result.title
+                ),
+            );
         }
         // Best-effort: drop temp diagnostic JSONL once the lane is terminal.
         if result.status != LaneStatus::Running {

@@ -1,6 +1,43 @@
 use super::*;
 
 impl CodingHarness {
+    fn offer_lane(
+        &self,
+        brief: &crate::meta::DelegateBrief,
+        description: &str,
+        read_only: bool,
+    ) -> Option<Value> {
+        let agent = brief.agent.as_deref()?;
+        if agent == crate::mission_control::SESSION_ID || self.context.lane_origin().is_some() {
+            return None;
+        }
+        let session_id = self.context.durable_session_id()?;
+        let store = crate::lanes::bound_store(self.context.store_path())?.ok()?;
+        store.get_agent(agent).ok().flatten()?;
+        let result = crate::lane_offers::offer_lane(
+            &store,
+            session_id,
+            agent,
+            brief,
+            description,
+            read_only,
+        );
+        Some(match result {
+            Ok((offer_id, merged)) => json!({
+                "schema_version": 1,
+                "status": "success",
+                "data": {
+                    "offered": true,
+                    "offer_id": offer_id,
+                    "agent": agent,
+                    "merged": merged,
+                    "note": format!("Offered to `{agent}`'s desk. When it claims, the lane starts in this session with whatever the desk adds, and its report arrives as a [lane_report]. Unclaimed after a while: call delegate.run again with the same title and agent to resend; it merges into this offer. A decline arrives as [lane_offer_declined]."),
+                }
+            }),
+            Err(error) => tool_error(format!("could not offer the lane to `{agent}`: {error}")),
+        })
+    }
+
     pub(super) fn dispatch_meta(
         &self,
         state: &mut HarnessState,
@@ -426,6 +463,9 @@ impl CodingHarness {
                     } else {
                         (brief.description.clone(), brief.read_only)
                     };
+                    if let Some(offered) = self.offer_lane(&brief, &description, read_only) {
+                        return (offered, MetaControl::Continue);
+                    }
                     match lanes.spawn_scoped(
                         &brief.title,
                         &description,
