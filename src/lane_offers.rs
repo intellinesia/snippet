@@ -370,7 +370,14 @@ mod tests {
             offer_lane(&store, "s1", "reviewer", &brief, "Also check tests.", true).unwrap();
         assert_eq!((again.as_str(), merged), (id.as_str(), true));
         assert!(claim_or_decline(&store, &id, "someone-else", true, None).is_err());
-        claim_or_decline(&store, &id, "reviewer", true, Some("Watch the lease token.")).unwrap();
+        claim_or_decline(
+            &store,
+            &id,
+            "reviewer",
+            true,
+            Some("Watch the lease token."),
+        )
+        .unwrap();
         assert!(claim_or_decline(&store, &id, "reviewer", false, Some("no")).is_err());
         let taken = store.take_resolved_lane_offers("now").unwrap();
         assert_eq!(taken.len(), 1);

@@ -195,6 +195,7 @@ fn create_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
     crate::history_archive::ensure_schema(connection)?;
     crate::usage_ledger::ensure_schema(connection)?;
     crate::lane_offers::ensure_schema(connection)?;
+    crate::reflection::ensure_schema(connection)?;
     Ok(())
 }
 

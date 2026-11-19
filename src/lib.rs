@@ -55,6 +55,7 @@ pub mod reasoning;
 pub mod recording_policy;
 pub mod recordings;
 pub mod recurring;
+pub mod reflection;
 pub mod review_tools;
 pub mod routing;
 pub mod sanitize;

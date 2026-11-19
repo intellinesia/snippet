@@ -1422,6 +1422,7 @@ pub async fn dispatch_loop(daemon: Shared) {
         }
         super::review::drive_reviews(&daemon).await;
         drive_lane_offers(&daemon).await;
+        drive_reflection(&daemon).await;
         super::stall::sweep(
             &daemon.store,
             chrono::Utc::now(),
@@ -1465,6 +1466,99 @@ async fn drive_lane_offers(daemon: &Shared) {
             crate::harness::LoopInput::UserMessage(crate::lane_offers::declined_notice(&offer))
         };
         daemon.deliver(&offer.session_id, input).await;
+    }
+}
+
+static REFLECTION_SWEEP_AT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+async fn drive_reflection(daemon: &Shared) {
+    let now = chrono::Utc::now().timestamp();
+    let last = REFLECTION_SWEEP_AT.load(std::sync::atomic::Ordering::Relaxed);
+    if now - last < 300 {
+        return;
+    }
+    REFLECTION_SWEEP_AT.store(now, std::sync::atomic::Ordering::Relaxed);
+    let root = crate::coordination::agents_root(&daemon.mission_control_root);
+    for agent in daemon.store.list_agents().unwrap_or_default() {
+        if agent.id == mission_control::SESSION_ID
+            || agent.kind != crate::coordination::types::AgentKind::Worker
+            || agent.status != crate::coordination::types::AgentStatus::Active
+        {
+            continue;
+        }
+        let Ok(home) = crate::coordination::AgentHome::new(&root, &agent.id) else {
+            continue;
+        };
+        if !home.identity_path().exists() {
+            continue;
+        }
+        let _ = home.ensure_repo();
+        home.commit("Update agent home");
+        let identity = home.last_identity_commit();
+        let Some(mut mark) = daemon.store.reflection_mark(&agent.id).ok().flatten() else {
+            let latest = daemon
+                .store
+                .board_since(&agent.id, 0)
+                .unwrap_or_default()
+                .last()
+                .map(|l| l.id)
+                .unwrap_or(0);
+            let _ = daemon.store.set_reflection_mark(
+                &agent.id,
+                &crate::reflection::ReflectionMark {
+                    last_board_id: latest,
+                    last_at: now,
+                    identity_commit: identity.map(|(hash, _)| hash),
+                },
+            );
+            continue;
+        };
+        if let Some((hash, subject)) = identity.as_ref()
+            && mark.identity_commit.as_deref() != Some(hash.as_str())
+        {
+            let size = std::fs::metadata(home.identity_path())
+                .map(|m| m.len() as usize)
+                .unwrap_or(0);
+            let notice = crate::reflection::identity_notice(&agent.id, hash, subject, size);
+            let at = chrono::Utc::now().to_rfc3339();
+            for recipient in [
+                ("human", crate::coordination::LOCAL_HUMAN_ID),
+                ("agent", mission_control::SESSION_ID),
+            ] {
+                let _ = daemon.store.send_direct_message(
+                    ("agent", &agent.id),
+                    recipient,
+                    &notice,
+                    &uuid::Uuid::new_v4().to_string(),
+                    &at,
+                );
+            }
+            mark.identity_commit = Some(hash.clone());
+            let _ = daemon.store.set_reflection_mark(&agent.id, &mark);
+        }
+        let fresh = daemon
+            .store
+            .board_since(&agent.id, mark.last_board_id)
+            .unwrap_or_default();
+        if !crate::reflection::due(&fresh, mark.last_at, now) || inbox_busy(&agent.id) {
+            continue;
+        }
+        if super::direct::ensure_agent_inbox(daemon, &agent.id)
+            .await
+            .is_err()
+        {
+            continue;
+        }
+        let envelope = crate::reflection::reflect_envelope(home.root(), &fresh);
+        mark.last_board_id = fresh.last().map(|l| l.id).unwrap_or(mark.last_board_id);
+        mark.last_at = now;
+        let _ = daemon.store.set_reflection_mark(&agent.id, &mark);
+        daemon
+            .deliver(
+                &crate::session::inbox_session_id(&agent.id),
+                crate::harness::LoopInput::UserMessage(envelope),
+            )
+            .await;
     }
 }
 
