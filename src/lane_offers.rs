@@ -118,9 +118,9 @@ impl Store {
         })
     }
 
-    pub fn merge_lane_offer(&self, id: &str, addition: &str, now: &str) -> Result<(), StoreError> {
+    pub fn merge_lane_offer(&self, id: &str, addition: &str, now: &str) -> Result<bool, StoreError> {
         self.with_connection(|conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "UPDATE lane_offers SET brief = brief || ?2, updated_at = ?3
                  WHERE id = ?1 AND status = 'offered'",
                 params![
@@ -128,8 +128,7 @@ impl Store {
                     format!("\n\nUpdate from the requester:\n{addition}"),
                     now
                 ],
-            )?;
-            Ok(())
+            )? == 1)
         })
     }
 
@@ -158,12 +157,14 @@ impl Store {
                 ))?
                 .query_map([], offer_from)?
                 .collect::<Result<_, _>>()?;
-            tx.execute(
-                "UPDATE lane_offers SET status = CASE status WHEN 'claimed' THEN 'started' ELSE 'closed' END,
-                    updated_at = ?1
-                 WHERE status IN ('claimed', 'declined')",
-                params![now],
-            )?;
+            for offer in &offers {
+                tx.execute(
+                    "UPDATE lane_offers SET status = CASE status WHEN 'claimed' THEN 'started' ELSE 'closed' END,
+                        updated_at = ?2
+                     WHERE id = ?1",
+                    params![offer.id, now],
+                )?;
+            }
             tx.commit()?;
             Ok(offers)
         })
@@ -193,10 +194,12 @@ pub fn claim_or_decline(
         .resolve_lane_offer(offer_id, status, note, &now)
         .map_err(|e| e.to_string())?
     {
-        return Err(format!(
-            "lane offer `{offer_id}` is already {}",
-            offer.status
-        ));
+        let current = store
+            .get_lane_offer(offer_id)
+            .ok()
+            .flatten()
+            .map_or(offer.status, |o| o.status);
+        return Err(format!("lane offer `{offer_id}` is already {current}"));
     }
     let (kind, summary) = if claim {
         (
@@ -295,9 +298,12 @@ pub fn offer_lane(
 ) -> Result<(String, bool), StoreError> {
     let title = request.title.as_str();
     let now = chrono::Utc::now().to_rfc3339();
-    let (offer, merged) = match store.pending_lane_offer(session_id, agent_id, title)? {
+    let pending = match store.pending_lane_offer(session_id, agent_id, title)? {
+        Some(existing) if store.merge_lane_offer(&existing.id, brief, &now)? => Some(existing),
+        _ => None,
+    };
+    let (offer, merged) = match pending {
         Some(existing) => {
-            store.merge_lane_offer(&existing.id, brief, &now)?;
             let offer = store.get_lane_offer(&existing.id)?.unwrap_or(existing);
             (offer, true)
         }
