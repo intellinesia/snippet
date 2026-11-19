@@ -1486,7 +1486,6 @@ async fn run_lane_once(
         Ok(context) => {
             let context = context
                 .with_write_scope(link.write_scope.clone())
-                .with_read_only_shell(read_only)
                 .with_lease_token(link.lease_token)
                 .with_agent_id_opt(link.agent_id.clone())
                 .with_store_path(
