@@ -84,6 +84,7 @@ pub(crate) mod watches;
 use crate::term::SessionTerms;
 pub(crate) use session_routes::*;
 pub mod sidecar;
+mod tool_routes;
 mod transcribe;
 mod tunnel;
 pub(crate) use tunnel::find_cloudflared;
@@ -1379,6 +1380,8 @@ pub async fn run_serve(
         .route("/session/lane/cancel", post(session_routes::cancel_lane))
         .route("/session/lane/retry", post(session_routes::retry_lane))
         .route("/git/init", post(git_init))
+        .route("/api/tools", get(tool_routes::list_tools))
+        .route("/api/tools/run", post(tool_routes::run_tool))
         .layer(axum::middleware::from_fn_with_state(
             daemon.clone(),
             require_token,

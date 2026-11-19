@@ -105,7 +105,7 @@ pub fn read_only_verdict(command: &str) -> Result<(), String> {
                 .any(|a| a.starts_with("--pre") || a.starts_with("--hostname-bin")),
             "file" => args.iter().any(|a| short_cluster(a, 'C')),
             "uniq" => args.iter().filter(|a| !a.starts_with('-')).count() > 1,
-            "snippet" => args.first() != Some(&"history"),
+            "snippet" => !matches!(args.first(), Some(&"history" | &"tool")),
             "find" => args.iter().any(|a| {
                 matches!(
                     *a,
