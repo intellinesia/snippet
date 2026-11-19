@@ -472,12 +472,11 @@ impl CodingHarness {
             .map(|call| {
                 let uses_op = crate::surface::uses_op(&call.tool_name, &call.arguments);
                 let advertised = definitions.iter().find(|d| d.name == call.tool_name);
-                let lowered = advertised
-                    .and_then(|adv| {
-                        crate::surface::lower_for_advertised(&call.tool_name, &call.arguments, adv)
-                            .ok()
-                            .flatten()
-                    });
+                let lowered = advertised.and_then(|adv| {
+                    crate::surface::lower_for_advertised(&call.tool_name, &call.arguments, adv)
+                        .ok()
+                        .flatten()
+                });
                 match lowered {
                     Some((name, args)) => (name, args, uses_op),
                     None => (call.tool_name.clone(), call.arguments.clone(), false),
@@ -485,16 +484,21 @@ impl CodingHarness {
             })
             .collect();
         for (call, (internal_name, internal_args, _)) in calls.iter().zip(&lowered_calls) {
-            self.lane_progress("tool_call", tool_activity_text(internal_name, internal_args));
+            self.lane_progress(
+                "tool_call",
+                tool_activity_text(internal_name, internal_args),
+            );
             self.presence(
                 "tool",
                 &super::presence::tool_detail(internal_name, internal_args),
             );
             let _ = call;
         }
-        let results = futures_util::future::join_all(lowered_calls.iter().map(|(name, args, _)| {
-            self.tools.execute(&self.context, name, args.clone())
-        }))
+        let results = futures_util::future::join_all(
+            lowered_calls
+                .iter()
+                .map(|(name, args, _)| self.tools.execute(&self.context, name, args.clone())),
+        )
         .await;
         for ((call, (internal_name, _, uses_op)), outcome) in
             calls.iter().zip(&lowered_calls).zip(results)
@@ -572,7 +576,10 @@ impl CodingHarness {
             tool_name: surface_name.clone(),
             arguments: surface_args.clone(),
         });
-        self.lane_progress("tool_call", tool_activity_text(&surface_name, &surface_args));
+        self.lane_progress(
+            "tool_call",
+            tool_activity_text(&surface_name, &surface_args),
+        );
         self.presence(
             "tool",
             &super::presence::tool_detail(&surface_name, &surface_args),

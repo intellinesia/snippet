@@ -4432,7 +4432,10 @@ mod goal_tests {
         assert!(out.contains("`mcp__snippet__delegate_task` for lanes"));
         assert!(out.contains("`ls` for listing"));
         assert!(out.contains("`bash {background: true}`"));
-        assert_eq!(prefix_tool_names(&out, &names), out.replace("mcp__snippet__mcp__snippet__", "mcp__snippet__"));
+        assert_eq!(
+            prefix_tool_names(&out, &names),
+            out.replace("mcp__snippet__mcp__snippet__", "mcp__snippet__")
+        );
     }
 
     #[test]

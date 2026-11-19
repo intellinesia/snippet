@@ -595,10 +595,7 @@ Options:
   -h, --help        Show this help, or schema help for <name>";
 
 fn one_line_description(description: &str) -> String {
-    let flat = description
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let flat = description.split_whitespace().collect::<Vec<_>>().join(" ");
     match flat.find(". ") {
         Some(idx) => flat[..=idx].to_string(),
         None => flat,
@@ -624,9 +621,7 @@ fn parse_kv_value(raw: &str) -> serde_json::Value {
     }
 }
 
-fn parse_tool_arguments(
-    args: &[String],
-) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+fn parse_tool_arguments(args: &[String]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     use std::io::{IsTerminal, Read};
     if args.is_empty() {
         if !std::io::stdin().is_terminal() {
@@ -645,8 +640,8 @@ fn parse_tool_arguments(
         return Ok(serde_json::json!({}));
     }
     if args.len() == 1 && args[0].trim_start().starts_with('{') {
-        let value: serde_json::Value = serde_json::from_str(&args[0])
-            .map_err(|e| format!("invalid JSON arguments: {e}"))?;
+        let value: serde_json::Value =
+            serde_json::from_str(&args[0]).map_err(|e| format!("invalid JSON arguments: {e}"))?;
         if !value.is_object() {
             return Err("tool arguments must be a JSON object".into());
         }
@@ -685,7 +680,9 @@ async fn tool_cli(
         .or_else(|| std::env::var("SNIPPET_SESSION_ID").ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .ok_or("no session: pass --session <id> (inside an agent shell $SNIPPET_SESSION_ID is set)")?;
+        .ok_or(
+            "no session: pass --session <id> (inside an agent shell $SNIPPET_SESSION_ID is set)",
+        )?;
     let state = serve_connection().map_err(|error| {
         format!(
             "{error}\n\nis the daemon running? start it with `snippet serve`, then check `snippet serve --status`"
@@ -750,7 +747,10 @@ async fn tool_cli(
                 .get("input_schema")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
-            println!("{tool_name}\n\n{desc}\n\nSchema:\n{}", serde_json::to_string_pretty(&schema)?);
+            println!(
+                "{tool_name}\n\n{desc}\n\nSchema:\n{}",
+                serde_json::to_string_pretty(&schema)?
+            );
             return Ok(());
         }
         let allowed: Vec<&str> = tools

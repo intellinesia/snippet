@@ -17,6 +17,7 @@ pub struct Act {
     pub tool: &'static str,
     pub fixed: Option<&'static str>,
     pub op: bool,
+    pub about: &'static str,
 }
 
 pub struct Surface {
@@ -25,84 +26,183 @@ pub struct Surface {
     pub acts: &'static [Act],
 }
 
-const fn act(action: &'static str, tool: &'static str) -> Act {
+const fn act(action: &'static str, tool: &'static str, about: &'static str) -> Act {
     Act {
         action,
         tool,
         fixed: None,
         op: false,
+        about,
     }
 }
 
-const fn fixed(action: &'static str, tool: &'static str, value: &'static str) -> Act {
+const fn fixed(
+    action: &'static str,
+    tool: &'static str,
+    value: &'static str,
+    about: &'static str,
+) -> Act {
     Act {
         action,
         tool,
         fixed: Some(value),
         op: false,
+        about,
     }
 }
 
-const fn op(action: &'static str, tool: &'static str) -> Act {
+const fn op(action: &'static str, tool: &'static str, about: &'static str) -> Act {
     Act {
         action,
         tool,
         fixed: None,
         op: true,
+        about,
     }
 }
 
 const WEB: Surface = Surface {
     name: "web",
     intro: "Search the web or read a URL.",
-    acts: &[act("search", "web_search"), act("read", "web_read")],
+    acts: &[
+        act(
+            "search",
+            "web_search",
+            "search the web for current facts, docs, errors and releases.",
+        ),
+        act(
+            "read",
+            "web_read",
+            "fetch the full text of one URL, usually a search result.",
+        ),
+    ],
 };
 
 const PROCESS: Surface = Surface {
     name: "process",
     intro: "Manage background processes and file watches.",
     acts: &[
-        fixed("list", "manage_process", "list"),
-        fixed("log", "manage_process", "log"),
-        fixed("wait", "manage_process", "wait"),
-        fixed("kill", "manage_process", "kill"),
-        fixed("watch", "monitor", "add"),
-        fixed("unwatch", "monitor", "remove"),
-        fixed("watches", "monitor", "list"),
+        fixed(
+            "list",
+            "manage_process",
+            "list",
+            "this session's running background processes (all: true for every one).",
+        ),
+        fixed(
+            "log",
+            "manage_process",
+            "log",
+            "trailing lines of a process's log (id, lines).",
+        ),
+        fixed(
+            "wait",
+            "manage_process",
+            "wait",
+            "block until a process exits or its log matches pattern, up to timeout_seconds; use this instead of sleeping.",
+        ),
+        fixed(
+            "kill",
+            "manage_process",
+            "kill",
+            "terminate a process (id).",
+        ),
+        fixed(
+            "watch",
+            "monitor",
+            "add",
+            "watch a file for appended text matching filter (path, label); matches wake you as [file_watch].",
+        ),
+        fixed(
+            "unwatch",
+            "monitor",
+            "remove",
+            "remove a file watch (watch_id, path or label).",
+        ),
+        fixed("watches", "monitor", "list", "list your file watches."),
     ],
 };
 
 const PRESENT: Surface = Surface {
     name: "present",
     intro: "Present files or artifacts to the user, or share artifacts.",
-    acts: &[act("show", "present_file"), act("share", "share_artifact")],
+    acts: &[
+        act(
+            "show",
+            "present_file",
+            "show a file to the user; a title makes it a versioned artifact (artifact_id adds a version).",
+        ),
+        act(
+            "share",
+            "share_artifact",
+            "send an artifact or file to the user, an agent, a group or a channel (to).",
+        ),
+    ],
 };
 
 const DELEGATE: Surface = Surface {
     name: "delegate",
     intro: "Delegate background lanes, cancel them, or list profiles.",
     acts: &[
-        act("run", "delegate_task"),
-        act("cancel", "cancel_delegated_task"),
-        act("profiles", "list_profiles"),
+        act(
+            "run",
+            "delegate_task",
+            "start a background lane with a written brief, or message one by lane_id.",
+        ),
+        act(
+            "cancel",
+            "cancel_delegated_task",
+            "stop a running lane and take its scope back (lane_id, reason).",
+        ),
+        act(
+            "profiles",
+            "list_profiles",
+            "list inference profiles a lane can run on.",
+        ),
     ],
 };
 
 const SKILL: Surface = Surface {
     name: "skill",
     intro: "Search or load Agent Skills.",
-    acts: &[act("search", "search_skills"), act("load", "skill")],
+    acts: &[
+        act(
+            "search",
+            "search_skills",
+            "find an installed skill (playbook) for a procedure.",
+        ),
+        act("load", "skill", "load a skill's full instructions by name."),
+    ],
 };
 
 const MESSAGE: Surface = Surface {
     name: "message",
     intro: "Send direct messages, chat posts, task-room updates, group messages, or push notifications.",
     acts: &[
-        act("send", "send_agent_message"),
-        act("post", "post_chat"),
-        act("task", "post_task_coordination"),
-        op("group", "group_thread"),
-        act("push", "ping_user"),
+        act(
+            "send",
+            "send_agent_message",
+            "direct message to an agent, the user (human), session:<id> or task:<id>; reaction alone acknowledges.",
+        ),
+        act(
+            "post",
+            "post_chat",
+            "post to any chat thread by thread_id (direct, group or task room).",
+        ),
+        act(
+            "task",
+            "post_task_coordination",
+            "post to a task room; to names who must act, urgency urgent only for blockers.",
+        ),
+        op(
+            "group",
+            "group_thread",
+            "create or post in group threads, set the lead, add members.",
+        ),
+        act(
+            "push",
+            "ping_user",
+            "push-notify the user's phone; only when they must act.",
+        ),
     ],
 };
 
@@ -110,16 +210,41 @@ const READ: Surface = Surface {
     name: "read",
     intro: "Read chats, threads, boards, group threads, and sessions.",
     acts: &[
-        act("chats", "chats"),
-        act("thread", "read_chat"),
-        act("agent", "read_agent_thread"),
-        act("room", "read_coordination_thread"),
-        act("inbox", "read_agent_inbox"),
-        act("board", "read_coordination_board"),
-        fixed("groups", "group_thread", "list"),
-        fixed("group", "group_thread", "read"),
-        act("session", "inspect_session"),
-        act("sessions", "list_sessions"),
+        act(
+            "chats",
+            "chats",
+            "your chat threads, most recent first, with unread counts.",
+        ),
+        act("thread", "read_chat", "read one chat by thread_id or peer."),
+        act(
+            "agent",
+            "read_agent_thread",
+            "your direct thread with one agent or human.",
+        ),
+        act(
+            "room",
+            "read_coordination_thread",
+            "the coordination room's messages.",
+        ),
+        act("inbox", "read_agent_inbox", "an agent's inbox items."),
+        act(
+            "board",
+            "read_coordination_board",
+            "an agent's board (progress, reports, notes), newest first.",
+        ),
+        fixed("groups", "group_thread", "list", "list your group threads."),
+        fixed(
+            "group",
+            "group_thread",
+            "read",
+            "read one group thread (thread_id).",
+        ),
+        act(
+            "session",
+            "inspect_session",
+            "inspect one session's state and recent activity.",
+        ),
+        act("sessions", "list_sessions", "list sessions."),
     ],
 };
 
@@ -127,19 +252,67 @@ const TASK: Surface = Surface {
     name: "task",
     intro: "Work on, inspect, claim, hand off, or report tasks.",
     acts: &[
-        act("report", "report_mission_task"),
-        act("ledger", "task_ledger"),
-        act("update", "update_task_state"),
-        act("pass", "pass_turn"),
-        act("invite", "invite_task_agent"),
-        act("review", "submit_review"),
-        act("follow_up", "file_follow_up_task"),
-        act("hand_off", "hand_off_session"),
-        act("inspect", "inspect_task"),
-        act("board", "view_task_board"),
-        act("claim", "claim_and_dispatch_task"),
-        act("decline", "decline_task"),
-        act("start", "start_task"),
+        act(
+            "report",
+            "report_mission_task",
+            "report your Mission Control task done, blocked or failed.",
+        ),
+        act(
+            "ledger",
+            "task_ledger",
+            "read a task's shared ledger and its version.",
+        ),
+        act(
+            "update",
+            "update_task_state",
+            "patch the task ledger (expected_version from ledger).",
+        ),
+        act(
+            "pass",
+            "pass_turn",
+            "hand the task turn to another agent with done, next and risks.",
+        ),
+        act(
+            "invite",
+            "invite_task_agent",
+            "bring a specialist onto your task with a self-contained ask.",
+        ),
+        act(
+            "review",
+            "submit_review",
+            "give your review verdict: approve or changes with findings.",
+        ),
+        act(
+            "follow_up",
+            "file_follow_up_task",
+            "file a small follow-up task that starts when yours is done.",
+        ),
+        act(
+            "hand_off",
+            "hand_off_session",
+            "pass this whole session to another agent.",
+        ),
+        act(
+            "inspect",
+            "inspect_task",
+            "a task's brief, steps, agents, blockers and result.",
+        ),
+        act(
+            "board",
+            "view_task_board",
+            "every open task and those finished in the last day.",
+        ),
+        act(
+            "claim",
+            "claim_and_dispatch_task",
+            "claim an offered task and dispatch it to a work session.",
+        ),
+        act(
+            "decline",
+            "decline_task",
+            "decline an offered task with a reason.",
+        ),
+        act("start", "start_task", "start a task that is ready."),
     ],
 };
 
@@ -147,9 +320,21 @@ const WAKE: Surface = Surface {
     name: "wake",
     intro: "Schedule wakes and manage background watches.",
     acts: &[
-        act("once", "schedule_wake"),
-        op("every", "wake_schedule"),
-        op("watch", "watch"),
+        act(
+            "once",
+            "schedule_wake",
+            "wake this seat once in_minutes from now with a note.",
+        ),
+        op(
+            "every",
+            "wake_schedule",
+            "recurring wake with a brief on a schedule (show, set, clear).",
+        ),
+        op(
+            "watch",
+            "watch",
+            "background script that wakes you on new output (poll or stream).",
+        ),
     ],
 };
 
@@ -157,17 +342,49 @@ const TASKS: Surface = Surface {
     name: "tasks",
     intro: "Create, assign, update, inspect, review, or report mission tasks.",
     acts: &[
-        act("create", "create_mission_task"),
-        act("update", "update_mission_task"),
-        act("list", "list_mission_tasks"),
-        act("cancel", "cancel_mission_task"),
-        act("retry", "retry_mission_task"),
-        act("assign", "assign_task_agent"),
-        act("transfer", "transfer_mission_task_lease"),
-        act("inspect", "inspect_task"),
-        act("ledger", "task_ledger"),
-        act("review", "submit_review"),
-        act("report", "report_mission_task"),
+        act(
+            "create",
+            "create_mission_task",
+            "file a task: what, where, why, and what done looks like.",
+        ),
+        act(
+            "update",
+            "update_mission_task",
+            "change a task's brief, status, plan or fields.",
+        ),
+        act("list", "list_mission_tasks", "list mission tasks."),
+        act("cancel", "cancel_mission_task", "cancel a task."),
+        act(
+            "retry",
+            "retry_mission_task",
+            "retry a failed or stuck task.",
+        ),
+        act(
+            "assign",
+            "assign_task_agent",
+            "add or change an agent on a task.",
+        ),
+        act(
+            "transfer",
+            "transfer_mission_task_lease",
+            "move a task's lease to another session.",
+        ),
+        act(
+            "inspect",
+            "inspect_task",
+            "a task's brief, steps, agents, blockers and result.",
+        ),
+        act("ledger", "task_ledger", "read a task's shared ledger."),
+        act(
+            "review",
+            "submit_review",
+            "approve a task in review or send it back with findings.",
+        ),
+        act(
+            "report",
+            "report_mission_task",
+            "report a task done, blocked or failed.",
+        ),
     ],
 };
 
@@ -175,12 +392,16 @@ const GOALS: Surface = Surface {
     name: "goals",
     intro: "Create, plan, update, list, or close goals.",
     acts: &[
-        act("create", "create_goal"),
-        act("plan", "plan_goal"),
-        act("replan", "replan_goal"),
-        act("update", "update_goal"),
-        act("list", "list_goals"),
-        act("close", "close_goal"),
+        act("create", "create_goal", "open a goal."),
+        act("plan", "plan_goal", "plan a goal into tasks."),
+        act(
+            "replan",
+            "replan_goal",
+            "replan a goal after new information.",
+        ),
+        act("update", "update_goal", "change a goal."),
+        act("list", "list_goals", "list goals."),
+        act("close", "close_goal", "close a goal."),
     ],
 };
 
@@ -188,12 +409,28 @@ const SESSIONS: Surface = Surface {
     name: "sessions",
     intro: "Create, message, stop, inspect, clean up, or answer worker sessions.",
     acts: &[
-        act("create", "create_mission_session"),
-        act("deliver", "deliver_to_session"),
-        act("stop", "stop_session"),
-        act("state", "session_state"),
-        op("clean_up", "clean_up_sessions"),
-        act("answer", "answer_worker"),
+        act(
+            "create",
+            "create_mission_session",
+            "open a new work session.",
+        ),
+        act(
+            "deliver",
+            "deliver_to_session",
+            "deliver a message into a session.",
+        ),
+        act("stop", "stop_session", "stop a session's run."),
+        act("state", "session_state", "a session's live state."),
+        op(
+            "clean_up",
+            "clean_up_sessions",
+            "list or delete finished sessions.",
+        ),
+        act(
+            "answer",
+            "answer_worker",
+            "answer a worker's pending question.",
+        ),
     ],
 };
 
@@ -201,12 +438,32 @@ const SCHEDULE: Surface = Surface {
     name: "schedule",
     intro: "Schedule wakes, watches, and recurring jobs.",
     acts: &[
-        act("once", "schedule_wake"),
-        op("every", "wake_schedule"),
-        op("watch", "watch"),
-        act("job_create", "create_recurring_job"),
-        act("jobs", "list_recurring_jobs"),
-        act("job_cancel", "cancel_recurring_job"),
+        act(
+            "once",
+            "schedule_wake",
+            "wake once in_minutes from now with a note.",
+        ),
+        op(
+            "every",
+            "wake_schedule",
+            "recurring wake for an agent or Mission Control.",
+        ),
+        op(
+            "watch",
+            "watch",
+            "background script that wakes on new output.",
+        ),
+        act(
+            "job_create",
+            "create_recurring_job",
+            "create a recurring job.",
+        ),
+        act("jobs", "list_recurring_jobs", "list recurring jobs."),
+        act(
+            "job_cancel",
+            "cancel_recurring_job",
+            "cancel a recurring job.",
+        ),
     ],
 };
 
@@ -214,16 +471,24 @@ const AMBIENT: Surface = Surface {
     name: "ambient",
     intro: "Control ambient listening, room state, expectations, tuning, and recordings.",
     acts: &[
-        act("mode", "ambient_mode"),
-        op("room", "ambient_room"),
-        act("search", "ambient_search"),
-        act("expect", "ambient_expect"),
-        act("feedback", "ambient_feedback"),
-        op("tune", "ambient_tune"),
-        act("on_call", "user_on_call"),
-        act("wait", "wait_for_user"),
-        op("recordings", "recordings"),
-        op("policy", "recording_policy"),
+        act("mode", "ambient_mode", "switch ambient listening mode."),
+        op("room", "ambient_room", "room state."),
+        act("search", "ambient_search", "search what was heard."),
+        act(
+            "expect",
+            "ambient_expect",
+            "tell the listener what to expect next.",
+        ),
+        act(
+            "feedback",
+            "ambient_feedback",
+            "record feedback on an ambient reply.",
+        ),
+        op("tune", "ambient_tune", "tune listener settings."),
+        act("on_call", "user_on_call", "whether the user is on a call."),
+        act("wait", "wait_for_user", "wait for the user to speak."),
+        op("recordings", "recordings", "list or manage recordings."),
+        op("policy", "recording_policy", "recording policy."),
     ],
 };
 
@@ -325,7 +590,10 @@ pub fn lower(name: &str, args: &Value) -> Result<Option<(String, Value)>, String
     let mut lowered = map.clone();
     lowered.remove("action");
     if let Some(fixed_action) = act.fixed {
-        lowered.insert("action".to_string(), Value::String(fixed_action.to_string()));
+        lowered.insert(
+            "action".to_string(),
+            Value::String(fixed_action.to_string()),
+        );
     } else if act.op {
         if let Some(op_val) = lowered.remove("op") {
             lowered.insert("action".to_string(), op_val);
@@ -409,6 +677,7 @@ fn build_surface_definition(
         .collect();
     let mut props: BTreeMap<String, Value> = BTreeMap::new();
     let mut any_op = false;
+    let mut listed: Vec<&str> = Vec::new();
     let mut lines = Vec::with_capacity(active.len() + 1);
     lines.push(surface.intro.to_string());
 
@@ -455,7 +724,7 @@ fn build_surface_definition(
             b_req.cmp(&a_req).then_with(|| a.cmp(b))
         });
 
-        let summary = first_sentence(&def.description, 140);
+        let summary = act.about;
         let op_note = if act.op {
             let ops = op_values(surface.name, act.action, internal_props);
             if ops.is_empty() {
@@ -466,7 +735,9 @@ fn build_surface_definition(
         } else {
             String::new()
         };
-        let fields_note = if field_names.is_empty() {
+        let repeat = listed.contains(&act.tool);
+        listed.push(act.tool);
+        let fields_note = if field_names.is_empty() || repeat {
             String::new()
         } else {
             format!(" Fields: {}.", field_names.join(", "))
@@ -550,32 +821,11 @@ fn merge_property_collision(existing: &mut Value, incoming: &mut Value) {
         ex.insert("anyOf".to_string(), json!([{ "type": t1 }, { "type": t2 }]));
     } else if let Some(any_of) = ex.get_mut("anyOf").and_then(Value::as_array_mut)
         && let Some(t2) = inc.get("type").and_then(Value::as_str)
-        && !any_of.iter().any(|v| v.get("type").and_then(Value::as_str) == Some(t2))
+        && !any_of
+            .iter()
+            .any(|v| v.get("type").and_then(Value::as_str) == Some(t2))
     {
         any_of.push(json!({ "type": t2 }));
-    }
-}
-
-fn first_sentence(text: &str, max_chars: usize) -> String {
-    let compact: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut end = compact.len();
-    let bytes = compact.as_bytes();
-    for (idx, b) in bytes.iter().enumerate() {
-        if *b == b'.' {
-            let next_is_sep = bytes.get(idx + 1).is_none_or(|n| *n == b' ');
-            let is_abbrev = idx >= 3 && matches!(&compact[idx - 3..=idx], "e.g." | "i.e.");
-            if next_is_sep && !is_abbrev {
-                end = idx + 1;
-                break;
-            }
-        }
-    }
-    let sentence = &compact[..end];
-    if sentence.chars().count() <= max_chars {
-        sentence.to_string()
-    } else {
-        let cut: String = sentence.chars().take(max_chars.saturating_sub(1)).collect();
-        format!("{cut}…")
     }
 }
 
@@ -696,9 +946,7 @@ mod tests {
             id_prop["anyOf"],
             json!([{"type": "integer"}, {"type": "string"}])
         );
-        assert!(
-            id_prop["description"].as_str().unwrap().chars().count() <= 120
-        );
+        assert!(id_prop["description"].as_str().unwrap().chars().count() <= 120);
         assert!(amb.description.contains("(op: get|drop)"));
         assert!(amb.description.contains("(op: list|delete)"));
     }
@@ -714,7 +962,11 @@ mod tests {
 
         let (work_defs, _) = crate::lanes::role_tool_definitions("work", None).unwrap();
         let (work_names, work_bytes) = sizes(&work_defs);
-        println!("Work native ({}): {work_bytes} bytes -> {:?}", work_names.len(), work_names);
+        println!(
+            "Work native ({}): {work_bytes} bytes -> {:?}",
+            work_names.len(),
+            work_names
+        );
 
         let mut cli_internal = crate::session::work_tool_registry(key.clone(), None).definitions();
         cli_internal.extend(crate::meta::conversation_meta_definitions_for(true, true));
@@ -733,19 +985,35 @@ mod tests {
         });
         let cli_defs = advertise(SeatRole::Work, cli_internal);
         let (cli_names, cli_bytes) = sizes(&cli_defs);
-        println!("Work CLI bridge ({}): {cli_bytes} bytes -> {:?}", cli_names.len(), cli_names);
+        println!(
+            "Work CLI bridge ({}): {cli_bytes} bytes -> {:?}",
+            cli_names.len(),
+            cli_names
+        );
 
         let (desk_defs, _) = crate::lanes::role_tool_definitions("desk", None).unwrap();
         let (desk_names, desk_bytes) = sizes(&desk_defs);
-        println!("Desk ({}): {desk_bytes} bytes -> {:?}", desk_names.len(), desk_names);
+        println!(
+            "Desk ({}): {desk_bytes} bytes -> {:?}",
+            desk_names.len(),
+            desk_names
+        );
 
         let (lane_defs, _) = crate::lanes::role_tool_definitions("lane", None).unwrap();
         let (lane_names, lane_bytes) = sizes(&lane_defs);
-        println!("Lane ({}): {lane_bytes} bytes -> {:?}", lane_names.len(), lane_names);
+        println!(
+            "Lane ({}): {lane_bytes} bytes -> {:?}",
+            lane_names.len(),
+            lane_names
+        );
 
         let (mc_defs, _) = crate::lanes::role_tool_definitions("mission_control", None).unwrap();
         let (mc_names, mc_bytes) = sizes(&mc_defs);
-        println!("MC ({}): {mc_bytes} bytes -> {:?}", mc_names.len(), mc_names);
+        println!(
+            "MC ({}): {mc_bytes} bytes -> {:?}",
+            mc_names.len(),
+            mc_names
+        );
 
         assert_eq!(desk_names.len(), 7);
         assert_eq!(mc_names.len(), 14);
@@ -762,7 +1030,10 @@ mod tests {
             "report_progress",
         ] {
             for names in [&work_names, &cli_names, &desk_names, &lane_names, &mc_names] {
-                assert!(!names.iter().any(|n| n == hidden), "{hidden} leaked into {names:?}");
+                assert!(
+                    !names.iter().any(|n| n == hidden),
+                    "{hidden} leaked into {names:?}"
+                );
             }
         }
     }

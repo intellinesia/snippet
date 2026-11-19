@@ -62,7 +62,9 @@ fn plain_text(content: &str) -> String {
 }
 
 fn summarize_tool(tc: &crate::llm::ToolCallRecord) -> Option<String> {
-    let lowered = crate::surface::lower(&tc.name, &tc.arguments).ok().flatten();
+    let lowered = crate::surface::lower(&tc.name, &tc.arguments)
+        .ok()
+        .flatten();
     let (name, args) = match lowered.as_ref() {
         Some((n, a)) => (n.as_str(), a),
         None => (tc.name.as_str(), &tc.arguments),

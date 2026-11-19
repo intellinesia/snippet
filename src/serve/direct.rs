@@ -2283,7 +2283,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(task_rx.try_recv().is_err(), "the task session hears it only through the desk");
+        assert!(
+            task_rx.try_recv().is_err(),
+            "the task session hears it only through the desk"
+        );
         match desk_rx.try_recv().expect("desk got the message") {
             LoopInput::UserMessage(text) => {
                 assert!(text.contains("body: how is it going"), "{text}");

@@ -194,8 +194,6 @@ fn record_progress(ctx: &ToolContext, session: &str, summary: &str) -> Result<St
     Ok(agent)
 }
 
-
-
 /// The written log lines a ledger reader gets, oldest first. Empty when none.
 pub fn ledger_log(db: &Store, task_id: &str) -> String {
     let rows = db

@@ -235,7 +235,9 @@ impl CodingHarness {
                     .trim()
                     .to_string();
                 match state.goal.as_mut() {
-                    Some(goal) if matches!(goal.status, GoalStatus::Active | GoalStatus::Paused) => {
+                    Some(goal)
+                        if matches!(goal.status, GoalStatus::Active | GoalStatus::Paused) =>
+                    {
                         goal.status = GoalStatus::Complete;
                         let text = goal.text.clone();
                         state.events.push(HarnessEvent::SystemDecision {
@@ -622,7 +624,8 @@ impl CodingHarness {
         } else {
             definitions.push(meta::terminate_loop_tool());
         }
-        let mut advertised = crate::surface::advertise(self.seat_role(conversation_mode), definitions);
+        let mut advertised =
+            crate::surface::advertise(self.seat_role(conversation_mode), definitions);
         for custom in self.tools.custom_definitions() {
             if !advertised.iter().any(|d| d.name == custom.name) {
                 advertised.push(custom);
@@ -631,7 +634,12 @@ impl CodingHarness {
         advertised
     }
 
-    fn record_done_plan_steps(&self, previous: &[PlanStep], steps: &[PlanStep], note: Option<&str>) {
+    fn record_done_plan_steps(
+        &self,
+        previous: &[PlanStep],
+        steps: &[PlanStep],
+        note: Option<&str>,
+    ) {
         let newly_done: Vec<&str> = steps
             .iter()
             .filter(|s| s.status == PlanStatus::Done)
@@ -1020,7 +1028,10 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind, "progress");
-        assert_eq!(rows[0].summary, "Implement surface: Wired both dispatch paths");
+        assert_eq!(
+            rows[0].summary,
+            "Implement surface: Wired both dispatch paths"
+        );
 
         let (res, _) = harness.dispatch_meta(
             &mut state,

@@ -221,7 +221,10 @@ pub(crate) fn build_session_tools(
     })
 }
 
-pub(crate) fn allowed_definitions(seat: Seat, registry: &ToolRegistry) -> Vec<NativeToolDefinition> {
+pub(crate) fn allowed_definitions(
+    seat: Seat,
+    registry: &ToolRegistry,
+) -> Vec<NativeToolDefinition> {
     let mut by_name: HashMap<String, NativeToolDefinition> = registry
         .definitions()
         .into_iter()
@@ -253,10 +256,7 @@ pub(crate) async fn list_tools(
         .into_response()
 }
 
-pub(crate) async fn run_tool(
-    State(d): State<Shared>,
-    Json(req): Json<ToolRunReq>,
-) -> Response {
+pub(crate) async fn run_tool(State(d): State<Shared>, Json(req): Json<ToolRunReq>) -> Response {
     let resolved = match build_session_tools(&d, &req.session_id) {
         Ok(resolved) => resolved,
         Err(response) => return response,
