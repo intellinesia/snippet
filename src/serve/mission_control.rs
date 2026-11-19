@@ -1421,6 +1421,7 @@ pub async fn dispatch_loop(daemon: Shared) {
             }
         }
         super::review::drive_reviews(&daemon).await;
+        drive_lane_offers(&daemon).await;
         super::stall::sweep(
             &daemon.store,
             chrono::Utc::now(),
@@ -1441,6 +1442,29 @@ pub async fn dispatch_loop(daemon: Shared) {
         deliver_mission_control_reports(&daemon).await;
         crate::coordination::origin::sweep(&daemon.store);
         tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn drive_lane_offers(daemon: &Shared) {
+    let now = chrono::Utc::now().to_rfc3339();
+    for offer in daemon
+        .store
+        .take_resolved_lane_offers(&now)
+        .unwrap_or_default()
+    {
+        let input = if offer.status == "claimed" {
+            crate::harness::LoopInput::SpawnLane(crate::harness::LaneSpawn {
+                title: offer.title.clone(),
+                brief: crate::lane_offers::lane_brief(&offer),
+                read_only: offer.read_only,
+                agent: Some(offer.agent_id.clone()),
+                profile: offer.profile.clone(),
+                paths: offer.paths.clone(),
+            })
+        } else {
+            crate::harness::LoopInput::UserMessage(crate::lane_offers::declined_notice(&offer))
+        };
+        daemon.deliver(&offer.session_id, input).await;
     }
 }
 

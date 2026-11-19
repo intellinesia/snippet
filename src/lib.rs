@@ -37,6 +37,7 @@ pub mod history_archive;
 pub mod inline;
 pub mod keep_warm;
 mod lane_log;
+pub mod lane_offers;
 pub mod lanes;
 pub mod llm;
 pub mod members;
