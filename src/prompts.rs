@@ -6,11 +6,10 @@
 
 pub const HARNESS_CORE: &str = include_str!("../prompts/harness_core.md");
 pub const CODING_AGENT_LAYER: &str = include_str!("../prompts/coding_agent_layer.md");
-pub const CONVERSATION_AGENT_LAYER: &str = include_str!("../prompts/conversation_agent_layer.md");
+pub const WORK_SESSION_LAYER: &str = include_str!("../prompts/work_session_layer.md");
 pub const MISSION_CONTROL_LAYER: &str = include_str!("../prompts/mission_control_layer.md");
-pub const COORDINATION_LAYER: &str = include_str!("../prompts/coordination_layer.md");
-pub const DELEGATION_LAYER: &str = include_str!("../prompts/delegation_layer.md");
-pub const TASK_LAYER: &str = include_str!("../prompts/task_layer.md");
+pub const DESK_LAYER: &str = include_str!("../prompts/desk_layer.md");
+pub const LANE_LAYER: &str = include_str!("../prompts/lane_layer.md");
 pub const GIT_WORKTREE_LAYER: &str = include_str!("../prompts/git_worktree_layer.md");
 pub const MEMORY_GUIDANCE_LAYER: &str = include_str!("../prompts/memory_layer.md");
 pub const MEMORY_WRITE_LAYER: &str = include_str!("../prompts/memory_write_layer.md");
@@ -35,10 +34,8 @@ pub struct PromptContext {
     pub skills: bool,
     /// The vault holds at least one secret.
     pub vault: bool,
-    /// This is an agent's COORDINATION session: it answers direct messages and
-    /// dispatches work, and holds no workspace tools. The layer is what tells it
-    /// how to behave, which is not inferable from the tool list alone.
-    pub coordination: bool,
+    /// The session's `managed_by` is `agent`: an agent leads it, not the user.
+    pub agent_managed: bool,
     /// The session's model accepts image input.
     pub images: bool,
 }
@@ -54,8 +51,7 @@ impl PromptContext {
             memory_writable: memory && memory_writable,
             skills: !crate::skills::discover().is_empty(),
             vault: !crate::vault::Vault::load().is_empty(),
-            // Not inferable from the environment; the role's own constructor sets it.
-            coordination: false,
+            agent_managed: false,
             images: false,
         }
     }
@@ -82,9 +78,6 @@ impl PromptContext {
         if self.memory && self.memory_writable {
             layers.push(MEMORY_WRITE_LAYER.trim());
         }
-        if self.coordination {
-            layers.push(COORDINATION_LAYER.trim());
-        }
         layers
     }
 }
@@ -95,12 +88,25 @@ pub fn coding_prompt(context: &PromptContext) -> String {
     parts.join("\n\n")
 }
 
+const HUMAN_MANAGED_LINE: &str = "The user leads this session: follow their direction and do not run ahead. Your desk keeps track but does not drive it.";
+const AGENT_MANAGED_LINE: &str = "You run this session for your desk, toward its objective. The user may drop in: take their word as direction; the session stays yours.";
+
+fn work_session_layer(context: &PromptContext) -> String {
+    let line = if context.agent_managed {
+        AGENT_MANAGED_LINE
+    } else {
+        HUMAN_MANAGED_LINE
+    };
+    WORK_SESSION_LAYER.trim().replace("{managed_line}", line)
+}
+
 pub fn conversation_prompt(context: &PromptContext) -> String {
-    let mut parts = vec![CODING_AGENT_LAYER.trim(), HARNESS_CORE.trim()];
-    parts.extend(context.conditional_layers());
-    parts.push(CONVERSATION_AGENT_LAYER.trim());
-    parts.push(DELEGATION_LAYER.trim());
-    parts.push(TASK_LAYER.trim());
+    let mut parts = vec![
+        CODING_AGENT_LAYER.trim().to_string(),
+        HARNESS_CORE.trim().to_string(),
+    ];
+    parts.extend(context.conditional_layers().into_iter().map(String::from));
+    parts.push(work_session_layer(context));
     parts.join("\n\n")
 }
 
@@ -110,24 +116,12 @@ pub fn coding_system_prompt() -> String {
     coding_prompt(&PromptContext::default())
 }
 
-/// The prompt for an agent's COORDINATION session.
+/// The prompt for an agent's desk: the harness core and the desk layer only.
 ///
-/// Deliberately does NOT include [`CODING_AGENT_LAYER`]: that layer states the
-/// session has real bash and full filesystem access, which is false here and
-/// would instruct the model to reach for tools it was not given. The
-/// coordination layer states the real capability set instead, and the
-/// per-workspace memory layers are excluded for the same reason — this session
-/// has no workspace to hold memory about.
+/// No [`CODING_AGENT_LAYER`] (it claims a full shell and filesystem the desk
+/// does not have) and no workspace memory or vault layers.
 pub fn coordination_prompt(_context: &PromptContext) -> String {
-    // No vault layer: it is about commands this session has no
-    // shell to run. COORDINATION_LAYER is last so its statements about what
-    // this session can and cannot do are the final word.
-    [
-        CONVERSATION_AGENT_LAYER.trim(),
-        HARNESS_CORE.trim(),
-        COORDINATION_LAYER.trim(),
-    ]
-    .join("\n\n")
+    [HARNESS_CORE.trim(), DESK_LAYER.trim()].join("\n\n")
 }
 
 pub fn mission_control_system_prompt() -> String {
@@ -167,12 +161,13 @@ fn identity_overlay(agent_id: &str, identity: &str) -> String {
     )
 }
 
-/// A delegated lane's prompt: the execution contract, plus the identity of the
-/// agent it was assigned, when there is one.
-const LANE_NOTE: &str = "## Working as a lane\n\nYou've taken one piece of a colleague's work: the agent that handed it to you carries on with the rest, and you run until your piece is done, then report once with `terminate_loop`. The brief's footer says who handed it over, what it's part of and which other lanes are working beside you.\n\nThe user isn't here, and a lane has no `process.watch`, `update_plan`, `present.show`, board, chat, message or wake tools, so where the guidance above mentions them, adapt: run a long command in the foreground with a generous timeout (or poll its log a few times) rather than ending your turn to wait. You do have colleagues. The agent that handed you this is a `message_parent` away: ask it what you can't settle yourself (wait for the answer when you can't sensibly go on without it), and tell it early about anything that changes its plan or another lane's piece. An agent's reply can take a few minutes: carry on with your piece meanwhile, and when only waiting is left, wait in the shell (`sleep 30`, a few times) rather than asking again. For everything else, apply \"Decide or ask\" with the agent that handed you this standing in for the user: decide, and say in your report what you assumed; a real fork or an irreversible step is a question to it, and if only the user can decide, stop and report it as the blocker.";
-
+/// A delegated lane's prompt: the execution contract and the lane layer,
+/// without the harness core, plus the assigned agent's identity.
 pub fn lane_prompt(context: &PromptContext, identity: Option<(&str, &str)>) -> String {
-    let base = format!("{}\n\n{LANE_NOTE}", coding_prompt(context));
+    let mut parts = vec![CODING_AGENT_LAYER.trim()];
+    parts.extend(context.conditional_layers());
+    parts.push(LANE_LAYER.trim());
+    let base = parts.join("\n\n");
     match identity {
         Some((agent_id, body)) => format!("{base}\n\n{}", identity_overlay(agent_id, body)),
         None => base,
@@ -234,10 +229,10 @@ mod seat_layer_tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
-    const HARNESS_CORE_MAX_BYTES: usize = 7_500;
-    const COORDINATION_LAYER_MAX_BYTES: usize = 3_500;
-    const DELEGATION_LAYER_MAX_BYTES: usize = 3_500;
-    const TASK_LAYER_MAX_BYTES: usize = 4_000;
+    const HARNESS_CORE_MAX_BYTES: usize = 9_500;
+    const DESK_LAYER_MAX_BYTES: usize = 5_000;
+    const WORK_SESSION_LAYER_MAX_BYTES: usize = 5_500;
+    const LANE_LAYER_MAX_BYTES: usize = 2_000;
 
     #[test]
     fn every_seat_prompt_includes_harness_core_exactly_once() {
@@ -267,32 +262,23 @@ mod seat_layer_tests {
             "HARNESS_CORE is {} bytes (limit {HARNESS_CORE_MAX_BYTES})",
             HARNESS_CORE.len()
         );
-        assert!(
-            COORDINATION_LAYER.len() < COORDINATION_LAYER_MAX_BYTES,
-            "COORDINATION_LAYER is {} bytes (limit {COORDINATION_LAYER_MAX_BYTES})",
-            COORDINATION_LAYER.len()
-        );
-        assert!(
-            DELEGATION_LAYER.len() < DELEGATION_LAYER_MAX_BYTES,
-            "DELEGATION_LAYER is {} bytes (limit {DELEGATION_LAYER_MAX_BYTES})",
-            DELEGATION_LAYER.len()
-        );
-        assert!(
-            TASK_LAYER.len() < TASK_LAYER_MAX_BYTES,
-            "TASK_LAYER is {} bytes (limit {TASK_LAYER_MAX_BYTES})",
-            TASK_LAYER.len()
-        );
+        for (name, body, limit) in [
+            ("DESK_LAYER", DESK_LAYER, DESK_LAYER_MAX_BYTES),
+            ("WORK_SESSION_LAYER", WORK_SESSION_LAYER, WORK_SESSION_LAYER_MAX_BYTES),
+            ("LANE_LAYER", LANE_LAYER, LANE_LAYER_MAX_BYTES),
+        ] {
+            assert!(body.len() < limit, "{name} is {} bytes (limit {limit})", body.len());
+        }
     }
 
     #[test]
     fn only_harness_core_has_envelope_overview_or_list() {
         let non_core_layers = [
             ("CODING_AGENT_LAYER", CODING_AGENT_LAYER),
-            ("CONVERSATION_AGENT_LAYER", CONVERSATION_AGENT_LAYER),
+            ("WORK_SESSION_LAYER", WORK_SESSION_LAYER),
             ("MISSION_CONTROL_LAYER", MISSION_CONTROL_LAYER),
-            ("COORDINATION_LAYER", COORDINATION_LAYER),
-            ("DELEGATION_LAYER", DELEGATION_LAYER),
-            ("TASK_LAYER", TASK_LAYER),
+            ("DESK_LAYER", DESK_LAYER),
+            ("LANE_LAYER", LANE_LAYER),
             ("GIT_WORKTREE_LAYER", GIT_WORKTREE_LAYER),
             ("MEMORY_GUIDANCE_LAYER", MEMORY_GUIDANCE_LAYER),
             ("MEMORY_WRITE_LAYER", MEMORY_WRITE_LAYER),
@@ -300,7 +286,6 @@ mod seat_layer_tests {
             ("VAULT_LAYER", VAULT_LAYER),
             ("VISION_LAYER", VISION_LAYER),
             ("NO_VISION_LAYER", NO_VISION_LAYER),
-            ("LANE_NOTE", LANE_NOTE),
         ];
         for (name, body) in non_core_layers {
             assert!(
@@ -415,7 +400,7 @@ mod seat_layer_tests {
             memory_writable: true,
             skills: has_skills,
             vault: true,
-            coordination: false,
+            agent_managed: false,
             images: true,
         };
         let lane_full_ctx = PromptContext {
