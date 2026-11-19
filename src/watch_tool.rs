@@ -285,7 +285,7 @@ impl Tool for WatchTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "watch".into(),
-            description: "Run a shell script in the background, owned by the daemon, that wakes you when it reports something new: your own channel for email, chat apps, APIs, pages or feeds. poll runs it every interval and wakes you with output lines that were not there last time; stream keeps it running and wakes you with the lines it prints. Vault secrets work as $NAME. test runs it once without waking. Guide: harness_map section guide.".into(),
+            description: "Run a shell script in the background, owned by the daemon, that wakes you when it reports something new: your own channel for email, chat apps, APIs, pages or feeds. poll runs it every interval and wakes you with output lines that were not there last time; stream keeps it running and wakes you with the lines it prints. Vault secrets work as $NAME. test runs it once without waking.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
