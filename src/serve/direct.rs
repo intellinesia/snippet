@@ -1193,10 +1193,20 @@ async fn deliver_direct(
     if event.actor_kind == "human" {
         let envelope = desk_open_tasks_envelope(&d.store, agent_id, envelope);
         deliver_by_urgency(d, &session_id, envelope, &event.payload, true).await;
+    } else if is_task_offer(&event.payload) {
+        let envelope = desk_open_tasks_envelope(&d.store, agent_id, envelope);
+        deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
     } else {
         deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
     }
     Ok(())
+}
+
+fn is_task_offer(payload: &serde_json::Value) -> bool {
+    payload
+        .get("body")
+        .and_then(|b| b.as_str())
+        .is_some_and(|b| b.starts_with("[task_offer]"))
 }
 
 fn desk_open_tasks_envelope(
@@ -1204,23 +1214,49 @@ fn desk_open_tasks_envelope(
     agent_id: &str,
     envelope: String,
 ) -> String {
-    let tasks = store.open_tasks_of_agent(agent_id, 8).unwrap_or_default();
-    let tasks_block = if tasks.is_empty() {
-        "your open tasks: none\n".to_string()
-    } else {
-        let mut block = String::from("your open tasks:\n");
-        for task in tasks {
-            let title: String = task.title.split_whitespace().collect::<Vec<_>>().join(" ");
-            block.push_str(&format!(
-                "  {}  {}  {}  session:{}\n",
-                task.id,
-                task.status.as_str(),
-                title,
-                task.session_id
-            ));
+    let tasks = store.open_tasks_of_agent(agent_id, 12).unwrap_or_default();
+    let (mut running, mut assisting, mut offers) = (String::new(), String::new(), String::new());
+    for task in tasks {
+        let title: String = task.title.split_whitespace().collect::<Vec<_>>().join(" ");
+        let line = format!(
+            "  {}  {}  {}  session:{}\n",
+            task.id,
+            task.status.as_str(),
+            title,
+            task.session_id
+        );
+        let offered = store
+            .list_task_agents(&task.id)
+            .unwrap_or_default()
+            .iter()
+            .any(|m| m.agent_id == agent_id && m.removed_at.is_none() && m.status == "offered");
+        let human = store
+            .session_managed_by(&task.session_id)
+            .ok()
+            .flatten()
+            .is_some_and(|m| m == "human");
+        let section = if offered {
+            &mut offers
+        } else if human {
+            &mut assisting
+        } else {
+            &mut running
+        };
+        section.push_str(&line);
+    }
+    let mut tasks_block = String::from("now:\n");
+    for (label, body) in [
+        ("running (you lead)", running),
+        ("assisting (the user leads)", assisting),
+        ("offers", offers),
+    ] {
+        if !body.is_empty() {
+            tasks_block.push_str(&format!(" {label}:\n{body}"));
         }
-        block
-    };
+    }
+    if tasks_block == "now:\n" {
+        tasks_block = "now: no open tasks\n".to_string();
+    }
     let envelope = envelope.replacen(
         "\nnote: ",
         "\nnote: forward with message.send to task:<id> and forward: <event_id> when it is about running work. ",
@@ -2325,7 +2361,7 @@ mod tests {
                     text.contains("note: forward with message.send to task:<id> and forward: <event_id> when it is about running work."),
                     "{text}"
                 );
-                assert!(text.contains("your open tasks:\n"), "{text}");
+                assert!(text.contains("now:\n running (you lead):\n"), "{text}");
                 assert!(
                     text.contains("  t1  in_progress  Task t1  session:s-one\n"),
                     "{text}"
@@ -2334,7 +2370,7 @@ mod tests {
                     text.contains("  t2  in_progress  Task t2  session:s-two\n"),
                     "{text}"
                 );
-                let tasks_pos = text.find("your open tasks:").unwrap();
+                let tasks_pos = text.find("now:").unwrap();
                 let body_pos = text.find("\nbody: hello").unwrap();
                 assert!(tasks_pos < body_pos, "{text}");
             }
@@ -2443,7 +2479,7 @@ mod tests {
         match desk_rx.try_recv().expect("desk got the message") {
             LoopInput::UserMessage(text) => {
                 assert!(
-                    text.contains("\nyour open tasks: none\nbody: anyone there?\n"),
+                    text.contains("\nnow: no open tasks\nbody: anyone there?\n"),
                     "{text}"
                 );
             }

@@ -303,6 +303,85 @@ pub(crate) async fn keep_awake_route(Json(req): Json<KeepAwakeReq>) -> Response 
 }
 
 #[derive(Deserialize)]
+pub(crate) struct ManagedByReq {
+    session: String,
+    managed_by: String,
+}
+
+// POST /session/managed_by {session, managed_by}
+pub(crate) async fn managed_by_route(
+    State(d): State<Shared>,
+    Json(req): Json<ManagedByReq>,
+) -> Response {
+    let mode = req.managed_by.trim();
+    if mode != "human" && mode != "agent" {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "managed_by must be `human` or `agent`",
+        );
+    }
+    let Some(store) = crate::session::store_for_sessions() else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "no store");
+    };
+    let Some(row) = store.get_session_row(&req.session).ok().flatten() else {
+        return api_error(StatusCode::NOT_FOUND, "no such session");
+    };
+    if row.managed_by != mode {
+        if let Err(e) = store.set_session_managed_by(&row.id, mode) {
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, e);
+        }
+        announce_conversion(&d, &row, mode);
+    }
+    Json(serde_json::json!({"ok": true, "session": session_json(&row.id)})).into_response()
+}
+
+fn announce_conversion(d: &Shared, row: &crate::conversations::SessionRow, mode: &str) {
+    let agent = crate::session::owner_agent_id_for(&row.id, row.agent_id.as_deref());
+    if crate::mission_control::is_session_id(&row.id)
+        || crate::session::is_inbox_session_id(&row.id)
+    {
+        return;
+    }
+    let title = row
+        .title
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or("untitled");
+    let summary = if mode == "agent" {
+        format!(
+            "The user handed session {} ({title}) to you: you run it now. Read it (read.session), settle what done looks like and what is open, and drive it to done; the user may still drop in.",
+            row.id
+        )
+    } else {
+        format!(
+            "The user took session {} ({title}) back: they lead it now. Stop driving it; assist only when asked.",
+            row.id
+        )
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = d.store.record_board_entry(
+        &agent,
+        crate::coordination::BoardEntryKind::Noted,
+        &crate::coordination::NewBoardEntry {
+            session_id: Some(&row.id),
+            workspace: Some(&row.workspace),
+            summary: &summary,
+            correlation_id: None,
+            created_at: &now,
+        },
+    );
+    if agent != crate::mission_control::SESSION_ID {
+        let _ = d.store.send_direct_message(
+            ("agent", crate::mission_control::SESSION_ID),
+            ("agent", &agent),
+            &format!("[managed_by] {summary}"),
+            &uuid::Uuid::new_v4().to_string(),
+            &now,
+        );
+    }
+}
+
+#[derive(Deserialize)]
 pub(crate) struct ResumeModeReq {
     session: String,
     mode: String,

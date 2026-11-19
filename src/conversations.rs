@@ -100,7 +100,8 @@ pub fn ensure_schema(connection: &rusqlite::Connection) -> Result<(), rusqlite::
              -- First line of the done/idle result body, trimmed to 200 chars.
              result_summary TEXT,
              -- Queued hand-off JSON ({to_agent, note, by, at}) applied at turn end.
-             pending_handoff TEXT
+             pending_handoff TEXT,
+             managed_by TEXT NOT NULL DEFAULT 'human'
          );
          CREATE INDEX IF NOT EXISTS sessions_workspace
              ON sessions(workspace_key, updated_at DESC);
@@ -199,6 +200,7 @@ pub struct SessionRow {
     pub result_summary: Option<String>,
     /// Queued hand-off payload JSON while waiting for turn end / input resolution.
     pub pending_handoff: Option<String>,
+    pub managed_by: String,
 }
 
 /// Session metadata that used to live in sidecar files.
@@ -216,6 +218,7 @@ pub struct SessionExtras {
     pub role: Option<String>,
     /// The agent working this session. Was `.role`'s `agent_id`.
     pub agent_id: Option<String>,
+    pub managed_by: Option<String>,
 }
 
 /// A session's live approval/question request in raw form — what
@@ -695,6 +698,27 @@ impl Store {
         })
     }
 
+    pub fn set_session_managed_by(&self, id: &str, managed_by: &str) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            Ok(conn.execute(
+                "UPDATE sessions SET managed_by = ?2 WHERE id = ?1",
+                params![id, managed_by],
+            )? == 1)
+        })
+    }
+
+    pub fn session_managed_by(&self, id: &str) -> Result<Option<String>, StoreError> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT managed_by FROM sessions WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
     pub fn set_session_user_seen(&self, id: &str, seen_at: i64) -> Result<bool, StoreError> {
         self.with_connection(|conn| {
             Ok(conn.execute(
@@ -784,8 +808,8 @@ impl Store {
             tx.execute(
                 "INSERT INTO sessions (id, workspace_key, workspace, title, status,
                     created_at, updated_at, tags_json, state_json,
-                    last_active, profile, role, agent_id)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,'[]',?8,?9,?10,?11,?12)
+                    last_active, profile, role, agent_id, managed_by)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'[]',?8,?9,?10,?11,?12,?13)
                  ON CONFLICT(id) DO UPDATE SET
                     workspace_key = excluded.workspace_key,
                     workspace = excluded.workspace,
@@ -810,6 +834,7 @@ impl Store {
                     extras.profile,
                     role,
                     extras.agent_id,
+                    extras.managed_by.as_deref().unwrap_or("human"),
                 ],
             )?;
             // Replace rather than append: an import states the whole truth, so a
@@ -836,7 +861,7 @@ impl Store {
 
 const SESSION_COLUMNS: &str = "id, workspace_key, workspace, title, status, created_at, \
      updated_at, last_active, profile, role, agent_id, kind, settled_at, keep_awake, resume_mode, last_changes, total_changes, \
-     user_seen_at, finished_at, result_summary, pending_handoff";
+     user_seen_at, finished_at, result_summary, pending_handoff, managed_by";
 
 impl Store {
     /// Save a session's scalar state, creating the row on first write.
@@ -1635,6 +1660,7 @@ fn session_row_from(row: &rusqlite::Row<'_>) -> Result<SessionRow, rusqlite::Err
         finished_at: row.get(18)?,
         result_summary: row.get(19)?,
         pending_handoff: row.get(20)?,
+        managed_by: row.get(21)?,
     })
 }
 
@@ -1699,6 +1725,7 @@ mod tests {
             finished_at: None,
             result_summary: None,
             pending_handoff: None,
+            managed_by: "human".into(),
         }
     }
 

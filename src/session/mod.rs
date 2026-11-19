@@ -860,6 +860,8 @@ pub struct SessionInfo {
     pub user_seen_at: Option<i64>,
     /// Whether this session finished with an unseen result.
     pub came_back: bool,
+    /// `human` when the user leads the session, `agent` when its agent runs it.
+    pub managed_by: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1317,6 +1319,7 @@ pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> V
                 result_summary: row.result_summary,
                 user_seen_at: row.user_seen_at,
                 came_back,
+                managed_by: row.managed_by,
             }
         })
         .collect();
@@ -2175,6 +2178,7 @@ pub fn create_blank_session_in(
     // sends a message there. Opening this chat later must not re-bump.
     let extras = crate::conversations::SessionExtras {
         last_active: Some(now_unix_secs()),
+        managed_by: Some("agent".into()),
         ..Default::default()
     };
     store
@@ -2228,6 +2232,7 @@ pub fn create_blank_session_in(
         result_summary: None,
         user_seen_at: None,
         came_back: false,
+        managed_by: "agent".into(),
     })
 }
 
