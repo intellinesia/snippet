@@ -357,10 +357,10 @@ async fn handle_ws(
                             o.insert("revision".into(), serde_json::json!(attach_revision));
                             o.insert("counts".into(), serde_json::json!(counts));
                             if continuous {
-                                let tail = &events[last_events.len()..];
                                 let total_events = last_event_offset + events.len();
                                 o.insert("wire".into(), serde_json::json!("delta"));
-                                let mut added = wire_events(tail, compact);
+                                let mut added =
+                                    wire_events_slice(&events, last_events.len(), compact);
                                 stamp_event_times(
                                     &state_path,
                                     last_event_offset + last_events.len(),
@@ -381,7 +381,7 @@ async fn handle_ws(
                                 let start = base_offset + rel_start;
                                 last_event_offset = start;
                                 o.insert("wire".into(), serde_json::json!("snapshot"));
-                                let mut window = wire_events(&events[rel_start..], compact);
+                                let mut window = wire_events_slice(&events, rel_start, compact);
                                 stamp_event_times(&state_path, start, &mut window).await;
                                 o.insert("events".into(), window);
                                 o.insert("event_offset".into(), serde_json::json!(start));
@@ -475,16 +475,21 @@ async fn handle_ws(
             let event_request = match pending_event.take().or_else(|| event_rx.try_recv().ok()) {
                 Some(index) => {
                     let path = state_path.clone();
-                    tokio::task::spawn_blocking(move || read_session_state_tail(&path, index))
+                    let ctx_start = index.saturating_sub(20);
+                    tokio::task::spawn_blocking(move || read_session_state_tail(&path, ctx_start))
                         .await
                         .ok()
                         .flatten()
-                        .map(|(state, _)| (index, state))
+                        .map(|(state, _)| (index, index - ctx_start, state))
                 }
                 None => None,
             };
-            if let Some((index, state)) = event_request {
-                let mut one = serde_json::json!([state.events.first()]);
+            if let Some((index, rel, state)) = event_request {
+                let mut one = if rel < state.events.len() {
+                    wire_events_slice(&state.events[..=rel], rel, false)
+                } else {
+                    serde_json::json!([serde_json::Value::Null])
+                };
                 stamp_event_times(&state_path, index, &mut one).await;
                 let frame = serde_json::json!({
                     "wire": "event",

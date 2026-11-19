@@ -432,7 +432,7 @@ fn build_responses_request(
                 instructions = content.clone();
                 if config.x_search {
                     instructions.push_str(
-                        "\n\nYou have `search_x` for X (Twitter): it searches posts, accounts and threads live and returns each post's author, time, status URL and text. Call it whenever you need anything from X, including recent posts in a time window; never assume X search is unavailable. Use `web_search` for the open web, and browser tools only for logged-in sites.",
+                        "\n\nYou have `search_x` for X (Twitter): it searches posts, accounts and threads live and returns each post's author, time, status URL and text. Call it whenever you need anything from X, including recent posts in a time window; never assume X search is unavailable. Use `web.search` for the open web, and browser tools only for logged-in sites.",
                     );
                 }
             }

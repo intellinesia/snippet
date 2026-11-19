@@ -203,7 +203,7 @@ fn direct_message_envelope(
          reply_to: {reply_to}\n{reply_lines}{tags}\
          note: {who} wrote directly; this is not a turn in your own conversation. \
          {answer} \
-         Recent history only; use read_agent_thread for more.\n{history}body: {body}\n\
+         Recent history only; use read.agent for more.\n{history}body: {body}\n\
          [/direct_message]",
         event_id_line = event_id_line,
         thread = event.thread_id,
@@ -215,14 +215,14 @@ fn direct_message_envelope(
         },
         answer = if reply_to == "human" {
             if about_thread.is_some() {
-                "Your plain reply text is delivered to the user automatically; use send_agent_message \
+                "Your plain reply text is delivered to the user automatically; use message.send \
                  only for extra messages."
             } else {
-                "Your plain reply text is delivered to them automatically; use send_agent_message \
+                "Your plain reply text is delivered to them automatically; use message.send \
                  only for extra messages."
             }
         } else {
-            "Answer with send_agent_message to `reply_to` above, which is where they're reading."
+            "Answer with message.send to `reply_to` above, which is where they're reading."
         },
         reply_to = reply_to,
         reply_lines = reply_lines,
@@ -275,17 +275,25 @@ fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool 
     use crate::harness::HarnessEvent as E;
     let mut sent = false;
     for (i, event) in turn.iter().enumerate().skip(from) {
-        if let E::ToolCall {
+        let E::ToolCall {
             tool_name,
             arguments,
         } = event
-            && tool_name == "send_agent_message"
-            && arguments
+        else {
+            continue;
+        };
+        let lowered = crate::surface::lower(tool_name, arguments).ok().flatten();
+        let (resolved_name, resolved_args) = match lowered.as_ref() {
+            Some((n, a)) => (n.as_str(), a),
+            None => (tool_name.as_str(), arguments),
+        };
+        if resolved_name == "send_agent_message"
+            && resolved_args
                 .get("reaction")
                 .and_then(|v| v.as_str())
                 .is_none_or(|r| r.trim().is_empty())
             && matches!(
-                arguments
+                resolved_args
                     .get("recipient_agent_id")
                     .and_then(|v| v.as_str())
                     .map(str::trim),
@@ -293,12 +301,13 @@ fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool 
             )
         {
             let failed = turn[i + 1..].iter().find_map(|e| match e {
-                E::ToolResult { tool_name, result } if tool_name == "send_agent_message" => Some(
+                E::ToolResult {
+                    tool_name: rn,
+                    result,
+                } if rn == tool_name => Some(
                     result.get("error").is_some() || result.get("is_error") == Some(&json!(true)),
                 ),
-                E::InvalidToolCall { tool_name, .. } if tool_name == "send_agent_message" => {
-                    Some(true)
-                }
+                E::InvalidToolCall { tool_name: rn, .. } if rn == tool_name => Some(true),
                 _ => None,
             });
             if failed == Some(false) {
@@ -354,10 +363,13 @@ fn turn_end_relay_with_notice(
                 .iter()
                 .rev()
                 .find_map(|e| match e {
-                    E::ToolCall { tool_name, .. } => Some(tool_name.as_str()),
+                    E::ToolCall {
+                        tool_name,
+                        arguments,
+                    } => Some(crate::surface::resolve(tool_name, arguments)),
                     _ => None,
                 })
-                .unwrap_or("none");
+                .unwrap_or_else(|| "none".to_string());
             (
                 format!("{who} finished this turn without a reply; its last step was {last_tool}."),
                 true,
@@ -1052,7 +1064,7 @@ async fn deliver_direct(
         if answers_own_message(d, event, &session_id) {
             let note = match lane.as_deref() {
                 Some(lane) => format!(
-                    "this answers a message your lane {lane} sent, and that lane has finished. Use it yourself, or pass it on with delegate_task (lane_id {lane}) if the lane should act on it."
+                    "this answers a message your lane {lane} sent, and that lane has finished. Use it yourself, or pass it on with delegate.run (lane_id {lane}) if the lane should act on it."
                 ),
                 None => "this answers the message this session sent; carry on with what you were doing, using it. No reply is needed unless you have a follow-up.".to_string(),
             };
@@ -1094,7 +1106,7 @@ async fn deliver_direct(
                 "human".to_string()
             };
             let envelope = format!(
-                "[direct_message]\nthread_id: {}\nfrom: {}:{}\nreply_to: {reply_to}\n{tags}note: this was sent to this session directly; act on it or answer it with send_agent_message to reply_to.\nbody: {body}\n[/direct_message]",
+                "[direct_message]\nthread_id: {}\nfrom: {}:{}\nreply_to: {reply_to}\n{tags}note: this was sent to this session directly; act on it or answer it with message.send to reply_to.\nbody: {body}\n[/direct_message]",
                 event.thread_id,
                 event.actor_kind,
                 event.actor_id,
@@ -1211,7 +1223,7 @@ fn desk_open_tasks_envelope(
     };
     let envelope = envelope.replacen(
         "\nnote: ",
-        "\nnote: forward with send_agent_message to task:<id> and forward: <event_id> when it is about running work. ",
+        "\nnote: forward with message.send to task:<id> and forward: <event_id> when it is about running work. ",
         1,
     );
     envelope.replacen("\nbody: ", &format!("\n{tasks_block}body: "), 1)
@@ -1929,7 +1941,7 @@ mod tests {
         assert!(envelope.starts_with("[direct_message]"));
         assert!(envelope.contains("from: human:local"));
         assert!(envelope.contains("to: agent:a"));
-        assert!(envelope.contains("send_agent_message"));
+        assert!(envelope.contains("message.send"));
         assert!(
             !envelope.contains("Workspace work requires a task"),
             "the desk layer teaches that, not every message"
@@ -2271,7 +2283,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(task_rx.try_recv().is_err(), "the task session hears it only through the desk");
+        assert!(
+            task_rx.try_recv().is_err(),
+            "the task session hears it only through the desk"
+        );
         match desk_rx.try_recv().expect("desk got the message") {
             LoopInput::UserMessage(text) => {
                 assert!(text.contains("body: how is it going"), "{text}");
@@ -2307,7 +2322,7 @@ mod tests {
         match desk_rx.try_recv().expect("desk got the message") {
             LoopInput::UserMessage(text) => {
                 assert!(
-                    text.contains("note: forward with send_agent_message to task:<id> and forward: <event_id> when it is about running work."),
+                    text.contains("note: forward with message.send to task:<id> and forward: <event_id> when it is about running work."),
                     "{text}"
                 );
                 assert!(text.contains("your open tasks:\n"), "{text}");
@@ -3100,11 +3115,9 @@ mod tests {
         }
 
         let desk_id = crate::session::minimal_inbox_identity(agent_id);
-        assert!(
-            desk_id.contains(
-                "Your channels and the kinds of message each carries are in reach_policy;"
-            )
-        );
+        assert!(desk_id.contains(
+            "Your channels and the kinds of message each carries are in snippet tool reach_policy;"
+        ));
     }
 
     fn waiting_question_state() -> crate::harness::HarnessState {

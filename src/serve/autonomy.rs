@@ -362,7 +362,7 @@ async fn wake_for_worker_questions(daemon: &Shared) {
             continue;
         }
         let text = format!(
-            "[worker_question]\ntask_id: {}\ntask: {}\nsession_id: {}\nquestion:\n{}\n[/worker_question]\nWorkflow W5 · worker question: the worker is paused on it. Answer with answer_worker (session_id {}) when the user's request, the task or your brief settles it; otherwise ask the user once with your recommendation. Then stop.",
+            "[worker_question]\ntask_id: {}\ntask: {}\nsession_id: {}\nquestion:\n{}\n[/worker_question]\nWorkflow W5 · worker question: the worker is paused on it. Answer with sessions.answer (session_id {}) when the user's request, the task or your brief settles it; otherwise ask the user once with your recommendation. Then stop.",
             task.id,
             task.title,
             task.session_id,
@@ -499,7 +499,7 @@ fn goal_attention_lines(store: &crate::store::Store) -> Vec<String> {
         .list_goals(Some(crate::coordination::GoalStatus::Open))
         .unwrap_or_default();
     if goals.is_empty() {
-        return vec!["- none recorded: every outcome the user is still pursuing belongs in create_goal, not as prose in your brief.".to_string()];
+        return vec!["- none recorded: every outcome the user is still pursuing belongs in goals.create, not as prose in your brief.".to_string()];
     }
     goals
         .iter()
@@ -683,7 +683,7 @@ fn round_envelope(
     out.push_str(&open.join("\n"));
 
     if !goal_lines.is_empty() {
-        out.push_str("\n\n## Goals needing you\nStalled: file or replan the next step, or take it to the user. Waiting on the user, NUDGE DUE: nudge them (one is enough this wake, the most important), then update_goal nudged. ASK WHETHER TO DROP OR PARK IT: three nudges went unanswered, so ask that instead. Ready to close: confirm with the user, then close_goal.\n");
+        out.push_str("\n\n## Goals needing you\nStalled: file or replan the next step, or take it to the user. Waiting on the user, NUDGE DUE: nudge them (one is enough this wake, the most important), then goals.update nudged. ASK WHETHER TO DROP OR PARK IT: three nudges went unanswered, so ask that instead. Ready to close: confirm with the user, then goals.close.\n");
         out.push_str(&goal_lines.join("\n"));
     }
 

@@ -127,7 +127,7 @@ pub fn submit_for_review(
                 t.notify_once(
                     "in_review",
                     &format!(
-                        "{summary}\nVerification is yours ({}): {ask}, then submit_review.",
+                        "{summary}\nVerification is yours ({}): {ask}, then tasks.review.",
                         mode.as_str()
                     ),
                 );
@@ -318,7 +318,7 @@ pub fn revision_envelope(
     by: &str,
 ) -> String {
     format!(
-        "[mission_control_task]\ntask_id: {id}\ntitle: {title}\nrevision: {n}\nrequested_by: agent {by} (your finished work reopened, same session)\nprevious result:\n{prev}\nfeedback:\n{feedback}\n{ledger}\n\nChange what the feedback names, in this session, then report again with report_mission_task (task_id {id}) and evidence for each acceptance criterion.\n[/mission_control_task]",
+        "[mission_control_task]\ntask_id: {id}\ntitle: {title}\nrevision: {n}\nrequested_by: agent {by} (your finished work reopened, same session)\nprevious result:\n{prev}\nfeedback:\n{feedback}\n{ledger}\n\nChange what the feedback names, in this session, then report again with task.report (task_id {id}) and evidence for each acceptance criterion.\n[/mission_control_task]",
         id = task.id,
         title = task.title,
         n = state.revision,
@@ -437,8 +437,15 @@ impl Tool for SubmitReview {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let tool_name = if ctx.is_mission_control() {
+            "tasks.review"
+        } else if ctx.lane_origin().is_some() {
+            "submit_review"
+        } else {
+            "task.review"
+        };
         let args: SubmitReviewArgs = serde_json::from_value(arguments)
-            .map_err(|e| ToolError::msg(format!("submit_review arguments: {e}")))?;
+            .map_err(|e| ToolError::msg(format!("{tool_name} arguments: {e}")))?;
         let approve = match args.verdict.as_str() {
             "approve" => true,
             "changes" => false,
@@ -608,7 +615,11 @@ pub fn apply_verdict(
             },
         );
     }
-    let by = if reviewer == "user" { "human" } else { reviewer };
+    let by = if reviewer == "user" {
+        "human"
+    } else {
+        reviewer
+    };
     let at = chrono::DateTime::parse_from_rfc3339(&now)
         .map(|at| at.timestamp())
         .unwrap_or(0);
@@ -676,7 +687,7 @@ pub fn apply_verdict(
         ),
     );
     let envelope = format!(
-        "[review_findings]\ntask_id: {}\ntitle: {}\nreviewer: {reviewer}\nround: {rounds}\nThe review sent this task back. Fix every finding, then report again with report_mission_task (task_id {}).\nfindings:\n{}\n{}\n[/review_findings]",
+        "[review_findings]\ntask_id: {}\ntitle: {}\nreviewer: {reviewer}\nround: {rounds}\nThe review sent this task back. Fix every finding, then report again with task.report (task_id {}).\nfindings:\n{}\n{}\n[/review_findings]",
         task.id,
         task.title,
         task.id,
@@ -888,7 +899,7 @@ How: re-ran everything"
             "revision: 1",
             "previous result:\nfirst cut",
             "feedback:\ntighten the intro",
-            "report_mission_task (task_id rv1)",
+            "task.report (task_id rv1)",
         ] {
             assert!(envelope.contains(needle), "{needle}: {envelope}");
         }

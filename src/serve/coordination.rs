@@ -948,14 +948,14 @@ pub fn board_message_envelope_with_task(
         "the turn on this task has passed to you: it's yours to carry out here, and you may change files now."
     } else {
         "a teammate posted on the shared task board; this isn't a turn in your own \
-         conversation. If it needs your input or changes what you're doing, reply (post_task_coordination on a task thread, \
-         send_agent_message to the sender elsewhere) or act on it; if not, end your turn \
+         conversation. If it needs your input or changes what you're doing, reply (message.task on a task thread, \
+         message.send to the sender elsewhere) or act on it; if not, end your turn \
          without a reply."
     };
     format!(
         "[coordination_board_message]\nthread_id: {}\nfrom_id: {}\nfrom_kind: {}\n{tags}{task_meta}\
-         note: {note} inspect_task shows the task's plan and roster; only recent history is \
-         shown here, and read_coordination_thread has more.\n{history}body: {body}\n\
+         note: {note} task.inspect shows the task's plan and roster; only recent history is \
+         shown here, and read.room has more.\n{history}body: {body}\n\
          [/coordination_board_message]",
         event.thread_id,
         event.actor_id,

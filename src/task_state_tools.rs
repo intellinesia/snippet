@@ -464,7 +464,7 @@ impl Tool for UpdateTaskState {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: UpdateStateArgs = serde_json::from_value(arguments)
-            .map_err(|e| ToolError::msg(format!("update_task_state arguments: {e}")))?;
+            .map_err(|e| ToolError::msg(format!("task.update arguments: {e}")))?;
         let patch: StatePatch = serde_json::from_value(args.patch)
             .map_err(|e| ToolError::msg(format!("patch: {e}")))?;
         let store = ctx

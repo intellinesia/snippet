@@ -39,7 +39,7 @@ impl Tool for BashTool {
         NativeToolDefinition {
             name: "bash".to_string(),
             description:
-                "Run shell commands in the workspace. Limit output with `max_lines` or `max_bytes`. Use `background=true` for long-lived processes, then manage them with `manage_process`. Drive interactive apps with follow-up calls."
+                "Run shell commands in the workspace. Limit output with `max_lines` or `max_bytes`. Use `background=true` for long-lived processes, then manage them with `process`. Drive interactive apps with follow-up calls."
                     .to_string(),
             input_schema: object_schema(
                 json!({
@@ -95,7 +95,15 @@ impl Tool for BashTool {
                 .stderr(Stdio::from(log_err))
                 .spawn()?;
             let pid = child.id().unwrap_or(0);
-            crate::bg::record(ctx.workspace_root(), &id, &args.command, label, pid, Some(crate::bg::session_key(ctx))).ok();
+            crate::bg::record(
+                ctx.workspace_root(),
+                &id,
+                &args.command,
+                label,
+                pid,
+                Some(crate::bg::session_key(ctx)),
+            )
+            .ok();
             let status_path = crate::bg::status_path(ctx.workspace_root(), &id);
             tokio::spawn(async move {
                 let code = match child.wait().await {
@@ -112,7 +120,7 @@ impl Tool for BashTool {
                 "id": id,
                 "pid": pid,
                 "log": log_path.display().to_string(),
-                "note": "started in the background and still running. Use `manage_process` to inspect logs or terminate it, or tail the log file directly. It appears in your [background_processes] list.",
+                "note": "started in the background and still running. Use `process` (list, log, wait, kill) to inspect logs or terminate it, or tail the log file directly. It appears in your [background_processes] list.",
             });
             if let Some(lbl) = label {
                 res["label"] = json!(lbl);
@@ -160,13 +168,23 @@ impl Tool for BashTool {
             .stdout(Stdio::from(out_file))
             .stderr(Stdio::from(err_file))
             .spawn()?;
-        let timeout = std::time::Duration::from_secs(args.timeout_seconds.unwrap_or(120).min(FOREGROUND_CAP_SECS));
+        let timeout = std::time::Duration::from_secs(
+            args.timeout_seconds.unwrap_or(120).min(FOREGROUND_CAP_SECS),
+        );
         let status = match tokio::time::timeout(timeout, child.wait()).await {
             Ok(status) => status?,
             Err(_) => {
                 capture.keep = true;
                 let pid = child.id().unwrap_or(0);
-                crate::bg::record(ctx.workspace_root(), &id, &args.command, label, pid, Some(crate::bg::session_key(ctx))).ok();
+                crate::bg::record(
+                    ctx.workspace_root(),
+                    &id,
+                    &args.command,
+                    label,
+                    pid,
+                    Some(crate::bg::session_key(ctx)),
+                )
+                .ok();
                 let status_path = crate::bg::status_path(ctx.workspace_root(), &id);
                 tokio::spawn(async move {
                     let code = match child.wait().await {
@@ -189,7 +207,7 @@ impl Tool for BashTool {
                     "log": out_path.display().to_string(),
                     "moved_after_secs": timeout.as_secs(),
                     "note": format!(
-                        "still running after {}s, so it was moved to the background instead of being stopped. It keeps running and appears in your [background_processes] list, which reports its exit status when it finishes. Read new output with manage_process log (id {id}) or tail the log; stop it with manage_process kill if it's stuck. Don't rerun it.",
+                        "still running after {}s, so it was moved to the background instead of being stopped. It keeps running and appears in your [background_processes] list, which reports its exit status when it finishes. Read new output with process.log (id {id}) or tail the log; stop it with process.kill if it's stuck. Don't rerun it.",
                         timeout.as_secs()
                     ),
                 });

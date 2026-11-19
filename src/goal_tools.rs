@@ -26,7 +26,7 @@ fn find(store: &Store, id: &str) -> Result<Goal, ToolError> {
     store
         .get_goal(id.trim())
         .map_err(|e| ToolError::msg(format!("look up goal: {e}")))?
-        .ok_or_else(|| ToolError::msg(format!("no goal `{id}`; list_goals shows them")))
+        .ok_or_else(|| ToolError::msg(format!("no goal `{id}`; goals.list shows them")))
 }
 
 fn save(store: &Store, goal: &Goal) -> Result<(), ToolError> {
@@ -304,7 +304,7 @@ impl Tool for UpdateGoal {
             }
             Some(other) => {
                 return Err(ToolError::msg(format!(
-                    "status must be open or cancelled, got `{other}`; close with close_goal"
+                    "status must be open or cancelled, got `{other}`; close with goals.close"
                 )));
             }
         }

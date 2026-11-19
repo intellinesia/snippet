@@ -87,6 +87,7 @@ pub struct HarnessConfig {
     /// Inference profile this session runs on; lanes without their own inherit it.
     pub profile: Option<String>,
     pub hidden_meta: &'static [&'static str],
+    pub seat_role: crate::surface::SeatRole,
 }
 
 impl Default for HarnessConfig {
@@ -113,6 +114,7 @@ impl Default for HarnessConfig {
             session_title: None,
             profile: None,
             hidden_meta: &[],
+            seat_role: crate::surface::SeatRole::Work,
         }
     }
 }

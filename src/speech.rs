@@ -220,7 +220,7 @@ pub async fn speak(
     let forward = tuning.chattiness == crate::ambient_tuning::Chattiness::Forward;
     if !forward && crate::ambient::room_busy() {
         abandon_stream();
-        return Err("people nearby are in a conversation or meeting, so speaking would talk over them: reply in the chat instead, and use ping_user if it cannot wait".into());
+        return Err("people nearby are in a conversation or meeting, so speaking would talk over them: reply in the chat instead, and use message.push if it cannot wait".into());
     }
     if quiet_hold(&tuning) && !urgent {
         abandon_stream();
@@ -228,7 +228,7 @@ pub async fn speak(
             "held": true,
             "spoken": false,
             "result": "held: quiet profile. The user has not spoken to you recently, so nothing was said aloud.",
-            "next": "Put it in the chat, or call ping_user if it cannot wait; set urgent true on speak only when waiting would cause harm.",
+            "next": "Put it in the chat, or call message.push if it cannot wait; set urgent true on speak only when waiting would cause harm.",
         }));
     }
     let (device, conversation) = prepare().await?;

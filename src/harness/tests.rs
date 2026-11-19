@@ -830,7 +830,7 @@ mod steer_and_interrupt_tests {
         let release = Arc::new(Notify::new());
         let mut tools = ToolRegistry::new();
         tools.insert(GateTool {
-            name: "work",
+            name: "bash",
             started: started.clone(),
             release: Some(release.clone()),
         });
@@ -851,7 +851,7 @@ mod steer_and_interrupt_tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut model = ScriptedModel {
             outputs: Mutex::new(VecDeque::from([
-                tool_call_output("work", "c1"),
+                tool_call_output("bash", "c1"),
                 text_output("Switched to sqlite."),
             ])),
             seen_messages: seen.clone(),
@@ -906,7 +906,7 @@ mod steer_and_interrupt_tests {
         let release = Arc::new(Notify::new());
         let mut tools = ToolRegistry::new();
         tools.insert(GateTool {
-            name: "work",
+            name: "bash",
             started: started.clone(),
             release: Some(release.clone()),
         });
@@ -926,7 +926,7 @@ mod steer_and_interrupt_tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut model = ScriptedModel {
             outputs: Mutex::new(VecDeque::from([
-                tool_call_output("work", "c1"),
+                tool_call_output("bash", "c1"),
                 text_output("Noted."),
             ])),
             seen_messages: seen.clone(),
@@ -976,7 +976,7 @@ mod steer_and_interrupt_tests {
         let started = Arc::new(Notify::new());
         let mut tools = ToolRegistry::new();
         tools.insert(GateTool {
-            name: "hang",
+            name: "bash",
             started: started.clone(),
             release: None,
         });
@@ -997,7 +997,7 @@ mod steer_and_interrupt_tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut model = ScriptedModel {
             outputs: Mutex::new(VecDeque::from([
-                tool_call_output("hang", "c1"),
+                tool_call_output("bash", "c1"),
                 text_output("Stopped at hang; deploy not started."),
             ])),
             seen_messages: seen.clone(),
@@ -1291,6 +1291,106 @@ mod allow_rule_flow_tests {
                 .iter()
                 .any(|e| matches!(e, HarnessEvent::Decision { by, .. } if by == "human")),
             "the only request before the rule decision was answered by the user"
+        );
+    }
+
+    #[tokio::test]
+    async fn surface_dispatch_lowers_rejects_hidden_aliases_and_appends_internal_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tools = ToolRegistry::new();
+        tools.insert(crate::builtins::ManageProcessTool);
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                state_path: Some(dir.path().join("state.json")),
+                memory_enabled: false,
+                ..HarnessConfig::default()
+            },
+            tools,
+            ToolContext::new(dir.path())
+                .unwrap()
+                .with_store_path(dir.path().join("store.db")),
+        );
+        let defs = harness.definitions_for(true, false);
+        assert!(defs.iter().any(|d| d.name == "process"));
+        assert!(!defs.iter().any(|d| d.name == "manage_process"));
+
+        let mut state = HarnessState::blank(&dir.path().display().to_string(), None);
+        let (lane_tx, _) = mpsc::unbounded_channel();
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        let mut lanes = LaneManager::new(
+            None,
+            dir.path().to_path_buf(),
+            dir.path().join("lanes"),
+            lane_tx,
+            progress_tx,
+            None,
+        );
+        let (watch_tx, _) = mpsc::unbounded_channel();
+        let mut watches = WatchManager::new(dir.path().to_path_buf(), watch_tx);
+        let mut vars = LoopVars::default();
+        let (_tx, mut approval_rx) = mpsc::unbounded_channel();
+
+        let calls = vec![
+            GeneratedToolCall {
+                tool_name: "process".into(),
+                arguments: json!({"action": "list"}),
+                id: Some("c1".into()),
+                signature: None,
+                origin_model: None,
+            },
+            GeneratedToolCall {
+                tool_name: "manage_process".into(),
+                arguments: json!({"action": "list"}),
+                id: Some("c2".into()),
+                signature: None,
+                origin_model: None,
+            },
+            GeneratedToolCall {
+                tool_name: "process".into(),
+                arguments: json!({"action": "kill"}),
+                id: Some("c3".into()),
+                signature: None,
+                origin_model: None,
+            },
+        ];
+
+        let _ = harness
+            .run_tool_calls(
+                &mut state,
+                &mut lanes,
+                &mut watches,
+                &mut vars,
+                true,
+                None,
+                &mut approval_rx,
+                calls,
+                &defs,
+            )
+            .await
+            .ok()
+            .expect("tool calls completed");
+
+        let results: Vec<(&str, &Value)> = state
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                HarnessMessage::ToolResult {
+                    tool_name, content, ..
+                } => Some((tool_name.as_str(), content)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].0, "process");
+        assert_eq!(results[0].1["status"], "success");
+        assert_eq!(results[1].0, "manage_process");
+        assert_eq!(results[1].1["error"]["code"], "unknown_tool");
+        assert_eq!(results[2].0, "process");
+        assert_eq!(results[2].1["status"], "error");
+        let err_msg = results[2].1["error"]["message"].as_str().unwrap();
+        assert!(
+            err_msg.contains("manage_process") && err_msg.contains("properties"),
+            "expected internal schema in argument error, got: {err_msg}"
         );
     }
 }

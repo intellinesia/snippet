@@ -1,6 +1,5 @@
 pub mod fs;
 pub mod process;
-pub mod read_only_shell;
 pub mod shell_search;
 pub mod skills;
 pub mod web;

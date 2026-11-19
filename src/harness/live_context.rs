@@ -65,7 +65,7 @@ pub(super) fn build_reminder(
     let lane_running = state.lanes.iter().any(|l| l.status == LaneStatus::Running);
     if used >= 60 && open_steps >= 2 && !lane_running && !vars.capacity_nudged {
         signals.push(format!(
-            "Context is {used}% used with {open_steps} plan steps left and no lane running. A step you can brief in a paragraph with file references is lane work (delegate_task); keep your own context for judgement."
+            "Context is {used}% used with {open_steps} plan steps left and no lane running. A step you can brief in a paragraph with file references is lane work (delegate.run); keep your own context for judgement."
         ));
         vars.capacity_nudged = true;
     }
@@ -475,7 +475,7 @@ mod tests {
             .expect("first build emits reminder");
         assert!(
             first.contains(
-                "Context is 65% used with 2 plan steps left and no lane running. A step you can brief in a paragraph with file references is lane work (delegate_task); keep your own context for judgement."
+                "Context is 65% used with 2 plan steps left and no lane running. A step you can brief in a paragraph with file references is lane work (delegate.run); keep your own context for judgement."
             ),
             "got: {first}"
         );

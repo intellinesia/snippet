@@ -266,7 +266,7 @@ impl Goal {
             .map(|t| format!("task {} \"{}\" is {}", t.id, clip(&t.title, 80), t.status))
             .collect();
         if self.acceptance.is_empty() {
-            gaps.push("the goal has no acceptance criteria; add some with update_goal".into());
+            gaps.push("the goal has no acceptance criteria; add some with goals.update".into());
         }
         gaps.extend(
             self.unevidenced()

@@ -20,7 +20,7 @@ use crate::llm::{ModelOutput, StreamBuffer, StreamHandle};
 
 const MCP_SERVER: &str = "snippet";
 const MCP_PREFIX: &str = "mcp__snippet__";
-const QUIET_TOOLS: [&str; 3] = ["update_plan", "ask_user", "set_session_title"];
+const QUIET_TOOLS: [&str; 2] = ["update_plan", "ask_user"];
 const COMMAND_MARK: &str = "\u{1}command\u{1}";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -571,6 +571,8 @@ pub async fn cli_agent_status(provider: &str) -> Value {
 struct McpCall {
     name: String,
     arguments: Value,
+    surface_name: Option<String>,
+    uses_op: bool,
     reply: oneshot::Sender<Value>,
 }
 
@@ -751,7 +753,8 @@ fn prefix_tool_names(text: &str, names: &[String]) -> String {
         match after.find('`') {
             Some(end) => {
                 let span = &after[..end];
-                if names.iter().any(|n| n == span) {
+                let tool = span.split_once('.').map_or(span, |(t, _)| t);
+                if names.iter().any(|n| n == tool) {
                     out.push('`');
                     out.push_str(MCP_PREFIX);
                     out.push_str(span);
@@ -773,16 +776,43 @@ fn prefix_tool_names(text: &str, names: &[String]) -> String {
     out
 }
 
+fn empty_call_example(name: &str, schema: &Value) -> Value {
+    let props = schema.get("properties").and_then(Value::as_object);
+    let arguments: serde_json::Map<String, Value> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|field| {
+            let kind = props
+                .and_then(|p| p.get(field))
+                .and_then(|p| p.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("string");
+            let placeholder = match kind {
+                "array" => json!([]),
+                "object" => json!({}),
+                "integer" | "number" => json!(1),
+                "boolean" => json!(true),
+                _ => json!(format!("<{field}>")),
+            };
+            (field.to_string(), placeholder)
+        })
+        .collect();
+    json!({"server_name": MCP_SERVER, "tool_name": name, "arguments": arguments})
+}
+
 fn tool_prompt_preamble(kind: CliKind) -> String {
     match kind {
         CliKind::ClaudeCode => format!(
             "## Tools in this runtime\n\nThe tools named in this prompt are served to you as `{MCP_PREFIX}<name>`: where it says `bash`, call `{MCP_PREFIX}bash`, and so on. These are your only tools: you have no built-in ones in this session. Read and search files with `bash` (cat, sed -n, rg, ls), and make every change, command, question and delegation through the snippet tools."
         ),
         CliKind::Devin => format!(
-            "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{MCP_SERVER}` MCP server. Call them via `mcp_call_tool` with `server_name: \"{MCP_SERVER}\"`, `tool_name` set to the exact tool name (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate_task`, and the rest), and `arguments` matching its schema (call `mcp_list_tools` for `{MCP_SERVER}` once first if your runtime requires it). Every built-in tool of yours (`exec`, `read`, `write`, `edit`, `grep`, `glob`, `skill`, `ask_user_question`, `todo_write`) is disabled in this session: read and search files with `bash` (`cat`, `sed -n`, `rg`, `ls`), edit files with `change_files`, and make every command, question and delegation through the `{MCP_SERVER}` MCP tools."
+            "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{MCP_SERVER}` MCP server. Call them via `mcp_call_tool` with `server_name: \"{MCP_SERVER}\"`, `tool_name` set to the exact tool name (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate`, and the rest), and `arguments` matching its schema (call `mcp_list_tools` for `{MCP_SERVER}` once first if your runtime requires it). The nested `arguments` object is required on every call and carries the tool's own fields, written out in full each time, for example `{{\"server_name\": \"{MCP_SERVER}\", \"tool_name\": \"bash\", \"arguments\": {{\"command\": \"ls\", \"label\": \"list files\"}}}}`; a call without it reaches the tool empty and fails. Every built-in tool of yours (`exec`, `read`, `write`, `edit`, `grep`, `glob`, `skill`, `ask_user_question`, `todo_write`) is disabled in this session: read and search files with `bash` (`cat`, `sed -n`, `rg`, `ls`), edit files with `change_files`, and make every command, question and delegation through the `{MCP_SERVER}` MCP tools."
         ),
         CliKind::Antigravity => format!(
-            "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{}` MCP server: call them with call_mcp_tool, ServerName `{}` and ToolName exactly as named here (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate_task`, and the rest). These are your only working tools: every built-in tool of yours is switched off in this session. Read and search files with the snippet `bash` tool (cat, sed -n, rg, ls), research with its `web_search` and `web_read`, and make every change, command, question and delegation through the snippet tools. The one exception: when a tool result says its output was saved to a file inside your own Antigravity folder, read that file with view_file.",
+            "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{}` MCP server: call them with call_mcp_tool, ServerName `{}` and ToolName exactly as named here (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate`, and the rest). These are your only working tools: every built-in tool of yours is switched off in this session. Read and search files with the snippet `bash` tool (cat, sed -n, rg, ls), research with its `web.search` and `web.read`, and make every change, command, question and delegation through the snippet tools. The one exception: when a tool result says its output was saved to a file inside your own Antigravity folder, read that file with view_file.",
             crate::antigravity::MCP_SERVER_NAME,
             crate::antigravity::MCP_SERVER_NAME,
         ),
@@ -1235,6 +1265,8 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
                 .send(McpCall {
                     name,
                     arguments,
+                    surface_name: None,
+                    uses_op: false,
                     reply,
                 })
                 .is_err()
@@ -1405,6 +1437,22 @@ fn cli_meta_tool_definitions(
     defs
 }
 
+fn custom_tool_definition() -> NativeToolDefinition {
+    NativeToolDefinition {
+        name: "custom_tool".into(),
+        description: "Run one of your custom tools by name, including one you created or changed during this conversation that isn't in your tool list yet.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The custom tool's name."},
+                "arguments": {"type": "object", "description": "Its arguments, as its parameters schema describes."}
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        }),
+    }
+}
+
 type StreakCell = std::sync::Arc<std::sync::Mutex<super::guards::FailStreak>>;
 
 const CLI_STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -1489,13 +1537,25 @@ impl CodingHarness {
             })
             .unwrap_or_else(|| self.config.system_prompt.clone());
         let system = if kind == CliKind::ClaudeCode {
-            let names: Vec<String> = self
+            let mut internal: Vec<NativeToolDefinition> = self
                 .tools
                 .definitions()
                 .into_iter()
                 .chain(cli_meta_tool_definitions(false, true, &[]))
-                .map(|d| d.name)
                 .collect();
+            if self.tools.custom_dir().is_some() {
+                internal.push(custom_tool_definition());
+            }
+            let mut names: Vec<String> =
+                crate::surface::advertise(self.seat_role(true), internal.clone())
+                    .into_iter()
+                    .map(|d| d.name)
+                    .collect();
+            for def in internal {
+                if !names.iter().any(|n| n == &def.name) {
+                    names.push(def.name);
+                }
+            }
             prefix_tool_names(&system, &names)
         } else {
             system
@@ -2070,23 +2130,13 @@ impl CodingHarness {
         let mut vars = LoopVars::default();
         let meta_defs = self.cli_meta_definitions(once, lanes_enabled);
         let meta_names: Vec<String> = meta_defs.iter().map(|d| d.name.clone()).collect();
-        let mut bridge_tools = self.tools.definitions();
+        let mut internal_tools = self.tools.definitions();
         if self.tools.custom_dir().is_some() {
-            bridge_tools.push(NativeToolDefinition {
-                name: "custom_tool".into(),
-                description: "Run one of your custom tools by name, including one you created or changed during this conversation that isn't in your tool list yet.".into(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "description": "The custom tool's name."},
-                        "arguments": {"type": "object", "description": "Its arguments, as its parameters schema describes."}
-                    },
-                    "required": ["name"],
-                    "additionalProperties": false
-                }),
-            });
+            internal_tools.push(custom_tool_definition());
         }
-        bridge_tools.extend(meta_defs);
+        internal_tools.extend(meta_defs);
+        let bridge_tools = crate::surface::advertise(self.seat_role(!once), internal_tools);
+        let advertised_tools = bridge_tools.clone();
         let kind = CliKind::of(&profile.provider);
         let guide = tool_guide(kind, &bridge_tools);
         let steers: SteerQueue = Default::default();
@@ -3074,8 +3124,60 @@ impl CodingHarness {
                     let Some(mut call) = call else { continue };
                     last_heard = tokio::time::Instant::now();
                     if call.name == "custom_tool" {
+                        if !advertised_tools.iter().any(|d| d.name == "custom_tool") {
+                            let available: Vec<&str> =
+                                advertised_tools.iter().map(|d| d.name.as_str()).collect();
+                            let _ = call.reply.send(error_result(
+                                "unknown_tool",
+                                &format!(
+                                    "`custom_tool` isn't a tool in this session. Tools you have: {}.",
+                                    available.join(", ")
+                                ),
+                            ));
+                            continue;
+                        }
                         call.name = call.arguments.get("name").and_then(Value::as_str).unwrap_or("").to_string();
                         call.arguments = call.arguments.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                    } else {
+                        let Some(advertised) = advertised_tools.iter().find(|d| d.name == call.name) else {
+                            let available: Vec<&str> =
+                                advertised_tools.iter().map(|d| d.name.as_str()).collect();
+                            let hint = if self.context.workspace_root()
+                                == crate::mission_control::workspace_path()
+                            {
+                                " You are Mission Control: to check on, run or change anything in a project, ask the session that owns it (tasks action=create to that session, or read action=session)."
+                            } else {
+                                ""
+                            };
+                            let _ = call.reply.send(error_result(
+                                "unknown_tool",
+                                &format!(
+                                    "`{}` isn't a tool in this session.{hint} Tools you have: {}.",
+                                    call.name,
+                                    available.join(", ")
+                                ),
+                            ));
+                            continue;
+                        };
+                        let surface_name = call.name.clone();
+                        let uses_op = crate::surface::uses_op(&surface_name, &call.arguments);
+                        match crate::surface::lower_for_advertised(
+                            &surface_name,
+                            &call.arguments,
+                            advertised,
+                        ) {
+                            Ok(Some((internal_name, internal_args))) => {
+                                call.surface_name = Some(surface_name);
+                                call.uses_op = uses_op;
+                                call.name = internal_name;
+                                call.arguments = internal_args;
+                            }
+                            Ok(None) => {}
+                            Err(message) => {
+                                let _ = call.reply.send(error_result("invalid_arguments", &message));
+                                continue;
+                            }
+                        }
                     }
                     let custom = self
                         .tools
@@ -3194,7 +3296,19 @@ impl CodingHarness {
                             break;
                         }
                         name if meta_names.iter().any(|m| m == name) => {
-                            let (value, _) = self.dispatch_meta(&mut state, &mut lanes, &mut watches, name, &call.arguments);
+                            let (mut value, _) = self.dispatch_meta(&mut state, &mut lanes, &mut watches, name, &call.arguments);
+                            if value.get("status").and_then(Value::as_str) == Some("error") {
+                                let surface = call.surface_name.as_deref().unwrap_or(name);
+                                let schema = self.internal_tool_schema(name);
+                                value = super::dispatch::enrich_error_result(
+                                    value,
+                                    surface,
+                                    name,
+                                    call.uses_op,
+                                    schema.as_ref(),
+                                    false,
+                                );
+                            }
                             let _ = call.reply.send(value);
                             self.persist(&mut state, &lanes).await?;
                         }
@@ -3367,7 +3481,23 @@ impl CodingHarness {
                 }
                 result.value
             }
-            Ok(result) => result.value,
+            Ok(result) => {
+                if let Some(surface) = call.surface_name.as_deref()
+                    && result.value.get("status").and_then(Value::as_str) == Some("error")
+                {
+                    let schema = self.internal_tool_schema(&call.name);
+                    super::dispatch::enrich_error_result(
+                        result.value,
+                        surface,
+                        &call.name,
+                        call.uses_op,
+                        schema.as_ref(),
+                        false,
+                    )
+                } else {
+                    result.value
+                }
+            }
             Err(ToolError::UnknownTool(name)) => {
                 let available: Vec<String> = self
                     .tools
@@ -3378,7 +3508,7 @@ impl CodingHarness {
                 let hint = if self.context.workspace_root()
                     == crate::mission_control::workspace_path()
                 {
-                    " You are Mission Control: to check on, run or change anything in a project, ask the session that owns it (create_mission_task to that session, or inspect_session)."
+                    " You are Mission Control: to check on, run or change anything in a project, ask the session that owns it (tasks.create to that session, or read.session)."
                 } else {
                     ""
                 };
@@ -3410,7 +3540,13 @@ impl CodingHarness {
                     .into_iter()
                     .find(|d| argument_error && d.name == call.name)
                     .map(|d| d.input_schema);
+                let empty = arguments.as_object().is_none_or(|o| o.is_empty());
                 let message = match schema {
+                    Some(schema) if empty => format!(
+                        "Your call to `{name}` arrived with no arguments: the `arguments` object was missing or empty, so nothing reached the tool. If you call through a wrapper such as `mcp_call_tool`, the tool's own arguments go inside its nested `arguments` field, written out in full on every call, for example: {example}\nDo not resend the previous call unchanged. Schema of `{name}`: {schema}",
+                        name = call.name,
+                        example = empty_call_example(&call.name, &schema),
+                    ),
                     Some(schema) => format!(
                         "{error}\nCall `{}` again with arguments matching this schema: {schema}",
                         call.name
@@ -4297,7 +4433,10 @@ mod goal_tests {
         assert!(out.contains("`mcp__snippet__delegate_task` for lanes"));
         assert!(out.contains("`ls` for listing"));
         assert!(out.contains("`bash {background: true}`"));
-        assert_eq!(prefix_tool_names(&out, &names), out.replace("mcp__snippet__mcp__snippet__", "mcp__snippet__"));
+        assert_eq!(
+            prefix_tool_names(&out, &names),
+            out.replace("mcp__snippet__mcp__snippet__", "mcp__snippet__")
+        );
     }
 
     #[test]

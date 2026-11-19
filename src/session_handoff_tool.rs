@@ -38,12 +38,12 @@ impl Tool for HandOffSession {
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         if ctx.is_mission_control() || ctx.lane_origin().is_some() {
             return Err(ToolError::msg(
-                "hand_off_session is only available in standard sessions",
+                "task.hand_off is only available in standard sessions",
             ));
         }
         let session = ctx
             .durable_session_id()
-            .ok_or_else(|| ToolError::msg("hand_off_session requires a durable session"))?;
+            .ok_or_else(|| ToolError::msg("task.hand_off requires a durable session"))?;
         let args: Args =
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let store = ctx

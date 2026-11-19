@@ -501,7 +501,7 @@ fn extract_message_metadata(
             } else {
                 let tool_names = tool_calls
                     .iter()
-                    .map(|tc| tc.name.as_str())
+                    .map(|tc| crate::surface::resolve(&tc.name, &tc.arguments))
                     .collect::<Vec<_>>()
                     .join(",");
                 let paths = tool_calls

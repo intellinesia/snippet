@@ -367,7 +367,12 @@ pub(super) struct FailStreak {
 }
 
 impl FailStreak {
-    pub(super) fn observe(&mut self, name: &str, arguments: &Value, failed: bool) -> FailStreakAction {
+    pub(super) fn observe(
+        &mut self,
+        name: &str,
+        arguments: &Value,
+        failed: bool,
+    ) -> FailStreakAction {
         if !failed {
             self.last = None;
             self.count = 0;

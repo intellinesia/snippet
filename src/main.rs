@@ -95,6 +95,20 @@ enum Command {
         #[command(subcommand)]
         action: AgentAction,
     },
+    #[command(
+        disable_help_flag = true,
+        about = "Run an allowed daemon tool as the calling session."
+    )]
+    Tool {
+        #[arg(long)]
+        list: bool,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(short = 'h', long = "help")]
+        help: bool,
+        name: Option<String>,
+        args: Vec<String>,
+    },
     /// Check external tools and voice assets, and show how to install what is missing.
     Doctor {
         /// Machine output: one tab-separated line per missing item (id, required|optional, purpose, command).
@@ -565,6 +579,206 @@ async fn agent_cli(action: AgentAction) -> Result<(), Box<dyn std::error::Error>
     }
 }
 
+const TOOL_CLI_HELP: &str = "\
+Run an allowed daemon tool as the calling session.
+
+Usage:
+  snippet tool --list [--session <id>]
+  snippet tool <name> --help [--session <id>]
+  snippet tool <name> '<json>' [--session <id>]
+  snippet tool <name> key=value ... [--session <id>]
+  echo '<json>' | snippet tool <name> [--session <id>]
+
+Options:
+  --list            List allowed tools for the session
+  --session <id>    Session id (defaults to $SNIPPET_SESSION_ID)
+  -h, --help        Show this help, or schema help for <name>";
+
+fn one_line_description(description: &str) -> String {
+    let flat = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    match flat.find(". ") {
+        Some(idx) => flat[..=idx].to_string(),
+        None => flat,
+    }
+}
+
+fn parse_kv_value(raw: &str) -> serde_json::Value {
+    match raw {
+        "true" => serde_json::Value::Bool(true),
+        "false" => serde_json::Value::Bool(false),
+        "null" => serde_json::Value::Null,
+        _ => {
+            if (raw.starts_with('{') || raw.starts_with('[') || raw.starts_with('"'))
+                && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw)
+            {
+                return parsed;
+            }
+            if let Ok(number) = serde_json::from_str::<serde_json::Number>(raw) {
+                return serde_json::Value::Number(number);
+            }
+            serde_json::Value::String(raw.to_string())
+        }
+    }
+}
+
+fn parse_tool_arguments(args: &[String]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    use std::io::{IsTerminal, Read};
+    if args.is_empty() {
+        if !std::io::stdin().is_terminal() {
+            let mut text = String::new();
+            std::io::stdin().read_to_string(&mut text)?;
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                let value: serde_json::Value = serde_json::from_str(trimmed)
+                    .map_err(|e| format!("invalid JSON on stdin: {e}"))?;
+                if !value.is_object() {
+                    return Err("stdin JSON must be an object".into());
+                }
+                return Ok(value);
+            }
+        }
+        return Ok(serde_json::json!({}));
+    }
+    if args.len() == 1 && args[0].trim_start().starts_with('{') {
+        let value: serde_json::Value =
+            serde_json::from_str(&args[0]).map_err(|e| format!("invalid JSON arguments: {e}"))?;
+        if !value.is_object() {
+            return Err("tool arguments must be a JSON object".into());
+        }
+        return Ok(value);
+    }
+    let mut map = serde_json::Map::new();
+    for arg in args {
+        let Some((key, value)) = arg.split_once('=') else {
+            return Err(format!("expected a JSON object or key=value pairs, got `{arg}`").into());
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!("empty argument key in `{arg}`").into());
+        }
+        map.insert(key.to_string(), parse_kv_value(value));
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
+async fn tool_cli(
+    list: bool,
+    session: Option<String>,
+    help: bool,
+    name: Option<String>,
+    args: Vec<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if name.is_none() && help {
+        println!("{TOOL_CLI_HELP}");
+        return Ok(());
+    }
+    if !list && name.is_none() {
+        eprintln!("{TOOL_CLI_HELP}");
+        return Err("pass --list or a tool name".into());
+    }
+    let session_id = session
+        .or_else(|| std::env::var("SNIPPET_SESSION_ID").ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or(
+            "no session: pass --session <id> (inside an agent shell $SNIPPET_SESSION_ID is set)",
+        )?;
+    let state = serve_connection().map_err(|error| {
+        format!(
+            "{error}\n\nis the daemon running? start it with `snippet serve`, then check `snippet serve --status`"
+        )
+    })?;
+    if list {
+        let value = daemon_http(
+            &state,
+            "GET",
+            "api/tools",
+            &[("session_id", session_id)],
+            None,
+        )
+        .await?;
+        let tools = value
+            .get("tools")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if tools.is_empty() {
+            println!("no allowed tools for this session");
+            return Ok(());
+        }
+        for tool in tools {
+            let tool_name = tool
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?");
+            let desc = tool
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            println!("{tool_name:<26} {}", one_line_description(desc));
+        }
+        return Ok(());
+    }
+    let tool_name = name.unwrap();
+    if help || args.iter().any(|a| a == "--help" || a == "-h") {
+        let value = daemon_http(
+            &state,
+            "GET",
+            "api/tools",
+            &[("session_id", session_id)],
+            None,
+        )
+        .await?;
+        let tools = value
+            .get("tools")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(found) = tools.iter().find(|t| {
+            t.get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|n| n == tool_name)
+        }) {
+            let desc = found
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let schema = found
+                .get("input_schema")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            println!(
+                "{tool_name}\n\n{desc}\n\nSchema:\n{}",
+                serde_json::to_string_pretty(&schema)?
+            );
+            return Ok(());
+        }
+        let allowed: Vec<&str> = tools
+            .iter()
+            .filter_map(|t| t.get("name").and_then(serde_json::Value::as_str))
+            .collect();
+        return Err(format!(
+            "tool `{tool_name}` is not allowed for this session (allowed tools: {})",
+            allowed.join(", ")
+        )
+        .into());
+    }
+    let arguments = parse_tool_arguments(&args)?;
+    let value = daemon_http(
+        &state,
+        "POST",
+        "api/tools/run",
+        &[],
+        Some(serde_json::json!({
+            "session_id": session_id,
+            "tool": tool_name,
+            "arguments": arguments,
+        })),
+    )
+    .await?;
+    print_json(&value)
+}
+
 /// Read a line from the TTY with echo disabled (crossterm raw mode) — no extra
 /// password-prompt dependency needed.
 fn rpassword_read() -> Result<String, Box<dyn std::error::Error>> {
@@ -681,6 +895,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Vault { action }) => return vault_cli(action),
         Some(Command::History { action }) => return history_cli(action),
         Some(Command::Agent { action }) => return runtime()?.block_on(agent_cli(action)),
+        Some(Command::Tool {
+            list,
+            session,
+            help,
+            name,
+            args,
+        }) => return runtime()?.block_on(tool_cli(list, session, help, name, args)),
         Some(Command::AgyHook) => return Ok(snippet::antigravity::run_hook()?),
         Some(Command::DevinHook) => return Ok(snippet::devin::run_hook()?),
         Some(Command::Doctor { tsv, pm, prefetch }) => {

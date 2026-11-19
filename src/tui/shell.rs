@@ -277,28 +277,37 @@ pub(crate) fn turn_tools(app: &App) -> Vec<(String, Value, Option<Value>)> {
         .iter()
         .rposition(|e| matches!(e, HarnessEvent::UserInput { .. }))
         .unwrap_or(0);
-    let mut out: Vec<(String, Value, Option<Value>)> = Vec::new();
+    let mut out: Vec<(String, String, Value, Option<Value>)> = Vec::new();
     for event in &state.events[start..] {
         match event {
             HarnessEvent::ToolCall {
                 tool_name,
                 arguments,
-            } if !HIDDEN_TOOL_ROWS.contains(&tool_name.as_str()) => {
-                out.push((tool_name.clone(), arguments.clone(), None));
+            } => {
+                let (resolved_name, resolved_args) =
+                    match crate::surface::lower(tool_name, arguments).ok().flatten() {
+                        Some((n, a)) => (n, a),
+                        None => (tool_name.clone(), arguments.clone()),
+                    };
+                if !HIDDEN_TOOL_ROWS.contains(&resolved_name.as_str()) {
+                    out.push((tool_name.clone(), resolved_name, resolved_args, None));
+                }
             }
             HarnessEvent::ToolResult { tool_name, result } => {
                 if let Some(slot) = out
                     .iter_mut()
                     .rev()
-                    .find(|(name, _, r)| name == tool_name && r.is_none())
+                    .find(|(raw, _, _, r)| raw == tool_name && r.is_none())
                 {
-                    slot.2 = Some(result.clone());
+                    slot.3 = Some(result.clone());
                 }
             }
             _ => {}
         }
     }
-    out
+    out.into_iter()
+        .map(|(_, resolved, args, res)| (resolved, args, res))
+        .collect()
 }
 
 fn tool_row(

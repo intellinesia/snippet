@@ -75,37 +75,76 @@ pub(crate) fn wire_events(
     events: &[crate::harness::HarnessEvent],
     compact: bool,
 ) -> serde_json::Value {
-    if !compact {
-        return serde_json::to_value(events).unwrap_or_default();
-    }
-    serde_json::Value::Array(
-        events
-            .iter()
-            .map(|event| {
-                let mut v = serde_json::to_value(event).unwrap_or_default();
-                match event {
-                    crate::harness::HarnessEvent::ToolResult { .. } => {
-                        if let Some(o) = v.as_object_mut()
-                            && let Some(result) = o.get_mut("result")
-                            && clip_json(result, WIRE_STRING_LIMIT, WIRE_ARRAY_LIMIT)
-                        {
-                            o.insert("result_clipped".into(), serde_json::json!(true));
-                        }
-                    }
-                    crate::harness::HarnessEvent::ToolCall { .. } => {
-                        if let Some(o) = v.as_object_mut()
-                            && let Some(args) = o.get_mut("arguments")
-                            && clip_json(args, WIRE_STRING_LIMIT, WIRE_ARRAY_LIMIT)
-                        {
-                            o.insert("result_clipped".into(), serde_json::json!(true));
-                        }
-                    }
-                    _ => {}
+    wire_events_slice(events, 0, compact)
+}
+
+pub(crate) fn wire_events_slice(
+    all: &[crate::harness::HarnessEvent],
+    start: usize,
+    compact: bool,
+) -> serde_json::Value {
+    let mut pending: std::collections::VecDeque<(String, String)> =
+        std::collections::VecDeque::new();
+    let mut out = Vec::with_capacity(all.len().saturating_sub(start));
+    for (idx, event) in all.iter().enumerate() {
+        let mut rewritten: Option<(String, Option<serde_json::Value>, String)> = None;
+        match event {
+            crate::harness::HarnessEvent::ToolCall {
+                tool_name,
+                arguments,
+            } => {
+                if let Ok(Some((internal, lowered))) = crate::surface::lower(tool_name, arguments)
+                    && internal != *tool_name
+                {
+                    pending.push_back((tool_name.clone(), internal.clone()));
+                    rewritten = Some((internal, Some(lowered), tool_name.clone()));
                 }
-                v
-            })
-            .collect(),
-    )
+            }
+            crate::harness::HarnessEvent::ToolResult { tool_name, .. }
+            | crate::harness::HarnessEvent::InvalidToolCall { tool_name, .. } => {
+                if let Some(pos) = pending.iter().position(|(s, _)| s == tool_name)
+                    && let Some((surface, internal)) = pending.remove(pos)
+                {
+                    rewritten = Some((internal, None, surface));
+                }
+            }
+            _ => {}
+        }
+        if idx < start {
+            continue;
+        }
+        let mut v = serde_json::to_value(event).unwrap_or_default();
+        if let (Some((internal, lowered_args, surface)), Some(o)) = (rewritten, v.as_object_mut()) {
+            o.insert("tool_name".into(), serde_json::Value::String(internal));
+            if let Some(args) = lowered_args {
+                o.insert("arguments".into(), args);
+            }
+            o.insert("surface_tool".into(), serde_json::Value::String(surface));
+        }
+        if compact {
+            match event {
+                crate::harness::HarnessEvent::ToolResult { .. } => {
+                    if let Some(o) = v.as_object_mut()
+                        && let Some(result) = o.get_mut("result")
+                        && clip_json(result, WIRE_STRING_LIMIT, WIRE_ARRAY_LIMIT)
+                    {
+                        o.insert("result_clipped".into(), serde_json::json!(true));
+                    }
+                }
+                crate::harness::HarnessEvent::ToolCall { .. } => {
+                    if let Some(o) = v.as_object_mut()
+                        && let Some(args) = o.get_mut("arguments")
+                        && clip_json(args, WIRE_STRING_LIMIT, WIRE_ARRAY_LIMIT)
+                    {
+                        o.insert("result_clipped".into(), serde_json::json!(true));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.push(v);
+    }
+    serde_json::Value::Array(out)
 }
 
 const TASK_SUMMARY_TEXT_LIMIT: usize = 280;
@@ -799,5 +838,54 @@ pub(crate) async fn seen_session(State(d): State<Shared>, Json(req): Json<SeenRe
             .into_response(),
         Ok(false) => api_error(StatusCode::NOT_FOUND, "no such session"),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod wire_surface_tests {
+    use super::*;
+    use crate::harness::HarnessEvent;
+    use serde_json::json;
+
+    #[test]
+    fn wire_events_rewrites_surface_calls_and_results_in_full_and_compact_modes() {
+        let events = vec![
+            HarnessEvent::ToolCall {
+                tool_name: "web".into(),
+                arguments: json!({"action": "search", "query": "rust"}),
+            },
+            HarnessEvent::ToolResult {
+                tool_name: "web".into(),
+                result: json!({"status": "success", "data": {"count": 2}}),
+            },
+            HarnessEvent::ToolCall {
+                tool_name: "bash".into(),
+                arguments: json!({"command": "ls"}),
+            },
+            HarnessEvent::ToolResult {
+                tool_name: "bash".into(),
+                result: json!({"status": "success", "data": {"exit_code": 0}}),
+            },
+        ];
+
+        for compact in [false, true] {
+            let wired = wire_events(&events, compact);
+            let arr = wired.as_array().unwrap();
+            assert_eq!(arr[0]["tool_name"], "web_search");
+            assert_eq!(arr[0]["arguments"], json!({"query": "rust"}));
+            assert_eq!(arr[0]["surface_tool"], "web");
+            assert_eq!(arr[1]["tool_name"], "web_search");
+            assert_eq!(arr[1]["surface_tool"], "web");
+            assert_eq!(arr[2]["tool_name"], "bash");
+            assert!(arr[2].get("surface_tool").is_none());
+            assert_eq!(arr[3]["tool_name"], "bash");
+            assert!(arr[3].get("surface_tool").is_none());
+        }
+
+        // Delta slice containing only ToolResult still resolves its preceding ToolCall.
+        let delta = wire_events_slice(&events, 1, false);
+        let arr = delta.as_array().unwrap();
+        assert_eq!(arr[0]["tool_name"], "web_search");
+        assert_eq!(arr[0]["surface_tool"], "web");
     }
 }

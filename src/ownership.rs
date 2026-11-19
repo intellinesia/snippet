@@ -72,9 +72,6 @@ pub fn gate(ctx: &ToolContext, tool: &str, args: &Value) -> Gate {
     let Some(targets) = write_targets(ctx, tool, args) else {
         return Gate::Allow;
     };
-    if tool == "bash" && ctx.read_only_shell() {
-        return Gate::Refuse("this lane is read-only: shell commands that modify files are refused. Report what you would change instead.".into());
-    }
     let scope = ctx.write_scope();
     if tool == "change_files"
         && !scope.is_empty()
@@ -109,7 +106,7 @@ fn task_gate(ctx: &ToolContext, targets: &[PathBuf]) -> Gate {
         && member.status != "active"
     {
         return Gate::Refuse(format!(
-            "`{}` doesn't hold the turn on task `{}`; only the holder changes files. Say what you need in the room, or ask the holder to pass_turn to you.",
+            "`{}` doesn't hold the turn on task `{}`; only the holder changes files. Say what you need in the room, or ask the holder to task.pass to you.",
             member.agent_id, member.task_id
         ));
     }
@@ -343,15 +340,6 @@ mod tests {
         assert_eq!(gate(&lane, "change_files", &edit("src/a.rs")), Gate::Allow);
         assert!(
             matches!(gate(&lane, "change_files", &edit("docs/a.rs")), Gate::Refuse(m) if m.contains("declared paths"))
-        );
-        let ro = ctx.clone().with_read_only_shell(true);
-        assert!(matches!(
-            gate(&ro, "bash", &json!({"command": "rm -rf src"})),
-            Gate::Refuse(_)
-        ));
-        assert_eq!(
-            gate(&ro, "bash", &json!({"command": "rg foo"})),
-            Gate::Allow
         );
 
         running(&store, "t", "s1", vec![]);

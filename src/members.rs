@@ -469,7 +469,7 @@ pub fn handover_body(handover: &Handover, passed: &Passed) -> String {
         body.push_str(&format!("\nCommits: {}", passed.commits.join("; ")));
     }
     body.push_str(&format!(
-        "\nIt is {}'s turn. When your part is done, pass_turn to whoever goes next, or report_mission_task if the work is finished.",
+        "\nIt is {}'s turn. When your part is done, task.pass to whoever goes next, or task.report if the work is finished.",
         handover.to_agent
     ));
     body

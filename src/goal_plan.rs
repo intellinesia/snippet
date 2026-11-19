@@ -40,7 +40,7 @@ fn slice_schema(what: &str) -> Value {
         "brief":{"type":"string","description":"what this slice owns and delivers; the worker also sees the goal and the other slices"},
         "depends_on":{"type":"array","items":{"type":"integer"},"description":what},
         "blocked_by":{"type":"array","items":{"type":"string"},"description":"ids of existing tasks this slice also waits on"},
-        "suggested_agent":{"type":"string","description":"specialist from list_coordination_agents"},
+        "suggested_agent":{"type":"string","description":"specialist from snippet tool list_coordination_agents"},
         "session":{"type":"string","description":"session to run in; defaults to the plan's session"},
         "read_only":{"type":"boolean"},
         "verify_mode":{"type":"string","enum":["self","reviewer","mission_control","user"],"description":"default: self if read_only, else a reviewer lane"},
@@ -99,10 +99,10 @@ fn open_goal(store: &Store, id: &str) -> Result<Goal, ToolError> {
     let goal = store
         .get_goal(id.trim())
         .map_err(|e| ToolError::msg(format!("look up goal: {e}")))?
-        .ok_or_else(|| ToolError::msg(format!("no goal `{id}`; list_goals shows them")))?;
+        .ok_or_else(|| ToolError::msg(format!("no goal `{id}`; goals.list shows them")))?;
     if goal.status != GoalStatus::Open {
         return Err(ToolError::msg(format!(
-            "goal is {}; reopen it with update_goal first",
+            "goal is {}; reopen it with goals.update first",
             goal.status.as_str()
         )));
     }
@@ -323,12 +323,12 @@ impl Tool for PlanGoal {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: PlanGoalArgs = serde_json::from_value(arguments)
-            .map_err(|e| ToolError::msg(format!("plan_goal arguments: {e}")))?;
+            .map_err(|e| ToolError::msg(format!("goals.plan arguments: {e}")))?;
         let store = store_of(ctx)?;
         let mut goal = open_goal(&store, &args.goal)?;
         if !plan_entries(&goal).is_empty() {
             return Err(ToolError::msg(
-                "this goal already has a plan; use replan_goal to add, drop or reorder slices",
+                "this goal already has a plan; use goals.replan to add, drop or reorder slices",
             ));
         }
         if args.slices.is_empty() {
@@ -388,7 +388,7 @@ impl Tool for ReplanGoal {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: ReplanArgs = serde_json::from_value(arguments)
-            .map_err(|e| ToolError::msg(format!("replan_goal arguments: {e}")))?;
+            .map_err(|e| ToolError::msg(format!("goals.replan arguments: {e}")))?;
         let store = store_of(ctx)?;
         let mut goal = open_goal(&store, &args.goal)?;
         let linked: HashSet<String> = store
@@ -593,7 +593,7 @@ mod tests {
         assert!(
             err(json!([{"title": "a", "brief": "b"}]))
                 .await
-                .contains("replan_goal")
+                .contains("goals.replan")
         );
     }
 

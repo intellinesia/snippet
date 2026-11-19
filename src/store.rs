@@ -87,6 +87,7 @@ fn cached_stores() -> &'static Mutex<HashMap<PathBuf, Store>> {
 #[derive(Clone)]
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
+    path: Option<PathBuf>,
 }
 
 impl Store {
@@ -126,6 +127,7 @@ impl Store {
         migrate(&connection)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            path: Some(path.to_path_buf()),
         })
     }
 
@@ -135,7 +137,12 @@ impl Store {
         migrate(&connection)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            path: None,
         })
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     pub fn with_connection<T>(

@@ -96,15 +96,15 @@ pub(super) fn sweep(
             .unwrap_or_else(|| "missing".into());
         let detail = match (question, last_said) {
             (Some(q), _) => format!(
-                "the worker is waiting on an answer:\n{q}\nanswer_worker (session_id {}) if you can settle it, otherwise ask the user.",
+                "the worker is waiting on an answer:\n{q}\nsessions.answer (session_id {}) if you can settle it, otherwise ask the user.",
                 task.session_id
             ),
             (None, Some(said)) => format!(
-                "its session went idle without reporting; its last message was:\n{said}\nIf that asks for something, answer_worker (session_id {}) if you can settle it, otherwise ask the user; if it just stopped, retry_mission_task.",
+                "its session went idle without reporting; its last message was:\n{said}\nIf that asks for something, sessions.answer (session_id {}) if you can settle it, otherwise ask the user; if it just stopped, tasks.retry.",
                 task.session_id
             ),
             (None, None) => format!(
-                "its session is {state}; check it with inspect_session, then retry_mission_task, answer it or cancel."
+                "its session is {state}; check it with read.session, then tasks.retry, answer it or cancel."
             ),
         };
         let message = format!("stalled {age} min: no progress since {stamp}; {detail}");
@@ -337,7 +337,7 @@ pub(super) fn owed_sweep(store: &Store, now: DateTime<Utc>) -> Vec<(String, Stri
             continue;
         }
         let notice = format!(
-            "[owed_reply]\nfrom: {}\nthread_id: {}\nwaiting_minutes: {waiting}\nnote: a question or blocker sent to you has had no reply. Answer it with send_agent_message to the thread, or say in one line why it needs no answer.\n[/owed_reply]",
+            "[owed_reply]\nfrom: {}\nthread_id: {}\nwaiting_minutes: {waiting}\nnote: a question or blocker sent to you has had no reply. Answer it with message.send to the thread, or say in one line why it needs no answer.\n[/owed_reply]",
             row.sender, row.thread_id
         );
         notices.push((super::direct::recipient_session_id(&row.recipient), notice));

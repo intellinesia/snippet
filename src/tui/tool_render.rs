@@ -9,6 +9,11 @@ const AGENT: usize = 3;
 /// A tool call as (verb, argument) — e.g. ("Read", "src/auth.rs") — so the verb
 /// and its target can be styled distinctly instead of a single `Read(path)` blob.
 pub(super) fn tool_call_parts(tool_name: &str, arguments: &Value) -> (String, String) {
+    let lowered = crate::surface::lower(tool_name, arguments).ok().flatten();
+    let (tool_name, arguments) = match lowered.as_ref() {
+        Some((n, a)) => (n.as_str(), a),
+        None => (tool_name, arguments),
+    };
     let arg = |key: &str| {
         arguments
             .get(key)

@@ -1724,7 +1724,15 @@ mod tests {
         assert!(db.room_replying(&id).unwrap().is_empty());
         // An idle session is not replying even with an unanswered wake.
         let p2 = db
-            .post_group_message(&id, ("human", "human"), "@c ping", &["c".into()], None, "k3", T2)
+            .post_group_message(
+                &id,
+                ("human", "human"),
+                "@c ping",
+                &["c".into()],
+                None,
+                "k3",
+                T2,
+            )
             .unwrap();
         db.mark_direct_delivered(&p2.event_id, "group", "c", T2)
             .unwrap();

@@ -238,7 +238,7 @@ async fn build_agent_from_prompt(
         .filter(|n| !n.is_empty())
         .map(|n| {
             format!(
-                "\n\nThe user chose the nickname \"{n}\": pass it as `nickname` to register_agent."
+                "\n\nThe user chose the nickname \"{n}\": pass it as `nickname` to snippet tool register_agent."
             )
         })
         .unwrap_or_default();
@@ -246,12 +246,12 @@ async fn build_agent_from_prompt(
         .as_deref()
         .map(|c| {
             format!(
-                "\n\nThe user chose character \"{c}\": pass it as `character` to register_agent."
+                "\n\nThe user chose character \"{c}\": pass it as `character` to snippet tool register_agent."
             )
         })
         .unwrap_or_default();
     let description = format!(
-        "Build a specialized agent from this user brief:\n\n{prompt}{nickname_note}{character_note}\n\nResearch the domain first (web_search / web_read when available): the domain's standards, the checks an expert runs, common failure modes. Choose a short kebab-case id and a display name, then write the identity: who the agent is, its mandate, how it works step by step, what it checks, and how it reports. Create the agent with register_agent, then report this task with report_mission_task: the agent id, a two-line identity summary, and the sources you used."
+        "Build a specialized agent from this user brief:\n\n{prompt}{nickname_note}{character_note}\n\nResearch the domain first (web.search / web.read when available): the domain's standards, the checks an expert runs, common failure modes. Choose a short kebab-case id and a display name, then write the identity: who the agent is, its mandate, how it works step by step, what it checks, and how it reports. Create the agent with snippet tool register_agent, then report this task with tasks.report: the agent id, a two-line identity summary, and the sources you used."
     );
     let task = Task::dispatched_to(
         task_id,
@@ -551,8 +551,13 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
         handoff
     };
     let ledger = crate::task_state_tools::dispatch_ledger(&d.store, &task, &workspace, scope, &now);
+    let report_tool = if crate::mission_control::is_session_id(&session_id) {
+        "tasks.report"
+    } else {
+        "task.report"
+    };
     let text = format!(
-        "{identity}[mission_control_task]\ntask_id: {}\ntitle: {}\nrequested_by: {} {}\n{}active_agent: {}\n{plan_line}{roster_line}{owned_line}workspace: {}\n{revision_line}{inputs_line}scope:\n{}\n{ledger}\n\nThis is yours now: deliver it end to end, verified, in this session. If the scope looks wrong, unclear or there's a better way, say so to Mission Control (send_agent_message to mission-control) before you build. When something long-running is in flight, put a monitor watch on it rather than ending the task. When it's done, blocked or failed, report with report_mission_task (task_id {}): what was done, files changed, how it was verified, anything left open.\n[/mission_control_task]",
+        "{identity}[mission_control_task]\ntask_id: {}\ntitle: {}\nrequested_by: {} {}\n{}active_agent: {}\n{plan_line}{roster_line}{owned_line}workspace: {}\n{revision_line}{inputs_line}scope:\n{}\n{ledger}\n\nThis is yours now: deliver it end to end, verified, in this session. If the scope looks wrong, unclear or there's a better way, say so to Mission Control (message.send to mission-control) before you build. When something long-running is in flight, put a process.watch on it rather than ending the task. When it's done, blocked or failed, report with {report_tool} (task_id {}): what was done, files changed, how it was verified, anything left open.\n[/mission_control_task]",
         task.id,
         task.title,
         task.created_by_kind,
@@ -722,7 +727,7 @@ fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, Str
     {
         if let Some(error) = inbox_failure_since(&agent, &offered_at) {
             let note = format!(
-                "The offer to {agent} is stuck: its inbox can't run ({error}). Offer the task to another agent (assign_task_agent, then retry_mission_task), or wait until it recovers."
+                "The offer to {agent} is stuck: its inbox can't run ({error}). Offer the task to another agent (tasks.assign, then tasks.retry), or wait until it recovers."
             );
             if !task.notifications.iter().any(|n| n.kind == "offer_stuck") {
                 return d
@@ -750,7 +755,7 @@ fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, Str
                 return Ok(Some(task));
             }
             let note = format!(
-                "{agent} hasn't claimed or declined this task after {} offers. Ask it directly (send_agent_message), offer it to another agent (assign_task_agent, then retry_mission_task), or tell the user.",
+                "{agent} hasn't claimed or declined this task after {} offers. Ask it directly (message.send), offer it to another agent (tasks.assign, then tasks.retry), or tell the user.",
                 resent + 1
             );
             return d
@@ -863,7 +868,7 @@ fn task_offer_body(task: &Task) -> String {
             .join(", ")
     };
     format!(
-        "[task_offer]\ntask_id: {}\ntitle: {}\ntarget_session: {}\nhandoff: {:?}\nowned_paths: {owned}\nbriefing:\n{}\n[/task_offer]\nOffer only: review, then claim with claim_and_dispatch_task, ask Mission Control if unclear, or decline with a reason.",
+        "[task_offer]\ntask_id: {}\ntitle: {}\ntarget_session: {}\nhandoff: {:?}\nowned_paths: {owned}\nbriefing:\n{}\n[/task_offer]\nOffer only: review, then claim with task.claim, ask Mission Control if unclear, or decline with a reason.",
         task.id,
         task.title,
         task.session_id,
@@ -1270,9 +1275,9 @@ async fn open(State(d): State<Shared>, Json(req): Json<MissionOpenReq>) -> Respo
     }
 }
 
-pub(super) const WORKFLOW_PLAN: &str = "Workflow W7 · first plan: the worker has laid out how it will deliver the task. Check it against the requirements; when it misses or misreads something, say so in the task room (post_task_coordination) so the worker adjusts before going far; when it shows what comes next, line up that work. A plan that's right needs no reply. Then stop.";
+pub(super) const WORKFLOW_PLAN: &str = "Workflow W7 · first plan: the worker has laid out how it will deliver the task. Check it against the requirements; when it misses or misreads something, say so in the task room (message.task) so the worker adjusts before going far; when it shows what comes next, line up that work. A plan that's right needs no reply. Then stop.";
 
-pub(super) const WORKFLOW_REPORT: &str = "Workflow W3 · task report: check its Scope, Done and How against the task's scope (spot-check only if thin), then judge it as the user will: is it actually good, would the person it's for care, does it keep their standing rules? Covers the scope but weak → update_mission_task revise with the bar you want, before they see it. Done and good → tell the user unless you already have, with your view, and set the goal's next step; short of the scope → update_mission_task revise; in_review or review_escalated → submit_review is yours; stalled → inspect_session, then answer, retry or cancel; blocked → unblock it; failed → retry once or re-route. Then stop.";
+pub(super) const WORKFLOW_REPORT: &str = "Workflow W3 · task report: check its Scope, Done and How against the task's scope (spot-check only if thin), then judge it as the user will: is it actually good, would the person it's for care, does it keep their standing rules? Covers the scope but weak → tasks.update revise with the bar you want, before they see it. Done and good → tell the user unless you already have, with your view, and set the goal's next step; short of the scope → tasks.update revise; in_review or review_escalated → tasks.review is yours; stalled → read.session, then answer, retry or cancel; blocked → unblock it; failed → retry once or re-route. Then stop.";
 
 pub(super) async fn open_mission_control(
     d: &Shared,

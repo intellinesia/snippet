@@ -928,7 +928,7 @@ pub async fn maybe_clarify(d: &Shared, device: &str) -> Result<bool, String> {
 
     let esc = super::ambient_watch::escape;
     let msg = format!(
-        "<room_clarify id=\"{}\" device=\"{}\">{}</room_clarify>\nThe user is alone and idle. If this still matters, switch ambient_mode to active and ask it in one short spoken sentence; otherwise ignore it.",
+        "<room_clarify id=\"{}\" device=\"{}\">{}</room_clarify>\nThe user is alone and idle. If this still matters, switch ambient.mode to active and ask it in one short spoken sentence; otherwise ignore it.",
         item.id,
         esc(device),
         esc(item.text.trim()),

@@ -106,7 +106,7 @@ pub(crate) fn minimal_inbox_identity(agent_id: &str) -> String {
         "You are `{agent_id}`'s inbox. Answer messages and look things up (read-only shell, web) yourself; \
          anything that changes files, has side effects or takes long goes to Mission Control as a task request. \
          If the ask needs more than your desk budget, do not drop it: hand it to your work session, a lane or Mission Control in the same turn, and say so. \
-         Your channels and the kinds of message each carries are in reach_policy; a reply goes back on the channel the message came from, and a question for the user that cannot wait goes through reach_policy's question channels."
+         Your channels and the kinds of message each carries are in snippet tool reach_policy; a reply goes back on the channel the message came from, and a question for the user that cannot wait goes through its question channels."
     )
 }
 
@@ -300,6 +300,7 @@ struct AgentRuntime {
     /// Mission Control coordinates durable sessions; it does not spawn lanes.
     allow_lane_control: bool,
     hidden_meta: &'static [&'static str],
+    seat_role: crate::surface::SeatRole,
     /// Whether the project memory block and reflection apply. Only a session
     /// that works in a project has a project to remember.
     memory: bool,
@@ -348,7 +349,8 @@ impl AgentRuntime {
             tools,
             prompt: mission_control_system_prompt(),
             allow_lane_control: false,
-            hidden_meta: &["monitor", "set_session_title", "update_plan"],
+            hidden_meta: &["monitor", "update_plan"],
+            seat_role: crate::surface::SeatRole::MissionControl,
             memory: true,
         })
     }
@@ -424,6 +426,7 @@ impl AgentRuntime {
             prompt,
             allow_lane_control: true,
             hidden_meta: &[],
+            seat_role: crate::surface::SeatRole::Work,
             memory: true,
         })
     }
@@ -470,13 +473,8 @@ impl AgentRuntime {
             ),
             // Nothing to delegate: no lane control in a coordination session.
             allow_lane_control: false,
-            hidden_meta: &[
-                "ask_user",
-                "monitor",
-                "present_file",
-                "set_session_title",
-                "update_plan",
-            ],
+            hidden_meta: &["ask_user", "monitor", "present_file", "update_plan"],
+            seat_role: crate::surface::SeatRole::Desk,
             memory: true,
         })
     }
@@ -556,7 +554,6 @@ pub(crate) fn work_tool_registry(
     ] {
         tools.remove(name);
     }
-    tools.insert(crate::progress::ReportProgress);
     tools.insert(crate::review_tools::SubmitReview);
     tools.insert(crate::profiles::ListProfiles);
     tools.insert(crate::followup_tool::SessionWakeTool);
@@ -573,7 +570,8 @@ pub(crate) fn coordination_tool_registry(exa_api_key: Option<String>) -> ToolReg
     tools.insert(crate::mission_tools::StartTask);
     tools.insert(crate::coordination_tools::DeclineTask);
     tools.insert(crate::followup_tool::SessionWakeTool);
-    tools.insert(crate::builtins::read_only_shell::ReadOnlyBashTool);
+    tools.insert(crate::builtins::BashTool);
+    tools.insert(crate::builtins::ChangeFilesTool);
     if let Some(key) = exa_api_key.filter(|k| !k.trim().is_empty()) {
         tools.insert(crate::builtins::WebSearchTool {
             api_key: key.clone(),
@@ -669,6 +667,7 @@ fn start_session_with_role(
                 allow_lane_control: runtime.allow_lane_control,
                 profile,
                 hidden_meta: runtime.hidden_meta,
+                seat_role: runtime.seat_role,
                 ..HarnessConfig::default()
             },
             runtime.tools,
@@ -750,6 +749,7 @@ pub async fn reflect_stored_session(
             resume: true,
             memory_enabled: config.memory_enabled && runtime.memory,
             memory_reflect: config.memory_reflect,
+            seat_role: runtime.seat_role,
             ..HarnessConfig::default()
         },
         runtime.tools,

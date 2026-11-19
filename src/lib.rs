@@ -70,6 +70,7 @@ pub mod speech;
 pub mod sse;
 pub mod store;
 pub mod stt;
+pub mod surface;
 pub mod task_state_tools;
 pub mod term;
 pub mod tools;

@@ -93,8 +93,6 @@ pub struct ToolContext {
     lane_origin: Option<(String, String)>,
     /// A writing lane's declared paths; `change_files` outside them is refused.
     write_scope: Vec<PathBuf>,
-    /// Investigation lane: shell commands that modify files are refused.
-    read_only_shell: bool,
     /// Fencing token of the task lease this lane was started under.
     lease_token: Option<u64>,
     /// The shell's working directory, carried across `bash` calls. Relative
@@ -140,7 +138,6 @@ impl ToolContext {
             agent_id: None,
             lane_origin: None,
             write_scope: Vec::new(),
-            read_only_shell: false,
             lease_token: None,
         })
     }
@@ -251,15 +248,6 @@ impl ToolContext {
 
     pub fn write_scope(&self) -> &[PathBuf] {
         &self.write_scope
-    }
-
-    pub fn with_read_only_shell(mut self, on: bool) -> Self {
-        self.read_only_shell = on;
-        self
-    }
-
-    pub fn read_only_shell(&self) -> bool {
-        self.read_only_shell
     }
 
     pub fn with_lease_token(mut self, token: Option<u64>) -> Self {
@@ -423,12 +411,25 @@ impl ToolRegistry {
     pub fn definitions(&self) -> Vec<NativeToolDefinition> {
         let mut defs: Vec<NativeToolDefinition> =
             self.tools.values().map(|tool| tool.definition()).collect();
-        defs.extend(
-            self.custom_tools()
-                .iter()
-                .map(crate::agent_tools::definition),
-        );
+        defs.extend(self.custom_definitions());
         defs
+    }
+
+    pub fn custom_definitions(&self) -> Vec<NativeToolDefinition> {
+        self.custom_tools()
+            .iter()
+            .map(crate::agent_tools::definition)
+            .collect()
+    }
+
+    pub fn definition_for(&self, name: &str) -> Option<NativeToolDefinition> {
+        if let Some(tool) = self.tools.get(name) {
+            return Some(tool.definition());
+        }
+        self.custom_tools()
+            .into_iter()
+            .find(|t| t.name == name)
+            .map(|t| crate::agent_tools::definition(&t))
     }
 
     pub fn is_custom(&self, name: &str) -> bool {

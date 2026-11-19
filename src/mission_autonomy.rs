@@ -190,7 +190,7 @@ fn user_state_line() -> String {
             format!(" ({})", call.about)
         };
         return format!(
-            " THE USER IS ON A CALL{about}, {} minutes in, held for {} more unless they say it ended (then user_on_call ended). Their speech reaches you only when they use your wake word, speak is off, and pings wait unless urgent. Hold new work for a worker until they ask for it.",
+            " THE USER IS ON A CALL{about}, {} minutes in, held for {} more unless they say it ended (then ambient.on_call ended). Their speech reaches you only when they use your wake word, speak is off, and pings wait unless urgent. Hold new work for a worker until they ask for it.",
             (now - call.since) / 60,
             (call.until - now) / 60
         );
@@ -540,7 +540,7 @@ fn mode_status() -> String {
         _ => String::new(),
     };
     format!(
-        "Automated wakes are on: you're woken every {} minutes{quiet} (in quiet hours only when something changed).{} The user may be away and doesn't watch this chat: reach them with ping_user to keep working while they think, or ask_user when nothing worthwhile can move without their answer (it blocks you and your wakes until they reply). When they message you directly they are here, so answer in your reply as usual.",
+        "Automated wakes are on: you're woken every {} minutes{quiet} (in quiet hours only when something changed).{} The user may be away and doesn't watch this chat: reach them with message.push to keep working while they think, or ask_user when nothing worthwhile can move without their answer (it blocks you and your wakes until they reply). When they message you directly they are here, so answer in your reply as usual.",
         settings.round_minutes,
         next_wake_status(&state)
     )

@@ -657,7 +657,7 @@ async fn handle_out_of_context(
     let (streak, samples) = note_out_of_context(device, text, verdict);
     if streak == 2 && !super::autonomy::mission_control_busy() {
         let msg = format!(
-            "<ambient_context_alert device=\"{}\" streak=\"{streak}\">The voice classifier blocked {streak} consecutive spoken turns as out of context or directed at someone else:\n{}\nConfirm without disturbing the user: stay silent and either call schedule_wake with in_seconds: 10 (unless_user_speaks: true) to check if they say anything else for you, or call ambient_mode with passive if they have moved on to another conversation.</ambient_context_alert>",
+            "<ambient_context_alert device=\"{}\" streak=\"{streak}\">The voice classifier blocked {streak} consecutive spoken turns as out of context or directed at someone else:\n{}\nConfirm without disturbing the user: stay silent and either call schedule.once with in_seconds: 10 (unless_user_speaks: true) to check if they say anything else for you, or call ambient.mode with passive if they have moved on to another conversation.</ambient_context_alert>",
             ambient_watch::escape(device),
             samples.join("\n")
         );

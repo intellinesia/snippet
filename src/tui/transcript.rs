@@ -166,10 +166,15 @@ pub(super) fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     result = Some(r.clone());
                     events.next();
                 }
-                if !HIDDEN_TOOL_ROWS.contains(&tool_name.as_str()) {
+                let (resolved_tool, resolved_args) =
+                    match crate::surface::lower(tool_name, arguments).ok().flatten() {
+                        Some((n, a)) => (n, a),
+                        None => (tool_name.clone(), arguments.clone()),
+                    };
+                if !HIDDEN_TOOL_ROWS.contains(&resolved_tool.as_str()) {
                     run.push(RunStep {
-                        tool: tool_name.clone(),
-                        args: arguments.clone(),
+                        tool: resolved_tool,
+                        args: resolved_args,
                         result,
                     });
                 }
@@ -661,7 +666,8 @@ pub(super) fn event_lines(event: &HarnessEvent, width: usize) -> Vec<Line<'stati
             tool_name,
             arguments,
         } => {
-            if HIDDEN_TOOL_ROWS.contains(&tool_name.as_str()) {
+            let resolved = crate::surface::resolve(tool_name, arguments);
+            if HIDDEN_TOOL_ROWS.contains(&resolved.as_str()) {
                 return Vec::new();
             }
             tool_call_lines(tool_name, arguments, width, false)
