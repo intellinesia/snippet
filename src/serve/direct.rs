@@ -275,17 +275,25 @@ fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool 
     use crate::harness::HarnessEvent as E;
     let mut sent = false;
     for (i, event) in turn.iter().enumerate().skip(from) {
-        if let E::ToolCall {
+        let E::ToolCall {
             tool_name,
             arguments,
         } = event
-            && tool_name == "send_agent_message"
-            && arguments
+        else {
+            continue;
+        };
+        let lowered = crate::surface::lower(tool_name, arguments).ok().flatten();
+        let (resolved_name, resolved_args) = match lowered.as_ref() {
+            Some((n, a)) => (n.as_str(), a),
+            None => (tool_name.as_str(), arguments),
+        };
+        if resolved_name == "send_agent_message"
+            && resolved_args
                 .get("reaction")
                 .and_then(|v| v.as_str())
                 .is_none_or(|r| r.trim().is_empty())
             && matches!(
-                arguments
+                resolved_args
                     .get("recipient_agent_id")
                     .and_then(|v| v.as_str())
                     .map(str::trim),
@@ -293,12 +301,13 @@ fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool 
             )
         {
             let failed = turn[i + 1..].iter().find_map(|e| match e {
-                E::ToolResult { tool_name, result } if tool_name == "send_agent_message" => Some(
+                E::ToolResult {
+                    tool_name: rn,
+                    result,
+                } if rn == tool_name => Some(
                     result.get("error").is_some() || result.get("is_error") == Some(&json!(true)),
                 ),
-                E::InvalidToolCall { tool_name, .. } if tool_name == "send_agent_message" => {
-                    Some(true)
-                }
+                E::InvalidToolCall { tool_name: rn, .. } if rn == tool_name => Some(true),
                 _ => None,
             });
             if failed == Some(false) {
@@ -354,10 +363,13 @@ fn turn_end_relay_with_notice(
                 .iter()
                 .rev()
                 .find_map(|e| match e {
-                    E::ToolCall { tool_name, .. } => Some(tool_name.as_str()),
+                    E::ToolCall {
+                        tool_name,
+                        arguments,
+                    } => Some(crate::surface::resolve(tool_name, arguments)),
                     _ => None,
                 })
-                .unwrap_or("none");
+                .unwrap_or_else(|| "none".to_string());
             (
                 format!("{who} finished this turn without a reply; its last step was {last_tool}."),
                 true,

@@ -39,7 +39,7 @@ impl Tool for BashTool {
         NativeToolDefinition {
             name: "bash".to_string(),
             description:
-                "Run shell commands in the workspace. Limit output with `max_lines` or `max_bytes`. Use `background=true` for long-lived processes, then manage them with `manage_process`. Drive interactive apps with follow-up calls."
+                "Run shell commands in the workspace. Limit output with `max_lines` or `max_bytes`. Use `background=true` for long-lived processes, then manage them with `process`. Drive interactive apps with follow-up calls."
                     .to_string(),
             input_schema: object_schema(
                 json!({

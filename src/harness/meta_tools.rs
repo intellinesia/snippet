@@ -62,8 +62,15 @@ impl CodingHarness {
                         .map(str::trim)
                         .filter(|s| !s.is_empty())
                         .map(str::to_string);
-                    state.plan = steps.clone();
+                    let note = arguments
+                        .get("note")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    let previous = std::mem::replace(&mut state.plan, steps.clone());
                     self.mirror_plan_to_task(&steps);
+                    self.record_done_plan_steps(&previous, &steps, note.as_deref());
                     state
                         .events
                         .push(HarnessEvent::PlanUpdated { steps, explanation });
@@ -74,26 +81,6 @@ impl CodingHarness {
                 }
                 Err(message) => (tool_error(&message), MetaControl::Continue),
             },
-            "set_session_title" => {
-                let title = arguments
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::trim);
-                let Some(title) = title else {
-                    return (
-                        tool_error("set_session_title requires a `title` string."),
-                        MetaControl::Continue,
-                    );
-                };
-                state.title = (!title.is_empty()).then(|| title.to_string());
-                (
-                    json!({"schema_version": 1, "status": "success", "data": {
-                        "renamed": true,
-                        "title": state.title,
-                    }}),
-                    MetaControl::Continue,
-                )
-            }
             "present_file" => {
                 let text = |key: &str| {
                     arguments
@@ -602,6 +589,21 @@ impl CodingHarness {
         }
     }
 
+    pub(super) fn seat_role(&self, conversation_mode: bool) -> crate::surface::SeatRole {
+        if !conversation_mode {
+            crate::surface::SeatRole::Lane
+        } else {
+            self.config.seat_role
+        }
+    }
+
+    pub(super) fn internal_tool_schema(&self, name: &str) -> Option<Value> {
+        self.tools
+            .definition_for(name)
+            .or_else(|| meta::definition_for(name))
+            .map(|d| d.input_schema)
+    }
+
     pub(super) fn definitions_for(
         &self,
         conversation_mode: bool,
@@ -609,8 +611,6 @@ impl CodingHarness {
     ) -> Vec<crate::llm::NativeToolDefinition> {
         let mut definitions = self.tools.definitions();
         if conversation_mode {
-            // User-facing: meta tools (note/ask_user/delegate); no terminate tool —
-            // a plain reply ends the turn. `complete_goal` is added only while a goal runs.
             definitions.extend(
                 meta::conversation_meta_definitions_for(
                     goal_active,
@@ -620,11 +620,37 @@ impl CodingHarness {
                 .filter(|d| !self.config.hidden_meta.contains(&d.name.as_str())),
             );
         } else {
-            // Headless (lanes / one-shot run): an explicit terminate_loop carries a
-            // structured summary back to the caller.
             definitions.push(meta::terminate_loop_tool());
         }
-        definitions
+        let mut advertised = crate::surface::advertise(self.seat_role(conversation_mode), definitions);
+        for custom in self.tools.custom_definitions() {
+            if !advertised.iter().any(|d| d.name == custom.name) {
+                advertised.push(custom);
+            }
+        }
+        advertised
+    }
+
+    fn record_done_plan_steps(&self, previous: &[PlanStep], steps: &[PlanStep], note: Option<&str>) {
+        let newly_done: Vec<&str> = steps
+            .iter()
+            .filter(|s| s.status == PlanStatus::Done)
+            .filter(|s| {
+                !previous
+                    .iter()
+                    .any(|p| p.status == PlanStatus::Done && p.step == s.step)
+            })
+            .map(|s| s.step.as_str())
+            .collect();
+        if newly_done.is_empty() {
+            return;
+        }
+        let mut summary = newly_done.join("; ");
+        if let Some(note) = note {
+            summary.push_str(": ");
+            summary.push_str(note);
+        }
+        crate::progress::record_plan_progress(&self.context, &summary);
     }
 
     /// Copy this session's plan onto the task it is working, so the board and
@@ -923,5 +949,96 @@ mod tests {
             ),
             "unexpected handoff: {handoff}"
         );
+    }
+
+    #[test]
+    fn update_plan_writes_board_progress_only_for_newly_done_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("store.db");
+        let store = crate::store::Store::open(&db_path).unwrap();
+        let ctx = ToolContext::new(dir.path())
+            .unwrap()
+            .with_durable_session_id("work-1")
+            .with_store_path(&db_path)
+            .with_agent_id("rook");
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                state_path: Some(dir.path().join("state.json")),
+                ..HarnessConfig::default()
+            },
+            ToolRegistry::new(),
+            ctx,
+        );
+        let mut state = HarnessState::blank(&dir.path().display().to_string(), None);
+        let (lane_tx, _) = mpsc::unbounded_channel();
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        let mut lanes = LaneManager::new(
+            None,
+            dir.path().to_path_buf(),
+            dir.path().join("lanes"),
+            lane_tx,
+            progress_tx,
+            None,
+        );
+        let (watch_tx, _) = mpsc::unbounded_channel();
+        let mut watches = WatchManager::new(dir.path().to_path_buf(), watch_tx);
+
+        let (res, _) = harness.dispatch_meta(
+            &mut state,
+            &mut lanes,
+            &mut watches,
+            "update_plan",
+            &json!({
+                "steps": [
+                    {"step": "Implement surface", "status": "in_progress"},
+                    {"step": "Verify tests", "status": "pending"}
+                ]
+            }),
+        );
+        assert_eq!(res["status"], "success");
+        let rows = store
+            .read_board("rook", &crate::coordination::BoardQuery::default(), 10)
+            .unwrap();
+        assert!(rows.is_empty());
+
+        let (res, _) = harness.dispatch_meta(
+            &mut state,
+            &mut lanes,
+            &mut watches,
+            "update_plan",
+            &json!({
+                "steps": [
+                    {"step": "Implement surface", "status": "done"},
+                    {"step": "Verify tests", "status": "in_progress"}
+                ],
+                "note": "Wired both dispatch paths"
+            }),
+        );
+        assert_eq!(res["status"], "success");
+        let rows = store
+            .read_board("rook", &crate::coordination::BoardQuery::default(), 10)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, "progress");
+        assert_eq!(rows[0].summary, "Implement surface: Wired both dispatch paths");
+
+        let (res, _) = harness.dispatch_meta(
+            &mut state,
+            &mut lanes,
+            &mut watches,
+            "update_plan",
+            &json!({
+                "steps": [
+                    {"step": "Implement surface", "status": "done"},
+                    {"step": "Verify tests", "status": "in_progress"}
+                ],
+                "note": "No new done steps"
+            }),
+        );
+        assert_eq!(res["status"], "success");
+        let rows = store
+            .read_board("rook", &crate::coordination::BoardQuery::default(), 10)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
     }
 }

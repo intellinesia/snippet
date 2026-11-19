@@ -1210,11 +1210,7 @@ pub(crate) fn lane_tool_registry(
     let mut tools = coding_tools(exa_api_key)
         .with_custom_dir(crate::agent_tools::tools_dir(agent.unwrap_or("snippet")));
     tools.insert(message_parent);
-    tools.insert(crate::coordination_tools::SendAgentMessage);
-    tools.insert(crate::coordination_tools::ReadCoordinationBoard);
     tools.insert(crate::review_tools::SubmitReview);
-    tools.insert(crate::profiles::ListProfiles);
-    tools.remove(crate::progress::TOOL_NAME);
     tools.remove("pass_turn");
     if read_only {
         // Investigation lane: strip the file-mutation tools so a fan-out of
@@ -1225,10 +1221,10 @@ pub(crate) fn lane_tool_registry(
     tools
 }
 
-pub const WORK_TOOL_BUDGET_BYTES: usize = 35_500;
-pub const MISSION_CONTROL_TOOL_BUDGET_BYTES: usize = 63_800;
-pub const DESK_TOOL_BUDGET_BYTES: usize = 20_300;
-pub const LANE_TOOL_BUDGET_BYTES: usize = 10_300;
+pub const WORK_TOOL_BUDGET_BYTES: usize = 21_000;
+pub const MISSION_CONTROL_TOOL_BUDGET_BYTES: usize = 34_500;
+pub const DESK_TOOL_BUDGET_BYTES: usize = 13_000;
+pub const LANE_TOOL_BUDGET_BYTES: usize = 8_000;
 
 pub fn definition_byte_size(d: &NativeToolDefinition) -> usize {
     d.name.len() + d.description.len() + d.input_schema.to_string().len()
@@ -1245,21 +1241,30 @@ pub fn role_tool_definitions(
     };
     match role {
         "work" => Some((
-            with_meta(
-                crate::session::work_tool_registry(key, custom_dir).definitions(),
-                true,
+            crate::surface::advertise(
+                crate::surface::SeatRole::Work,
+                with_meta(
+                    crate::session::work_tool_registry(key, custom_dir).definitions(),
+                    true,
+                ),
             ),
             WORK_TOOL_BUDGET_BYTES,
         )),
         "mission_control" => Some((
-            with_meta(
-                crate::session::mission_control_tool_registry(key).definitions(),
-                true,
+            crate::surface::advertise(
+                crate::surface::SeatRole::MissionControl,
+                with_meta(
+                    crate::session::mission_control_tool_registry(key).definitions(),
+                    false,
+                ),
             ),
             MISSION_CONTROL_TOOL_BUDGET_BYTES,
         )),
         "desk" => Some((
-            crate::session::coordination_tool_registry(key).definitions(),
+            crate::surface::advertise(
+                crate::surface::SeatRole::Desk,
+                crate::session::coordination_tool_registry(key).definitions(),
+            ),
             DESK_TOOL_BUDGET_BYTES,
         )),
         "lane" => {
@@ -1269,13 +1274,46 @@ pub fn role_tool_definitions(
                 progress_tx,
                 mailbox: Arc::new(LaneMailbox::default()),
             };
+            let mut defs = lane_tool_registry(key, None, parent, false).definitions();
+            defs.push(crate::meta::terminate_loop_tool());
             Some((
-                lane_tool_registry(key, None, parent, false).definitions(),
+                crate::surface::advertise(crate::surface::SeatRole::Lane, defs),
                 LANE_TOOL_BUDGET_BYTES,
             ))
         }
         _ => None,
     }
+}
+
+#[cfg(test)]
+pub(crate) fn role_internal_tool_names(role: &str) -> Vec<String> {
+    let key = Some("k".to_string());
+    let defs = match role {
+        "work" => {
+            let mut d = crate::session::work_tool_registry(key, None).definitions();
+            d.extend(crate::meta::conversation_meta_definitions_for(false, true));
+            d
+        }
+        "mission_control" => {
+            let mut d = crate::session::mission_control_tool_registry(key).definitions();
+            d.extend(crate::meta::conversation_meta_definitions_for(false, true));
+            d
+        }
+        "desk" => crate::session::coordination_tool_registry(key).definitions(),
+        "lane" => {
+            let (progress_tx, _rx) = mpsc::unbounded_channel();
+            let parent = MessageParent {
+                lane_id: "lane-1".into(),
+                progress_tx,
+                mailbox: Arc::new(LaneMailbox::default()),
+            };
+            let mut d = lane_tool_registry(key, None, parent, false).definitions();
+            d.push(crate::meta::terminate_loop_tool());
+            d
+        }
+        _ => Vec::new(),
+    };
+    defs.into_iter().map(|d| d.name).collect()
 }
 
 /// Profiles a lane tries in order: a pinned profile then the parent's; unpinned,
@@ -1520,6 +1558,7 @@ async fn run_lane_once(
             lane_approval: approval,
             lane_mailbox: Some(link.mailbox.clone()),
             session_title: Some(link.title.clone()).filter(|t| !t.trim().is_empty()),
+            seat_role: crate::surface::SeatRole::Lane,
             ..defaults
         },
         tools,

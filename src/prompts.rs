@@ -322,10 +322,7 @@ mod seat_layer_tests {
             let (defs, _) = crate::lanes::role_tool_definitions(role, None)
                 .unwrap_or_else(|| panic!("missing role_tool_definitions for {role}"));
             let mut names: BTreeSet<String> = defs.into_iter().map(|d| d.name).collect();
-            if role == "lane" {
-                // CodingHarness::definitions_for(false, ..) injects terminate_loop for headless lanes.
-                names.insert(crate::meta::terminate_loop_tool().name);
-            }
+            names.extend(crate::lanes::role_internal_tool_names(role));
             all_known.extend(names.iter().cloned());
             role_tools.insert(role, names);
         }
@@ -379,6 +376,9 @@ mod seat_layer_tests {
                     // harness_core / task_layer describe sibling-branch chat and MC one-shot wake tools.
                     "read_chat",
                     "post_chat",
+                    // Removed tools still referenced by unrewritten prompt prose.
+                    "report_progress",
+                    "set_session_title",
                 ]
                 .into_iter()
                 .collect(),
@@ -407,6 +407,7 @@ mod seat_layer_tests {
                     "read_chat",
                     "record_coordination_note",
                     "report_progress",
+                    "wake",
                 ]
                 .into_iter()
                 .collect(),
@@ -428,6 +429,10 @@ mod seat_layer_tests {
                     "file_follow_up_task",
                     "invite_task_agent",
                     "pass_turn",
+                    // Removed from lanes; prompt prose rewrite owned by parent.
+                    "send_agent_message",
+                    "read_coordination_board",
+                    "list_profiles",
                 ]
                 .into_iter()
                 .collect(),

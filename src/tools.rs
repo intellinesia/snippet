@@ -423,12 +423,25 @@ impl ToolRegistry {
     pub fn definitions(&self) -> Vec<NativeToolDefinition> {
         let mut defs: Vec<NativeToolDefinition> =
             self.tools.values().map(|tool| tool.definition()).collect();
-        defs.extend(
-            self.custom_tools()
-                .iter()
-                .map(crate::agent_tools::definition),
-        );
+        defs.extend(self.custom_definitions());
         defs
+    }
+
+    pub fn custom_definitions(&self) -> Vec<NativeToolDefinition> {
+        self.custom_tools()
+            .iter()
+            .map(crate::agent_tools::definition)
+            .collect()
+    }
+
+    pub fn definition_for(&self, name: &str) -> Option<NativeToolDefinition> {
+        if let Some(tool) = self.tools.get(name) {
+            return Some(tool.definition());
+        }
+        self.custom_tools()
+            .into_iter()
+            .find(|t| t.name == name)
+            .map(|t| crate::agent_tools::definition(&t))
     }
 
     pub fn is_custom(&self, name: &str) -> bool {

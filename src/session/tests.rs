@@ -674,7 +674,6 @@ mod inbox_tool_tests {
     fn an_inbox_cannot_write_delegate_or_report() {
         let tools = crate::session::coordination_tool_registry(None);
         for name in [
-            "change_files",
             "write_file",
             "edit_file",
             "delegate_task",
@@ -683,6 +682,7 @@ mod inbox_tool_tests {
             assert!(!tools.contains(name), "{name} must not reach an inbox");
         }
         assert!(tools.contains("bash"));
+        assert!(tools.contains("change_files"));
         assert!(tools.contains("send_agent_message"));
     }
 }

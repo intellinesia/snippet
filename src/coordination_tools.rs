@@ -4702,10 +4702,15 @@ mod tests {
 
     #[tokio::test]
     async fn share_artifact_from_path_creates_and_shares_and_is_available_on_desks() {
+        let desk_registry = crate::session::coordination_tool_registry(None);
+        assert!(
+            desk_registry.contains("share_artifact"),
+            "desk tool registry must include share_artifact for CLI access"
+        );
         let (desk_defs, _) = crate::lanes::role_tool_definitions("desk", None).unwrap();
         assert!(
-            desk_defs.iter().any(|d| d.name == "share_artifact"),
-            "desk tool definitions must include share_artifact"
+            !desk_defs.iter().any(|d| d.name == "share_artifact"),
+            "desk advertised tool definitions must hide share_artifact"
         );
 
         let dir = tempfile::tempdir().unwrap();

@@ -1,6 +1,11 @@
 use super::*;
 
 pub(super) fn tool_activity_text(name: &str, args: &Value) -> String {
+    let lowered = crate::surface::lower(name, args).ok().flatten();
+    let (name, args) = match lowered.as_ref() {
+        Some((n, a)) => (n.as_str(), a),
+        None => (name, args),
+    };
     let arg = |k: &str| {
         args.get(k)
             .and_then(Value::as_str)
@@ -253,6 +258,37 @@ fn execution_error(error: ToolError) -> Value {
     })
 }
 
+pub(super) fn enrich_error_result(
+    mut result: Value,
+    surface_name: &str,
+    internal_name: &str,
+    uses_op: bool,
+    internal_schema: Option<&Value>,
+    force_arg_error: bool,
+) -> Value {
+    let Some(msg) = result
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return result;
+    };
+    if !force_arg_error && !crate::surface::looks_like_argument_error(&msg) {
+        return result;
+    }
+    let enriched = crate::surface::format_argument_error(
+        &msg,
+        surface_name,
+        internal_name,
+        uses_op,
+        internal_schema,
+    );
+    if let Some(err_obj) = result.get_mut("error").and_then(Value::as_object_mut) {
+        err_obj.insert("message".to_string(), Value::String(enriched));
+    }
+    result
+}
+
 /// Answer a call in both logs: the event the clients render and the message the
 /// model sees. Every call must be answered — an unanswered tool_call_id makes
 /// strict providers reject the whole history.
@@ -293,7 +329,10 @@ impl CodingHarness {
         // show "action N of M".
         let total_mutating = calls
             .iter()
-            .filter(|c| MUTATING_TOOLS.contains(&c.tool_name.as_str()))
+            .filter(|c| {
+                let resolved = crate::surface::resolve(&c.tool_name, &c.arguments);
+                MUTATING_TOOLS.contains(&resolved.as_str())
+            })
             .count();
         let mut approval_index = 0usize;
 
@@ -317,12 +356,12 @@ impl CodingHarness {
                 answer_call(state, &call.tool_name, &call_id, tool_error(text));
                 continue;
             }
-            let mut end = self.parallel_run_end(&calls, i, conversation_mode);
+            let mut end = self.parallel_run_end(&calls, i, conversation_mode, definitions);
             if let Some(left) = self.desk_budget_left(state) {
                 end = end.min(i + left);
             }
             if end > i + 1 {
-                self.run_parallel_reads(state, lanes, &calls[i..end], &mut stats)
+                self.run_parallel_reads(state, lanes, &calls[i..end], definitions, &mut stats)
                     .await;
                 i = end;
                 continue;
@@ -377,10 +416,27 @@ impl CodingHarness {
         Some(DESK_TOOL_BUDGET.saturating_sub(used))
     }
 
-    fn is_parallel_safe(&self, call: &GeneratedToolCall, conversation_mode: bool) -> bool {
-        PARALLEL_SAFE_TOOLS.contains(&call.tool_name.as_str())
-            && !(conversation_mode && meta::is_meta_tool(&call.tool_name))
-            && self.tools.contains(&call.tool_name)
+    fn is_parallel_safe(
+        &self,
+        call: &GeneratedToolCall,
+        conversation_mode: bool,
+        definitions: &[NativeToolDefinition],
+    ) -> bool {
+        let Some(advertised) = definitions.iter().find(|d| d.name == call.tool_name) else {
+            return false;
+        };
+        let Ok(lowered) =
+            crate::surface::lower_for_advertised(&call.tool_name, &call.arguments, advertised)
+        else {
+            return false;
+        };
+        let internal = lowered
+            .as_ref()
+            .map(|(n, _)| n.as_str())
+            .unwrap_or(call.tool_name.as_str());
+        PARALLEL_SAFE_TOOLS.contains(&internal)
+            && !(conversation_mode && meta::is_meta_tool(internal))
+            && self.tools.contains(internal)
     }
 
     /// End (exclusive) of the run of parallel-safe calls starting at `start`.
@@ -389,9 +445,12 @@ impl CodingHarness {
         calls: &[GeneratedToolCall],
         start: usize,
         conversation_mode: bool,
+        definitions: &[NativeToolDefinition],
     ) -> usize {
         let mut end = start;
-        while end < calls.len() && self.is_parallel_safe(&calls[end], conversation_mode) {
+        while end < calls.len()
+            && self.is_parallel_safe(&calls[end], conversation_mode, definitions)
+        {
             end += 1;
         }
         end
@@ -404,25 +463,42 @@ impl CodingHarness {
         state: &mut HarnessState,
         lanes: &LaneManager,
         calls: &[GeneratedToolCall],
+        definitions: &[NativeToolDefinition],
         stats: &mut TurnStats,
     ) {
         stats.only_delegations = false;
-        for call in calls {
-            self.lane_progress(
-                "tool_call",
-                tool_activity_text(&call.tool_name, &call.arguments),
-            );
+        let lowered_calls: Vec<(String, Value, bool)> = calls
+            .iter()
+            .map(|call| {
+                let uses_op = crate::surface::uses_op(&call.tool_name, &call.arguments);
+                let advertised = definitions.iter().find(|d| d.name == call.tool_name);
+                let lowered = advertised
+                    .and_then(|adv| {
+                        crate::surface::lower_for_advertised(&call.tool_name, &call.arguments, adv)
+                            .ok()
+                            .flatten()
+                    });
+                match lowered {
+                    Some((name, args)) => (name, args, uses_op),
+                    None => (call.tool_name.clone(), call.arguments.clone(), false),
+                }
+            })
+            .collect();
+        for (call, (internal_name, internal_args, _)) in calls.iter().zip(&lowered_calls) {
+            self.lane_progress("tool_call", tool_activity_text(internal_name, internal_args));
             self.presence(
                 "tool",
-                &super::presence::tool_detail(&call.tool_name, &call.arguments),
+                &super::presence::tool_detail(internal_name, internal_args),
             );
+            let _ = call;
         }
-        let results = futures_util::future::join_all(calls.iter().map(|call| {
-            self.tools
-                .execute(&self.context, &call.tool_name, call.arguments.clone())
+        let results = futures_util::future::join_all(lowered_calls.iter().map(|(name, args, _)| {
+            self.tools.execute(&self.context, name, args.clone())
         }))
         .await;
-        for (call, outcome) in calls.iter().zip(results) {
+        for ((call, (internal_name, _, uses_op)), outcome) in
+            calls.iter().zip(&lowered_calls).zip(results)
+        {
             let call_id = call.id.clone().unwrap_or_default();
             state.events.push(HarnessEvent::ToolCall {
                 tool_name: call.tool_name.clone(),
@@ -430,8 +506,36 @@ impl CodingHarness {
             });
             stats.real_work += 1;
             let mut result = match outcome {
-                Ok(result) => result.value,
-                Err(error) => execution_error(error),
+                Ok(result) => {
+                    if is_error_result(&result.value) {
+                        let schema = self.internal_tool_schema(internal_name);
+                        enrich_error_result(
+                            result.value,
+                            &call.tool_name,
+                            internal_name,
+                            *uses_op,
+                            schema.as_ref(),
+                            false,
+                        )
+                    } else {
+                        result.value
+                    }
+                }
+                Err(error) => {
+                    let force = matches!(
+                        error,
+                        ToolError::Json(_) | ToolError::InvalidArguments { .. }
+                    );
+                    let schema = self.internal_tool_schema(internal_name);
+                    enrich_error_result(
+                        execution_error(error),
+                        &call.tool_name,
+                        internal_name,
+                        *uses_op,
+                        schema.as_ref(),
+                        force,
+                    )
+                }
             };
             scrub_vault(&mut result);
             if is_error_result(&result) {
@@ -461,35 +565,33 @@ impl CodingHarness {
         total_mutating: usize,
         approval_index: &mut usize,
     ) -> Option<StepResult> {
-        let tool_name = call.tool_name.clone();
+        let surface_name = call.tool_name.clone();
+        let surface_args = call.arguments.clone();
         let call_id = call.id.clone().unwrap_or_default();
-        if tool_name != "delegate_task" {
-            stats.only_delegations = false;
-        }
         state.events.push(HarnessEvent::ToolCall {
-            tool_name: tool_name.clone(),
-            arguments: call.arguments.clone(),
+            tool_name: surface_name.clone(),
+            arguments: surface_args.clone(),
         });
-        self.lane_progress("tool_call", tool_activity_text(&tool_name, &call.arguments));
+        self.lane_progress("tool_call", tool_activity_text(&surface_name, &surface_args));
         self.presence(
             "tool",
-            &super::presence::tool_detail(&tool_name, &call.arguments),
+            &super::presence::tool_detail(&surface_name, &surface_args),
         );
 
         // Headless explicit completion: a lane / one-shot run ends with a
         // structured `summary` (folded back into the caller). Not advertised to
         // the conversation agent, which finishes by replying with no tool calls.
-        if tool_name == "terminate_loop" {
-            let summary = call
-                .arguments
+        if surface_name == "terminate_loop" {
+            stats.only_delegations = false;
+            let summary = surface_args
                 .get("summary")
-                .or_else(|| call.arguments.get("message"))
+                .or_else(|| surface_args.get("message"))
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
             let closing = summary.as_ref().map(|s| {
-                let mut data = match call.arguments.as_object() {
+                let mut data = match surface_args.as_object() {
                     Some(map) => map.clone(),
                     None => serde_json::Map::new(),
                 };
@@ -504,10 +606,8 @@ impl CodingHarness {
                     "`terminate_loop` requires a non-empty `summary` of what you did and found.",
                 ),
             };
-            answer_call(state, &tool_name, &call_id, result);
+            answer_call(state, &surface_name, &call_id, result);
             if let Some(s) = summary {
-                // A steered conversation model can call it anyway; its summary
-                // IS the answer — render it as one, or the turn ends silently.
                 if conversation_mode && !replied_since_last_user(&state.events) {
                     record_assistant_text(state, s.clone(), None);
                     if let Some(sink) = sink {
@@ -521,21 +621,56 @@ impl CodingHarness {
                     closing,
                 });
             }
-            // Missing summary: the error result nudges a retry next turn.
             let _ = self.persist(state, lanes).await;
             return None;
         }
 
-        if conversation_mode
-            && self.config.hidden_meta.contains(&tool_name.as_str())
-            && meta::is_meta_tool(&tool_name)
-        {
-            let result = tool_error(format!(
-                "`{tool_name}` is not available on a desk; use the tools you were given, and send anything that needs a person or a workspace to Mission Control."
-            ));
-            answer_call(state, &tool_name, &call_id, result);
+        let Some(advertised) = definitions.iter().find(|d| d.name == surface_name) else {
+            stats.only_delegations = false;
+            let available = definitions
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            vars.pending_signals.push(RuntimeSignal::UnknownTool {
+                name: surface_name.clone(),
+                available: available.clone(),
+            });
+            let error = format!("Unknown tool `{surface_name}`. Available tools: {available}");
+            let result = json!({
+                "schema_version": 1,
+                "status": "error",
+                "error": {"code": "unknown_tool", "message": error},
+            });
+            state.events.push(HarnessEvent::InvalidToolCall {
+                tool_name: surface_name.clone(),
+                error,
+            });
+            state.messages.push(HarnessMessage::ToolResult {
+                tool_call_id: call_id,
+                tool_name: surface_name,
+                content: result,
+            });
             let _ = self.persist(state, lanes).await;
             return None;
+        };
+
+        let uses_op = crate::surface::uses_op(&surface_name, &surface_args);
+        let (tool_name, args) =
+            match crate::surface::lower_for_advertised(&surface_name, &surface_args, advertised) {
+                Ok(Some((internal_name, internal_args))) => (internal_name, internal_args),
+                Ok(None) => (surface_name.clone(), surface_args.clone()),
+                Err(message) => {
+                    stats.only_delegations = false;
+                    stats.failed += 1;
+                    answer_call(state, &surface_name, &call_id, tool_error(message));
+                    let _ = self.persist(state, lanes).await;
+                    return None;
+                }
+            };
+
+        if tool_name != "delegate_task" {
+            stats.only_delegations = false;
         }
 
         let is_meta = conversation_mode
@@ -546,8 +681,19 @@ impl CodingHarness {
                     "delegate_task" | "cancel_delegated_task"
                 ));
         if is_meta {
-            let (result, control) =
-                self.dispatch_meta(state, lanes, watches, &tool_name, &call.arguments);
+            let (mut result, control) =
+                self.dispatch_meta(state, lanes, watches, &tool_name, &args);
+            if is_error_result(&result) {
+                let schema = self.internal_tool_schema(&tool_name);
+                result = enrich_error_result(
+                    result,
+                    &surface_name,
+                    &tool_name,
+                    uses_op,
+                    schema.as_ref(),
+                    false,
+                );
+            }
             if tool_name == "update_plan" && !is_error_result(&result) {
                 stats.had_plan = true;
                 vars.turns_since_plan = 0;
@@ -560,9 +706,8 @@ impl CodingHarness {
                     stats.only_delegations = false;
                 }
             }
-            answer_call(state, &tool_name, &call_id, result);
+            answer_call(state, &surface_name, &call_id, result);
             let _ = self.persist(state, lanes).await;
-            // ask_user pauses the run here; nothing else ends a turn now.
             if let MetaControl::EndTurn { kind, final_text } = control {
                 return Some(StepResult::TurnEnded {
                     kind,
@@ -580,22 +725,22 @@ impl CodingHarness {
                 .collect::<Vec<_>>()
                 .join(", ");
             vars.pending_signals.push(RuntimeSignal::UnknownTool {
-                name: tool_name.clone(),
+                name: surface_name.clone(),
                 available: available.clone(),
             });
-            let error = format!("Unknown tool `{tool_name}`. Available tools: {available}");
+            let error = format!("Unknown tool `{surface_name}`. Available tools: {available}");
             let result = json!({
                 "schema_version": 1,
                 "status": "error",
                 "error": {"code": "unknown_tool", "message": error},
             });
             state.events.push(HarnessEvent::InvalidToolCall {
-                tool_name: tool_name.clone(),
+                tool_name: surface_name.clone(),
                 error,
             });
             state.messages.push(HarnessMessage::ToolResult {
                 tool_call_id: call_id,
-                tool_name,
+                tool_name: surface_name,
                 content: result,
             });
             let _ = self.persist(state, lanes).await;
@@ -605,25 +750,20 @@ impl CodingHarness {
         stats.real_work += 1;
 
         if tool_name == "bash"
-            && let Some(command) = call.arguments.get("command").and_then(Value::as_str)
+            && let Some(command) = args.get("command").and_then(Value::as_str)
             && note_shell_command(vars, command)
         {
             stats.shell_nudged = true;
         }
 
-        // A bash command that references a vault secret ($NAME) ALWAYS requires
-        // explicit user confirmation, regardless of approval mode or a prior
-        // Approve-All. A delegated / headless run has no user to confirm, so it is
-        // denied there — the step must run on the interactive thread.
         let custom = self
             .tools
             .custom_dir()
             .filter(|_| self.tools.is_custom(&tool_name))
-            .and_then(|dir| crate::agent_tools::prepare(dir, &tool_name, &call.arguments))
+            .and_then(|dir| crate::agent_tools::prepare(dir, &tool_name, &args))
             .and_then(Result::ok);
         let vault_secrets_used: Vec<String> = if tool_name == "bash" {
-            call.arguments
-                .get("command")
+            args.get("command")
                 .and_then(Value::as_str)
                 .map(|c| crate::vault::Vault::load().referenced_names(c))
                 .unwrap_or_default()
@@ -643,7 +783,7 @@ impl CodingHarness {
                 None => format!(
                     "⚠ uses vault secret(s) [{}] — {}",
                     vault_secrets_used.join(", "),
-                    approval_summary(&tool_name, &call.arguments)
+                    approval_summary(&tool_name, &args)
                 ),
             };
             if !route.ask(&tool_name, &summary).await {
@@ -655,7 +795,7 @@ impl CodingHarness {
                         "message": "The user denied this action. Retrying it as-is would just meet the same answer, so adjust your approach, or report what you needed."
                     }
                 });
-                answer_call(state, &tool_name, &call_id, result);
+                answer_call(state, &surface_name, &call_id, result);
                 let _ = self.persist(state, lanes).await;
                 return None;
             }
@@ -675,7 +815,7 @@ impl CodingHarness {
                     "message": format!("The custom tool `{tool_name}` is new and needs the user's approval before its first run, which isn't available in a delegated/headless run. Report that it needs approving, so it's run once on the main thread.")
                 }
             });
-            answer_call(state, &tool_name, &call_id, result);
+            answer_call(state, &surface_name, &call_id, result);
             let _ = self.persist(state, lanes).await;
             return None;
         }
@@ -691,54 +831,50 @@ impl CodingHarness {
                     )
                 }
             });
-            answer_call(state, &tool_name, &call_id, result);
+            answer_call(state, &surface_name, &call_id, result);
             let _ = self.persist(state, lanes).await;
             return None;
         }
         let force_vault_approval = !vault_secrets_used.is_empty() || first_run;
         let manual_gated = state.approval_mode == ApprovalMode::Manual
             && (MUTATING_TOOLS.contains(&tool_name.as_str()) || custom.is_some());
-        // Vault and first-run calls never offer or match a rule.
         let rule_eligible = !lane_approved && !force_vault_approval && manual_gated;
 
         if rule_eligible
             && let Some(label) = super::allow_rules::covering(
                 &state.allow_rules,
                 &tool_name,
-                &call.arguments,
+                &args,
                 custom.is_some(),
             )
         {
             let summary = match custom.as_ref() {
                 Some(custom) => crate::agent_tools::approval_summary(custom),
-                None => approval_summary(&tool_name, &call.arguments),
+                None => approval_summary(&tool_name, &args),
             };
             Self::record_rule_decision(state, &tool_name, summary, label);
         } else if !lane_approved && (force_vault_approval || manual_gated) {
-            // Manual mode (or any vault-secret call): pause for the user's decision.
             *approval_index += 1;
-            // Discard stale decisions queued before this prompt existed — an
-            // unconsumed leftover would instantly "approve" an unseen action.
             while approval_rx.try_recv().is_ok() {}
             let summary = match custom.as_ref() {
                 Some(custom) => crate::agent_tools::approval_summary(custom),
                 None if force_vault_approval => format!(
                     "⚠ uses vault secret(s) [{}] — {}",
                     vault_secrets_used.join(", "),
-                    approval_summary(&tool_name, &call.arguments)
+                    approval_summary(&tool_name, &args)
                 ),
-                None => approval_summary(&tool_name, &call.arguments),
+                None => approval_summary(&tool_name, &args),
             };
             let rule = rule_eligible
-                .then(|| super::allow_rules::offer(&tool_name, &call.arguments, custom.is_some()))
+                .then(|| super::allow_rules::offer(&tool_name, &args, custom.is_some()))
                 .flatten();
             state.events.push(HarnessEvent::ApprovalRequest {
                 tool_name: tool_name.clone(),
                 summary,
                 index: *approval_index,
                 total: total_mutating.max(*approval_index),
-                title: super::allow_rules::title(&tool_name, &call.arguments),
-                reason: super::allow_rules::reason(&call.arguments),
+                title: super::allow_rules::title(&tool_name, &args),
+                reason: super::allow_rules::reason(&args),
                 rule,
             });
             state.status = HarnessStatus::WaitingForInput;
@@ -763,8 +899,6 @@ impl CodingHarness {
                 .then(|| Self::grant_pending_rule(state))
                 .flatten();
             self.record_decision_with_rule(state, "approval", outcome, None, &by, &via, granted);
-            // Approve-All flips to Auto for ordinary mutating calls — never off a
-            // vault prompt, which must not authorize an unattended mode.
             if matches!(decision, Some(ApprovalDecision::ApproveAll)) && !force_vault_approval {
                 state.approval_mode = ApprovalMode::Auto;
             }
@@ -791,45 +925,63 @@ impl CodingHarness {
                         "message": "The user denied this action. Retrying it as-is would just meet the same answer, so adjust your approach or ask what they'd prefer."
                     }
                 });
-                answer_call(state, &tool_name, &call_id, result);
+                answer_call(state, &surface_name, &call_id, result);
                 let _ = self.persist(state, lanes).await;
                 return None;
             }
         }
 
-        // Surface the in-flight call before running it so a slow tool (bash,
-        // web fetch) isn't a black box.
         let _ = self.persist(state, lanes).await;
 
         let edit_path = (tool_name == "change_files")
             .then(|| {
-                call.arguments
-                    .pointer("/changes/0/path")
+                args.pointer("/changes/0/path")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
             .flatten();
         let bash_command = (tool_name == "bash")
             .then(|| {
-                call.arguments
-                    .get("command")
+                args.get("command")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
             .flatten();
-        let background = call.arguments.get("background").and_then(Value::as_bool) == Some(true);
-        let change_args = (tool_name == "change_files").then(|| call.arguments.clone());
+        let background = args.get("background").and_then(Value::as_bool) == Some(true);
+        let change_args = (tool_name == "change_files").then(|| args.clone());
         let cwd_before = self.context.current_dir();
-        let mut result = match self
-            .tools
-            .execute(&self.context, &tool_name, call.arguments)
-            .await
-        {
-            Ok(result) => result.value,
-            Err(error) => execution_error(error),
+        let mut result = match self.tools.execute(&self.context, &tool_name, args).await {
+            Ok(result) => {
+                if is_error_result(&result.value) {
+                    let schema = self.internal_tool_schema(&tool_name);
+                    enrich_error_result(
+                        result.value,
+                        &surface_name,
+                        &tool_name,
+                        uses_op,
+                        schema.as_ref(),
+                        false,
+                    )
+                } else {
+                    result.value
+                }
+            }
+            Err(error) => {
+                let force = matches!(
+                    error,
+                    ToolError::Json(_) | ToolError::InvalidArguments { .. }
+                );
+                let schema = self.internal_tool_schema(&tool_name);
+                enrich_error_result(
+                    execution_error(error),
+                    &surface_name,
+                    &tool_name,
+                    uses_op,
+                    schema.as_ref(),
+                    force,
+                )
+            }
         };
-        // Vault choke point: secret values become [vault:NAME] before a result
-        // enters the conversation.
         scrub_vault(&mut result);
         let is_err = is_error_result(&result);
         if is_err {
@@ -848,7 +1000,7 @@ impl CodingHarness {
             note_bash_command(vars, &command, &cwd_before);
             collapse_repeated_output(vars, command, &mut result);
         }
-        answer_call(state, &tool_name, &call_id, result);
+        answer_call(state, &surface_name, &call_id, result);
         // Flush after every tool result so a mid-batch kill still keeps completed
         // calls on disk.
         let _ = self.persist(state, lanes).await;

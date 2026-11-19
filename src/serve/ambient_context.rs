@@ -62,19 +62,22 @@ fn plain_text(content: &str) -> String {
 }
 
 fn summarize_tool(tc: &crate::llm::ToolCallRecord) -> Option<String> {
+    let lowered = crate::surface::lower(&tc.name, &tc.arguments).ok().flatten();
+    let (name, args) = match lowered.as_ref() {
+        Some((n, a)) => (n.as_str(), a),
+        None => (tc.name.as_str(), &tc.arguments),
+    };
     let s = |k: &str| {
-        tc.arguments
-            .get(k)
+        args.get(k)
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|v| !v.is_empty())
     };
-    let summary = match tc.name.as_str() {
+    let summary = match name {
         "speak" => return None,
         "create_mission_task" | "update_mission_task" => {
             format!(
-                "{}: {}",
-                tc.name,
+                "{name}: {}",
                 clip(
                     s("title").or_else(|| s("task_id")).unwrap_or("task"),
                     80,
@@ -84,8 +87,7 @@ fn summarize_tool(tc: &crate::llm::ToolCallRecord) -> Option<String> {
         }
         "inspect_session" | "stop_session" | "create_mission_session" => {
             format!(
-                "{}: {}",
-                tc.name,
+                "{name}: {}",
                 clip(
                     s("session_id").or_else(|| s("title")).unwrap_or("session"),
                     80,
@@ -104,7 +106,7 @@ fn summarize_tool(tc: &crate::llm::ToolCallRecord) -> Option<String> {
             clip(s("note").unwrap_or(""), 70, false)
         ),
         "ping_user" => format!("ping_user: {}", clip(s("title").unwrap_or(""), 70, false)),
-        "list_mission_tasks" | "list_sessions" | "ambient_search" => tc.name.clone(),
+        "list_mission_tasks" | "list_sessions" | "ambient_search" => name.to_string(),
         other => format!("{other}"),
     };
     Some(redact(&summary))

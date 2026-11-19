@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::llm::NativeToolDefinition;
 
 /// Names the harness loop must intercept instead of dispatching to the registry.
-pub const META_TOOL_NAMES: [&str; 8] = [
+pub const META_TOOL_NAMES: [&str; 7] = [
     "update_plan",
     "ask_user",
     "delegate_task",
@@ -18,11 +18,24 @@ pub const META_TOOL_NAMES: [&str; 8] = [
     "complete_goal",
     "monitor",
     "present_file",
-    "set_session_title",
 ];
 
 pub fn is_meta_tool(name: &str) -> bool {
     META_TOOL_NAMES.contains(&name)
+}
+
+pub fn definition_for(name: &str) -> Option<NativeToolDefinition> {
+    match name {
+        "update_plan" => Some(update_plan_tool()),
+        "ask_user" => Some(ask_user_tool()),
+        "delegate_task" => Some(delegate_task_tool()),
+        "cancel_delegated_task" => Some(cancel_delegated_task_tool()),
+        "complete_goal" => Some(complete_goal_tool()),
+        "monitor" => Some(monitor_tool()),
+        "present_file" => Some(present_file_tool()),
+        "terminate_loop" => Some(terminate_loop_tool()),
+        _ => None,
+    }
 }
 
 pub fn conversation_meta_definitions_for(
@@ -34,7 +47,6 @@ pub fn conversation_meta_definitions_for(
         ask_user_tool(),
         monitor_tool(),
         present_file_tool(),
-        set_session_title_tool(),
     ];
     if allow_lane_control {
         tools.push(delegate_task_tool());
@@ -58,23 +70,6 @@ fn cancel_delegated_task_tool() -> NativeToolDefinition {
             },
             "required": ["lane_id", "reason"],
             "additionalProperties": false,
-        }),
-    }
-}
-fn set_session_title_tool() -> NativeToolDefinition {
-    NativeToolDefinition {
-        name: "set_session_title".to_string(),
-        description: "Change the title of the current session. Use a short, descriptive title that reflects the user's request or the work underway. This is a harmless conversation action and does not require approval.".to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "title": {
-                    "type": "string",
-                    "description": "The new session title. Use an empty string to clear the custom title."
-                }
-            },
-            "required": ["title"],
-            "additionalProperties": false
         }),
     }
 }
@@ -238,6 +233,10 @@ fn update_plan_tool() -> NativeToolDefinition {
                 "explanation": {
                     "type": "string",
                     "description": "Optional: why the plan changed."
+                },
+                "note": {
+                    "type": "string",
+                    "description": "What this step found or changed; written to your board."
                 }
             },
             "required": ["steps"],

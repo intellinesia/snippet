@@ -10,18 +10,13 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::coordination::{
     BoardEntry, BoardEntryKind, BoardQuery, NewBoardEntry, SNIPPET_AGENT_ID, TaskStatus,
 };
-use crate::llm::NativeToolDefinition;
 use crate::store::Store;
-use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
-
-pub const TOOL_NAME: &str = "report_progress";
+use crate::tools::ToolContext;
 const REPORT_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const MIN_TOOL_CALLS: u32 = 20;
 const RECENT_LABELS: usize = 6;
@@ -89,7 +84,7 @@ pub fn note_tool_call(ctx: &ToolContext, tool: &str, label: String) -> Option<St
     let session = reporting_session(ctx)?;
     let now = Instant::now();
     let mut clocks = CLOCKS.lock().unwrap_or_else(|e| e.into_inner());
-    if tool == TOOL_NAME {
+    if tool == "update_plan" {
         clocks.insert(session.to_string(), Clock::new(now));
         return None;
     }
@@ -124,10 +119,22 @@ pub fn note_tool_call(ctx: &ToolContext, tool: &str, label: String) -> Option<St
         return None;
     }
     Some(format!(
-        "Progress report due: {} tool calls over {} minutes since your last one. Add {TOOL_NAME} to your next batch of tool calls with what you did and why, rather than spending a turn on it.",
+        "Progress report due: {} tool calls over {} minutes since your last one. Update your plan with `update_plan` (marking done steps with a `note`) so your board stays current.",
         clock.tool_calls,
         now.duration_since(clock.since).as_secs() / 60,
     ))
+}
+
+pub(crate) fn record_plan_progress(ctx: &ToolContext, summary: &str) {
+    let Some(session) = reporting_session(ctx) else {
+        return;
+    };
+    if let Ok(mut clocks) = CLOCKS.lock() {
+        clocks.insert(session.to_string(), Clock::new(Instant::now()));
+    }
+    if let Err(error) = record_progress(ctx, session, summary) {
+        eprintln!("progress {session}: {error}");
+    }
 }
 
 fn open_store(ctx: &ToolContext) -> Option<Store> {
@@ -187,64 +194,7 @@ fn record_progress(ctx: &ToolContext, session: &str, summary: &str) -> Result<St
     Ok(agent)
 }
 
-#[derive(Deserialize)]
-struct ReportArgs {
-    summary: String,
-    #[serde(default)]
-    why: Option<String>,
-    #[serde(default)]
-    learned: Option<String>,
-}
 
-fn report_text(args: &ReportArgs) -> String {
-    let mut text = args.summary.trim().to_string();
-    for (label, part) in [("Why", &args.why), ("Learned", &args.learned)] {
-        if let Some(part) = part.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-            text.push_str(&format!("\n{label}: {part}"));
-        }
-    }
-    text
-}
-
-pub struct ReportProgress;
-
-#[async_trait]
-impl Tool for ReportProgress {
-    fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition {
-            name: TOOL_NAME.into(),
-            description: "Log important findings, actions or decisions to your agent board. It wakes no one. Use `send_agent_message` for another agent, `post_task_coordination` for task-room messages, and `ask_user` for user questions.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "summary": {"type": "string", "description": "one to three sentences: what you did or found since your last report"},
-                    "why": {"type": "string", "description": "why you did it that way, or why it mattered"},
-                    "learned": {"type": "string", "description": "what would help you or the next agent on similar work"}
-                },
-                "required": ["summary"],
-                "additionalProperties": false
-            }),
-        }
-    }
-
-    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: ReportArgs =
-            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        if args.summary.trim().is_empty() {
-            return Err(ToolError::msg("summary must not be empty"));
-        }
-        let summary = report_text(&args);
-        let Some(session) = reporting_session(ctx) else {
-            return Err(ToolError::msg(
-                "only a working session reports progress; a lane reports to the session that started it",
-            ));
-        };
-        let agent = record_progress(ctx, session, &summary).map_err(ToolError::msg)?;
-        Ok(ToolResult::success(
-            json!({"recorded": true, "agent": agent}),
-        ))
-    }
-}
 
 /// The written log lines a ledger reader gets, oldest first. Empty when none.
 pub fn ledger_log(db: &Store, task_id: &str) -> String {
