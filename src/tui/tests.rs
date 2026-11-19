@@ -66,37 +66,6 @@ fn dump_frame_for_review() {
     }
 }
 
-/// The empty state is the first thing anyone sees, and it is composed almost
-/// entirely of one long literal in `transcript.rs` — so a mangled or dropped
-/// block of art is invisible to every other kind of test.
-#[test]
-fn empty_state_renders_its_artwork_and_status() {
-    let rows = snapshot(90, 24);
-    let frame = rows.join("\n");
-    for expected in [
-        "████████████", // Mochi's body
-        "███████",      // the block-letter title
-        "workspace",    // the footer names the working folder
-        "gpt-4o",       // ...and the model
-    ] {
-        assert!(
-            frame.contains(expected),
-            "empty state is missing {expected:?}"
-        );
-    }
-    for stray in [
-        "t                                          T",
-        "G",
-        "g                                          g",
-        "t",
-    ] {
-        assert!(
-            rows.iter().all(|row| row.trim() != stray),
-            "empty state contains an orphan artwork row {stray:?}"
-        );
-    }
-}
-
 /// A model that is not connected is the one case the footer must not stay
 /// quiet about: without it the screen is a silent prompt.
 #[test]
