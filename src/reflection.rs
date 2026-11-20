@@ -125,9 +125,9 @@ pub fn reflect_envelope(home: &std::path::Path, lines: &[BoardLine]) -> String {
         "[reflect]\nSince you last reflected: {} board entries, {jobs} finished jobs.\n{listed}[/reflect]\n\
          Look back at this work (read.board, read.session for detail) and keep what will make the next job go better: \
          facts and lessons in your memory; a procedure worth repeating as a skill at {home}/skills/<name>/SKILL.md, \
-         which every agent can use at once; how you run recurring work in {home}/playbook.md; and only when your role \
+         which every agent can use at once; how you run recurring work in a playbook in your agent memory ({home}/memory/playbooks/<job>.md); and only when your role \
          itself should change, {home}/identity.md (under 6 KB; the user is told and can revert). Commit what you change \
-         in {home} with git, the message saying why. If nothing was learned, change nothing. Then stop.",
+         with git in the repo it lives in, the message saying why. If nothing was learned, change nothing. Then stop.",
         lines.len()
     )
 }
