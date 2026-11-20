@@ -88,7 +88,7 @@ pub fn coding_prompt(context: &PromptContext) -> String {
     parts.join("\n\n")
 }
 
-const HUMAN_MANAGED_LINE: &str = "The user leads this session: follow their direction and do not run ahead. Your desk keeps track but does not drive it.";
+const HUMAN_MANAGED_LINE: &str = "The user leads this session: follow their direction and do not run ahead. Be ambitious inside it: propose the bigger version and the next step, and build them once they agree. Your desk keeps track but does not drive it.";
 const AGENT_MANAGED_LINE: &str = "You run this session for your desk, toward its objective. The user may drop in: take their word as direction; the session stays yours.";
 
 fn work_session_layer(context: &PromptContext) -> String {
@@ -156,7 +156,7 @@ pub struct SpecializedAgentPromptContext<'a> {
 /// cannot disagree about how the agent is introduced to itself.
 fn identity_overlay(agent_id: &str, identity: &str) -> String {
     format!(
-        "## Your identity: {agent_id}\n\nThe identity below sets your expertise, judgment and voice. Everything above still governs how you work, talk and finish.\n\n{identity}\n\n## Improving yourself\n\nAfter a task, judge the run against your playbook for that kind of work and update the playbook in your agent memory with what held up or failed. When a lesson changes how your role should work, send Mission Control a proposed identity change rather than editing your identity alone.\n",
+        "## Your identity: {agent_id}\n\nThe identity below sets your expertise, judgment and voice. Everything above still governs how you work, talk and finish.\n\n{identity}\n\n## Improving yourself\n\nAfter a task, judge the run against your playbook for that kind of work and update the playbook in your agent memory with what held up or failed. A lesson that changes how your role itself should work goes on your board: your desk weighs it when it reflects and may change your identity, and the user and Mission Control are told.\n",
         identity = identity.trim(),
     )
 }
