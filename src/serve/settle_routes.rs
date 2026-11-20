@@ -349,7 +349,7 @@ fn announce_conversion(d: &Shared, row: &crate::conversations::SessionRow, mode:
         .unwrap_or("untitled");
     let summary = if mode == "agent" {
         format!(
-            "The user handed session {} ({title}) to you: you run it now. Read it (read.session), settle what done looks like and what is open, and drive it to done; the user may still drop in.",
+            "The user handed session {} ({title}) to you: you run it now, and the session has been told. Keep track of it and step in when it stalls, asks or finishes a job; the user may still drop in.",
             row.id
         )
     } else {
@@ -370,6 +370,20 @@ fn announce_conversion(d: &Shared, row: &crate::conversations::SessionRow, mode:
             created_at: &now,
         },
     );
+    let session_note = if mode == "agent" {
+        format!(
+            "[managed_by] The user handed this session to {agent}: you run it now, and the line at the top of your instructions about who leads no longer applies. Settle what done looks like and what is open, then drive it to done; the user may still drop in."
+        )
+    } else {
+        "[managed_by] The user took this session back: they lead it now, and the line at the top of your instructions about who leads no longer applies. Stop driving it and follow their direction; reply in one line.".to_string()
+    };
+    let daemon = d.clone();
+    let session_id = row.id.clone();
+    tokio::spawn(async move {
+        daemon
+            .deliver(&session_id, crate::harness::LoopInput::UserMessage(session_note))
+            .await;
+    });
     if agent != crate::mission_control::SESSION_ID {
         let _ = d.store.send_direct_message(
             ("agent", crate::mission_control::SESSION_ID),

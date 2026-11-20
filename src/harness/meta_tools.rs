@@ -23,7 +23,17 @@ impl CodingHarness {
             read_only,
         );
         Some(match result {
-            Ok((offer_id, merged)) => json!({
+            Ok(crate::lane_offers::OfferOutcome::AlreadyClaimed(offer_id)) => json!({
+                "schema_version": 1,
+                "status": "success",
+                "data": {
+                    "offered": false,
+                    "already_claimed": offer_id,
+                    "agent": agent,
+                    "note": format!("`{agent}` already claimed this lane; it runs in this session. To add to it, message that lane with delegate.run and its lane_id. For separate work, offer it under a different title."),
+                }
+            }),
+            Ok(crate::lane_offers::OfferOutcome::Offered { id: offer_id, merged }) => json!({
                 "schema_version": 1,
                 "status": "success",
                 "data": {
@@ -31,11 +41,29 @@ impl CodingHarness {
                     "offer_id": offer_id,
                     "agent": agent,
                     "merged": merged,
-                    "note": format!("Offered to `{agent}`'s desk. When it claims, the lane starts in this session with whatever the desk adds, and its report arrives as a [lane_report]. Unclaimed after a while: call delegate.run again with the same title and agent to resend; it merges into this offer. A decline arrives as [lane_offer_declined]."),
+                    "note": format!("Offered to `{agent}`'s desk. When it claims, the lane starts in this session with whatever the desk adds, and its report arrives as a [lane_report]. Unclaimed after a while: call delegate.run again with the same title and agent to resend; it merges into this offer. To withdraw it, delegate.cancel with its offer id as lane_id. A decline arrives as [lane_offer_declined]."),
                 }
             }),
             Err(error) => tool_error(format!("could not offer the lane to `{agent}`: {error}")),
         })
+    }
+
+    fn withdraw_lane_offer(&self, offer_id: &str, reason: &str) -> Value {
+        let Some(session_id) = self.context.durable_session_id() else {
+            return tool_error("withdrawing a lane offer needs a durable session".to_string());
+        };
+        let Some(Ok(store)) = crate::lanes::bound_store(self.context.store_path()) else {
+            return tool_error("no coordination store in this session".to_string());
+        };
+        match crate::lane_offers::withdraw(&store, offer_id, session_id, reason) {
+            Ok(offer) => json!({"schema_version": 1, "status": "success", "data": {
+                "withdrawn": true,
+                "offer_id": offer_id,
+                "agent": offer.agent_id,
+                "note": "Withdrawn; a later claim is refused. The piece is yours again."
+            }}),
+            Err(error) => tool_error(error),
+        }
     }
 
     pub(super) fn dispatch_meta(
@@ -58,6 +86,11 @@ impl CodingHarness {
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|reason| !reason.is_empty());
+                if let (Some(offer_id), Some(reason)) = (lane_id, reason)
+                    && crate::lane_offers::is_offer_id(offer_id)
+                {
+                    return (self.withdraw_lane_offer(offer_id, reason), MetaControl::Continue);
+                }
                 match (lane_id, reason) {
                     (Some(lane_id), Some(reason)) => match lanes.cancel(lane_id, reason) {
                         Ok(title) => {

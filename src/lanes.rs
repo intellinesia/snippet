@@ -736,6 +736,41 @@ impl LaneManager {
         if let Some(clash) = self.scope_clash(read_only, &paths) {
             return Err(clash);
         }
+        let id = self.push_record(title, brief, read_only, agent.clone(), profile.clone(), paths);
+        self.launch(&id, title, brief, false, read_only, agent, profile);
+        Ok(id)
+    }
+
+    pub fn reject_spawn(&mut self, spec: crate::harness::LaneSpawn, error: &str) -> String {
+        let id = self.push_record(
+            &spec.title,
+            &spec.brief,
+            spec.read_only,
+            spec.agent,
+            spec.profile,
+            spec.paths,
+        );
+        let _ = self.result_tx.send(LaneResult {
+            id: id.clone(),
+            title: spec.title,
+            status: LaneStatus::Failed,
+            summary: Some(format!("not started: {error}")),
+            report: None,
+            error: Some(format!("not started: {error}")),
+            structured: None,
+        });
+        id
+    }
+
+    fn push_record(
+        &mut self,
+        title: &str,
+        brief: &str,
+        read_only: bool,
+        agent: Option<String>,
+        profile: Option<String>,
+        paths: Vec<String>,
+    ) -> String {
         self.counter += 1;
         let id = self.fresh_lane_id();
         self.records.push(LaneRecord {
@@ -754,13 +789,12 @@ impl LaneManager {
             activity_at: None,
             activity_log: Vec::new(),
             read_only,
-            agent: agent.clone(),
-            profile: profile.clone(),
+            agent,
+            profile,
             transcript: self.transcript_id(&id),
             paths,
         });
-        self.launch(&id, title, brief, false, read_only, agent, profile);
-        Ok(id)
+        id
     }
 
     fn scope_clash(&self, read_only: bool, paths: &[String]) -> Option<String> {

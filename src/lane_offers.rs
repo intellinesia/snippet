@@ -92,6 +92,39 @@ impl Store {
         })
     }
 
+    pub fn recently_claimed_lane_offer(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        title: &str,
+        since: &str,
+    ) -> Result<Option<LaneOffer>, StoreError> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                &format!(
+                    "SELECT {COLUMNS} FROM lane_offers
+                     WHERE session_id = ?1 AND agent_id = ?2 AND title = ?3
+                       AND status IN ('claimed', 'started') AND updated_at >= ?4
+                     ORDER BY updated_at DESC LIMIT 1"
+                ),
+                params![session_id, agent_id, title, since],
+                offer_from,
+            )
+            .optional()
+        })
+    }
+
+    pub fn pending_lane_offers_for(&self, agent_id: &str) -> Result<Vec<LaneOffer>, StoreError> {
+        self.with_connection(|conn| {
+            conn.prepare(&format!(
+                "SELECT {COLUMNS} FROM lane_offers WHERE agent_id = ?1 AND status = 'offered'
+                 ORDER BY created_at"
+            ))?
+            .query_map(params![agent_id], offer_from)?
+            .collect()
+        })
+    }
+
     pub fn insert_lane_offer(&self, offer: &LaneOffer) -> Result<(), StoreError> {
         let paths = serde_json::to_string(&offer.paths).unwrap_or_else(|_| "[]".into());
         self.with_connection(|conn| {
@@ -237,6 +270,47 @@ pub fn claim_or_decline(
     })
 }
 
+pub fn withdraw(
+    store: &Store,
+    offer_id: &str,
+    session_id: &str,
+    reason: &str,
+) -> Result<LaneOffer, String> {
+    let offer = store
+        .get_lane_offer(offer_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("lane offer `{offer_id}` not found"))?;
+    if offer.session_id != session_id {
+        return Err(format!("lane offer `{offer_id}` was made by another session"));
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    if !store
+        .resolve_lane_offer(offer_id, "withdrawn", Some(reason), &now)
+        .map_err(|e| e.to_string())?
+    {
+        let current = store
+            .get_lane_offer(offer_id)
+            .ok()
+            .flatten()
+            .map_or(offer.status.clone(), |o| o.status);
+        return Err(format!(
+            "lane offer `{offer_id}` is already {current}; once claimed it runs as a lane you can cancel by its lane id"
+        ));
+    }
+    let _ = store.record_board_entry(
+        &offer.agent_id,
+        crate::coordination::BoardEntryKind::Noted,
+        &crate::coordination::NewBoardEntry {
+            session_id: Some(session_id),
+            workspace: None,
+            summary: &format!("{offer_id} — lane offer withdrawn: {} — {reason}", offer.title),
+            correlation_id: Some(offer_id),
+            created_at: &now,
+        },
+    );
+    Ok(offer)
+}
+
 pub fn declined_notice(offer: &LaneOffer) -> String {
     format!(
         "[lane_offer_declined]\noffer_id: {}\nagent: {}\ntitle: {}\nreason: {}\n[/lane_offer_declined]\nDo the piece yourself, offer it to another agent, or change the brief and offer again.",
@@ -295,9 +369,16 @@ pub fn offer_lane(
     request: &crate::meta::DelegateBrief,
     brief: &str,
     read_only: bool,
-) -> Result<(String, bool), StoreError> {
+) -> Result<OfferOutcome, StoreError> {
     let title = request.title.as_str();
     let now = chrono::Utc::now().to_rfc3339();
+    let since = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+    if store.pending_lane_offer(session_id, agent_id, title)?.is_none()
+        && let Some(claimed) =
+            store.recently_claimed_lane_offer(session_id, agent_id, title, &since)?
+    {
+        return Ok(OfferOutcome::AlreadyClaimed(claimed.id));
+    }
     let pending = match store.pending_lane_offer(session_id, agent_id, title)? {
         Some(existing) if store.merge_lane_offer(&existing.id, brief, &now)? => Some(existing),
         _ => None,
@@ -352,7 +433,15 @@ pub fn offer_lane(
             created_at: &now,
         },
     );
-    Ok((offer.id, merged))
+    Ok(OfferOutcome::Offered {
+        id: offer.id,
+        merged,
+    })
+}
+
+pub enum OfferOutcome {
+    Offered { id: String, merged: bool },
+    AlreadyClaimed(String),
 }
 
 #[cfg(test)]
@@ -369,11 +458,14 @@ mod tests {
             "paths": ["src/lanes.rs"]
         }))
         .unwrap();
-        let (id, merged) =
-            offer_lane(&store, "s1", "reviewer", &brief, &brief.description, true).unwrap();
+        let offer = |text: &str| match offer_lane(&store, "s1", "reviewer", &brief, text, true) {
+            Ok(OfferOutcome::Offered { id, merged }) => (id, merged),
+            Ok(OfferOutcome::AlreadyClaimed(id)) => (id, false),
+            Err(e) => panic!("{e}"),
+        };
+        let (id, merged) = offer(&brief.description);
         assert!(!merged);
-        let (again, merged) =
-            offer_lane(&store, "s1", "reviewer", &brief, "Also check tests.", true).unwrap();
+        let (again, merged) = offer("Also check tests.");
         assert_eq!((again.as_str(), merged), (id.as_str(), true));
         assert!(claim_or_decline(&store, &id, "someone-else", true, None).is_err());
         claim_or_decline(
@@ -385,12 +477,19 @@ mod tests {
         )
         .unwrap();
         assert!(claim_or_decline(&store, &id, "reviewer", false, Some("no")).is_err());
-        let taken = store.take_resolved_lane_offers("now").unwrap();
+        let taken = store
+            .take_resolved_lane_offers(&chrono::Utc::now().to_rfc3339())
+            .unwrap();
         assert_eq!(taken.len(), 1);
         let lane = lane_brief(&taken[0]);
         assert!(lane.contains("Also check tests."), "{lane}");
         assert!(lane.contains("Watch the lease token."), "{lane}");
         assert_eq!(taken[0].paths, vec!["src/lanes.rs".to_string()]);
         assert!(store.take_resolved_lane_offers("now").unwrap().is_empty());
+        assert!(matches!(
+            offer_lane(&store, "s1", "reviewer", &brief, "Late resend.", true),
+            Ok(OfferOutcome::AlreadyClaimed(claimed)) if claimed == id
+        ));
+        assert!(withdraw(&store, &id, "s1", "not needed").is_err());
     }
 }

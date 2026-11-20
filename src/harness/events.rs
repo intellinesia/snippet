@@ -739,19 +739,18 @@ impl CodingHarness {
             &spec.title,
             &spec.brief,
             spec.read_only,
-            spec.agent,
-            spec.profile,
-            spec.paths,
+            spec.agent.clone(),
+            spec.profile.clone(),
+            spec.paths.clone(),
         ) {
             Ok(id) => state.events.push(HarnessEvent::LaneSpawned {
                 id,
                 title: spec.title,
                 retry_of: None,
             }),
-            Err(error) => eprintln!(
-                "[lanes] requested lane `{}` not started: {error}",
-                spec.title
-            ),
+            Err(error) => {
+                lanes.reject_spawn(spec, &error);
+            }
         }
     }
 

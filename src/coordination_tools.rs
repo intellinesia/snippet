@@ -1744,7 +1744,7 @@ impl Tool for ClaimAndDispatchTask {
                     "task_id": {"type": "string", "description": "The task ID to claim"},
                     "profile": {"type": "string", "description": "Optional inference profile name. Omit to preserve prompt cache affinity."},
                     "report_to": {"type": "string", "description": "`group:<id>` or `direct:<thread>`"},
-                    "context": {"type": "string", "description": "Lane offers: what the lane should know from your memory, skills or past work; added to its brief."}
+                    "context": {"type": "string", "description": "What the worker should know from your memory, skills or past work that the brief does not say; added to its brief."}
                 }),
                 &["task_id"],
             ),
@@ -1830,6 +1830,12 @@ impl Tool for ClaimAndDispatchTask {
         } else {
             None
         };
+        let desk_context = args
+            .context
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string);
         db.add_task_agent_full(task_id, &actor_id, "implementer", None, "", "active", &now)
             .map_err(|e| ToolError::msg(format!("take the lease: {e}")))?;
         db.retry_task(task_id, &now)
@@ -1838,6 +1844,12 @@ impl Tool for ClaimAndDispatchTask {
             .update_task_in(task_id, &now, |t| {
                 if profile.is_some() {
                     t.profile = profile.clone();
+                }
+                if let Some(context) = desk_context.as_deref() {
+                    t.description = format!(
+                        "{}\n\nFrom your desk ({actor_id}), when it took this on:\n{context}",
+                        t.description
+                    );
                 }
                 if let Some(thread) = report_to.as_deref() {
                     t.origin_thread = Some(thread.to_string());
