@@ -3,6 +3,7 @@ use rusqlite::{OptionalExtension, params};
 use crate::store::{Store, StoreError};
 
 pub const DAILY_SECS: i64 = 24 * 3600;
+pub const JOB_END_GAP_SECS: i64 = 3600;
 pub const IDENTITY_BUDGET_BYTES: usize = 6 * 1024;
 const MAX_LISTED: usize = 12;
 
@@ -97,7 +98,9 @@ pub fn is_job_end(line: &BoardLine) -> bool {
 }
 
 pub fn due(lines: &[BoardLine], last_at: i64, now: i64) -> bool {
-    !lines.is_empty() && (lines.iter().any(is_job_end) || now - last_at >= DAILY_SECS)
+    let since = now - last_at;
+    !lines.is_empty()
+        && (since >= DAILY_SECS || (since >= JOB_END_GAP_SECS && lines.iter().any(is_job_end)))
 }
 
 pub fn reflect_envelope(home: &std::path::Path, lines: &[BoardLine]) -> String {
@@ -164,16 +167,18 @@ mod tests {
         assert!(!due(&progress, 100, 200));
         assert!(due(&progress, 100, 100 + DAILY_SECS));
         assert!(!due(&[], 0, DAILY_SECS * 10));
-        assert!(due(&[line(2, "reported", "t1 — done: x")], 100, 101));
+        let gap = 100 + JOB_END_GAP_SECS;
+        assert!(!due(&[line(2, "reported", "t1 — done: x")], 100, 101));
+        assert!(due(&[line(2, "reported", "t1 — done: x")], 100, gap));
         assert!(due(
             &[line(3, "progress", "lane l-1 completed: fix — ok")],
             100,
-            101
+            gap
         ));
         assert!(!due(
             &[line(4, "progress", "lane l-1 started: fix")],
             100,
-            101
+            gap
         ));
     }
 }

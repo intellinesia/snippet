@@ -1244,6 +1244,12 @@ fn desk_open_tasks_envelope(
         };
         section.push_str(&line);
     }
+    for offer in store.pending_lane_offers_for(agent_id).unwrap_or_default() {
+        offers.push_str(&format!(
+            "  {}  lane offer  {}  session:{}\n",
+            offer.id, offer.title, offer.session_id
+        ));
+    }
     let mut tasks_block = String::from("now:\n");
     for (label, body) in [
         ("running (you lead)", running),

@@ -151,7 +151,7 @@ const DELEGATE: Surface = Surface {
         act(
             "cancel",
             "cancel_delegated_task",
-            "stop a running lane and take its scope back (lane_id, reason).",
+            "stop a running lane and take its scope back, or withdraw a lane offer by its offer id (lane_id, reason).",
         ),
         act(
             "profiles",
