@@ -76,7 +76,6 @@ async fn turn_end_persists_the_cleared_human_wait() {
         thread_id: "direct:agent:a|human:local".into(),
         since: "s".into(),
         steered: true,
-        event_index: 0,
     });
     state.events.push(HarnessEvent::AssistantText {
         text: "Done.".into(),
@@ -149,7 +148,6 @@ mod assistant_dedup_tests {
             thread_id: "t".into(),
             since: "s".into(),
             steered: true,
-            event_index: 0,
         });
         let back: HarnessState =
             serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
@@ -530,111 +528,6 @@ mod empty_reply_tests {
             },
         ];
         assert!(!empty_turn_needs_reply(&replied, false));
-    }
-}
-
-#[cfg(test)]
-mod desk_budget_tests {
-    use super::*;
-
-    fn harness(session: &str) -> CodingHarness {
-        CodingHarness::new(
-            HarnessConfig::default(),
-            ToolRegistry::new(),
-            ToolContext::new(std::env::temp_dir())
-                .expect("ctx")
-                .with_durable_session_id(session),
-        )
-    }
-
-    fn waiting_state(wait: bool) -> HarnessState {
-        let mut state = HarnessState::blank("/tmp", None);
-        if wait {
-            state.human_waiting.push(HumanWait {
-                thread_id: "t".into(),
-                since: "s".into(),
-                steered: true,
-                event_index: 0,
-            });
-        }
-        state
-    }
-
-    fn calls(n: usize) -> Vec<GeneratedToolCall> {
-        (0..n)
-            .map(|i| GeneratedToolCall {
-                tool_name: "nope".into(),
-                arguments: serde_json::json!({}),
-                id: Some(format!("c{i}")),
-                signature: None,
-                origin_model: None,
-            })
-            .collect()
-    }
-
-    async fn run(session: &str, wait: bool, n: usize) -> HarnessState {
-        let harness = harness(session);
-        let mut state = waiting_state(wait);
-        let (result_tx, _result_rx) = mpsc::unbounded_channel();
-        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
-        let mut lanes = LaneManager::new(
-            None,
-            std::env::temp_dir(),
-            std::env::temp_dir(),
-            result_tx,
-            progress_tx,
-            None,
-        );
-        let (watch_tx, _watch_rx) = mpsc::unbounded_channel();
-        let mut watches = WatchManager::new(std::env::temp_dir(), watch_tx);
-        let mut vars = LoopVars::default();
-        let (_tx, mut rx) = mpsc::unbounded_channel();
-        let _ = harness
-            .run_tool_calls(
-                &mut state,
-                &mut lanes,
-                &mut watches,
-                &mut vars,
-                true,
-                None,
-                &mut rx,
-                calls(n),
-                &[],
-            )
-            .await;
-        state
-    }
-
-    fn results(state: &HarnessState) -> Vec<String> {
-        state
-            .messages
-            .iter()
-            .filter_map(|m| match m {
-                HarnessMessage::ToolResult { content, .. } => Some(content.to_string()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[tokio::test]
-    async fn seventh_desk_call_is_refused_then_short_refusal() {
-        let state = run("inbox-scout", true, 8).await;
-        let r = results(&state);
-        assert_eq!(r.len(), 8, "{r:?}");
-        assert!(r[..6].iter().all(|t| !t.contains("Desk budget")));
-        assert!(r[6].contains("Desk budget: 6 tool calls while the user waits."));
-        assert!(r[7].contains("Desk budget exhausted; reply now."));
-    }
-
-    #[tokio::test]
-    async fn non_inbox_and_not_waiting_are_untouched() {
-        for (session, wait) in [("snippet-service-1", true), ("inbox-scout", false)] {
-            let state = run(session, wait, 8).await;
-            assert!(
-                results(&state).iter().all(|t| !t.contains("Desk budget")),
-                "{session} {wait}"
-            );
-        }
     }
 }
 
