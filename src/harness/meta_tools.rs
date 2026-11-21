@@ -33,7 +33,10 @@ impl CodingHarness {
                     "note": format!("`{agent}` already claimed this lane; it runs in this session. To add to it, message that lane with delegate.run and its lane_id. For separate work, offer it under a different title."),
                 }
             }),
-            Ok(crate::lane_offers::OfferOutcome::Offered { id: offer_id, merged }) => json!({
+            Ok(crate::lane_offers::OfferOutcome::Offered {
+                id: offer_id,
+                merged,
+            }) => json!({
                 "schema_version": 1,
                 "status": "success",
                 "data": {
@@ -89,7 +92,10 @@ impl CodingHarness {
                 if let (Some(offer_id), Some(reason)) = (lane_id, reason)
                     && crate::lane_offers::is_offer_id(offer_id)
                 {
-                    return (self.withdraw_lane_offer(offer_id, reason), MetaControl::Continue);
+                    return (
+                        self.withdraw_lane_offer(offer_id, reason),
+                        MetaControl::Continue,
+                    );
                 }
                 match (lane_id, reason) {
                     (Some(lane_id), Some(reason)) => match lanes.cancel(lane_id, reason) {

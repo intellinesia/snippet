@@ -18,10 +18,7 @@ pub fn wake_envelope(f: &Followup) -> String {
             format!("You asked to be woken now (set {}).", f.created_at),
         )
         .child("wake_note", &f.note)
-        .child(
-            "instructions",
-            "wake.once sets another wake.",
-        )
+        .child("instructions", "wake.once sets another wake.")
         .render()
 }
 

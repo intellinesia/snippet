@@ -1686,7 +1686,10 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
         let text = format!(
             "{}\n{}",
             crate::envelope::Envelope::new("report_digest")
-                .child("note", "Outcomes that arrived while you waited on the user.")
+                .child(
+                    "note",
+                    "Outcomes that arrived while you waited on the user."
+                )
                 .render(),
             digest.join("\n")
         );

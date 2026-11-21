@@ -180,9 +180,7 @@ fn sections(
     let watches = if state.watches.is_empty() {
         String::new()
     } else {
-        let mut text = String::from(
-            "Active file watches (a matching line wakes you):",
-        );
+        let mut text = String::from("Active file watches (a matching line wakes you):");
         for w in &state.watches {
             text.push_str(&format!(
                 "\n- \"{}\" on {} (filter: \"{}\", id: {})",
@@ -474,9 +472,7 @@ mod tests {
         let first = build_reminder(&state, &mut vars, cwd, cwd, String::new(), 100_000, 90)
             .expect("first build emits reminder");
         assert!(
-            first.contains(
-                "Context is 65% used with 2 plan steps open and no lane running."
-            ),
+            first.contains("Context is 65% used with 2 plan steps open and no lane running."),
             "got: {first}"
         );
         assert!(vars.capacity_nudged);
