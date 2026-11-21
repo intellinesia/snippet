@@ -54,12 +54,6 @@ pub fn tokens_path() -> PathBuf {
         .join("xai_auth.json")
 }
 
-pub fn load_blocking() -> Option<XaiTokens> {
-    std::fs::read_to_string(tokens_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-}
-
 pub fn save_blocking(tokens: &XaiTokens) -> Result<(), String> {
     let path = tokens_path();
     if let Some(dir) = path.parent() {

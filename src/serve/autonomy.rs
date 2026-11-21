@@ -221,11 +221,6 @@ pub(super) fn mark_resume_delivered() {
     );
 }
 
-#[allow(dead_code)]
-pub(super) fn resume_unless_heard(daemon: Shared) {
-    super::attention::arm_resume(&daemon, crate::ambient::run_generation(), false);
-}
-
 /// From the speech interrupt hook: resumes only while the cut reply is still unconsumed.
 pub(super) fn resume_after_barge_in(daemon: Shared) {
     super::attention::arm_resume(&daemon, crate::ambient::run_generation(), true);

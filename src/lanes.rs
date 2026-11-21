@@ -1404,37 +1404,6 @@ pub fn role_tool_definitions(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn role_internal_tool_names(role: &str) -> Vec<String> {
-    let key = Some("k".to_string());
-    let defs = match role {
-        "work" => {
-            let mut d = crate::session::work_tool_registry(key, None).definitions();
-            d.extend(crate::meta::conversation_meta_definitions_for(false, true));
-            d
-        }
-        "mission_control" => {
-            let mut d = crate::session::mission_control_tool_registry(key).definitions();
-            d.extend(crate::meta::conversation_meta_definitions_for(false, true));
-            d
-        }
-        "desk" => crate::session::coordination_tool_registry(key).definitions(),
-        "lane" => {
-            let (progress_tx, _rx) = mpsc::unbounded_channel();
-            let parent = MessageParent {
-                lane_id: "lane-1".into(),
-                progress_tx,
-                mailbox: Arc::new(LaneMailbox::default()),
-            };
-            let mut d = lane_tool_registry(key, None, parent, false).definitions();
-            d.push(crate::meta::terminate_loop_tool());
-            d
-        }
-        _ => Vec::new(),
-    };
-    defs.into_iter().map(|d| d.name).collect()
-}
-
 /// Profiles a lane tries in order: a pinned profile then the parent's; unpinned,
 /// the parent's (`None` when unknown: the factory default), then the routing chain.
 fn lane_route(
