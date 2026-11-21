@@ -1340,7 +1340,7 @@ pub(crate) fn lane_tool_registry(
     tools
 }
 
-pub const WORK_TOOL_BUDGET_BYTES: usize = 19_500;
+pub const WORK_TOOL_BUDGET_BYTES: usize = 21_300;
 pub const MISSION_CONTROL_TOOL_BUDGET_BYTES: usize = 31_500;
 pub const DESK_TOOL_BUDGET_BYTES: usize = 11_500;
 pub const LANE_TOOL_BUDGET_BYTES: usize = 7_500;

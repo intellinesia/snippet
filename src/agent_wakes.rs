@@ -637,6 +637,10 @@ struct WakeToolArgs {
     task_id: Option<String>,
     #[serde(default)]
     only_on_change: Option<bool>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    plan_path: Option<String>,
 }
 
 fn own_view(state: &crate::mission_autonomy::AutonomyState) -> Value {
@@ -723,6 +727,79 @@ fn own_wakes(args: &WakeToolArgs) -> Result<ToolResult, ToolError> {
     }
 }
 
+pub struct AutomatedWakesTool;
+
+#[async_trait]
+impl Tool for AutomatedWakesTool {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "automated_wakes".into(),
+            description: "Show, set or clear Mission Control's own automated wakes, the heartbeat the app's Wakes settings also show. schedule `every 60m` or `hourly` sets the interval (10m minimum); quiet_start and quiet_end (HH:MM, empty clears) set quiet hours; enabled turns them on or off; clear turns them off.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["show", "set", "clear"]},
+                    "schedule": {"type": "string"},
+                    "enabled": {"type": "boolean"},
+                    "quiet_start": {"type": "string"},
+                    "quiet_end": {"type": "string"}
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        if !ctx.is_mission_control() {
+            return Err(ToolError::msg("only Mission Control has automated wakes"));
+        }
+        let args: WakeToolArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        own_wakes(&args)
+    }
+}
+
+fn all_schedules(root: &Path, now: u64) -> Result<ToolResult, ToolError> {
+    let rows: Vec<Value> = recurring::list_jobs(root)
+        .map_err(ToolError::msg)?
+        .iter()
+        .map(|job| {
+            if job.wake.is_some() {
+                view_with_runs(root, job, now)
+            } else {
+                json!({
+                    "job_id": job.id,
+                    "title": job.title,
+                    "session_id": job.session_id,
+                    "schedule": job.schedule.display(),
+                    "plan_path": job.plan_path,
+                    "enabled": job.enabled,
+                    "next_run": recurring::fmt_local_and_utc(job.next_run_at),
+                    "report_group": job.report_group,
+                })
+            }
+        })
+        .collect();
+    Ok(ToolResult::success(json!({"schedules": rows})))
+}
+
+fn clear_by_id(root: &Path, id: &str) -> Result<ToolResult, ToolError> {
+    let id = id.trim();
+    let job = recurring::list_jobs(root)
+        .map_err(ToolError::msg)?
+        .into_iter()
+        .find(|j| j.id == id)
+        .ok_or_else(|| ToolError::msg(format!("no schedule with id `{id}`")))?;
+    if job.wake.is_some_and(|w| w.set_by == Setter::User) {
+        return Err(ToolError::msg(
+            "the user set this schedule; ask them to change it",
+        ));
+    }
+    recurring::delete_job(root, id).map_err(ToolError::msg)?;
+    Ok(ToolResult::success(json!({"cleared": true, "job_id": id})))
+}
+
 pub struct WakeScheduleTool;
 
 #[async_trait]
@@ -730,12 +807,14 @@ impl Tool for WakeScheduleTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "wake_schedule".into(),
-            description: "Show, set or clear a recurring wake: on each one you get the brief as a goal and your complete_goal summary is reported (to Mission Control by default, only when something changed). Schedule: `every 30m` (15m minimum), `daily 09:00`, `weekdays 09:00`, `mon,thu 18:00`, in the user's local time, not UTC. Mission Control may pass agent_id to manage another agent's.".into(),
+            description: "Show, set or clear a recurring wake: each run gives the owner the brief as a goal, and its complete_goal summary is reported (to Mission Control by default, only on change). Schedule: `every 30m` (15m minimum), `daily 09:00`, `weekdays 09:00`, `mon,thu 18:00`, or one-off `at 14:00` / `in 30m`, in the user's local time, not UTC. Mission Control passes agent_id (an agent or a session id) to manage another's; its show without agent_id lists every schedule, and clear takes an id from that list.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["show", "set", "clear"]},
-                    "agent_id": {"type": "string", "description": "Mission Control: the agent or session to manage. Omitted, Mission Control manages its own automated wakes: schedule `every 60m` or `hourly` sets the interval (10m minimum), quiet_start and quiet_end set quiet hours, enabled turns them on or off, clear turns them off."},
+                    "agent_id": {"type": "string", "description": "Mission Control: an agent or session id."},
+                    "id": {"type": "string", "description": "Mission Control: a job_id to clear."},
+                    "plan_path": {"type": "string", "description": "File appended to the brief each run."},
                     "name": {"type": "string", "description": "Which of your wakes, e.g. `linkedin-sync`. show without it lists them all."},
                     "schedule": {"type": "string"},
                     "brief": {"type": "string", "description": "What to do on each wake."},
@@ -762,8 +841,23 @@ impl Tool for WakeScheduleTool {
             .map(str::trim)
             .filter(|a| !a.is_empty());
         let (owner, setter) = match (ctx.is_mission_control(), named) {
+            (true, Some(other)) if crate::mission_control::is_session_id(other) => {
+                return Err(ToolError::msg(
+                    "your own heartbeat is set with automated_wakes; a recurring wake targets an agent or a worker session",
+                ));
+            }
             (true, Some(other)) => (other.to_string(), Setter::MissionControl),
-            (true, None) => return own_wakes(&args),
+            (true, None) => {
+                let root = recurring::default_root();
+                let now = chrono::Utc::now().timestamp() as u64;
+                return match (args.action.as_str(), args.id.as_deref()) {
+                    ("show", _) => all_schedules(&root, now),
+                    ("clear", Some(id)) => clear_by_id(&root, id),
+                    _ => Err(ToolError::msg(
+                        "pass agent_id (an agent or session id), or id to clear; automated_wakes sets your own heartbeat",
+                    )),
+                };
+            }
             (false, Some(_)) => {
                 return Err(ToolError::msg(
                     "only Mission Control can set another agent's wake",
@@ -851,7 +945,13 @@ impl Tool for WakeScheduleTool {
                     report,
                     ..WakeSpec::default()
                 };
-                let job = set(&root, &owner, kind, spec, setter, now).map_err(ToolError::msg)?;
+                let mut job =
+                    set(&root, &owner, kind, spec, setter, now).map_err(ToolError::msg)?;
+                if let Some(path) = args.plan_path {
+                    let path = Some(path.trim().to_string()).filter(|p| !p.is_empty());
+                    job = recurring::update_job(&root, &job.id, |j| j.plan_path = path)
+                        .map_err(ToolError::msg)?;
+                }
                 Ok(ToolResult::success(view_with_runs(&root, &job, now)))
             }
             other => Err(ToolError::msg(format!("unknown action `{other}`"))),

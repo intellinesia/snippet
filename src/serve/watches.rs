@@ -172,7 +172,7 @@ pub fn watch_envelope(watch: &cw::Watch, event: &str, body: &[String], held: usi
         text.truncate(end);
     }
     let watch_tool = if watch.owner == crate::mission_control::SESSION_ID {
-        "schedule.watch"
+        "wake.watch"
     } else {
         "wake.watch"
     };
