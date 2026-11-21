@@ -207,7 +207,7 @@ impl Tool for BashTool {
                     "log": out_path.display().to_string(),
                     "moved_after_secs": timeout.as_secs(),
                     "note": format!(
-                        "still running after {}s, so it was moved to the background instead of being stopped. It keeps running and appears in your [background_processes] list, which reports its exit status when it finishes. Read new output with process.log (id {id}) or tail the log; stop it with process.kill if it's stuck. Don't rerun it.",
+                        "still running after {}s, so it was moved to the background instead of being stopped. It keeps running and appears in your [background_processes] list, which reports its exit status when it finishes. process.log (id {id}) reads new output and process.kill stops it; a rerun would start a second copy.",
                         timeout.as_secs()
                     ),
                 });

@@ -3584,7 +3584,7 @@ impl CodingHarness {
             .unwrap_or(super::guards::FailStreakAction::Continue);
         let note = match action {
             super::guards::FailStreakAction::Warn(n) => Some(format!(
-                "This exact call has now failed {n} times in a row with the same arguments. Do not send it again unchanged: fix the arguments or stop and tell the user what is blocking you."
+                "This exact call has now failed {n} times in a row with the same arguments; unchanged, it fails again."
             )),
             super::guards::FailStreakAction::Stop(n) => Some(format!(
                 "Stopped: this exact call failed {n} times in a row. The turn is being ended; do not retry."

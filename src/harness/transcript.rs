@@ -33,7 +33,7 @@ pub(crate) fn notice_text(event: &HarnessEvent) -> Option<String> {
                 .child("body", body)
                 .child(
                     "note",
-                    "Context only: the user did not address you. Do not reply or speak; use it to stay informed, and act only if it clearly matters to current work.",
+                    "Context only: the user did not address you, and no reply or speech is expected.",
                 )
                 .render(),
         ),
@@ -46,7 +46,7 @@ pub(crate) fn notice_text(event: &HarnessEvent) -> Option<String> {
                 .child("body", body)
                 .child(
                     "note",
-                    "Context only: what was said around the user while they were not talking to you. Do not reply or speak. Keep items marked remember the way you keep other remembered notes, with the event ids as source.",
+                    "Context only: what was said around the user while they were not talking to you; no reply or speech is expected. Items marked remember carry their event ids as source.",
                 )
                 .render(),
         ),
