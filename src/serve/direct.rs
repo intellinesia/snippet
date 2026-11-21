@@ -210,7 +210,11 @@ pub(crate) fn human_dm_thread(text: &str) -> Option<String> {
     Some(attr("thread_id").unwrap_or_default())
 }
 
-fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool {
+fn sent_to_human_ok(
+    turn: &[crate::harness::HarnessEvent],
+    from: usize,
+    forwarder: Option<&str>,
+) -> bool {
     use crate::harness::HarnessEvent as E;
     let mut sent = false;
     for (i, event) in turn.iter().enumerate().skip(from) {
@@ -241,13 +245,15 @@ fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool 
                     .get("reaction")
                     .and_then(|v| v.as_str())
                     .is_none_or(|r| r.trim().is_empty())
-                && matches!(
-                    resolved_args
-                        .get("recipient_agent_id")
-                        .and_then(|v| v.as_str())
-                        .map(str::trim),
-                    Some("human" | "local" | "human:local")
-                )
+                && resolved_args
+                    .get("recipient_agent_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .is_some_and(|to| {
+                        matches!(to, "human" | "local" | "human:local")
+                            || forwarder
+                                .is_some_and(|f| to == f || to.strip_prefix("agent:") == Some(f))
+                    })
         {
             let failed = turn[i + 1..].iter().find_map(|e| match e {
                 E::ToolResult {
@@ -275,13 +281,14 @@ pub(crate) fn turn_end_relay(
     who: &str,
     events: &[crate::harness::HarnessEvent],
 ) -> Option<(usize, String)> {
-    turn_end_relay_with_notice(waiting, who, events).map(|(start, line, _)| (start, line))
+    turn_end_relay_with_notice(waiting, who, events, None).map(|(start, line, _)| (start, line))
 }
 
 fn turn_end_relay_with_notice(
     waiting: usize,
     who: &str,
     events: &[crate::harness::HarnessEvent],
+    forwarder: Option<&str>,
 ) -> Option<(usize, String, bool)> {
     use crate::harness::HarnessEvent as E;
     if waiting == 0 {
@@ -298,7 +305,7 @@ fn turn_end_relay_with_notice(
         .rposition(|e| matches!(e, E::Steer { text } if human_dm_thread(text).is_some()))
         .map(|i| i + 1)
         .unwrap_or(0);
-    if sent_to_human_ok(turn, last_dm) {
+    if sent_to_human_ok(turn, last_dm, forwarder) {
         return None;
     }
     eprintln!("[relay] no reply from {who}");
@@ -446,7 +453,8 @@ pub(crate) fn relay_desk_reply(
         }
         None => relay_identity(store, session_id),
     };
-    let relay = turn_end_relay_with_notice(waiting, &name, &state.events);
+    let forwarder = about_thread.as_deref().and_then(agent_from_thread_id);
+    let relay = turn_end_relay_with_notice(waiting, &name, &state.events, forwarder.as_deref());
     state.human_waiting.clear();
     let Some((start, text, _)) = relay else {
         return;
@@ -3259,6 +3267,44 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn a_delivered_reply_to_the_forwarding_desk_or_the_human_raises_no_notice() {
+        for to in ["a", "agent:a", "human"] {
+            let store = crate::store::Store::open_in_memory().unwrap();
+            store.create_agent(&agent("a")).unwrap();
+            let mut state = crate::harness::HarnessState::blank("/tmp", None);
+            state.events.push(E::UserInput {
+                text: crate::envelope::Envelope::new("direct_message")
+                    .attr("from", "agent:a")
+                    .attr("reply_to", "human")
+                    .attr("about_thread", "direct:agent:a|human:local")
+                    .child("body", "status?")
+                    .render(),
+            });
+            state.events.push(E::ToolCall {
+                tool_name: "message".into(),
+                arguments: json!({"action": "send", "recipient_agent_id": to, "body": "done"}),
+            });
+            state.events.push(E::ToolResult {
+                tool_name: "message".into(),
+                result: json!({"status": "success", "data": {"output": "ok"}}),
+            });
+            state.human_waiting.push(crate::harness::HumanWait {
+                thread_id: "direct:agent:a|human:local".into(),
+                since: String::new(),
+                steered: false,
+            });
+            super::relay_desk_reply(&store, "sess-forwarded", &mut state);
+            assert!(
+                thread_events(&store, "a")
+                    .iter()
+                    .all(|e| e.payload.get("kind") != Some(&json!("notice"))),
+                "{to}"
+            );
+            assert!(state.human_waiting.is_empty());
+        }
     }
 
     #[test]
