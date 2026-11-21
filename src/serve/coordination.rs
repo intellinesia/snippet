@@ -922,17 +922,15 @@ pub fn board_message_envelope_with_task(
         ledger_xml = ledger.filter(|l| !l.is_empty() && event.event_type != "task.state_updated");
     }
     let note = if event.event_type == "task.lease_transferred" {
-        "the turn on this task has passed to you: it's yours to carry out here, and you may change files now."
+        "the turn on this task has passed to you; you may change files now."
     } else {
         "a teammate posted on the shared task board; this isn't a turn in your own \
-         conversation. If it needs your input or changes what you're doing, reply (message.task on a task thread, \
-         message.send to the sender elsewhere) or act on it; if not, end your turn \
-         without a reply."
+         conversation. message.task replies on a task thread, message.send to the sender elsewhere."
     };
     envelope = envelope.child(
         "note",
         format!(
-            "{note} task.inspect shows the task's plan and roster; only recent history is shown here, and read.room has more."
+            "{note} task.inspect shows the task's plan and roster; read.room has more than the recent history shown here."
         ),
     );
     if history.is_empty() {

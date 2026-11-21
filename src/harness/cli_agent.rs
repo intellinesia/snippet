@@ -338,7 +338,7 @@ struct Handoff {
     dropped: usize,
 }
 
-const DURABLE_SAVE: &str = "First save to global, project or agent memory what holds beyond this conversation: user preferences and rules, decisions and why, root causes, project facts and conventions. This conversation's own working state belongs in the summary, not in memory. Replace stale entries instead of adding duplicates, remove what is no longer true, and commit. An agent curates its own agent memory here and nowhere else: keep what still earns its place, rewrite what changed, and evict what is stale. ";
+const DURABLE_SAVE: &str = "Memory (global, project or agent) takes what holds beyond this conversation: user preferences and rules, decisions and why, root causes, project facts and conventions. The conversation's own working state belongs in the summary, not in memory. An agent curates its own agent memory here and nowhere else. ";
 
 fn handoff(messages: &[HarnessMessage], fresh: bool) -> Option<Handoff> {
     let mut entries: Vec<String> = Vec::new();
@@ -1578,7 +1578,7 @@ impl CodingHarness {
                 .attr("kind", "save")
                 .child(
                     "note",
-                    format!("This conversation is about to be compacted. {DURABLE_SAVE}Then reply with one line saying what you saved."),
+                    format!("This conversation is about to be compacted. {DURABLE_SAVE}Reply with one line saying what you saved."),
                 )
                 .render()
         })
@@ -1588,7 +1588,7 @@ impl CodingHarness {
         self.memory_on().then(|| {
             crate::envelope::Envelope::new("memory")
                 .attr("kind", "idle_save")
-                .child("note", "The user has stepped away. Before they're back, save what this conversation established since your last memory save that holds beyond it: user preferences and rules, decisions and why, root causes, project facts and conventions, in global, project or agent memory. Update or remove stale entries instead of adding duplicates, keep entries short, and commit. If nothing durable came up, change nothing. Don't continue the work. Then reply with one line saying what you saved, or that nothing needed saving.")
+                .child("note", "The user has stepped away. This turn is for saving to global, project or agent memory what this conversation established since your last memory save that holds beyond it. The work is not continued in this turn. Reply with one line saying what you saved, or that nothing needed saving.")
                 .render()
         })
     }
@@ -1600,7 +1600,7 @@ impl CodingHarness {
             .child(
                 "note",
                 format!(
-                    "This conversation is about to be compacted: it will continue in a fresh conversation that starts from your summary. {save}Then reply with only the summary, about 2k tokens: the user's requests in order (one line each), the goal and what counts as done, progress (done, in progress, left), decisions and constraints, the next steps and the exact values (paths, ids, error strings) they need."
+                    "This conversation is about to be compacted: it will continue in a fresh conversation that starts from your summary. {save}The reply is only the summary, about 2k tokens: the user's requests in order (one line each), the goal and what counts as done, progress (done, in progress, left), decisions and constraints, the next steps and the exact values (paths, ids, error strings) they need."
                 ),
             )
             .render()

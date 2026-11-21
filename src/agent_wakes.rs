@@ -730,7 +730,7 @@ impl Tool for WakeScheduleTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "wake_schedule".into(),
-            description: "Show, set or clear a recurring wake: on each one you get the brief as a goal and your complete_goal summary is reported (to Mission Control by default, only when something changed). Work you're asked to repeat is yours: name each job and report where it was asked. Schedule: `every 30m` (15m minimum), `daily 09:00`, `weekdays 09:00`, `mon,thu 18:00`, in the user's local time, not UTC. Mission Control may pass agent_id to manage another agent's.".into(),
+            description: "Show, set or clear a recurring wake: on each one you get the brief as a goal and your complete_goal summary is reported (to Mission Control by default, only when something changed). Schedule: `every 30m` (15m minimum), `daily 09:00`, `weekdays 09:00`, `mon,thu 18:00`, in the user's local time, not UTC. Mission Control may pass agent_id to manage another agent's.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

@@ -247,7 +247,7 @@ impl Tool for UpdateGoal {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "update_goal".into(),
-            description: "Change a goal's title, outcome or acceptance. When the scope moves, change the checks to match: one you remove needs a reason, stays on record as dropped and no longer blocks closing; evidence on unchanged text is kept. Also record evidence for criteria, set what drives it (next_step, waiting_on, due), record a nudge you just gave (nudged) or their 'not now' (snooze_days), or cancel it (status cancelled; needs no open task) or reopen it. Closing is close_goal.".into(),
+            description: "Change a goal's title, outcome or acceptance. A check removed needs a reason, stays on record as dropped and no longer blocks closing; evidence on unchanged text is kept. Also record evidence for criteria, set what drives it (next_step, waiting_on, due), record a nudge you just gave (nudged) or their 'not now' (snooze_days), or cancel it (status cancelled; needs no open task) or reopen it. Closing is close_goal.".into(),
             input_schema: {
                 let mut properties = json!({"id":{"type":"string"},"title":{"type":"string"},"outcome":{"type":"string"},"acceptance":criteria_schema(),"reason":{"type":"string","description":"why the scope changed; required when acceptance removes a check"},"evidence":evidence_schema(),"status":{"type":"string","enum":["open","cancelled"]},"nudged":{"type":"boolean","description":"you just nudged the user about what this waits on"},"snooze_days":{"type":"integer","description":"they said not now: no nudge for this many days"}});
                 properties.as_object_mut().unwrap().extend(drive_schema().as_object().unwrap().clone());

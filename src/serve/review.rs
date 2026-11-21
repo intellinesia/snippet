@@ -194,7 +194,7 @@ async fn review_due(
                 .attr("title", &task.title)
                 .attr("in_review_minutes", age_minutes.to_string())
                 .child("report", report)
-                .child("note", "No verdict has arrived. Call tasks.review with verdict approve, or changes with findings; if neither fits, hand it to the user.")
+                .child("note", "No verdict has arrived. tasks.review takes verdict approve, or changes with findings.")
                 .render();
             super::autonomy::deliver_to_mission_control(d, envelope).await;
         }
@@ -244,7 +244,7 @@ async fn start_review(d: &Daemon, task: &Task, state: &TaskState, now: &str) {
                 let envelope = crate::envelope::Envelope::new("review_request")
                     .attr("task_id", &task.id)
                     .attr("round", (state.review_rounds + 1).to_string())
-                    .child("note", "You are the reviewer seated on this task, in your own conversation. Only your approval finishes the work. Ask the worker anything you need in the room (message.task with `to`).")
+                    .child("note", "You are the reviewer seated on this task, in your own conversation. Only your approval finishes the work. The worker is reachable in the room with message.task (`to`).")
                     .child("brief", &brief)
                     .render();
                 d.deliver(&session, LoopInput::UserMessage(envelope)).await;

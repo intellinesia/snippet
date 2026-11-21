@@ -174,14 +174,14 @@ fn direct_message_envelope(
         "A colleague"
     };
     let answer = if reply_to == "human" {
-        "Answer with message.send to `human`; plain reply text is not delivered."
+        "message.send to `human` replies; plain reply text is not delivered."
     } else {
-        "Answer with message.send to `reply_to`, which is where they're reading."
+        "message.send to `reply_to` replies; that is where they are reading."
     };
     envelope = envelope.child(
         "note",
         format!(
-            "{who} wrote directly; this is not a turn in your own conversation. {answer} Recent history only; use read.agent for more."
+            "{who} wrote directly; this is not a turn in your own conversation. {answer} Recent history only; read.agent has more."
         ),
     );
     with_history(envelope, history).child("body", body).render()

@@ -19,7 +19,7 @@ pub(crate) fn notice_text(event: &HarnessEvent) -> Option<String> {
                 .child("body", body)
                 .child(
                     "note",
-                    "Context only: no reply needed. Adjust how you answer to match the mode.",
+                    "Context only: no reply needed.",
                 )
                 .render(),
         ),

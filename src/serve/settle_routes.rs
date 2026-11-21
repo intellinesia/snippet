@@ -374,12 +374,12 @@ fn announce_conversion(d: &Shared, row: &crate::conversations::SessionRow, mode:
         crate::envelope::Envelope::new("managed_by")
             .attr("kind", "handed")
             .attr("agent", &agent)
-            .child("note", format!("The user handed this session to {agent}: you run it now, and the line at the top of your instructions about who leads no longer applies. Settle what done looks like and what is open, then drive it to done; the user may still drop in."))
+            .child("note", format!("The user handed this session to {agent}: you run it now, and the line at the top of your instructions about who leads no longer applies. The user may still drop in."))
             .render()
     } else {
         crate::envelope::Envelope::new("managed_by")
             .attr("kind", "returned")
-            .child("note", "The user took this session back: they lead it now, and the line at the top of your instructions about who leads no longer applies. Stop driving it and follow their direction; reply in one line.")
+            .child("note", "The user took this session back: they lead it now, and the line at the top of your instructions about who leads no longer applies.")
             .render()
     };
     let daemon = d.clone();

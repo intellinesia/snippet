@@ -550,7 +550,7 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
             .child("collaborators", roster_line)
             .child_with("inputs", &[("note", "tasks this one waited on, with their reports")], inputs_line)
             .child("scope", scope)
-            .child("note", format!("This is yours now: deliver it end to end, verified, in this session. If the scope looks wrong, unclear or there's a better way, say so to Mission Control (message.send to mission-control) before you build. When something long-running is in flight, put a process.watch on it rather than ending the task. When it's done, blocked or failed, report with {report_tool} (task_id {}): what was done, files changed, how it was verified, anything left open.", task.id))
+            .child("note", format!("This task is yours, in this session. message.send to mission-control reaches Mission Control. {report_tool} (task_id {}) reports it done, blocked or failed, with what was done, files changed, how it was verified and what is left open.", task.id))
             .render();
     let rendered = if ledger.trim().is_empty() {
         rendered
@@ -879,7 +879,7 @@ fn task_offer_body(task: &Task) -> String {
         .attr("handoff", format!("{:?}", task.handoff_mode))
         .attr("owned_paths", owned)
         .child("briefing", task.description.trim())
-        .child("note", "Offer only: review, then claim with task.claim, ask Mission Control if unclear, or decline with a reason.")
+        .child("note", "This is an offer only. task.claim claims it; declining takes a reason. The offer stays open until claimed or declined.")
         .render()
 }
 
@@ -1281,9 +1281,9 @@ async fn open(State(d): State<Shared>, Json(req): Json<MissionOpenReq>) -> Respo
     }
 }
 
-pub(super) const WORKFLOW_PLAN: &str = "Workflow W7 · first plan: the worker has laid out how it will deliver the task. Check it against the requirements; when it misses or misreads something, say so in the task room (message.task) so the worker adjusts before going far; when it shows what comes next, line up that work. A plan that's right needs no reply. Then stop.";
+pub(super) const WORKFLOW_PLAN: &str = "First plan: the worker has laid out how it will deliver the task. message.task in the task room reaches the worker; no reply is required.";
 
-pub(super) const WORKFLOW_REPORT: &str = "Workflow W3 · task report: check its Scope, Done and How against the task's scope (spot-check only if thin), then judge it as the user will: is it actually good, would the person it's for care, does it keep their standing rules? Covers the scope but weak → tasks.update revise with the bar you want, before they see it. Done and good → tell the user unless you already have, with your view, and set the goal's next step; short of the scope → tasks.update revise; in_review or review_escalated → tasks.review is yours; stalled → read.session, then answer, retry or cancel; blocked → unblock it; failed → retry once or re-route. Then stop.";
+pub(super) const WORKFLOW_REPORT: &str = "Task report from a worker. tasks.update (revise) sends a task back; for in_review or review_escalated, tasks.review gives the verdict.";
 
 pub(super) async fn open_mission_control(
     d: &Shared,
@@ -1686,7 +1686,7 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
         let text = format!(
             "{}\n{}",
             crate::envelope::Envelope::new("report_digest")
-                .child("note", "Outcomes that arrived while you waited on the user; handle them after their answer.")
+                .child("note", "Outcomes that arrived while you waited on the user.")
                 .render(),
             digest.join("\n")
         );

@@ -191,7 +191,7 @@ const MESSAGE: Surface = Surface {
         act(
             "task",
             "post_task_coordination",
-            "post to a task room; to names who must act, urgency urgent only for blockers.",
+            "post to a task room; to names who must act, urgency urgent interrupts.",
         ),
         op(
             "group",
@@ -201,7 +201,7 @@ const MESSAGE: Surface = Surface {
         act(
             "push",
             "ping_user",
-            "push-notify the user's phone; only when they must act.",
+            "push-notify the user's phone.",
         ),
     ],
 };

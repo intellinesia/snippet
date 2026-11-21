@@ -334,7 +334,7 @@ impl Tool for ListCoordinationAgents {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "list_coordination_agents".into(),
-            description: "The agent directory: every agent's id, status, capabilities, the inference profile it works on (when it has one) and a one-line summary of what it is for. Use it to choose whom to message, invite onto a task (invite_task_agent) or run a lane as (delegate_task agent). Only active agents take new work.".into(),
+            description: "The agent directory: every agent's id, status, capabilities, the inference profile it works on (when it has one) and a one-line summary of what it is for. Only active agents take new work.".into(),
             input_schema: schema(json!({}), &[]),
         }
     }
@@ -495,7 +495,7 @@ impl Tool for ReadCoordinationThread {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "read_coordination_thread".into(),
-            description: "Read the coordination room's messages, oldest first. Call with no arguments for the most recent messages; pass after_sequence to page further back (use the returned oldest_sequence) or forward. The wake message already includes the recent history, so use this only to see more. For direct, group and task threads addressed by peer or id, use read_chat.".into(),
+            description: "Read the coordination room's messages, oldest first. Call with no arguments for the most recent messages; pass after_sequence to page further back (use the returned oldest_sequence) or forward. The wake message already includes the recent history. For direct, group and task threads addressed by peer or id, use read_chat.".into(),
             input_schema: schema(
                 json!({
                     "thread_id":{"type":"string","description":"defaults to the shared room"},
@@ -640,7 +640,7 @@ impl Tool for SendAgentMessage {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "send_agent_message".into(),
-            description: "Reply to a message or contact an agent. For session-origin messages, copy the exact `reply_to` value (`session:<id>`); use `human` only if no session was named, otherwise an agent id or `task:<id>`. This is conversation only: it cannot create work, transfer ownership or authorise workspace changes. Use Mission Control for tasks and `post_task_coordination` for task updates. `urgent` interrupts; reserve it for blockers or wrong direction. reply_to quotes the message you answer; reaction acknowledges one without words (check: done or agreed, eyes: seen and on it, thumbs_up, question: unclear, thinking).".into(),
+            description: "Reply to a message or contact an agent. For a session-origin message the recipient is its exact `reply_to` value (`session:<id>`); `human` is the user, otherwise an agent id or `task:<id>`. This is conversation only: it cannot create work, transfer ownership or authorise workspace changes (`post_task_coordination` posts task updates). `urgent` interrupts the recipient. reply_to quotes the message answered; reaction acknowledges one without words (check: done or agreed, eyes: seen and on it, thumbs_up, question: unclear, thinking).".into(),
             input_schema: schema(
                 json!({
                     "recipient_agent_id":{"type":"string","description":"agent id, `task:<id>`, `session:<id>` or `human`"},
@@ -938,7 +938,7 @@ impl Tool for ReadAgentThread {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "read_agent_thread".into(),
-            description: "Read your direct conversation with one agent — or with `human`/`local` for the user — oldest first. Omit after_sequence for the most recent messages; pass it to page forward. The wake message already includes the recent history, so use this only to see more. For group threads, task rooms and any thread by id, use read_chat.".into(),
+            description: "Read your direct conversation with one agent — or with `human`/`local` for the user — oldest first. Omit after_sequence for the most recent messages; pass it to page forward. The wake message already includes the recent history. For group threads, task rooms and any thread by id, use read_chat.".into(),
             input_schema: schema(
                 json!({
                     "peer_agent_id":{"type":"string"},
@@ -1198,7 +1198,7 @@ impl Tool for RecordCoordinationNote {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "record_coordination_note".into(),
-            description: "Write a note to your own coordination memory, so a later turn can recall it. Use it for conclusions worth keeping: what a workspace needs, which agent fits a kind of work, why an approach failed. Keep it to one or two sentences — it is a memory row, not a report. Dispatches and their reports are recorded for you; do not duplicate those.".into(),
+            description: "Write a note to your own coordination memory, so a later turn can recall it. One or two sentences per row. Dispatches and their reports are recorded automatically.".into(),
             input_schema: schema(
                 json!({
                     "summary":{"type":"string","description":"one or two sentences"},
@@ -1379,7 +1379,7 @@ impl Tool for PostTaskCoordination {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "post_task_coordination".into(),
-            description: "Coordinate with fellow agents assigned to this task board item. Posts context, plan proposals, or status to the task thread. Everyone on the task and Mission Control see it; a post that needs nothing from them can simply be read. The task room is the task's one channel, in task order. Optional `kind` types the post; `urgency: urgent` stops the other sessions' runs and wakes them now (a blocker or wrong direction only), while normal posts wait for their next turn.".into(),
+            description: "Post context, a plan proposal or status to the task thread of a task board item. Everyone on the task and Mission Control see it. The task room is the task's one channel, in task order. Optional `kind` types the post; `urgency: urgent` stops the other sessions' runs and wakes them now, while normal posts wait for their next turn.".into(),
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string", "description": "The task ID on the task board"},
@@ -1920,7 +1920,7 @@ impl Tool for DeclineTask {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "decline_task".into(),
-            description: "Turn down a task you were offered, with your reason: it isn't your kind of work, the target session is wrong, the briefing can't be done as written. You leave the roster, the task waits as blocked, and Mission Control is told why so it can reassign or reshape it. Ask Mission Control first instead when a question would settle it.".into(),
+            description: "Turn down a task you were offered, with a reason. You leave the roster, the task waits as blocked, and Mission Control is told the reason.".into(),
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string", "description": "The full task id from the offer."},
@@ -2185,7 +2185,7 @@ impl Tool for GroupThread {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "group_thread".into(),
-            description: "Group threads: several agents and the human taking turns like colleagues. A post wakes whom it names (mention or name in text); one naming nobody goes to the lead, then to all with any replies. An agent's first post after the human's reaches the other agents mid-turn (stop, or one line on what you're still doing); later ones only whom they name, so post points separately. Mention `human` only if the user must act: it pings their phone. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?, choices?, reaction? (with in_reply_to, no body)}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
+            description: "Group threads: several agents and the human taking turns like colleagues. A post wakes whom it names (mention or name in text); one naming nobody goes to the lead, then to all with any replies. An agent's first post after the human's reaches the other agents mid-turn; later ones reach only whom they name. Mentioning `human` pings the user's phone. Actions: create {title, members, lead?}, list, read {thread_id, after_sequence?, limit?}, post {thread_id, body, mentions?, in_reply_to?, choices?, reaction? (with in_reply_to, no body)}, set_lead {thread_id, agent}, add_member {thread_id, agent}. An aside to the human is a normal DM whose body starts 'From the <title> group: '.".into(),
             input_schema: schema(
                 json!({
                     "action": {"type": "string", "enum": ["create", "list", "read", "post", "set_lead", "add_member"]},
@@ -3737,7 +3737,7 @@ mod tests {
     async fn send_agent_message_schema_and_reply_reaction_behavior() {
         let def = SendAgentMessage.definition();
         assert!(def.description.contains(
-            "reply_to quotes the message you answer; reaction acknowledges one without words (check: done or agreed, eyes: seen and on it, thumbs_up, question: unclear, thinking)."
+            "reply_to quotes the message answered; reaction acknowledges one without words (check: done or agreed, eyes: seen and on it, thumbs_up, question: unclear, thinking)."
         ));
         let props = &def.input_schema["properties"];
         assert_eq!(props["reply_to"]["type"], "string");

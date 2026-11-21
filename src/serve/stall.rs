@@ -246,7 +246,7 @@ pub(super) fn goal_stall_wake(
         .attr("kind", "stalled_goals")
         .child("note", "A goal has stopped moving.")
         .child("body", stalled_goals_section(&lines))
-        .child("instructions", "Workflow W4 · decide for each: move it, replan it, nudge the user or park it, then stop.")
+        .child("instructions", "No reply is expected.")
         .render())
 }
 
@@ -342,7 +342,7 @@ pub(super) fn owed_sweep(store: &Store, now: DateTime<Utc>) -> Vec<(String, Stri
             .attr("from", &row.sender)
             .attr("thread_id", &row.thread_id)
             .attr("waiting_minutes", waiting.to_string())
-            .child("note", "a question or blocker sent to you has had no reply. Answer it with message.send to the thread, or say in one line why it needs no answer.")
+            .child("note", "a question or blocker sent to you has had no reply. message.send to the thread replies.")
             .render();
         notices.push((super::direct::recipient_session_id(&row.recipient), notice));
     }

@@ -230,9 +230,9 @@ pub(crate) fn handoff_envelope(from: &str, by: &str, note: &str) -> String {
     let by_label = if by == "human" { "the user" } else { by };
     let trimmed = note.trim();
     let instructions = if trimmed.is_empty() {
-        format!("You now own this session. Its history above is {from}'s; continue from here.")
+        format!("You now own this session. Its history above is {from}'s.")
     } else {
-        format!("You now own this session. Its history above is {from}'s; continue from the note.")
+        format!("You now own this session. Its history above is {from}'s; the handoff note is in this message.")
     };
     crate::envelope::Envelope::new("handoff")
         .attr("from", from)

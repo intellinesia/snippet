@@ -366,7 +366,7 @@ async fn wake_for_worker_questions(daemon: &Shared) {
             .attr("task", &task.title)
             .attr("session_id", &task.session_id)
             .child("question", question_text(question))
-            .child("instructions", format!("Workflow W5 · worker question: the worker is paused on it. Answer with sessions.answer (session_id {}) when the user's request, the task or your brief settles it; otherwise ask the user once with your recommendation. Then stop.", task.session_id))
+            .child("instructions", format!("Worker question: the worker is paused until it is answered. sessions.answer (session_id {}) answers it.", task.session_id))
             .render();
         deliver_to_mission_control(daemon, text).await;
     }
@@ -759,7 +759,7 @@ fn round_envelope(
             },
         )
         .child("body", out)
-        .child("instructions", "Workflow W4 · wake: move the work, nudge the user or propose the next thing, then stop. Just waiting is right only when every goal has something moving it and no nudge is due; it needs no reply. Running and waiting tasks report on their own: don't inspect them, read their logs or schedule a check for them.")
+        .child("instructions", "Mission Control wake. No reply is expected. Running and waiting tasks report on their own.")
         .render()
 }
 
