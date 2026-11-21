@@ -87,7 +87,6 @@ pub(crate) async fn attach_ws(
     Query(q): Query<AttachQuery>,
 ) -> Response {
     let on = |v: &Option<String>| v.as_deref().is_some_and(|v| v != "0" && v != "false");
-    let compact = on(&q.compact);
     let stream_delta = on(&q.stream_delta);
     if crate::session::is_lane_session_id(&q.session) {
         let Some(state_path) = state_path_for_id(&q.session)
@@ -108,7 +107,6 @@ pub(crate) async fn attach_ws(
                 stream,
                 None,
                 AttachOptions {
-                    compact,
                     stream_delta,
                     read_only: true,
                 },
@@ -132,7 +130,6 @@ pub(crate) async fn attach_ws(
                     stream,
                     terms,
                     AttachOptions {
-                        compact,
                         stream_delta,
                         read_only: false,
                     },
@@ -145,7 +142,6 @@ pub(crate) async fn attach_ws(
 
 #[derive(Clone, Copy)]
 struct AttachOptions {
-    compact: bool,
     stream_delta: bool,
     read_only: bool,
 }
@@ -160,7 +156,6 @@ async fn handle_ws(
     options: AttachOptions,
 ) {
     let AttachOptions {
-        compact,
         stream_delta,
         read_only,
     } = options;
@@ -344,9 +339,6 @@ async fn handle_ws(
                             for (lane_json, record) in lanes.iter_mut().zip(state.lanes.iter()) {
                                 crate::lanes::attach_recent(lane_json, record);
                             }
-                            if compact {
-                                trim_finished_lanes(lanes, &session);
-                            }
                         }
                         let lanes_json = v
                             .get("lanes")
@@ -359,8 +351,7 @@ async fn handle_ws(
                             if continuous {
                                 let total_events = last_event_offset + events.len();
                                 o.insert("wire".into(), serde_json::json!("delta"));
-                                let mut added =
-                                    wire_events_slice(&events, last_events.len(), compact);
+                                let mut added = wire_events_slice(&events, last_events.len());
                                 stamp_event_times(
                                     &state_path,
                                     last_event_offset + last_events.len(),
@@ -381,7 +372,7 @@ async fn handle_ws(
                                 let start = base_offset + rel_start;
                                 last_event_offset = start;
                                 o.insert("wire".into(), serde_json::json!("snapshot"));
-                                let mut window = wire_events_slice(&events, rel_start, compact);
+                                let mut window = wire_events_slice(&events, rel_start);
                                 stamp_event_times(&state_path, start, &mut window).await;
                                 o.insert("events".into(), window);
                                 o.insert("event_offset".into(), serde_json::json!(start));
@@ -486,7 +477,7 @@ async fn handle_ws(
             };
             if let Some((index, rel, state)) = event_request {
                 let mut one = if rel < state.events.len() {
-                    wire_events_slice(&state.events[..=rel], rel, false)
+                    wire_events_slice(&state.events[..=rel], rel)
                 } else {
                     serde_json::json!([serde_json::Value::Null])
                 };
@@ -541,7 +532,7 @@ async fn handle_ws(
                 };
                 if let Some((events, start, end)) = paged {
                     let has_older = start > 0;
-                    let mut page = wire_events(&events, compact);
+                    let mut page = wire_events(&events);
                     stamp_event_times(&state_path, start, &mut page).await;
                     let frame = serde_json::json!({
                         "wire": "history",
@@ -726,38 +717,6 @@ async fn handle_ws(
         }
     }
     push.abort();
-}
-
-const TRIMMED_SUMMARY_CHARS: usize = 600;
-
-/// Finished lanes keep their card fields; the full text is `GET /session/lane`.
-fn trim_finished_lanes(lanes: &mut [serde_json::Value], session: &str) {
-    for lane in lanes {
-        let Some(o) = lane.as_object_mut() else {
-            continue;
-        };
-        if matches!(
-            o.get("status").and_then(|s| s.as_str()),
-            Some("running" | "paused")
-        ) {
-            continue;
-        }
-        let mut trimmed = false;
-        for key in ["handoff", "report", "activity_log"] {
-            trimmed |= o.remove(key).is_some();
-        }
-        if let Some(summary) = o.get("summary").and_then(|s| s.as_str())
-            && summary.chars().count() > TRIMMED_SUMMARY_CHARS
-        {
-            let short: String = summary.chars().take(TRIMMED_SUMMARY_CHARS).collect();
-            o.insert("summary".into(), serde_json::json!(format!("{short}…")));
-            trimmed = true;
-        }
-        if trimmed {
-            o.insert("trimmed".into(), serde_json::json!(true));
-            o.insert("session".into(), serde_json::json!(session));
-        }
-    }
 }
 
 const HEARTBEAT: Duration = Duration::from_secs(5);
@@ -976,62 +935,6 @@ pub(crate) async fn terminal_pump_loop(daemon: Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn finished_lanes_are_trimmed_and_running_ones_kept_whole() {
-        let mut lanes = vec![
-            serde_json::json!({"id": "lane-1", "status": "completed", "report": "r", "handoff": "h", "summary": "x".repeat(700), "transcript": "t"}),
-            serde_json::json!({"id": "lane-2", "status": "running", "handoff": "h", "activity_log": [1]}),
-        ];
-        trim_finished_lanes(&mut lanes, "s1");
-        assert!(lanes[0].get("report").is_none() && lanes[0].get("handoff").is_none());
-        assert_eq!(lanes[0]["trimmed"], true);
-        assert_eq!(lanes[0]["session"], "s1");
-        assert_eq!(lanes[0]["transcript"], "t");
-        assert_eq!(
-            lanes[0]["summary"].as_str().unwrap().chars().count(),
-            TRIMMED_SUMMARY_CHARS + 1
-        );
-        assert_eq!(lanes[1]["handoff"], "h");
-        assert!(lanes[1].get("trimmed").is_none());
-    }
-
-    #[test]
-    fn attach_recent_survives_trim_finished_lanes() {
-        let mut record = crate::lanes::LaneRecord {
-            id: "lane-1".into(),
-            title: "audit".into(),
-            status: crate::lanes::LaneStatus::Completed,
-            handoff: Some("h".into()),
-            summary: Some("done".into()),
-            report: Some("r".into()),
-            structured: None,
-            error: None,
-            started_at: "2025-01-01T00:00:00Z".into(),
-            finished_at: Some("2025-01-01T00:01:00Z".into()),
-            activity: Some("last".into()),
-            activity_kind: None,
-            activity_at: None,
-            activity_log: vec![crate::lanes::LaneActivity {
-                at: "2025-01-01T00:00:10Z".into(),
-                kind: "tool_call".into(),
-                text: "Read src/lanes.rs".into(),
-            }],
-            read_only: true,
-            agent: None,
-            profile: None,
-            transcript: None,
-            paths: Vec::new(),
-        };
-        let mut v = serde_json::to_value(&record).unwrap();
-        crate::lanes::attach_recent(&mut v, &record);
-        let mut lanes = vec![v];
-        trim_finished_lanes(&mut lanes, "s1");
-        assert!(lanes[0].get("activity_log").is_none());
-        assert_eq!(lanes[0]["recent"], serde_json::json!(["Read src/lanes.rs"]));
-        record.status = crate::lanes::LaneStatus::Running;
-        assert_eq!(record.recent_lines(), vec!["Read src/lanes.rs".to_string()]);
-    }
 
     fn signals_for(
         stream: &crate::llm::StreamHandle,
