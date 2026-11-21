@@ -29,6 +29,35 @@ pub fn skills_root() -> PathBuf {
     home.join(".snippet").join("skills")
 }
 
+const BUILTIN_SKILLS: &[(&str, &str)] = &[(
+    "snippet-design",
+    include_str!("../skills/snippet-design/SKILL.md"),
+)];
+
+fn builtin_root() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".snippet").join("builtin-skills")
+}
+
+fn install_builtins() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let root = builtin_root();
+        for (name, body) in BUILTIN_SKILLS {
+            let path = root.join(name).join("SKILL.md");
+            if std::fs::read_to_string(&path).ok().as_deref() == Some(*body) {
+                continue;
+            }
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&path, body);
+        }
+    });
+}
+
 /// All roots scanned for skills, priority order — earlier wins on a name clash.
 /// Claude Code's and Codex's global skill folders use the same SKILL.md
 /// standard, so anything installed for them just works here.
@@ -48,6 +77,7 @@ pub fn skills_roots() -> Vec<PathBuf> {
     }
     roots.push(home.join(".claude").join("skills"));
     roots.push(home.join(".codex").join("skills"));
+    roots.push(builtin_root());
     roots
 }
 
@@ -55,6 +85,7 @@ pub fn skills_roots() -> Vec<PathBuf> {
 pub fn discover() -> Vec<Skill> {
     type Stamp = Vec<(PathBuf, Option<std::time::SystemTime>, u64)>;
     static CACHE: std::sync::Mutex<Option<(Stamp, Vec<Skill>)>> = std::sync::Mutex::new(None);
+    install_builtins();
     let stamp = skills_stamp();
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((cached, skills)) = cache.as_ref()

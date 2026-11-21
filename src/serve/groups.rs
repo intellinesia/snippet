@@ -182,7 +182,7 @@ fn group_added_envelope(group: &crate::coordination::GroupSummary) -> String {
         .attr("lead", group.lead.as_deref().unwrap_or("none"))
         .child(
             "note",
-            "you were added to this group chat. Nothing to do now: do not post and write nothing, just end your turn. Posts reach you as <group_message>; answer with message.group (op: post).",
+            "you were added to this group chat. Nothing is asked of you now and no post is expected. Posts reach you as <group_message>; message.group (op: post) answers.",
         )
         .render()
 }
@@ -465,26 +465,13 @@ fn group_message_envelope(
         None => envelope,
     };
     let note = if wake == GroupWakeKind::Peer {
-        "another member just posted this. You are not asked to answer. If it covers \
-         what you were doing or about to say, stop and end your turn quietly. If you \
-         are still working on something it does not cover, you may post one line saying \
-         what (a heartbeat), or add what only you know. Otherwise end your turn without \
-         writing anything."
+        "another member just posted this. You are not asked to answer. Plain text is visible only in this session; message.group (op: post) reaches the group."
     } else if !replies.is_empty() {
-        "this post has already been answered (replies below). Read them; post only if \
-         you add something they do not cover, and do not redo work someone has taken. \
-         Otherwise end your turn without writing anything, not even that you are staying quiet."
+        "this post has already been answered (replies below). message.group (op: post) reaches the group; plain text is visible only in this session."
     } else if reply_expected {
-        "this post is waiting on the group; answer in the thread with \
-         message.group (op: post), setting in_reply_to to the event you answer. \
-         One reply per agent per post. Before doing work from it, say in one line \
-         what you are taking; hand the parts another member is better placed for \
-         to them by naming them, instead of doing everything yourself."
+        "this post is waiting on the group. message.group (op: post) with in_reply_to set to the event answers it; plain text is visible only in this session. Other members may be answering the same post."
     } else {
-        "join only if you add something: an answer, a relevant view, a correction. \
-         If someone has already answered or said they are taking this, do not redo it; \
-         take only what is yours and say so in one line first. \
-         Otherwise end your turn without writing anything, not even that you are staying quiet."
+        "a member posted this to the group. message.group (op: post) reaches the group; plain text is visible only in this session. Other members may be answering the same post."
     };
     envelope = envelope.child(
         "note",
@@ -526,7 +513,7 @@ fn group_unanswered_envelope(
         .attr("waiting_minutes", waiting_minutes.to_string())
         .child(
             "note",
-            "nobody in the group has answered this post and you lead the group. Answer it with message.group (op: post, in_reply_to this event), or name in one line the member who should and mention them.",
+            "nobody in the group has answered this post and you lead the group. message.group (op: post, in_reply_to this event) answers it.",
         )
         .child("body", body)
         .render()
@@ -755,7 +742,7 @@ mod tests {
         };
         let e = super::group_added_envelope(&group);
         assert!(e.starts_with("<group_added thread_id=\"group:1\" title=\"jh\" members=\"x-scout, snippet\" lead=\"snippet\">"));
-        assert!(e.contains("do not post"));
+        assert!(e.contains("no post is expected"));
         assert!(e.ends_with("</group_added>"));
     }
 
@@ -938,7 +925,7 @@ mod tests {
         assert!(env.contains("- snippet: I'll take the scripts"));
         let peer = group_message_envelope(&reply, "t", GroupWakeKind::Peer, &[], &[], &[], None);
         assert!(peer.contains("reply_expected=\"false\""));
-        assert!(peer.contains("heartbeat"));
+        assert!(peer.contains("not asked to answer"));
     }
 
     #[test]
@@ -985,7 +972,7 @@ mod tests {
             "mentions=\"b\"",
             "in_reply_to=\"p0\"",
             "reply_expected=\"true\"",
-            "say in one line what you are taking",
+            "waiting on the group",
             "<body>hi</body>",
         ] {
             assert!(expected.contains(field), "missing {field} in {expected}");
@@ -1000,7 +987,7 @@ mod tests {
             None,
         );
         assert!(!deferred.contains("members:"));
-        assert!(deferred.contains("do not redo it"));
+        assert!(deferred.contains("a member posted this to the group"));
         assert!(deferred.contains("reply_expected=\"false\""));
         assert!(!deferred.contains("lead:"));
         let led = group_message_envelope(
@@ -1023,11 +1010,6 @@ mod tests {
             Some(("b", false)),
         );
         assert!(other.contains("<lead agent=\"b\">owns this round's follow-ups"));
-        assert!(
-            deferred.contains(
-                "join only if you add something: an answer, a relevant view, a correction."
-            )
-        );
     }
 
     /// The wake carries the thread's recent history like a DM wake does, with

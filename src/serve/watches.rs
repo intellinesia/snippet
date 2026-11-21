@@ -184,7 +184,7 @@ pub fn watch_envelope(watch: &cw::Watch, event: &str, body: &[String], held: usi
         .attr("lines", body.len().to_string())
         .attr("held", if held > 0 { held.to_string() } else { String::new() })
         .child("body", text)
-        .child("note", format!("your own watch fired. Act on what matters (answer, file a task, tell the user per your reach policy); otherwise end quietly. If it misfires, fix it with {watch_tool} (op: update) or remove it."))
+        .child("note", format!("your own watch fired. {watch_tool} (op: update) changes it or removes it."))
         .render()
 }
 

@@ -49,11 +49,11 @@ pub(super) fn build_reminder(
     if !goal_active {
         if n + 5 == TURN_BUDGET {
             signals.push(format!(
-                "This request has taken {n} steps. Start converging on the result."
+                "This request is at step {n} of a {TURN_BUDGET}-step budget."
             ));
         } else if n >= TURN_BUDGET && (n - TURN_BUDGET) % 10 == 0 {
             signals.push(format!(
-                "This request has taken {n} steps. Wrap up: deliver your best current result and say what is left."
+                "This request is at step {n}, past the {TURN_BUDGET}-step budget."
             ));
         }
     }
@@ -65,7 +65,7 @@ pub(super) fn build_reminder(
     let lane_running = state.lanes.iter().any(|l| l.status == LaneStatus::Running);
     if used >= 60 && open_steps >= 2 && !lane_running && !vars.capacity_nudged {
         signals.push(format!(
-            "Context is {used}% used with {open_steps} plan steps left and no lane running. A step you can brief in a paragraph with file references is lane work (delegate.run); keep your own context for judgement."
+            "Context is {used}% used with {open_steps} plan steps open and no lane running."
         ));
         vars.capacity_nudged = true;
     }
@@ -152,7 +152,7 @@ fn sections(
             String::new()
         } else {
             format!(
-                "Heuristic flags on the user's latest message (weigh them, don't quote them): {}",
+                "Heuristic flags on the user's latest message: {}",
                 safety.join("; ")
             )
         },
@@ -181,7 +181,7 @@ fn sections(
         String::new()
     } else {
         let mut text = String::from(
-            "Active file watches (end your turn to wait; a matching line wakes you; remove each once it has served its purpose):",
+            "Active file watches (a matching line wakes you):",
         );
         for w in &state.watches {
             text.push_str(&format!(
@@ -204,7 +204,7 @@ pub(super) fn render_plan(plan: &[PlanStep]) -> String {
     if plan.is_empty() {
         return String::new();
     }
-    let mut text = String::from("Your current plan (keep it current with update_plan):");
+    let mut text = String::from("Your current plan (update_plan changes it):");
     for step in plan {
         let mark = match step.status {
             PlanStatus::Done => "[x]",
@@ -236,7 +236,7 @@ fn render_lanes(state: &HarnessState) -> String {
         tags
     };
     let mut text = format!(
-        "Delegated work still running ({}); end your turn to wait, each report wakes you:",
+        "Delegated work still running ({}); each report wakes you:",
         running.len()
     );
     for l in &running {
@@ -475,7 +475,7 @@ mod tests {
             .expect("first build emits reminder");
         assert!(
             first.contains(
-                "Context is 65% used with 2 plan steps left and no lane running. A step you can brief in a paragraph with file references is lane work (delegate.run); keep your own context for judgement."
+                "Context is 65% used with 2 plan steps open and no lane running."
             ),
             "got: {first}"
         );

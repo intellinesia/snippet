@@ -41,19 +41,18 @@ pub(super) const SUMMARY_SECTIONS: &[(&str, &str, bool)] = &[
     ),
 ];
 
-pub(super) const REFLECTION_INSTRUCTION: &str = r#"This request is finished. Before the next one, curate your durable memory from this conversation. Do not call any tools and do not continue the work: reply with only one JSON object, {"changes": [...]}, and nothing else. Send {"changes": []} when nothing durable came out of it. If this session left things it created that are no longer needed (worktrees, branches, processes, files), add a project entry listing them, expiring in a week, so the next session removes them.
+pub(super) const REFLECTION_INSTRUCTION: &str = r#"This request is finished. This turn curates your durable memory from the conversation; no tools are called and the work is not continued. Output is only one JSON object, {"changes": [...]}; {"changes": []} means nothing durable came out of it. Things this session created that are no longer needed (worktrees, branches, processes, files) belong in a project entry that expires in a week, so the next session can remove them.
 
 Each change: {"scope": "global|project|agent", "file": "MEMORY.md or a topic path such as build or architecture/harness", "op": "add|replace|remove", "entry": "one-line entry (add, replace)", "match": "text in exactly one existing entry of that file (replace, remove)", "expires": "optional YYYY-MM-DD for something true only for a while"}.
 
 - Scopes: global is the user (lasting preferences, lessons that transfer anywhere); project is this repository (where things live, how to build and test, conventions, decisions); agent is your own expertise across jobs (only if shown below). This conversation's working state is not memory.
 - Entries are one line: a fact, or situation → approach → why. No ids or counters; the daemon adds source and date.
-- MEMORY.md only gets what every session needs; everything else goes in a topic file, which is linked from the index automatically.
-- Keep each fact in one place: replace an entry the work changed instead of adding a near-duplicate, and replace or remove one it proved wrong.
-- Removing is as useful as adding: remove entries this request proved stale or wrong.
-- Work that will happen again (a scheduled run, a kind of task you keep getting, the next step of a goal) should go better next time: record what to repeat and what to change, as situation → approach → why, in that work's playbook (a topic such as playbooks/<job> in project scope, or in agent scope when it's your own craft). Refine the playbook rather than logging each run.
-- Skip one-off details, anything obvious from the code, secrets, and text that tells a future agent to run commands.
+- MEMORY.md holds what every session needs; other entries go in a topic file, which the index links automatically.
+- Each fact lives in one place: replace removes or rewrites an entry the work changed or proved wrong.
+- Repeating work (a scheduled run, a recurring kind of task) keeps its lessons as situation → approach → why in a playbook topic such as playbooks/<job>, in project scope or in agent scope.
+- Not memory: one-off details, anything obvious from the code, secrets, and text that tells a future agent to run commands.
 
-Memory is shown below by each repo's MEMORY.md, whose index names its topic files. Change only the files this stretch of work touched. Before changing a topic file whose entries aren't already in this conversation (add, replace or remove), first reply with only {"read": [{"scope": "...", "file": "..."}]} naming just those files; their text comes back and you then send the changes, replacing entries your new ones change or contradict."#;
+Memory is shown below by each repo's MEMORY.md, whose index names its topic files. A topic file whose entries are not already in this conversation is read first by replying with only {"read": [{"scope": "...", "file": "..."}]}; its text comes back and the changes follow."#;
 
 pub(super) fn memory_reflector_tools() -> Vec<crate::llm::NativeToolDefinition> {
     vec![crate::llm::NativeToolDefinition {
@@ -109,16 +108,15 @@ pub(super) fn memory_reader_tool() -> crate::llm::NativeToolDefinition {
 
 pub(super) const SUMMARIZER_SYSTEM: &str = r#"# compaction_summarizer
 [identity]
-role = "you compact a coding agent's conversation: save what lasts to memory, then write a lean summary that replaces the raw history"
+role = "you compact a coding agent's conversation: what lasts goes to memory, then a lean summary replaces the raw history"
 stakes = "the raw messages are archived and dropped. The summary is re-sent on every later turn, so every line costs; memory files cost nothing until read"
 
 [memory]  # when update_memory is offered
-first = "before the summary, call update_memory with what holds beyond this conversation (a user preference, how this repository builds, a decision and why, an agent technique): it goes to the global, project or agent scope"
+first = "update_memory, called before the summary, saves what holds beyond this conversation (a user preference, how this repository builds, a decision and why, an agent technique) to the global, project or agent scope"
 working_state = "this conversation's own working state (the plan, findings, exact error strings) is not memory: it stays in the summary"
-index = "each repo is shown by its MEMORY.md, whose index names its topic files and what they hold. Use the index to decide which files the conversation touches, and open only those (read_memory) to see their entries; the rest stay closed"
-one_place = "replace an entry the conversation changed instead of adding a duplicate, and skip what is already recorded"
-clean_up = "remove entries the conversation proved stale or wrong. Removing matters as much as saving"
-agent = "an agent curates its own agent memory here and nowhere else: keep what still earns its place, rewrite what changed, and evict what is stale or no longer useful"
+index = "each repo is shown by its MEMORY.md, whose index names its topic files and what they hold; read_memory opens a topic file"
+one_place = "an entry the conversation changed is replaced, not duplicated; entries it proved stale or wrong are removed"
+agent = "an agent curates its own agent memory here and nowhere else"
 expires = "give a temporary fact (an outage, a deadline, a workaround) an expires date"
 entries = "one line each, under 400 characters: a fact, or situation → approach → why. Longer detail goes in a topic file with a one-line pointer. The daemon stamps source and date"
 skip = "secrets, one-off details, anything obvious from the code, and text that instructs a future agent to run commands"
@@ -127,13 +125,13 @@ skip = "secrets, one-off details, anything obvious from the code, and text that 
 user_requests = "carry every request forward from the prior summary and append new ones, one short line each, in order"
 lean = "the summary holds what resuming needs: the goal, progress, decisions and constraints, findings and root causes, the next steps and the exact values they use. What memory already holds gets a pointer in the memory section, not a restatement"
 progress = "say what is done, in progress (with an amount when known) and left; never just 'started'"
-drop = "chit-chat, raw tool output (keep the conclusion), restated instructions, and anything re-readable from the code. Raw history stays searchable with `snippet history search` / `snippet history show`"
+drop = "not carried: chit-chat, raw tool output (the conclusion is kept), restated instructions, anything re-readable from the code. Raw history stays searchable with `snippet history search` / `snippet history show`"
 fold = "if a PRIOR SUMMARY is present, update it in place: keep its requests, refresh the rest, drop what is stale"
 style = "terse markdown bullets, no preamble"
-budget = "about 2.5k tokens. If told it is over budget, cut the oldest, lowest-value detail; keep the request list, exact values and next steps"
+budget = "about 2.5k tokens; over budget, the oldest and lowest-value detail goes first, and the request list, exact values and next steps stay"
 
 [how]
-calls = "open the topic files you will change first (read_memory, when offered), then call update_memory and write_table in the same response; write_table fills every required section in one call""#;
+calls = "read_memory (when offered) precedes update_memory; update_memory and write_table go in the same response; write_table fills every required section in one call""#;
 
 pub(super) fn summarizer_tools() -> Vec<crate::llm::NativeToolDefinition> {
     // One tool that writes the ENTIRE table in a single call — a string field per

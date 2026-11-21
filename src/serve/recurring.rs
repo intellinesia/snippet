@@ -271,7 +271,7 @@ async fn report_wake(
                 .attr("session_id", &job.session_id)
                 .attr("status", status.to_string())
                 .child("summary", &summary)
-                .child("instructions", "A scheduled wake finished. Pass on what's worth the user's attention or act on it; otherwise no reply.")
+                .child("instructions", "A scheduled wake finished. No reply is expected.")
                 .render();
             if super::mission_control::open_mission_control(daemon, None)
                 .await
@@ -438,7 +438,7 @@ async fn report_run_to_mission_control(
         .attr("session_id", session_id)
         .attr("status", status.to_string())
         .child("summary", summary.trim())
-        .child("instructions", "Workflow W6 · recurring run report: pass on what's worth the user's attention, note it in your brief if it changes anything, then stop. Don't read the session's files or logs; this report is the outcome.")
+        .child("instructions", "Recurring run report. The report is the run's outcome; no reply is expected.")
         .render();
     if super::mission_control::open_mission_control(daemon, None)
         .await

@@ -115,7 +115,7 @@ impl Tool for ReadFile {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "read_file".into(),
-            description: "Read a file, or list a folder, without changing anything: an artifact or report a worker cites, a config or identity file, or a large tool output that was saved to a file. Returns numbered lines; use offset and limit for long files. For anything beyond a quick check, ask the session that owns the work.".into(),
+            description: "Read a file, or list a folder, without changing anything: an artifact or report a worker cites, a config or identity file, or a large tool output that was saved to a file. Returns numbered lines; use offset and limit for long files.".into(),
             input_schema: schema(json!({
                 "path": {"type": "string", "description": "Absolute path, or relative to your own folder."},
                 "offset": {"type": "integer", "description": "First line to read, 1-based. Default 1."},
@@ -209,7 +209,7 @@ impl Tool for AnswerWorker {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "answer_worker".into(),
-            description: "Answer the question a worker session is paused on, as if the user answered it there: for a <worker_question> the user's request, the task or your brief already settles. A question that only the user can settle (lost data, production, secrets, money, history, scope beyond the request) goes to them first. Name the choice plainly, with a sentence of why when it helps.".into(),
+            description: "Answer the question a worker session is paused on, as if the user answered it there. The worker resumes with the answer.".into(),
             input_schema: schema(json!({
                 "session_id": {"type": "string", "description": "The waiting session's id, from the <worker_question>."},
                 "answer": {"type": "string", "description": "The answer, e.g. \"Blue — the user wants colour files blue.\""}
@@ -259,7 +259,7 @@ impl Tool for UpdateBrief {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "update_brief".into(),
-            description: "Read or rewrite your standing brief: the durable memory you keep across wakes and long conversations. Keep it current and compact (markdown): the user's goals and priorities, how they like to work, decisions they made, open threads, and what you are watching for. Omit content to read it; pass content to replace it whole.".into(),
+            description: "Read or rewrite your standing brief: markdown memory that persists across wakes and long conversations. Omit content to read it; pass content to replace it whole.".into(),
             input_schema: schema(json!({"content": {"type": "string", "description": "The full new brief. Omit to read the current one."}}), &[]),
         }
     }
@@ -299,7 +299,7 @@ impl Tool for ScheduleFollowup {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "schedule_wake".into(),
-            description: "Be woken after a delay: pass in_seconds (5 to 3600, e.g. 10s to quietly check whether the user continued a cut-off or out-of-context spoken turn without disturbing them) or in_minutes (1 to 10080, for a deploy window, a check you promised, or the morning after quiet hours). When in_seconds is used (or unless_user_speaks is true), the wake fires with a snapshot of recent microphone lines even if automated wakes are off, and cancels itself automatically if the user speaks to you first.".into(),
+            description: "Be woken after a delay: in_seconds (5 to 3600) or in_minutes (1 to 10080). When in_seconds is used (or unless_user_speaks is true), the wake fires with a snapshot of recent microphone lines even if automated wakes are off, and cancels itself if the user speaks to you first.".into(),
             input_schema: schema(json!({
                 "in_seconds": {"type": "integer", "description": "How many seconds from now (5 to 3600) for a quick ambient or follow-up check."},
                 "in_minutes": {"type": "integer", "description": "How many minutes from now (1 to 10080)."},
@@ -503,7 +503,7 @@ impl Tool for RecordingPolicyTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "recording_policy".into(),
-            description: "Manage voice capture rules. Use `set_rule` with `note`/`include` for context notes, `auto` to also record, `ask` to query, or `never`/`ignore` to suppress both unless a wake word is spoken. Match `keywords`, `about`, `weekdays` (0=Sunday) and `from_hhmm`/`to_hhmm`; `address`/`for_assistant` targets speech to you, `meeting` marks others talking. `minutes` or `until` makes a rule temporary; otherwise it is standing. `expect` and `block` set windows up to 12 hours; `snooze` pauses recording and notes for 1–720 minutes. Both end active recording. `start` records now, including recent speech, and overrides refusal; use it when the user asks to record. `expect` is for later. `stop` saves the recording; `get` shows active_call. Every action except `ask` requires a `basis`.".into(),
+            description: "Manage voice capture rules. `set_rule` modes: `note`/`include` keep context notes, `auto` also records, `ask` queries, `never`/`ignore` suppress both unless a wake word is spoken, `address`/`for_assistant` marks speech to you, `meeting` marks others talking. Rules match `keywords`, `about`, `weekdays` (0=Sunday) and `from_hhmm`/`to_hhmm`; `minutes` or `until` makes a rule temporary, otherwise it is standing. `expect` and `block` set windows up to 12 hours; `snooze` pauses recording and notes for 1 to 720 minutes; both end active recording. `start` records now, including recent speech, and overrides refusal. `stop` saves the recording; `get` shows active_call. Every action except `ask` requires a `basis`.".into(),
             input_schema: schema(json!({
                 "action": {"type": "string", "enum": ["get", "start", "stop", "expect", "block", "snooze", "set_rule", "remove_rule", "remove_window"]},
                 "from": {"type": "string", "description": "expect, block"},
@@ -723,7 +723,7 @@ impl Tool for AmbientTune {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "ambient_tune".into(),
-            description: "Tune how the always-on microphone treats speech. `set` a `profile` (`alone`: normal; `with_people`: only the user's voice counts and you stay quiet unless addressed; `meeting`: nearly silent, notes everything; `demo`: forward and quick; `driving`: short, hands-free) or individual knobs, for `minutes`/`until` or standing. Say what you set in one line. Use it when the user says who is around or how they want you to behave, or when you see repeated misfires (lines not meant for you answered, or lines for you missed). `get` shows the effective values; `clear` returns to `alone`.".into(),
+            description: "Tune how the always-on microphone treats speech. `set` a `profile` (`alone`: normal; `with_people`: only the user's voice counts and you stay quiet unless addressed; `meeting`: nearly silent, notes everything; `demo`: forward and quick; `driving`: short, hands-free) or individual knobs, for `minutes`/`until` or standing. `get` shows the effective values; `clear` returns to `alone`.".into(),
             input_schema: schema(json!({
                 "action": {"type": "string", "enum": ["get", "set", "clear"]},
                 "profile": {"type": "string", "enum": ["alone", "with_people", "meeting", "demo", "driving", "custom"]},
@@ -873,7 +873,7 @@ impl Tool for AmbientMode {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "ambient_mode".into(),
-            description: "Switch ambient listening between passive and active. Passive: the microphone takes notes and passes along what is addressed to you as chat messages; calling `speak` switches to active on its own. Active: a spoken back and forth with the user, and `speak` works. Call it with active when a conversation would help (the user asks something conversational, their hands are busy, a quick exchange of questions) and whenever you have an update worth saying aloud (a task finished, failed or is blocked, an awaited answer, a decision only they can make), then call speak; call it with passive when speaking is no longer needed, for example the user is typing, or asks you to stop listening or speaking. It never changes unless you call it; the voice classifier only advises.".into(),
+            description: "Switch ambient listening between passive and active. Passive: the microphone takes notes and passes along what is addressed to you as chat messages; calling `speak` switches to active on its own. Active: a spoken back and forth with the user, and `speak` works. The mode changes only when this tool is called; the voice classifier only advises.".into(),
             input_schema: schema(json!({
                 "mode": {"type": "string", "enum": ["passive", "active"], "description": "The mode to switch to."},
                 "reason": {"type": "string", "description": "One short phrase the user may see, for example 'quick back and forth' or 'you are typing'."}
@@ -904,7 +904,7 @@ impl Tool for WaitForUser {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "wait_for_user".into(),
-            description: "In a live spoken conversation, pause for a beat when the user's line trails off or sounds unfinished. It returns by itself: with their next turn as soon as they speak (the wait stretches while they are still talking, up to 4 seconds, and you get the whole turn), or, if they stay silent, reporting that they did not continue, which hands the turn back to you to answer now. Call it once per line, before you speak.".into(),
+            description: "In a live spoken conversation, pause for a beat after a line that trails off. It returns with the user's next turn as soon as they speak (the wait stretches while they are still talking, up to 4 seconds, and the whole turn is returned), or, if they stay silent, reports that they did not continue and the turn is yours.".into(),
             input_schema: schema(json!({
                 "max_seconds": {"type": "number", "description": "How long to wait, 0.3 to 4. Default 1.5."},
                 "reason": {"type": "string", "description": "Why you are waiting, in a short phrase, for example 'trailed off after and also'."}
@@ -977,7 +977,7 @@ impl Tool for AmbientExpect {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "ambient_expect".into(),
-            description: "Tell the voice classifier what kind of spoken message you expect next, so a short reply such as 'yes' or 'the second one' is recognised as meant for you. Use it after asking the user something in the chat that they may answer aloud, or before waiting on a dictation. It lapses after the given minutes or at the next thing the user says. `speak` can set the same hint with its `expecting` argument.".into(),
+            description: "Tell the voice classifier what kind of spoken message is expected next, so a short reply such as 'yes' or 'the second one' is recognised as meant for you. It lapses after the given minutes or at the next thing the user says. `speak` sets the same hint with its `expecting` argument.".into(),
             input_schema: schema(json!({
                 "kind": {"type": "string", "enum": ["answer", "confirmation", "choice", "dictation"], "description": "What you expect."},
                 "about": {"type": "string", "description": "What it is about, in a short phrase, for example 'whether to delete the old branch'."},
@@ -1002,13 +1002,13 @@ impl Tool for Speak {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "speak".into(),
-            description: "Say something aloud to the user through the phone or computer that is listening. It returns at once and the speech plays as it is produced, so you can keep working. Use it in active mode to answer an <ambient_turn>: one or two short conversational sentences per call, no markdown, no lists, nothing the user would need to read. For a longer answer make several calls in order, each picking up where the last left off, so the user can cut in between. Speaking is never the action itself: when you say you will do something, make those tool calls in the same response, right after the speak. Set expecting only on a line that asks a question aloud, never on an acknowledgement or status line: a spoken question with expecting set to answer, confirmation, choice or dictation ends your turn when it is your last call. It fails when nobody is listening, on a call, or when people nearby are talking to each other. In passive mode it switches to active by itself, so anything meant for the user is spoken: call it, and keep detail for the chat.".into(),
+            description: "Say something aloud to the user through the phone or computer that is listening. The text is rendered by text-to-speech and plays on the user's device as it is produced; the call returns at once. Text written to chat is not heard aloud. One or two short sentences render best, several calls play in order and the user can cut in between. URLs, code, paths, lists, raw digits and emoji read poorly aloud; numbers and times are best written in words. Secrets are never to be spoken. `expecting` (answer, confirmation, choice or dictation) and `about` tell the ambient listener a reply is due; a spoken question with `expecting` set ends your turn when it is your last call. It fails when nobody is listening, while the user is on a call (`user_on_call`), during quiet hours and when people nearby are talking to each other. In passive mode it switches to active by itself.".into(),
             input_schema: schema(json!({
                 "text": {"type": "string", "description": "What to say, in plain spoken sentences."},
                 "expecting": {"type": "string", "enum": ["answer", "confirmation", "choice", "dictation", "none"], "description": "Set this when you are asking something: it tells the voice classifier a short reply is meant for you."},
                 "about": {"type": "string", "description": "What the expected reply is about, in a short phrase."},
                 "mode": {"type": "string", "enum": ["append", "replace"], "description": "append (default) queues after what is still being said; replace stops anything unplayed first, for when the user said something that makes the rest of your queued speech wrong or stale."},
-                "urgent": {"type": "boolean", "description": "Speak through a quiet profile; only when waiting would cause harm."}
+                "urgent": {"type": "boolean", "description": "Speak through a quiet profile."}
             }), &["text"]),
         }
     }
@@ -1059,7 +1059,7 @@ impl Tool for PingUser {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "ping_user".into(),
-            description: "Send the user a phone notification. Ping for a decision only they can make, finished work they asked for, a blocker or risk, or feedback you need. Routine progress stays in your reply; related news goes out as one ping. During quiet hours a non-urgent ping is held until morning; mark kind urgent only when waiting would cause real harm. Then also say it in your reply, which is what they read when they open the chat.".into(),
+            description: "Send the user a phone notification. During quiet hours a non-urgent ping is held until morning; kind urgent is delivered. The notification is separate from your reply, which is what the user reads when they open the chat.".into(),
             input_schema: schema(json!({
                 "title": {"type": "string", "description": "Short headline the notification shows, under 60 characters."},
                 "message": {"type": "string", "description": "One or two sentences: what happened and what you need from them, if anything."},
@@ -1226,7 +1226,7 @@ impl Tool for ListSessions {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "list_sessions".into(),
-            description: "Catalog of durable project sessions on this device: id, title, workspace, status, last activity and the profile a session is pinned to (none means the active default), to find the session that owns a piece of work or one already on the right model. Also idle_secs, cache (warm: idle under an hour; cold: prompt cache purged), settled (with settled_at) and keep_awake.".into(),
+            description: "Catalog of durable project sessions on this device: id, title, workspace, status, last activity and the profile a session is pinned to (none means the active default). Also idle_secs, cache (warm: idle under an hour; cold: prompt cache purged), settled (with settled_at) and keep_awake.".into(),
             input_schema: schema(json!({}), &[]),        }
     }
     async fn execute(
@@ -1635,7 +1635,7 @@ impl Tool for CreateMissionSession {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "create_mission_session".into(),
-            description: "Open a durable project chat in a folder: when no session has worked on the scope, or when work needs a different model than the session that has (pass `profile`), since a session moved to another model loses its prompt cache. `workspace` is required: `worktree` gives the session its own git worktree and branch (isolated from other sessions' edits; only in a git repo), `folder` works directly in the folder. Agents are built with register_agent, not here.".into(),
+            description: "Open a durable project chat in a folder; `profile` sets the model (a session moved to another model loses its prompt cache). `workspace` is required: `worktree` gives the session its own git worktree and branch (isolated from other sessions' edits; only in a git repo), `folder` works directly in the folder. Agents are built with register_agent, not here.".into(),
             input_schema: schema(
                 json!({
                     "folder": {"type": "string"},
@@ -1797,7 +1797,7 @@ pub struct CreateMissionTask;
 #[async_trait]
 impl Tool for CreateMissionTask {
     fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition { name: "create_mission_task".into(), description: "Create a task for project work requested by the user or an agent. File dependent steps together and link prerequisites with `blocked_by`. The description is the worker's full brief and scope. Choose `resume` if the target has context, otherwise `fresh`. Use `agent_id` for a matching specialist; use `crew` to seat reviewers or advisors before work starts.".into(), input_schema: schema(json!({"title":{"type":"string"}, "description":{"type":"string"}, "session":{"type":"string","description":"Session id, title fragment or workspace path; `latest` selects the most recent match."}, "supersedes":{"type":"string","description":"optional; id of the cancelled task this one replaces"}, "handoff_mode":{"type":"string","enum":["resume","fresh"]}, "owned_paths":{"type":"array","items":{"type":"string"}}, "agent_id":{"type":"string","description":"Specialist agent id from snippet tool list_coordination_agents."}, "crew":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"role":{"type":"string","description":"reviewer (default), advisor or tester"}},"required":["agent_id"]},"description":"Agents seated beside the worker; they wait until called."}, "profile":{"type":"string","description":"Profile from snippet tool list_profiles. Overrides the session model and restarts it, losing its prompt cache; use only to rescue a rate-limited session."}, "reply_to":{"type":"string","description":"Exact `reply_to` value from the request message, such as `session:<id>` or `agent:<id>`."}, "blocked_by":{"type":"array","items":{"type":"string"},"description":"Task ids that must finish first."}, "read_only":{"type":"boolean","description":"investigation that changes nothing"}, "verify_mode":{"type":"string","enum":["self","reviewer","mission_control","user"],"description":"Who confirms completion. `self` skips review; `reviewer` uses a read-only agent; `mission_control` or `user` leaves the verdict with you. Defaults to reviewer (self when read_only)."}, "reviewer":{"type":"string","description":"Agent id for the reviewer; defaults to the worker in a fresh lane."}, "revises_task_id":{"type":"string","description":"optional; the finished task this one revises"}, "audience":{"type":"string","description":"Intended audience for content work."}, "definition_of_good":{"type":"string","description":"Quality bar for content work."}, "goal":{"type":"string","description":"Open goal id this task serves."}, "expected_minutes":{"type":"integer","description":"Expected duration in minutes; flagged stalled after twice this (minimum 20). Defaults by verify_mode."}, "report_to":{"type":"string","description":"`group:<id>`/`direct:` chat"}}), &["title","description","session"]) }
+        NativeToolDefinition { name: "create_mission_task".into(), description: "Create a task for project work requested by the user or an agent. Prerequisites link with `blocked_by`. The description is the worker's full brief and scope. `resume` continues the target session's context, `fresh` starts clean; `agent_id` names a specialist; `crew` seats reviewers or advisors before work starts.".into(), input_schema: schema(json!({"title":{"type":"string"}, "description":{"type":"string"}, "session":{"type":"string","description":"Session id, title fragment or workspace path; `latest` selects the most recent match."}, "supersedes":{"type":"string","description":"optional; id of the cancelled task this one replaces"}, "handoff_mode":{"type":"string","enum":["resume","fresh"]}, "owned_paths":{"type":"array","items":{"type":"string"}}, "agent_id":{"type":"string","description":"Specialist agent id from snippet tool list_coordination_agents."}, "crew":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"role":{"type":"string","description":"reviewer (default), advisor or tester"}},"required":["agent_id"]},"description":"Agents seated beside the worker; they wait until called."}, "profile":{"type":"string","description":"Profile from snippet tool list_profiles. Overrides the session model and restarts it, losing its prompt cache; use only to rescue a rate-limited session."}, "reply_to":{"type":"string","description":"Exact `reply_to` value from the request message, such as `session:<id>` or `agent:<id>`."}, "blocked_by":{"type":"array","items":{"type":"string"},"description":"Task ids that must finish first."}, "read_only":{"type":"boolean","description":"investigation that changes nothing"}, "verify_mode":{"type":"string","enum":["self","reviewer","mission_control","user"],"description":"Who confirms completion. `self` skips review; `reviewer` uses a read-only agent; `mission_control` or `user` leaves the verdict with you. Defaults to reviewer (self when read_only)."}, "reviewer":{"type":"string","description":"Agent id for the reviewer; defaults to the worker in a fresh lane."}, "revises_task_id":{"type":"string","description":"optional; the finished task this one revises"}, "audience":{"type":"string","description":"Intended audience for content work."}, "definition_of_good":{"type":"string","description":"Quality bar for content work."}, "goal":{"type":"string","description":"Open goal id this task serves."}, "expected_minutes":{"type":"integer","description":"Expected duration in minutes; flagged stalled after twice this (minimum 20). Defaults by verify_mode."}, "report_to":{"type":"string","description":"`group:<id>`/`direct:` chat"}}), &["title","description","session"]) }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let mut args: CreateTaskArgs = serde_json::from_value(arguments)?;
@@ -2495,7 +2495,7 @@ impl Tool for DeliverToSession {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "deliver_to_session".into(),
-            description: "Send a brief straight into an existing session: it starts a turn there now, with no offer step, and that session is bound to report the task. Pass task_id to hand over a queued task; otherwise a task is filed for the brief. With no verify_mode the session checks its own work, so pass one when judgement matters.".into(),
+            description: "Send a brief straight into an existing session: it starts a turn there now, with no offer step, and that session is bound to report the task. Pass task_id to hand over a queued task; otherwise a task is filed for the brief. With no verify_mode the session checks its own work.".into(),
             input_schema: schema(
                 json!({
                     "session": {"type": "string", "description": "Session id, title fragment or workspace path; `latest` selects the most recent match."},
@@ -2768,7 +2768,7 @@ fn direct_brief_envelope(task: &Task, brief: &str, workspace: &str, ledger: &str
         .child(
             "note",
             format!(
-                "This is yours now. If the scope is wrong or unclear, tell Mission Control before building. Report done, blocked or failed with task.report (task_id {}).",
+                "This task is yours. task.report (task_id {}) reports it done, blocked or failed.",
                 task.id
             ),
         )
@@ -2786,7 +2786,7 @@ impl Tool for FileFollowUpTask {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "file_follow_up_task".into(),
-            description: "File a small follow-up to the task you hold, such as a review after your PR, a deploy after your build, or a cleanup you found but that is outside your scope. By default it waits on your current task and starts by itself when you report it done. The description is the whole briefing for whoever picks it up. Anything big, risky or that changes the plan goes to mission-control by message instead.".into(),
+            description: "File a follow-up to the task you hold. By default it waits on your current task and starts by itself when you report it done. The description is the whole briefing for whoever picks it up.".into(),
             input_schema: schema(
                 json!({
                     "title": {"type": "string"},
@@ -2945,7 +2945,7 @@ impl Tool for UpdateMissionTask {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "update_mission_task".into(),
-            description: "Update an existing task on the board (title, description, plan, status, or inference profile). Use this to add context, update scope, close a finished task (`done`), or reuse an existing task instead of creating duplicate tasks. status `todo` re-queues the task for dispatch; `blocked` parks it; `done` completes it. Work starts only through dispatch. An empty profile clears it.".into(),
+            description: "Update an existing task on the board (title, description, plan, status, or inference profile). Status `todo` re-queues the task for dispatch; `blocked` parks it; `done` completes it. Work starts only through dispatch. An empty profile clears it.".into(),
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string"},
@@ -3258,7 +3258,7 @@ impl Tool for InviteTaskAgent {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "invite_task_agent".into(),
-            description: "Bring a specialist onto the task you are working as a collaborator: it joins the task room as a waiting member and is woken with your ask. Use it for a review, a second opinion or expertise you need while you keep the session. It does not hand over the session; Mission Control does that when asked. Only for a task dispatched to this session.".into(),
+            description: "Bring a specialist onto the task you are working as a collaborator: it joins the task room as a waiting member and is woken with your ask. It does not hand over the session. Only for a task dispatched to this session.".into(),
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string"},
@@ -3499,7 +3499,7 @@ impl Tool for RetryMissionTask {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "retry_mission_task".into(),
-            description: "Re-queue a blocked, failed, or stuck in-progress Mission Control task (rate limit, dispatch error, a worker that stopped without reporting). The task is delivered to its session again. Does not create a new task. Refuses done/cancelled work. Pass profile only to move the worker onto another model, e.g. when its own is rate limited.".into(),
+            description: "Re-queue a blocked, failed, or stuck in-progress Mission Control task (rate limit, dispatch error, a worker that stopped without reporting). The task is delivered to its session again. Does not create a new task. Refuses done/cancelled work. profile moves the worker onto another model.".into(),
             input_schema: schema(json!({"task_id":{"type":"string"}, "profile":{"type":"string","description":"optional; an inference profile named exactly as snippet tool list_profiles returns it. The worker session restarts on that model."}}), &["task_id"]),
         }
     }
@@ -3748,7 +3748,7 @@ impl Tool for CleanUpSessions {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "clean_up_sessions".into(),
-            description: "Keep the session list tidy. `list` (the default) returns sessions that have gone stale: not running, idle for `idle_days` (default 14) and with no open task, each with its title, workspace and how long it's been idle. `delete` removes the sessions you name, the same way deleting one in the app does: the conversation goes for good, while project and global memory keep what was learned. Deletion is the user's call, so show them the exact list and delete what they confirm; sessions that are running or have open work are refused.".into(),
+            description: "Keep the session list tidy. `list` (the default) returns sessions that have gone stale: not running, idle for `idle_days` (default 14) and with no open task, each with its title, workspace and how long it's been idle. `delete` removes the sessions you name, the same way deleting one in the app does: the conversation goes for good, while project and global memory keep what was learned. Sessions that are running or have open work are refused.".into(),
             input_schema: schema(
                 json!({
                     "action": {"type": "string", "enum": ["list", "delete"]},
@@ -3841,7 +3841,7 @@ impl Tool for StopSession {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "stop_session".into(),
-            description: "Stop a session that is working: its current run ends the way the stop button ends it, keeping everything done so far, and the session waits for its next message. Use it when a session is stuck in a loop, burning time on the wrong thing, or the user asks you to stop it. Give a short reason; it's recorded in that session's transcript. A task the session holds stays on the board, so cancel, retry or reassign it separately. To restart the session, message it (send_agent_message to session:<id>).".into(),
+            description: "Stop a session that is working: its current run ends the way the stop button ends it, keeping everything done so far, and the session waits for its next message. The reason is recorded in that session's transcript. A task the session holds stays on the board, so cancel, retry or reassign it separately. send_agent_message to session:<id> restarts it.".into(),
             input_schema: schema(
                 json!({
                     "session_id": {"type": "string", "description": "exactly as read.sessions shows it"},
@@ -4002,7 +4002,7 @@ impl Tool for RegisterAgent {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "register_agent".into(),
-            description: "Create or rebuild a specialized agent: writes its identity.md into its agent home (~/.snippet/agents/<id>/) and registers it in the directory so it can be messaged and dispatched. The identity is its whole persona and expertise, applied on top of the coding runtime in every session. An agent is a lasting skill (a Rust expert, a motion designer), never one task or project. Call it once per build, after researching the domain; calling it again with the same id replaces the identity.".into(),
+            description: "Create or rebuild a specialized agent: writes its identity.md into its agent home (~/.snippet/agents/<id>/) and registers it in the directory so it can be messaged and dispatched. The identity is its whole persona and expertise, applied on top of the coding runtime in every session. An agent is a lasting skill, not one task or project. Calling it again with the same id replaces the identity.".into(),
             input_schema: schema(
                 json!({
                     "id": {"type": "string", "description": "kebab-case agent id, e.g. rust-pr-reviewer"},

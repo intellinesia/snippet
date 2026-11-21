@@ -27,7 +27,7 @@ pub fn wake_envelope(f: &Followup) -> String {
         .child("wake_note", &f.note)
         .child(
             "instructions",
-            format!("Do what the note says; {tool} again if it still needs waiting."),
+            format!("{tool} sets another wake."),
         )
         .render()
 }

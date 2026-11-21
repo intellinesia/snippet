@@ -329,7 +329,7 @@ pub fn declined_notice(offer: &LaneOffer) -> String {
         .attr("reason", offer.note.as_deref().unwrap_or("none given"))
         .child(
             "note",
-            "Do the piece yourself, offer it to another agent, or change the brief and offer again.",
+            "The offer was declined; the piece is unclaimed.",
         )
         .render()
 }
@@ -360,7 +360,7 @@ pub fn offer_body(offer: &LaneOffer, merged: bool) -> String {
         .child("brief", &offer.brief)
         .child(
             "note",
-            format!("{heading} Claim it with task.claim (task_id: the offer id) and pass `context` with what the lane should know from your memory, skills or past work; it is added to the lane's brief. Decline with a reason if it isn't yours."),
+            format!("{heading} task.claim (task_id: the offer id) claims it; `context` is added to the lane's brief. Declining takes a reason. The offer stays open until claimed or declined."),
         )
         .render()
 }

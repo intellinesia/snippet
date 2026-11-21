@@ -437,7 +437,7 @@ pub fn render_micro_pointers(goal: &str, turns: &[ArchivedTurnSummary]) -> Strin
         .child_with("turns", &[("columns", "#id|tool|summary|paths|status")], rows)
         .child(
             "note",
-            "Search these with `snippet history search 'term'` and read full messages with `snippet history show <id> [<id>...]` or `snippet history show --from <id> --to <id>` (bash).",
+            "`snippet history search 'term'` searches these; `snippet history show <id> [<id>...]` or `snippet history show --from <id> --to <id>` reads full messages (bash).",
         )
         .render()
 }

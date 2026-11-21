@@ -337,7 +337,7 @@ pub fn revision_envelope(
         .child(
             "note",
             format!(
-                "Change what the feedback names, in this session, then report again with task.report (task_id {}) and evidence for each acceptance criterion.",
+                "The task is back with you in this session. task.report (task_id {}) reports it again, with evidence for each acceptance criterion.",
                 task.id
             ),
         )
@@ -716,7 +716,7 @@ pub fn apply_verdict(
         .child(
             "note",
             format!(
-                "The review sent this task back. Fix every finding, then report again with task.report (task_id {}).",
+                "The review sent this task back. task.report (task_id {}) reports it again.",
                 task.id
             ),
         )

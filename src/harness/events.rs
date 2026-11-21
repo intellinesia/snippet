@@ -657,7 +657,7 @@ impl CodingHarness {
                 .child(
                     "note",
                     format!(
-                        "one of your lanes wrote to you while working. If it asks something, answer with delegate.run, lane_id {id}, and your answer as the description; it may be waiting on you. If it's an update, use it; no reply is needed.",
+                        "one of your lanes wrote to you while working and may be waiting on an answer. delegate.run with lane_id {id} and the answer as the description replies.",
                         id = progress.id
                     ),
                 )
@@ -1101,7 +1101,7 @@ impl CodingHarness {
                 .child("appended", format!("{skipped_note}\n{appended}"))
                 .child(
                     "orchestration",
-                    "Act if needed; otherwise end quietly. Remove this watch when done.",
+                    "This watch stays until removed.",
                 )
                 .child(
                     "note",
@@ -1245,10 +1245,10 @@ pub(crate) fn render_lane_report(result: &LaneResult, outstanding: usize) -> Str
         result.status,
         LaneStatus::Failed | LaneStatus::Paused | LaneStatus::Cancelled
     ) {
-        "No lane still out. Follow this one up with its lane_id, or do the part yourself."
+        "No lane still out."
             .to_string()
     } else {
-        "All lanes reported; integrate and check the findings you rely on.".to_string()
+        "All lanes reported.".to_string()
     };
     envelope.child("note", cue).render()
 }
@@ -1609,7 +1609,7 @@ mod lane_report_tests {
         );
         assert_eq!(
             child(&rendered, "note").as_deref(),
-            Some("All lanes reported; integrate and check the findings you rely on.")
+            Some("All lanes reported.")
         );
 
         let long_prose = "x".repeat(1800);
@@ -1794,7 +1794,7 @@ mod lane_report_tests {
         );
         assert!(
             failed_last.contains(
-                "No lane still out. Follow this one up with its lane_id, or do the part yourself."
+                "No lane still out."
             ),
             "{failed_last}"
         );

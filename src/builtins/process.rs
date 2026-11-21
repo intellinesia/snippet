@@ -57,7 +57,7 @@ impl Tool for ManageProcessTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "manage_process".to_string(),
-            description: "Manage background processes (started via `bash {background: true}`, or a command that ran past the foreground limit). `list` shows this session's running processes, one line each (`all: true` for every process); `log` reads trailing lines; `wait` blocks until a process exits or `pattern` (a regex on its log) matches, up to `timeout_seconds` (default and max 170; on `timeout`, call it again), then returns the exit status and log tail. Use `wait` instead of sleeping and polling; `kill` terminates."
+            description: "Manage background processes (started via `bash {background: true}`, or a command that ran past the foreground limit). `list` shows this session's running processes, one line each (`all: true` for every process); `log` reads trailing lines; `wait` blocks until a process exits or `pattern` (a regex on its log) matches, up to `timeout_seconds` (default and max 170), then returns the exit status and log tail, or `timeout`. `kill` terminates."
                 .to_string(),
             input_schema: object_schema(
                 json!({

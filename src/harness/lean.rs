@@ -117,7 +117,7 @@ impl CodingHarness {
             .attr("archived_messages", older.len().to_string())
             .child(
                 "note",
-                "earlier messages are archived: bring back what you need with `snippet history search <words>` and `snippet history show --from <id> --to <id>`.",
+                "earlier messages are archived; `snippet history search <words>` and `snippet history show --from <id> --to <id>` read them.",
             )
             .child("pointers", pointers.trim())
             .render();
