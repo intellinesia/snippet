@@ -481,12 +481,12 @@ fn build_responses_request(
                 if tool_call_id.is_empty() {
                     input.push(message_item(
                         "user",
-                        &format!("[tool_result]\ntool = \"{tool_name}\"\noutput = {output}\n[/tool_result]"),
+                        &crate::harness::tool_result_envelope(tool_name, &output),
                     ));
                 } else if !seen_calls.contains(tool_call_id) {
                     input.push(message_item(
                         "user",
-                        &format!("[tool_result {tool_name}]\n{output}\n[/tool_result]"),
+                        &crate::harness::tool_result_envelope(tool_name, &output),
                     ));
                 } else {
                     input.push(json!({
@@ -511,7 +511,7 @@ fn build_responses_request(
             HarnessMessage::Summary { kind, content } => {
                 input.push(message_item(
                     "user",
-                    &format!("[summary:{kind}]\n{content}\n[/summary]"),
+                    &crate::harness::summary_envelope(kind, content),
                 ));
             }
         }

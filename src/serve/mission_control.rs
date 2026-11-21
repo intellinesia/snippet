@@ -471,9 +471,7 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
         .map(|handoff| handoff.description.as_str())
         .unwrap_or("");
     let mode_line = match task.handoff_mode {
-        HandoffMode::Fresh => {
-            "handoff_mode: fresh (self-contained briefing; the session has no prior context)\n"
-        }
+        HandoffMode::Fresh => "fresh (self-contained briefing; the session has no prior context)",
         HandoffMode::Resume => "",
     };
     let roster = d.store.list_task_agents(task_id).unwrap_or_default();
@@ -483,32 +481,19 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
         .map(|m| m.agent_id.as_str())
         .unwrap_or("snippet");
 
-    let mut plan_line = String::new();
-    if !task.plan.trim().is_empty() {
-        plan_line = format!("plan:\n{}\n", task.plan.trim());
-    }
-
     let roster_summary: Vec<String> = roster
         .iter()
         .filter(|m| m.removed_at.is_none())
         .map(|m| format!("{} ({}, {})", m.agent_id, m.role, m.status))
         .collect();
-    let roster_line = if roster_summary.is_empty() {
-        String::new()
-    } else {
-        format!("collaborators: [{}]\n", roster_summary.join(", "))
-    };
+    let roster_line = roster_summary.join(", ");
 
-    let owned_line = if task.owned_paths.is_empty() {
-        String::new()
-    } else {
-        let paths: Vec<String> = task
-            .owned_paths
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
-        format!("owned_paths: [{}]\n", paths.join(", "))
-    };
+    let owned_line = task
+        .owned_paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
 
     let git = |args: &[&str]| {
         std::process::Command::new("git")
@@ -525,7 +510,7 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
         git(&["rev-parse", "--abbrev-ref", "HEAD"]),
         git(&["log", "-1", "--format=%h %s"]),
     ) {
-        (Some(branch), Some(head)) => format!("branch: {branch} at {head}\n"),
+        (Some(branch), Some(head)) => format!("{branch} at {head}"),
         _ => String::new(),
     };
     let inputs: Vec<String> = d
@@ -536,14 +521,7 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
         .filter_map(|id| d.store.get_task(id).ok().flatten())
         .map(|blocker| input_line(&blocker))
         .collect();
-    let inputs_line = if inputs.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "inputs (tasks this one waited on, with their reports):\n{}\n",
-            inputs.join("\n")
-        )
-    };
+    let inputs_line = inputs.join("\n");
     let identity = super::coordination::identity_overlay(d, active_worker, &session_id);
     let scope = if handoff.is_empty() {
         task.description.as_str()
@@ -556,18 +534,34 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
     } else {
         "task.report"
     };
-    let text = format!(
-        "{identity}[mission_control_task]\ntask_id: {}\ntitle: {}\nrequested_by: {} {}\n{}active_agent: {}\n{plan_line}{roster_line}{owned_line}workspace: {}\n{revision_line}{inputs_line}scope:\n{}\n{ledger}\n\nThis is yours now: deliver it end to end, verified, in this session. If the scope looks wrong, unclear or there's a better way, say so to Mission Control (message.send to mission-control) before you build. When something long-running is in flight, put a process.watch on it rather than ending the task. When it's done, blocked or failed, report with {report_tool} (task_id {}): what was done, files changed, how it was verified, anything left open.\n[/mission_control_task]",
-        task.id,
-        task.title,
-        task.created_by_kind,
-        task.created_by_id,
-        mode_line,
-        active_worker,
-        workspace.display(),
-        scope,
-        task.id,
-    );
+    let rendered = crate::envelope::Envelope::new("mission_control_task")
+            .attr("task_id", &task.id)
+            .attr("title", &task.title)
+            .attr(
+                "requested_by",
+                format!("{} {}", task.created_by_kind, task.created_by_id)
+            )
+            .attr("handoff_mode", mode_line)
+            .attr("active_agent", active_worker)
+            .attr("owned_paths", owned_line)
+            .attr("workspace", workspace.display().to_string())
+            .attr("branch", revision_line)
+            .child("plan", task.plan.trim())
+            .child("collaborators", roster_line)
+            .child_with("inputs", &[("note", "tasks this one waited on, with their reports")], inputs_line)
+            .child("scope", scope)
+            .child("note", format!("This is yours now: deliver it end to end, verified, in this session. If the scope looks wrong, unclear or there's a better way, say so to Mission Control (message.send to mission-control) before you build. When something long-running is in flight, put a process.watch on it rather than ending the task. When it's done, blocked or failed, report with {report_tool} (task_id {}): what was done, files changed, how it was verified, anything left open.", task.id))
+            .render();
+    let rendered = if ledger.trim().is_empty() {
+        rendered
+    } else {
+        crate::envelope::insert_before_child(&rendered, "note", ledger.trim())
+    };
+    let text = if identity.trim().is_empty() {
+        rendered
+    } else {
+        crate::envelope::insert_before_child(&rendered, "scope", identity.trim())
+    };
     let task_profile = d.task_profile(&task);
     let switch_to = match task_profile.as_deref() {
         Some(profile) => {
@@ -878,14 +872,15 @@ fn task_offer_body(task: &Task) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    format!(
-        "[task_offer]\ntask_id: {}\ntitle: {}\ntarget_session: {}\nhandoff: {:?}\nowned_paths: {owned}\nbriefing:\n{}\n[/task_offer]\nOffer only: review, then claim with task.claim, ask Mission Control if unclear, or decline with a reason.",
-        task.id,
-        task.title,
-        task.session_id,
-        task.handoff_mode,
-        task.description.trim(),
-    )
+    crate::envelope::Envelope::new("task_offer")
+        .attr("task_id", &task.id)
+        .attr("title", &task.title)
+        .attr("target_session", &task.session_id)
+        .attr("handoff", format!("{:?}", task.handoff_mode))
+        .attr("owned_paths", owned)
+        .child("briefing", task.description.trim())
+        .child("note", "Offer only: review, then claim with task.claim, ask Mission Control if unclear, or decline with a reason.")
+        .render()
 }
 
 fn wait_for_worker(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, String> {
@@ -1606,26 +1601,31 @@ fn task_artifacts_block(session_id: &str, created_at: &str) -> String {
     if lines.is_empty() {
         String::new()
     } else {
-        format!("artifacts:\n{}\n", lines.join("\n"))
+        lines.join("\n")
     }
 }
 
 fn report_text(task: &Task, marker: &crate::coordination::NotificationMarker) -> String {
     if marker.kind == "plan" {
-        format!(
-            "[task_plan]\ntask_id: {}\ntitle: {}\nsession_id: {}\nplan:\n{}\n[/task_plan]\n{}",
-            task.id, task.title, task.session_id, marker.message, WORKFLOW_PLAN
-        )
+        crate::envelope::Envelope::new("task_plan")
+            .attr("task_id", &task.id)
+            .attr("title", &task.title)
+            .attr("session_id", &task.session_id)
+            .child("plan", &marker.message)
+            .child("instructions", WORKFLOW_PLAN)
+            .render()
     } else {
-        format!(
-            "[mission_task_report]\ntask_id: {}\ntitle: {}\nstatus: {}\nsummary: {}\n{}[/mission_task_report]\n{}",
-            task.id,
-            task.title,
-            marker.kind,
-            marker.message,
-            task_artifacts_block(&task.session_id, &task.created_at),
-            WORKFLOW_REPORT
-        )
+        crate::envelope::Envelope::new("mission_task_report")
+            .attr("task_id", &task.id)
+            .attr("title", &task.title)
+            .attr("status", &marker.kind)
+            .child("summary", &marker.message)
+            .child(
+                "artifacts",
+                task_artifacts_block(&task.session_id, &task.created_at),
+            )
+            .child("instructions", WORKFLOW_REPORT)
+            .render()
     }
 }
 
@@ -1684,7 +1684,10 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
     }
     if !digest.is_empty() {
         let text = format!(
-            "[report_digest]\nOutcomes that arrived while you waited on the user; handle them after their answer.\n[/report_digest]\n{}",
+            "{}\n{}",
+            crate::envelope::Envelope::new("report_digest")
+                .child("note", "Outcomes that arrived while you waited on the user; handle them after their answer.")
+                .render(),
             digest.join("\n")
         );
         let item = crate::harness::QueuedInput {

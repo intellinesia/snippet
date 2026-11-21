@@ -1016,7 +1016,7 @@ mod tests {
         assert!(msg.contains("Fired: "));
         assert!(msg.contains("complete_goal"));
         assert!(msg.contains("how it went"));
-        assert!(!msg.contains("[recurring_job]"));
+        assert!(!msg.contains("<recurring_job"));
     }
 
     #[test]

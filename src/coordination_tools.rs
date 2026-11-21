@@ -689,13 +689,14 @@ impl Tool for SendAgentMessage {
             },
         };
         let db = db(ctx)?;
-        let mut body = if reaction.is_some() {
+        let body = if reaction.is_some() {
             String::new()
         } else {
             args.body.trim().to_string()
         };
         let task_session;
         let mut about_task: Option<String> = None;
+        let mut about_task_title: Option<String> = None;
         let (requested_kind, requested_id) = match recipient.strip_prefix("task:") {
             Some(task_id) => {
                 let task = db
@@ -729,10 +730,8 @@ impl Tool for SendAgentMessage {
                         s.review_started_at.clear();
                     });
                 }
-                if reaction.is_none() && forward_id.is_none() {
-                    body = format!("[about task {}: {}]\n{body}", task.id, task.title);
-                }
                 about_task = Some(task.id.clone());
+                about_task_title = Some(task.title.clone());
                 task_session = crate::members::working_session(&db, &task);
                 ("session", task_session.as_str())
             }
@@ -830,12 +829,16 @@ impl Tool for SendAgentMessage {
             reply_to.as_deref(),
             reaction.as_deref(),
         );
+        if let Some(title) = &about_task_title {
+            extra.insert("about_task_title".into(), json!(title));
+        }
         if let Some(forward_id) = forward_id {
             let orig = db
                 .event_by_id(forward_id)
                 .map_err(|e| ToolError::msg(format!("look up event: {e}")))?
                 .ok_or_else(|| ToolError::msg(format!("no event `{forward_id}`")))?;
             require_thread_access(&db, ctx, (sender_kind, sender_id.as_str()), &orig.thread_id)?;
+            let mut forwarded_text = String::new();
             if reaction.is_none() {
                 let orig_body = orig
                     .payload
@@ -849,15 +852,7 @@ impl Tool for SendAgentMessage {
                     .chars()
                     .take(1500)
                     .collect();
-                let quoted = format!(
-                    "[forwarded from {}:{} in {}, {}]\n{clipped}\n[/forwarded]",
-                    orig.actor_kind, orig.actor_id, orig.thread_id, orig.created_at
-                );
-                body = if body.is_empty() {
-                    quoted
-                } else {
-                    format!("{quoted}\n{body}")
-                };
+                forwarded_text = clipped;
             }
             extra.insert(
                 "forwarded_from".into(),
@@ -866,6 +861,8 @@ impl Tool for SendAgentMessage {
                     "thread_id": orig.thread_id,
                     "actor_kind": orig.actor_kind,
                     "actor_id": orig.actor_id,
+                    "created_at": orig.created_at,
+                    "text": forwarded_text,
                 }),
             );
             if orig.actor_kind == "human"
@@ -3899,11 +3896,7 @@ mod tests {
             .take(1500)
             .collect();
         assert_eq!(expected_clipped.chars().count(), 1500);
-        let expected_body = format!(
-            "[forwarded from human:local in {}, 2026-01-01T00:00:00Z]\n{expected_clipped}\n[/forwarded]\nplease check",
-            orig.thread_id
-        );
-        assert_eq!(fwd.payload["body"], expected_body);
+        assert_eq!(fwd.payload["body"], "please check");
         assert_eq!(
             fwd.payload["forwarded_from"],
             json!({
@@ -3911,6 +3904,8 @@ mod tests {
                 "thread_id": orig.thread_id,
                 "actor_kind": "human",
                 "actor_id": "local",
+                "created_at": "2026-01-01T00:00:00Z",
+                "text": expected_clipped,
             })
         );
         assert!(fwd.payload.get("about_thread").is_none());

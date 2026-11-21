@@ -229,17 +229,17 @@ pub(crate) async fn hand_off_session(
 pub(crate) fn handoff_envelope(from: &str, by: &str, note: &str) -> String {
     let by_label = if by == "human" { "the user" } else { by };
     let trimmed = note.trim();
-    if trimmed.is_empty() {
-        format!(
-            "[handoff] from {from} (by {by_label})\n\n\
-             You now own this session. Its history above is {from}'s; continue from here."
-        )
+    let instructions = if trimmed.is_empty() {
+        format!("You now own this session. Its history above is {from}'s; continue from here.")
     } else {
-        format!(
-            "[handoff] from {from} (by {by_label}): {trimmed}\n\n\
-             You now own this session. Its history above is {from}'s; continue from the note."
-        )
-    }
+        format!("You now own this session. Its history above is {from}'s; continue from the note.")
+    };
+    crate::envelope::Envelope::new("handoff")
+        .attr("from", from)
+        .attr("by", by_label)
+        .child("handoff_note", trimmed)
+        .child("note", instructions)
+        .render()
 }
 
 pub(crate) async fn apply_handoff_now(

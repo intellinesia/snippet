@@ -194,14 +194,26 @@ fn board_message_envelope_carries_sender_thread_and_reply_rule() {
         created_at: "2020-01-01T00:00:00Z".into(),
     };
     let envelope = coordination::board_message_envelope(&event, &[]);
-    assert!(envelope.starts_with("[coordination_board_message]"));
-    assert!(envelope.contains("thread_id: system"));
-    assert!(envelope.contains("from_id: human"));
-    assert!(envelope.contains("from_kind: human"));
-    assert!(envelope.contains("body: please investigate X"));
+    assert!(crate::envelope::is(&envelope, "coordination_board_message"));
+    assert_eq!(
+        crate::envelope::attr(&envelope, "thread_id").as_deref(),
+        Some("system")
+    );
+    assert_eq!(
+        crate::envelope::attr(&envelope, "from_id").as_deref(),
+        Some("human")
+    );
+    assert_eq!(
+        crate::envelope::attr(&envelope, "from_kind").as_deref(),
+        Some("human")
+    );
+    assert_eq!(
+        crate::envelope::child(&envelope, "body").as_deref(),
+        Some("please investigate X")
+    );
     // The reply contract is what stops a silent no-op.
     assert!(envelope.contains("message.send to the sender"));
-    assert!(envelope.contains("[/coordination_board_message]"));
+    assert!(envelope.ends_with("</coordination_board_message>"));
 }
 
 /// The body is last so a client can read everything up to the closing tag as
@@ -224,12 +236,14 @@ fn board_message_body_is_the_final_field_before_the_closing_tag() {
         created_at: "2020-01-01T00:00:00Z".into(),
     };
     let envelope = coordination::board_message_envelope(&event, &[]);
-    let after_body = envelope.split_once("body: ").expect("body field present").1;
-    assert!(after_body.starts_with("line one\nline two"));
+    assert_eq!(
+        crate::envelope::child(&envelope, "body").as_deref(),
+        Some("line one\nline two")
+    );
     assert!(
-        after_body
+        envelope
             .trim_end()
-            .ends_with("[/coordination_board_message]")
+            .ends_with("</body>\n</coordination_board_message>")
     );
 }
 
@@ -260,14 +274,14 @@ fn room_wake_carries_the_ledger_but_a_ledger_update_carries_only_its_delta() {
         0,
         "2020-01-01T00:00:00Z".into(),
     );
-    let ledger = "[task_ledger v4]\ncurrent step: tests\n[/task_ledger]";
+    let ledger = "ledger v4 current step: tests";
     let wake =
         coordination::board_message_envelope_with_task(&event, &[], Some(&task), Some(ledger));
-    assert!(wake.contains("[task_ledger v4]"), "{wake}");
+    assert!(wake.contains("ledger v4"), "{wake}");
     event.event_type = "task.state_updated".into();
     let delta =
         coordination::board_message_envelope_with_task(&event, &[], Some(&task), Some(ledger));
-    assert!(!delta.contains("[task_ledger"), "{delta}");
+    assert!(!delta.contains("ledger v4"), "{delta}");
 }
 
 #[test]
@@ -378,10 +392,16 @@ fn board_message_envelope_includes_bounded_history() {
     // Both prior turns appear, attributed.
     assert!(envelope.contains("mission-control: started the review"));
     assert!(envelope.contains("reviewer: found two issues"));
-    assert!(envelope.contains("history: last 2 message(s)"));
+    assert_eq!(
+        crate::envelope::child_attrs(&envelope, "history")
+            .iter()
+            .find(|(k, _)| k == "messages")
+            .map(|(_, v)| v.as_str()),
+        Some("2")
+    );
     // The new message is still the final body, and history precedes it.
-    let body_at = envelope.find("body: what is the status?").unwrap();
-    let history_at = envelope.find("history:").unwrap();
+    let body_at = envelope.find("<body>what is the status?").unwrap();
+    let history_at = envelope.find("<history").unwrap();
     assert!(history_at < body_at);
     // A multi-line prior body is collapsed so it can't break the layout.
     let wrapped =
@@ -408,7 +428,10 @@ fn board_message_envelope_marks_an_empty_room() {
         created_at: "2020-01-01T00:00:00Z".into(),
     };
     let envelope = coordination::board_message_envelope(&event, &[]);
-    assert!(envelope.contains("history: (start of the room)"));
+    assert_eq!(
+        crate::envelope::child(&envelope, "history").as_deref(),
+        Some("(start of the room)")
+    );
 }
 
 #[tokio::test]
@@ -880,7 +903,7 @@ fn identity_overlay_is_only_for_a_foreign_agent() {
         .unwrap();
 
     let overlay = coordination::identity_overlay(&d, "reviewer", "unowned-session");
-    assert!(overlay.starts_with("[agent_identity]"));
+    assert!(crate::envelope::is(&overlay, "agent_identity"));
     assert!(overlay.contains("Checks every change twice."));
     assert!(coordination::identity_overlay(&d, "snippet", "unowned-session").is_empty());
 }
@@ -947,7 +970,7 @@ async fn a_self_started_task_is_never_offered_back() {
             .filter(|e| {
                 e.payload["body"]
                     .as_str()
-                    .is_some_and(|b| b.contains("[task_offer]"))
+                    .is_some_and(|b| b.contains("<task_offer "))
             })
             .count()
     };
@@ -977,7 +1000,7 @@ async fn a_self_started_task_is_never_offered_back() {
     assert!(events.iter().any(|e| {
         e.payload["body"]
             .as_str()
-            .is_some_and(|b| b.contains("[task_offer]") && b.contains(&other_id))
+            .is_some_and(|b| b.contains("<task_offer ") && b.contains(&other_id))
     }));
 }
 
@@ -1069,7 +1092,7 @@ async fn a_blocked_self_started_task_starts_without_an_offer() {
         events.iter().all(|e| {
             !e.payload["body"]
                 .as_str()
-                .is_some_and(|b| b.contains("[task_offer]"))
+                .is_some_and(|b| b.contains("<task_offer "))
         }),
         "a blocked self-start was offered back to its desk"
     );

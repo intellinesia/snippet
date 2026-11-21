@@ -157,7 +157,7 @@ pub fn gate_open(
     fires_last_day < watch.max_wakes_per_day as i64
 }
 
-/// The `[watch]` envelope. The body is capped at 4 KB, cut at a line boundary.
+/// The `<watch>` envelope. The body is capped at 4 KB, cut at a line boundary.
 pub fn watch_envelope(watch: &cw::Watch, event: &str, body: &[String], held: usize) -> String {
     let mut text = body.join("\n");
     const CAP: usize = 4096;
@@ -171,26 +171,21 @@ pub fn watch_envelope(watch: &cw::Watch, event: &str, body: &[String], held: usi
         }
         text.truncate(end);
     }
-    let mut out = format!(
-        "[watch]\nname: {}\nwatch_id: {}\nmode: {}\nevent: {}\nlines: {}",
-        watch.name,
-        watch.id,
-        watch.mode,
-        event,
-        body.len()
-    );
-    if held > 0 {
-        out.push_str(&format!("\nheld: {held}"));
-    }
     let watch_tool = if watch.owner == crate::mission_control::SESSION_ID {
         "schedule.watch"
     } else {
         "wake.watch"
     };
-    out.push_str(&format!(
-        "\n---\n{text}\n---\nnote: your own watch fired. Act on what matters (answer, file a task, tell the user per your reach policy); otherwise end quietly. If it misfires, fix it with {watch_tool} (op: update) or remove it.\n[/watch]"
-    ));
-    out
+    crate::envelope::Envelope::new("watch")
+        .attr("name", &watch.name)
+        .attr("watch_id", &watch.id)
+        .attr("mode", watch.mode.to_string())
+        .attr("event", event)
+        .attr("lines", body.len().to_string())
+        .attr("held", if held > 0 { held.to_string() } else { String::new() })
+        .child("body", text)
+        .child("note", format!("your own watch fired. Act on what matters (answer, file a task, tell the user per your reach policy); otherwise end quietly. If it misfires, fix it with {watch_tool} (op: update) or remove it."))
+        .render()
 }
 
 /// Merge held lines with new ones, capped at 16 KB dropping the oldest.
@@ -774,7 +769,7 @@ impl WatchRunner {
         self.sink.deliver(&watch.owner, envelope).await
     }
 
-    /// The one-shot `event: error` wake; not gated.
+    /// The one-shot `error` wake; not gated.
     async fn deliver_error(&self, watch: &cw::Watch, detail: &str) {
         let body: Vec<String> = detail.lines().map(str::to_string).collect();
         let envelope = watch_envelope(watch, "error", &body, 0);
@@ -1513,19 +1508,28 @@ mod tests {
     fn envelope_format() {
         let w = watch();
         let env = watch_envelope(&w, "change", &["hello".into(), "world".into()], 3);
-        assert!(env.starts_with("[watch]\nname: inbox\nwatch_id: w1\nmode: poll\nevent: change\nlines: 2\nheld: 3\n---\n"));
-        assert!(env.ends_with("[/watch]"));
+        assert!(crate::envelope::is(&env, "watch"));
+        assert_eq!(
+            crate::envelope::attr(&env, "name").as_deref(),
+            Some("inbox")
+        );
+        assert_eq!(crate::envelope::attr(&env, "lines").as_deref(), Some("2"));
+        assert_eq!(crate::envelope::attr(&env, "held").as_deref(), Some("3"));
+        assert!(env.ends_with("</watch>"));
         assert!(env.contains("hello\nworld"));
         // 4 KB body cap, cut at a line.
         let big: Vec<String> = (0..500)
             .map(|i| format!("line {i} {}", "x".repeat(20)))
             .collect();
         let env = watch_envelope(&w, "change", &big, 0);
-        let body = env.split("\n---\n").nth(1).unwrap();
+        let body = crate::envelope::child(&env, "body").unwrap();
         assert!(body.len() <= 4096);
         let err = watch_envelope(&w, "error", &["boom".into()], 0);
-        assert!(err.contains("event: error"));
-        assert!(!err.contains("held:"));
+        assert_eq!(
+            crate::envelope::attr(&err, "event").as_deref(),
+            Some("error")
+        );
+        assert!(crate::envelope::attr(&err, "held").is_none());
     }
 
     #[derive(Default)]
@@ -1620,7 +1624,7 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, "a");
         assert!(got[0].1.contains("new-2"), "{}", got[0].1);
-        assert!(got[0].1.contains("[watch]"));
+        assert!(got[0].1.contains("<watch "));
     }
 
     #[tokio::test]
@@ -1655,7 +1659,7 @@ mod tests {
         }
         let got = sink.envelopes.lock().unwrap();
         assert_eq!(got.len(), 1, "{got:?}");
-        assert!(got[0].1.contains("event: error"));
+        assert!(crate::envelope::attr(&got[0].1, "event").as_deref() == Some("error"));
         assert!(got[0].1.contains("boom"));
     }
 

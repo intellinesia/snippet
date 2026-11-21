@@ -1406,37 +1406,41 @@ fn effective_title(state: &HarnessState) -> String {
 /// use the envelope's own title, job or sender instead.
 pub(crate) fn request_label(request: &str) -> String {
     let text = request.trim();
-    let field = |name: &str| {
-        text.lines()
-            .find_map(|line| line.trim().strip_prefix(name).map(str::trim))
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-    };
     if let Some(job) = text
         .strip_prefix("**Scheduled run — ")
         .and_then(|rest| rest.split("**").next())
     {
         return format!("Scheduled: {}", job.trim());
     }
-    let envelope = text.starts_with('[') || text.contains("[mission_control_task]");
-    if !envelope {
+    if crate::envelope::kind(text).is_none() {
         return text.lines().next().unwrap_or("").trim().to_string();
     }
-    if let Some(title) = field("title:")
-        .or_else(|| field("task_title:"))
-        .or_else(|| field("task:"))
-        .or_else(|| field("job:"))
+    let field = |name: &str| {
+        crate::envelope::attr(text, name)
+            .or_else(|| crate::envelope::child(text, name))
+            .map(|v| v.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    if let Some(title) = field("title")
+        .or_else(|| field("task_title"))
+        .or_else(|| field("task"))
+        .or_else(|| field("job"))
     {
         return title;
     }
-    if let Some(from) = field("from_id:").or_else(|| field("from:")) {
+    if let Some(from) = field("from_id").or_else(|| field("from")) {
         return format!("Message from {from}");
     }
-    text.lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with('['))
-        .unwrap_or("")
-        .to_string()
+    ["body", "brief", "scope", "note"]
+        .iter()
+        .find_map(|name| crate::envelope::child(text, name))
+        .and_then(|v| {
+            v.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
 }
 
 /// The status string exposed on the session list / events APIs. Uses the enum's

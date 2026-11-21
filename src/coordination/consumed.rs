@@ -3,10 +3,10 @@
 
 use serde_json::json;
 
-/// The envelope body when `text` is a `[direct_message]` envelope, else None.
+/// The `<direct_message>` envelope text when `text` is one, else None.
 ///
-/// A `note:` line may sit ahead of the tag — the steer/stop prefixes and the
-/// routed-to-task form (`note: about task ...`) all keep the tag itself intact.
+/// A `note:` line may sit ahead of the tag by older steer/stop prefixes; the
+/// tag itself stays intact.
 fn envelope_body(text: &str) -> Option<&str> {
     let mut body = text.trim_start();
     if let Some(rest) = body.strip_prefix("note:") {
@@ -15,24 +15,19 @@ fn envelope_body(text: &str) -> Option<&str> {
             .map(|(_, after)| after.trim_start())
             .unwrap_or("");
     }
-    body.strip_prefix("[direct_message]")
+    crate::envelope::is(body, "direct_message").then_some(body)
 }
 
 /// Record that the agent's turn consumed the direct message `text` carries.
 ///
 /// Cheap no-op — the prefix check runs before any store or socket work — for
-/// anything that is not a `[direct_message]` envelope with an `event_id:` line.
+/// anything that is not a `<direct_message>` envelope with an `event_id` attribute.
 /// Returns whether the message was marked read.
 pub fn direct_consumed(text: &str) -> bool {
     let Some(body) = envelope_body(text) else {
         return false;
     };
-    let Some(event_id) = body
-        .lines()
-        .find_map(|line| line.strip_prefix("event_id:").map(str::trim))
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
-    else {
+    let Some(event_id) = crate::envelope::attr(body, "event_id").filter(|id| !id.is_empty()) else {
         return false;
     };
     let Some(store) = crate::session::store_for_sessions() else {
@@ -83,9 +78,13 @@ mod tests {
     }
 
     fn envelope(event_id: &str) -> String {
-        format!(
-            "[direct_message]\nevent_id: {event_id}\nthread_id: direct:agent:x|human:local\nfrom: human:local\nreply_to: human\nbody: hi\n[/direct_message]"
-        )
+        crate::envelope::Envelope::new("direct_message")
+            .attr("event_id", event_id)
+            .attr("thread_id", "direct:agent:x|human:local")
+            .attr("from", "human:local")
+            .attr("reply_to", "human")
+            .child("body", "hi")
+            .render()
     }
 
     #[tokio::test]
@@ -137,9 +136,9 @@ mod tests {
         assert!(found[&routed.event_id].1.is_some());
 
         assert!(!direct_consumed("just a message"));
+        assert!(!direct_consumed("<agent_reply from=\"agent:a\"/>"));
         assert!(!direct_consumed(
-            "[agent_reply]\nfrom: agent:a\n[/agent_reply]"
+            &envelope("").replace(" event_id=\"\"", "")
         ));
-        assert!(!direct_consumed(&envelope("").replace("event_id: \n", "")));
     }
 }

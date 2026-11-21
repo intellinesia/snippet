@@ -371,24 +371,35 @@ fn announce_conversion(d: &Shared, row: &crate::conversations::SessionRow, mode:
         },
     );
     let session_note = if mode == "agent" {
-        format!(
-            "[managed_by] The user handed this session to {agent}: you run it now, and the line at the top of your instructions about who leads no longer applies. Settle what done looks like and what is open, then drive it to done; the user may still drop in."
-        )
+        crate::envelope::Envelope::new("managed_by")
+            .attr("kind", "handed")
+            .attr("agent", &agent)
+            .child("note", format!("The user handed this session to {agent}: you run it now, and the line at the top of your instructions about who leads no longer applies. Settle what done looks like and what is open, then drive it to done; the user may still drop in."))
+            .render()
     } else {
-        "[managed_by] The user took this session back: they lead it now, and the line at the top of your instructions about who leads no longer applies. Stop driving it and follow their direction; reply in one line.".to_string()
+        crate::envelope::Envelope::new("managed_by")
+            .attr("kind", "returned")
+            .child("note", "The user took this session back: they lead it now, and the line at the top of your instructions about who leads no longer applies. Stop driving it and follow their direction; reply in one line.")
+            .render()
     };
     let daemon = d.clone();
     let session_id = row.id.clone();
     tokio::spawn(async move {
         daemon
-            .deliver(&session_id, crate::harness::LoopInput::UserMessage(session_note))
+            .deliver(
+                &session_id,
+                crate::harness::LoopInput::UserMessage(session_note),
+            )
             .await;
     });
     if agent != crate::mission_control::SESSION_ID {
         let _ = d.store.send_direct_message(
             ("agent", crate::mission_control::SESSION_ID),
             ("agent", &agent),
-            &format!("[managed_by] {summary}"),
+            &crate::envelope::Envelope::new("managed_by")
+                .attr("kind", "summary")
+                .child("summary", &summary)
+                .render(),
             &uuid::Uuid::new_v4().to_string(),
             &now,
         );

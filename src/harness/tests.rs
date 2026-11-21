@@ -332,7 +332,11 @@ mod notice_tests {
         assert_eq!(state.messages.len(), 1);
         match &state.messages[0] {
             HarnessMessage::User { content } => {
-                assert!(content.contains("dispatched by You"), "got {content:?}");
+                assert_eq!(
+                    crate::envelope::attr(content, "by").as_deref(),
+                    Some("You"),
+                    "got {content:?}"
+                );
                 assert!(content.contains("do the thing"), "got {content:?}");
                 assert!(
                     content.contains("Do not dispatch it again"),
@@ -489,11 +493,11 @@ mod empty_reply_tests {
         )];
         assert!(!empty_turn_needs_reply(&events, true));
         let board = [input(
-            "[coordination_board_message]\nthread_id: task:1\nbody: claimed",
+            "<coordination_board_message thread_id=\"task:1\">\n<body>claimed</body>\n</coordination_board_message>",
         )];
         assert!(!empty_turn_needs_reply(&board, true));
         let steered = [HarnessEvent::Steer {
-            text: steer_message("[mission_task_report]\ntask_id: 1"),
+            text: steer_message("<mission_task_report task_id=\"1\"/>"),
         }];
         assert!(!empty_turn_needs_reply(&steered, true));
     }
@@ -940,7 +944,7 @@ mod steer_and_interrupt_tests {
                 .unwrap()
         });
 
-        let envelope = "[direct_message]\nfrom: agent:peer\nnote: steer: a colleague wrote while you were working; weigh it at your very next step and reply only if it needs one. \nbody: status update\n[/direct_message]";
+        let envelope = "<direct_message from=\"agent:peer\">\n<note>steer: a colleague wrote while you were working; weigh it at your very next step and reply only if it needs one.</note>\n<body>status update</body>\n</direct_message>";
         started.notified().await;
         tx.send(LoopInput::UserMessage(envelope.into())).unwrap();
         tokio::task::yield_now().await;

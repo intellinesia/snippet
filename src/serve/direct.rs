@@ -40,10 +40,10 @@ pub(super) fn recipient_session_id(agent_id: &str) -> String {
     }
 }
 
-/// The `history:` digest shared by the direct- and group-message envelopes:
-/// the prior messages, oldest first, with the daemon's own `auto` events
-/// hidden. Empty history reads as the start of the conversation.
-pub(super) fn history_digest(history: &[crate::coordination::types::CoordinationEvent]) -> String {
+pub(super) fn with_history(
+    envelope: crate::envelope::Envelope,
+    history: &[crate::coordination::types::CoordinationEvent],
+) -> crate::envelope::Envelope {
     let history: Vec<_> = history
         .iter()
         .filter(|prior| {
@@ -55,214 +55,159 @@ pub(super) fn history_digest(history: &[crate::coordination::types::Coordination
                     .unwrap_or(false)
         })
         .collect();
-    let mut digest = String::new();
     if history.is_empty() {
-        digest.push_str("history: (first message in this conversation)\n");
-    } else {
-        digest.push_str(&format!(
-            "history: last {} message(s), oldest first\n",
-            history.len()
-        ));
-        for prior in history {
-            let prior_body = if let Some(r) = prior.payload.get("reaction").and_then(|v| v.as_str())
-            {
-                let target = prior
-                    .payload
-                    .get("reply_to")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                if crate::coordination::direct::is_removed_reaction(&prior.payload) {
-                    format!("[removed reaction {r} from {target}]")
-                } else {
-                    format!("[reacted {r} to {target}]")
-                }
+        return envelope.child("history", "(first message in this conversation)");
+    }
+    let mut lines = String::new();
+    for prior in &history {
+        let prior_body = if let Some(r) = prior.payload.get("reaction").and_then(|v| v.as_str()) {
+            let target = prior
+                .payload
+                .get("reply_to")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if crate::coordination::direct::is_removed_reaction(&prior.payload) {
+                format!("(removed reaction {r} from {target})")
             } else {
-                prior
-                    .payload
-                    .get("body")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default()
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            };
-            digest.push_str(&format!(
-                "  {} [{}] {}: {}\n",
-                prior.sequence, prior.actor_kind, prior.actor_id, prior_body
-            ));
-        }
-    }
-    digest
-}
-
-/// The envelope handed to a recipient when a direct message arrives.
-///
-/// Field order matters: `body` is last, so a client or reader can take
-/// everything up to the closing tag as the message — including newlines —
-/// without the rules or history running into the sender's text.
-fn direct_message_envelope(
-    event: &crate::coordination::types::CoordinationEvent,
-    history: &[crate::coordination::types::CoordinationEvent],
-) -> String {
-    let sender = format!("{}:{}", event.actor_kind, event.actor_id);
-    if let Some(reaction) = event
-        .payload
-        .get("reaction")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|r| !r.is_empty())
-    {
-        let target = event
-            .payload
-            .get("reply_to")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        return format!("[reaction] {sender} reacted {reaction} to your message {target}");
-    }
-    let body = event
-        .payload
-        .get("body")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    let event_id_line = if event.event_id.is_empty() {
-        String::new()
-    } else {
-        format!("event_id: {}\n", event.event_id)
-    };
-    let mut reply_lines = String::new();
-    if let Some(target_id) = event
-        .payload
-        .get("reply_to")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    {
-        reply_lines.push_str(&format!("reply_to_message: {target_id}\n"));
-        if let Some(target) = history.iter().find(|prior| prior.event_id == target_id) {
-            let quoted: String = target
+                format!("(reacted {r} to {target})")
+            }
+        } else {
+            prior
                 .payload
                 .get("body")
                 .and_then(|value| value.as_str())
                 .unwrap_or_default()
-                .replace(['\r', '\n'], " ")
-                .chars()
-                .take(160)
-                .collect();
-            reply_lines.push_str(&format!("quoted: {quoted}\n"));
-        }
-    }
-    if let Some(ff) = event.payload.get("forwarded_from") {
-        let actor_kind = ff
-            .get("actor_kind")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let actor_id = ff
-            .get("actor_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let thread_id = ff
-            .get("thread_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let event_id = ff
-            .get("event_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        reply_lines.push_str(&format!(
-            "forwarded_from: {actor_kind}:{actor_id} in {thread_id} ({event_id})\n"
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        lines.push_str(&format!(
+            "{} {}:{}: {}\n",
+            prior.sequence, prior.actor_kind, prior.actor_id, prior_body
         ));
     }
-    let about_thread = event
-        .payload
-        .get("about_thread")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| s.starts_with("direct:agent:"));
-    if let Some(about_thread) = about_thread {
-        reply_lines.push_str(&format!("about_thread: {about_thread}\n"));
-    }
-    // When the message came from a SESSION, the reply belongs back in that
-    // session — that is where the human is reading and where the exchange is
-    // recorded. Stated as a `reply_to` line so the agent never has to infer it.
-    // A forwarded human-agent DM carries `about_thread`, whose reply relays to `human`.
-    let reply_to = if about_thread.is_some() {
-        "human".to_string()
-    } else {
-        event
-            .payload
-            .get("origin_session")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|session| !session.is_empty())
-            .map(|session| format!("session:{session}"))
-            .unwrap_or_else(|| "human".to_string())
-    };
-    let digest = history_digest(history);
-    format!(
-        "[direct_message]\n{event_id_line}thread_id: {thread}\nfrom: {sender}\nfrom_kind: {kind}\nto: {to}\n\
-         reply_to: {reply_to}\n{reply_lines}{tags}\
-         note: {who} wrote directly; this is not a turn in your own conversation. \
-         {answer} \
-         Recent history only; use read.agent for more.\n{history}body: {body}\n\
-         [/direct_message]",
-        event_id_line = event_id_line,
-        thread = event.thread_id,
-        sender = sender,
-        who = if event.actor_kind == "human" {
-            "The user"
-        } else {
-            "A colleague"
-        },
-        answer = if reply_to == "human" {
-            "Answer with message.send to `human`; plain reply text is not delivered."
-        } else {
-            "Answer with message.send to `reply_to` above, which is where they're reading."
-        },
-        reply_to = reply_to,
-        reply_lines = reply_lines,
-        tags = crate::coordination::typed::envelope_lines(&event.payload),
-        kind = event.actor_kind,
-        to = event
-            .payload
-            .get("recipient")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default(),
-        history = digest,
-        body = body,
+    let count = history.len().to_string();
+    envelope.child_with(
+        "history",
+        &[("messages", count.as_str()), ("order", "oldest first")],
+        lines,
     )
 }
 
-const HUMAN_DM_MARKER: &str = "[direct_message]";
-
-pub(crate) fn envelope_about_thread(text: &str) -> Option<String> {
-    if !text.starts_with(HUMAN_DM_MARKER) {
-        return None;
+fn direct_message_envelope(
+    event: &crate::coordination::types::CoordinationEvent,
+    history: &[crate::coordination::types::CoordinationEvent],
+) -> String {
+    use crate::envelope::Envelope;
+    let sender = format!("{}:{}", event.actor_kind, event.actor_id);
+    let payload_str = |key: &str| {
+        event
+            .payload
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(reaction) = payload_str("reaction") {
+        return Envelope::new("reaction")
+            .attr("from", &sender)
+            .attr("emoji", reaction)
+            .attr_opt("to_message", payload_str("reply_to"))
+            .render();
     }
-    text.lines()
-        .find_map(|line| line.trim().strip_prefix("about_thread:"))
-        .map(|id| id.trim().to_string())
-        .filter(|id| id.starts_with("direct:agent:"))
+    let body = payload_str("body").unwrap_or_default();
+    let about_thread = payload_str("about_thread").filter(|s| s.starts_with("direct:agent:"));
+    let reply_to = if about_thread.is_some() {
+        "human".to_string()
+    } else {
+        payload_str("origin_session")
+            .map(|session| format!("session:{session}"))
+            .unwrap_or_else(|| "human".to_string())
+    };
+    let mut envelope = Envelope::new("direct_message")
+        .attr("event_id", &event.event_id)
+        .attr("thread_id", &event.thread_id)
+        .attr("from", &sender)
+        .attr("from_kind", &event.actor_kind)
+        .attr("to", payload_str("recipient").unwrap_or_default())
+        .attr("reply_to", &reply_to)
+        .attr_opt("reply_to_message", payload_str("reply_to"))
+        .attr_opt("about_thread", about_thread)
+        .attr_opt("about_task", payload_str("about_task"))
+        .attr_opt("about_task_title", payload_str("about_task_title"));
+    envelope = crate::coordination::typed::envelope_attrs(envelope, &event.payload);
+    if let Some(target_id) = payload_str("reply_to")
+        && let Some(target) = history.iter().find(|prior| prior.event_id == target_id)
+    {
+        let quoted: String = target
+            .payload
+            .get("body")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .replace(['\r', '\n'], " ")
+            .chars()
+            .take(160)
+            .collect();
+        envelope = envelope.child("quoted", quoted);
+    }
+    if let Some(ff) = event.payload.get("forwarded_from") {
+        let field = |k: &str| ff.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+        let from = format!("{}:{}", field("actor_kind"), field("actor_id"));
+        envelope = envelope.child_with(
+            "forwarded",
+            &[
+                ("from", from.as_str()),
+                ("thread_id", field("thread_id")),
+                ("event_id", field("event_id")),
+                ("at", field("created_at")),
+            ],
+            if field("text").is_empty() {
+                "(original message)"
+            } else {
+                field("text")
+            },
+        );
+    }
+    let who = if event.actor_kind == "human" {
+        "The user"
+    } else {
+        "A colleague"
+    };
+    let answer = if reply_to == "human" {
+        "Answer with message.send to `human`; plain reply text is not delivered."
+    } else {
+        "Answer with message.send to `reply_to`, which is where they're reading."
+    };
+    envelope = envelope.child(
+        "note",
+        format!(
+            "{who} wrote directly; this is not a turn in your own conversation. {answer} Recent history only; use read.agent for more."
+        ),
+    );
+    with_history(envelope, history).child("body", body).render()
 }
 
-/// The thread id of a `[direct_message]` envelope that came from the human and
-/// expects its answer back in the human's DM thread.
+pub(crate) fn envelope_about_thread(text: &str) -> Option<String> {
+    if !crate::envelope::is(text, "direct_message") {
+        return None;
+    }
+    crate::envelope::attr(text, "about_thread").filter(|id| id.starts_with("direct:agent:"))
+}
+
+/// The thread of a direct message from the user that is owed an answer in their DM thread.
 pub(crate) fn human_dm_thread(text: &str) -> Option<String> {
-    if !text.starts_with(HUMAN_DM_MARKER) {
+    if !crate::envelope::is(text, "direct_message") {
         return None;
     }
     if let Some(about) = envelope_about_thread(text) {
         return Some(about);
     }
-    let has = |wanted: &str| text.lines().any(|line| line.trim() == wanted);
-    if !(has("from_kind: human") && has("reply_to: human")) {
+    let attr = |name: &str| crate::envelope::attr(text, name);
+    if attr("from_kind").as_deref() != Some("human") || attr("reply_to").as_deref() != Some("human")
+    {
         return None;
     }
-    Some(
-        text.lines()
-            .find_map(|line| line.trim().strip_prefix("thread_id:"))
-            .map(|id| id.trim().to_string())
-            .unwrap_or_default(),
-    )
+    Some(attr("thread_id").unwrap_or_default())
 }
 
 fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool {
@@ -292,17 +237,17 @@ fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool 
                 .is_none_or(|r| r.trim().is_empty());
         if posted_to_human
             || resolved_name == "send_agent_message"
-            && resolved_args
-                .get("reaction")
-                .and_then(|v| v.as_str())
-                .is_none_or(|r| r.trim().is_empty())
-            && matches!(
-                resolved_args
-                    .get("recipient_agent_id")
+                && resolved_args
+                    .get("reaction")
                     .and_then(|v| v.as_str())
-                    .map(str::trim),
-                Some("human" | "local" | "human:local")
-            )
+                    .is_none_or(|r| r.trim().is_empty())
+                && matches!(
+                    resolved_args
+                        .get("recipient_agent_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim),
+                    Some("human" | "local" | "human:local")
+                )
         {
             let failed = turn[i + 1..].iter().find_map(|e| match e {
                 E::ToolResult {
@@ -777,14 +722,11 @@ pub(crate) fn is_stop_command(body: &str) -> bool {
     ) || (normalized.starts_with("stop ") && words.len() <= 6)
 }
 
-fn body_of<'a>(payload: &'a serde_json::Value, envelope: &'a str) -> &'a str {
+fn body_of(payload: &serde_json::Value, envelope: &str) -> String {
     if let Some(body) = payload.get("body").and_then(|v| v.as_str()) {
-        return body;
+        return body.to_string();
     }
-    if let Some((_, rest)) = envelope.split_once("\nbody: ") {
-        return rest.strip_suffix("\n[/direct_message]").unwrap_or(rest);
-    }
-    envelope
+    crate::envelope::child(envelope, "body").unwrap_or_else(|| envelope.to_string())
 }
 
 const ANSWERED_BY_REACTION_NOTE: &str = "the user answered the question you were waiting on with this reaction: take it as a yes and carry on.";
@@ -824,18 +766,7 @@ fn reaction_answers_question(
 }
 
 fn prefix_envelope_note(envelope: String, prefix: &str) -> String {
-    let spaced = if prefix.ends_with(' ') {
-        prefix.to_string()
-    } else {
-        format!("{prefix} ")
-    };
-    if envelope.contains("\nnote: ") {
-        envelope.replacen("\nnote: ", &format!("\nnote: {spaced}"), 1)
-    } else if envelope.starts_with("note: ") {
-        envelope.replacen("note: ", &format!("note: {spaced}"), 1)
-    } else {
-        format!("note: {prefix}\n{envelope}")
-    }
+    crate::envelope::prefix_child(&envelope, "note", prefix)
 }
 
 /// Hand a message to a session by its urgency and sender. Urgent ends the
@@ -905,7 +836,7 @@ pub(super) async fn deliver_by_urgency(
                 .await;
         }
         crate::coordination::typed::Urgency::Normal if busy && from_human => {
-            if is_stop_command(body_of(payload, &envelope)) {
+            if is_stop_command(&body_of(payload, &envelope)) {
                 let envelope = prefix_envelope_note(envelope, STOP_NOTE_PREFIX);
                 d.deliver(session_id, LoopInput::Interrupt).await;
                 d.deliver(session_id, LoopInput::UserMessage(envelope))
@@ -1026,9 +957,10 @@ async fn deliver_direct(
         }
         let lane = reply_lane(d, event, &session_id);
         if let Some(lane) = lane.as_deref() {
-            let envelope = format!(
-                "[agent_reply]\nfrom: {}:{}\nthread_id: {}\nnote: this answers the message you sent; carry on with your piece, using it. No reply is needed unless you have a follow-up.\nbody: {body}\n[/agent_reply]",
-                event.actor_kind, event.actor_id, event.thread_id
+            let envelope = agent_reply_envelope(
+                event,
+                "this answers the message you sent; carry on with your piece, using it. No reply is needed unless you have a follow-up.",
+                &body,
             );
             if crate::lanes::deliver_to_lane(&session_id, lane, envelope) {
                 return Ok(());
@@ -1041,10 +973,7 @@ async fn deliver_direct(
                 ),
                 None => "this answers the message this session sent; carry on with what you were doing, using it. No reply is needed unless you have a follow-up.".to_string(),
             };
-            let envelope = format!(
-                "[agent_reply]\nfrom: {}:{}\nthread_id: {}\nnote: {note}\nbody: {body}\n[/agent_reply]",
-                event.actor_kind, event.actor_id, event.thread_id
-            );
+            let envelope = agent_reply_envelope(event, &note, &body);
             let source_via = if event.actor_kind == "human" {
                 "desk"
             } else {
@@ -1078,12 +1007,11 @@ async fn deliver_direct(
             } else {
                 "human".to_string()
             };
-            let envelope = format!(
-                "[direct_message]\nthread_id: {}\nfrom: {}:{}\nreply_to: {reply_to}\n{tags}note: this was sent to this session directly; act on it or answer it with message.send to reply_to.\nbody: {body}\n[/direct_message]",
-                event.thread_id,
-                event.actor_kind,
-                event.actor_id,
-                tags = crate::coordination::typed::envelope_lines(&event.payload)
+            let envelope = session_message_envelope(
+                event,
+                Some(&reply_to),
+                "this was sent to this session directly; act on it or answer it with message.send to reply_to.",
+                &body,
             );
             deliver_by_urgency(
                 d,
@@ -1098,12 +1026,11 @@ async fn deliver_direct(
         if crate::session::is_lane_session_id(&session_id)
             && let Some((parent, lane)) = session_id.rsplit_once("/lanes/")
         {
-            let envelope = format!(
-                "[direct_message]\nthread_id: {}\nfrom: {}:{}\n{tags}note: sent to this lane while it runs; act on it now.\nbody: {body}\n[/direct_message]",
-                event.thread_id,
-                event.actor_kind,
-                event.actor_id,
-                tags = crate::coordination::typed::envelope_lines(&event.payload)
+            let envelope = session_message_envelope(
+                event,
+                None,
+                "sent to this lane while it runs; act on it now.",
+                &body,
             );
             let reached = crate::lanes::deliver_to_lane(parent, lane, envelope);
             eprintln!(
@@ -1179,7 +1106,7 @@ fn is_task_offer(payload: &serde_json::Value) -> bool {
     payload
         .get("body")
         .and_then(|b| b.as_str())
-        .is_some_and(|b| b.starts_with("[task_offer]"))
+        .is_some_and(|b| crate::envelope::is(b, "task_offer"))
 }
 
 fn desk_open_tasks_envelope(
@@ -1259,26 +1186,62 @@ fn desk_open_tasks_envelope(
             offer.id, offer.title, offer.session_id
         ));
     }
-    let mut tasks_block = String::from("now:\n");
+    let mut tasks_block = String::new();
     for (label, body) in [
         ("running (you lead)", running),
         ("assisting (the user leads)", assisting),
         ("offers", offers),
-        ("sessions as you, no task (working or active in the last 10m)", sessions),
+        (
+            "sessions as you, no task (working or active in the last 10m)",
+            sessions,
+        ),
     ] {
         if !body.is_empty() {
-            tasks_block.push_str(&format!(" {label}:\n{body}"));
+            tasks_block.push_str(&format!("{label}:\n{body}"));
         }
     }
-    if tasks_block == "now:\n" {
-        tasks_block = "now: no open tasks or working sessions\n".to_string();
+    if tasks_block.is_empty() {
+        tasks_block = "no open tasks or working sessions".to_string();
     }
-    let envelope = envelope.replacen(
-        "\nnote: ",
-        "\nnote: forward with message.send to task:<id> and forward: <event_id> when it is about running work. ",
-        1,
+    let envelope = crate::envelope::prefix_child(
+        &envelope,
+        "note",
+        "forward with message.send to task:<id> and forward: <event_id> when it is about running work.",
     );
-    envelope.replacen("\nbody: ", &format!("\n{tasks_block}body: "), 1)
+    let now = format!(
+        "<now>\n{}\n</now>",
+        crate::envelope::escape_text(tasks_block.trim_end())
+    );
+    crate::envelope::insert_before_child(&envelope, "body", &now)
+}
+
+fn agent_reply_envelope(
+    event: &crate::coordination::types::CoordinationEvent,
+    note: &str,
+    body: &str,
+) -> String {
+    crate::envelope::Envelope::new("agent_reply")
+        .attr("from", format!("{}:{}", event.actor_kind, event.actor_id))
+        .attr("thread_id", &event.thread_id)
+        .child("note", note)
+        .child("body", body)
+        .render()
+}
+
+fn session_message_envelope(
+    event: &crate::coordination::types::CoordinationEvent,
+    reply_to: Option<&str>,
+    note: &str,
+    body: &str,
+) -> String {
+    let envelope = crate::envelope::Envelope::new("direct_message")
+        .attr("thread_id", &event.thread_id)
+        .attr("from", format!("{}:{}", event.actor_kind, event.actor_id))
+        .attr_opt("reply_to", reply_to);
+    crate::coordination::typed::envelope_attrs(envelope, &event.payload)
+        .child("note", note)
+        .child("body", body)
+        .render()
 }
 
 /// The lane that sent the latest message from this session on the thread, when
@@ -1790,7 +1753,7 @@ mod tests {
     fn dm(reply_to: &str) -> E {
         E::UserInput {
             text: format!(
-                "[direct_message]\nthread_id: t\nfrom: human:local\nfrom_kind: human\nto: agent:a\nreply_to: {reply_to}\nbody: hi\n[/direct_message]"
+                "<direct_message thread_id=\"t\" from=\"human:local\" from_kind=\"human\" to=\"agent:a\" reply_to=\"{reply_to}\">\n<body>hi</body>\n</direct_message>"
             ),
         }
     }
@@ -1872,7 +1835,7 @@ mod tests {
 
     #[test]
     fn reply_before_a_later_steer_does_not_cover_it() {
-        let steer = E::Steer { text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: and?\n[/direct_message]".into() };
+        let steer = E::Steer { text: "<direct_message thread_id=\"t\" from_kind=\"human\" reply_to=\"human\">\n<body>and?</body>\n</direct_message>".into() };
         let mut events = vec![dm("human")];
         events.extend(send("human", true));
         events.push(steer);
@@ -1890,9 +1853,7 @@ mod tests {
             Some("t".into())
         );
         assert_eq!(
-            super::human_dm_thread(
-                "[direct_message]\nfrom_kind: human\nreply_to: session:x\n[/direct_message]"
-            ),
+            super::human_dm_thread("<direct_message from_kind=\"human\" reply_to=\"session:x\"/>"),
             None
         );
         assert_eq!(super::human_dm_thread("hello"), None);
@@ -1974,16 +1935,22 @@ mod tests {
     fn envelope_states_sender_recipient_and_how_to_reply() {
         let current = event(2, "local", "please review this", "agent:a");
         let envelope = direct_message_envelope(&current, &[]);
-        assert!(envelope.starts_with("[direct_message]"));
-        assert!(envelope.contains("from: human:local"));
-        assert!(envelope.contains("to: agent:a"));
+        assert!(crate::envelope::is(&envelope, "direct_message"));
+        assert_eq!(
+            crate::envelope::attr(&envelope, "from").as_deref(),
+            Some("human:local")
+        );
+        assert_eq!(
+            crate::envelope::attr(&envelope, "to").as_deref(),
+            Some("agent:a")
+        );
         assert!(envelope.contains("message.send"));
         assert!(
             !envelope.contains("Workspace work requires a task"),
             "the desk layer teaches that, not every message"
         );
         assert!(envelope.contains("plain reply text is not delivered"));
-        assert!(envelope.ends_with("body: please review this\n[/direct_message]"));
+        assert!(envelope.ends_with("<body>please review this</body>\n</direct_message>"));
     }
 
     #[test]
@@ -1992,7 +1959,7 @@ mod tests {
         let current = event(2, "local", "reply", "agent:a");
         let envelope = direct_message_envelope(&current, &[prior]);
         let history_at = envelope.find("line one").expect("history present");
-        let body_at = envelope.find("body: reply").expect("body present");
+        let body_at = envelope.find("<body>reply</body>").expect("body present");
         assert!(history_at < body_at, "history must not run into the body");
         assert!(
             !envelope.contains("line one\nline two"),
@@ -2016,16 +1983,15 @@ mod tests {
         let mut reply = event(2, "local", "yes, go ahead", "agent:a");
         reply.payload["reply_to"] = json!("e1");
         let env = direct_message_envelope(&reply, std::slice::from_ref(&prior));
-        assert!(env.contains("reply_to_message: e1\n"), "{env}");
-        let quoted_line = env
-            .lines()
-            .find(|l| l.starts_with("quoted: "))
-            .expect("quoted line");
-        assert_eq!(quoted_line, format!("quoted: {}", "x".repeat(160)));
+        assert!(env.contains("reply_to_message=\"e1\""), "{env}");
+        assert_eq!(
+            crate::envelope::child(&env, "quoted").expect("quoted"),
+            "x".repeat(160)
+        );
 
         let env_missing = direct_message_envelope(&reply, &[]);
-        assert!(env_missing.contains("reply_to_message: e1\n"));
-        assert!(!env_missing.contains("\nquoted: "));
+        assert!(env_missing.contains("reply_to_message=\"e1\""));
+        assert!(crate::envelope::child(&env_missing, "quoted").is_none());
 
         let mut react = event(3, "local", "", "agent:a");
         react.payload["reply_to"] = json!("e1");
@@ -2034,7 +2000,7 @@ mod tests {
         let react_env = direct_message_envelope(&react, &[prior]);
         assert_eq!(
             react_env,
-            "[reaction] human:local reacted check to your message e1"
+            "<reaction from=\"human:local\" emoji=\"check\" to_message=\"e1\"/>"
         );
         assert!(!react_env.contains("history:"));
     }
@@ -2145,7 +2111,7 @@ mod tests {
                 assert_eq!(
                     item.text,
                     format!(
-                        "[reaction] human:local reacted eyes to your message {}",
+                        "<reaction from=\"human:local\" emoji=\"eyes\" to_message=\"{}\"/>",
                         target.event_id
                     )
                 );
@@ -2270,7 +2236,7 @@ mod tests {
         assert!(envelope.contains("first message in this conversation"));
         assert!(!envelope.contains("has your message"));
         let events = vec![
-            E::UserInput { text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: hi\n[/direct_message]".into() },
+            E::UserInput { text: "<direct_message thread_id=\"t\" from_kind=\"human\" reply_to=\"human\">\n<body>hi</body>\n</direct_message>".into() },
             E::ToolCall { tool_name: "bash".into(), arguments: json!({}) },
         ];
         assert!(super::turn_end_relay(1, "Scout", &events).is_some());
@@ -2325,7 +2291,7 @@ mod tests {
         );
         match desk_rx.try_recv().expect("desk got the message") {
             LoopInput::UserMessage(text) => {
-                assert!(text.contains("body: how is it going"), "{text}");
+                assert!(text.contains("<body>how is it going</body>"), "{text}");
                 assert!(
                     text.contains("  t1  in_progress  Task t1  session:task-session\n"),
                     "{text}"
@@ -2358,10 +2324,10 @@ mod tests {
         match desk_rx.try_recv().expect("desk got the message") {
             LoopInput::UserMessage(text) => {
                 assert!(
-                    text.contains("note: forward with message.send to task:<id> and forward: <event_id> when it is about running work."),
+                    text.contains("<note>forward with message.send to task:<id> and forward: <event_id> when it is about running work."),
                     "{text}"
                 );
-                assert!(text.contains("now:\n running (you lead):\n"), "{text}");
+                assert!(text.contains("<now>\nrunning (you lead):\n"), "{text}");
                 assert!(
                     text.contains("  t1  in_progress  Task t1  session:s-one\n"),
                     "{text}"
@@ -2370,8 +2336,8 @@ mod tests {
                     text.contains("  t2  in_progress  Task t2  session:s-two\n"),
                     "{text}"
                 );
-                let tasks_pos = text.find("now:").unwrap();
-                let body_pos = text.find("\nbody: hello").unwrap();
+                let tasks_pos = text.find("<now>").unwrap();
+                let body_pos = text.find("<body>hello</body>").unwrap();
                 assert!(tasks_pos < body_pos, "{text}");
             }
             other => panic!("unexpected desk input: {other:?}"),
@@ -2395,7 +2361,7 @@ mod tests {
             .send_direct_message_typed(
                 ("agent", "a"),
                 ("session", "unindexed-task-session"),
-                "[forwarded from human:local in direct:agent:a|human:local, 2026-01-01T00:00:00Z]\nhello\n[/forwarded]\nhandle this",
+                "handle this",
                 "k-fwd",
                 "2026-01-01T00:00:01Z",
                 Some("inbox-a"),
@@ -2405,16 +2371,27 @@ mod tests {
             )
             .unwrap();
         let fwd_env = direct_message_envelope(&forwarded, &[]);
-        let note_pos = fwd_env.find("\nnote: ").expect("note present");
-        let ff_pos = fwd_env
-            .find("forwarded_from: human:local in direct:agent:a|human:local")
-            .expect("forwarded_from line present");
-        let at_pos = fwd_env
-            .find("about_thread: direct:agent:a|human:local\n")
-            .expect("about_thread line present");
-        assert!(ff_pos < note_pos && at_pos < note_pos, "{fwd_env}");
-        assert!(fwd_env.contains("\nreply_to: human\n"), "{fwd_env}");
-        assert!(!fwd_env.contains("reply_to: session:inbox-a"), "{fwd_env}");
+        assert_eq!(
+            crate::envelope::child_attrs(&fwd_env, "forwarded")
+                .into_iter()
+                .find(|(k, _)| k == "from")
+                .map(|(_, v)| v)
+                .as_deref(),
+            Some("human:local"),
+            "{fwd_env}"
+        );
+        assert_eq!(
+            crate::envelope::attr(&fwd_env, "about_thread").as_deref(),
+            Some("direct:agent:a|human:local")
+        );
+        assert_eq!(
+            crate::envelope::attr(&fwd_env, "reply_to").as_deref(),
+            Some("human")
+        );
+        assert!(
+            !fwd_env.contains("reply_to=\"session:inbox-a\""),
+            "{fwd_env}"
+        );
         assert!(
             fwd_env.contains("plain reply text is not delivered"),
             "{fwd_env}"
@@ -2482,7 +2459,7 @@ mod tests {
         match desk_rx.try_recv().expect("desk got the message") {
             LoopInput::UserMessage(text) => {
                 assert!(
-                    text.contains("\nnow: no open tasks or working sessions\nbody: anyone there?\n"),
+                    text.contains("<now>\nno open tasks or working sessions\n</now>\n<body>anyone there?</body>"),
                     "{text}"
                 );
             }
@@ -2508,7 +2485,7 @@ mod tests {
             event_index: 0,
         });
         state.events.push(E::UserInput {
-            text: "[direct_message]\nthread_id: direct:agent:a|human:local\nfrom_kind: human\nreply_to: human\nbody: real human message\n[/direct_message]".into(),
+            text: "<direct_message thread_id=\"direct:agent:a|human:local\" from_kind=\"human\" reply_to=\"human\">\n<body>real human message</body>\n</direct_message>".into(),
         });
         state.events.push(E::ToolCall {
             tool_name: "bash".into(),
@@ -2558,7 +2535,7 @@ mod tests {
             None
         );
 
-        let bogus_env = "[direct_message]\nthread_id: direct:agent:a|session:s1\nfrom_kind: agent\nreply_to: session:inbox-a\nabout_thread: task:t1\nbody: hi\n[/direct_message]";
+        let bogus_env = "<direct_message thread_id=\"direct:agent:a|session:s1\" from_kind=\"agent\" reply_to=\"session:inbox-a\" about_thread=\"task:t1\">\n<body>hi</body>\n</direct_message>";
         assert_eq!(super::envelope_about_thread(bogus_env), None);
         assert_eq!(super::human_dm_thread(bogus_env), None);
 
@@ -2770,7 +2747,7 @@ mod tests {
                     text.contains("take it as a yes"),
                     "envelope says what the reaction means: {text}"
                 );
-                assert!(text.contains("reacted thumbs_up to your message evt-1"));
+                assert!(text.contains("emoji=\"thumbs_up\" to_message=\"evt-1\""));
             }
             other => panic!("an answering reaction must wake the idle session, got {other:?}"),
         }
@@ -2788,7 +2765,7 @@ mod tests {
             steered: true,
             event_index: 0,
         });
-        state.events.push(E::UserInput { text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: hi\n[/direct_message]".into() });
+        state.events.push(E::UserInput { text: "<direct_message thread_id=\"t\" from_kind=\"human\" reply_to=\"human\">\n<body>hi</body>\n</direct_message>".into() });
         state.events.push(E::AssistantText {
             text: "Almost done.".into(),
             quiet: false,
@@ -2862,7 +2839,7 @@ mod tests {
         match rx.try_recv().expect("human normal message delivered") {
             LoopInput::UserMessage(text) => {
                 assert!(
-                    text.contains("note: steer: the user wrote while you were working; let it shape your very next step and acknowledge it in one line."),
+                    text.contains("<note>steer: the user wrote while you were working; let it shape your very next step and acknowledge it in one line."),
                     "{text}"
                 );
             }
@@ -2876,9 +2853,9 @@ mod tests {
         super::deliver_by_urgency(&d, "busy-s", agent_env, &agent_ev.payload, false).await;
         match rx.try_recv().expect("agent normal message steers") {
             LoopInput::UserMessage(text) => {
-                assert!(text.contains("body: status update"), "{text}");
+                assert!(text.contains("<body>status update</body>"), "{text}");
                 assert!(
-                    text.contains("note: steer: a colleague wrote while you were working;"),
+                    text.contains("<note>steer: a colleague wrote while you were working;"),
                     "{text}"
                 );
             }
@@ -2896,7 +2873,7 @@ mod tests {
         match rx.try_recv().expect("stop message second") {
             LoopInput::UserMessage(text) => {
                 assert!(
-                    text.contains("note: stop: the user asked you to stop; report where you stopped and what is left, then wait."),
+                    text.contains("<note>stop: the user asked you to stop; report where you stopped and what is left, then wait."),
                     "{text}"
                 );
             }

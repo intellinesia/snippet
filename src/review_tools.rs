@@ -317,18 +317,32 @@ pub fn revision_envelope(
     feedback: &str,
     by: &str,
 ) -> String {
-    format!(
-        "[mission_control_task]\ntask_id: {id}\ntitle: {title}\nrevision: {n}\nrequested_by: agent {by} (your finished work reopened, same session)\nprevious result:\n{prev}\nfeedback:\n{feedback}\n{ledger}\n\nChange what the feedback names, in this session, then report again with task.report (task_id {id}) and evidence for each acceptance criterion.\n[/mission_control_task]",
-        id = task.id,
-        title = task.title,
-        n = state.revision,
-        prev = state
-            .previous_result
-            .as_ref()
-            .map(|p| p.summary.as_str())
-            .unwrap_or(""),
-        ledger = state.render(false),
-    )
+    let envelope = crate::envelope::Envelope::new("mission_control_task")
+        .attr("task_id", &task.id)
+        .attr("title", &task.title)
+        .attr("revision", state.revision.to_string())
+        .attr(
+            "requested_by",
+            format!("agent {by} (your finished work reopened, same session)"),
+        )
+        .child(
+            "previous_result",
+            state
+                .previous_result
+                .as_ref()
+                .map(|p| p.summary.as_str())
+                .unwrap_or(""),
+        )
+        .child("feedback", feedback)
+        .child(
+            "note",
+            format!(
+                "Change what the feedback names, in this session, then report again with task.report (task_id {}) and evidence for each acceptance criterion.",
+                task.id
+            ),
+        )
+        .render();
+    crate::envelope::insert_before_child(&envelope, "note", &state.render(false))
 }
 
 /// Reopen a done task in its own session with the reviewer's or Mission
@@ -686,22 +700,32 @@ pub fn apply_verdict(
             findings.join("\n")
         ),
     );
-    let envelope = format!(
-        "[review_findings]\ntask_id: {}\ntitle: {}\nreviewer: {reviewer}\nround: {rounds}\nThe review sent this task back. Fix every finding, then report again with task.report (task_id {}).\nfindings:\n{}\n{}\n[/review_findings]",
-        task.id,
-        task.title,
-        task.id,
-        findings
-            .iter()
-            .map(|f| format!("  - {f}"))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        {
-            let mut ledger = state.clone();
-            ledger.review_findings.clear();
-            ledger.render(false)
-        },
-    );
+    let envelope = crate::envelope::Envelope::new("review_findings")
+        .attr("task_id", &task.id)
+        .attr("title", &task.title)
+        .attr("reviewer", reviewer)
+        .attr("round", rounds.to_string())
+        .child(
+            "findings",
+            findings
+                .iter()
+                .map(|f| format!("- {f}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .child(
+            "note",
+            format!(
+                "The review sent this task back. Fix every finding, then report again with task.report (task_id {}).",
+                task.id
+            ),
+        )
+        .render();
+    let envelope = {
+        let mut ledger = state.clone();
+        ledger.review_findings.clear();
+        crate::envelope::insert_before_child(&envelope, "note", &ledger.render(false))
+    };
     store
         .send_task_notice(
             ("agent", reviewer),
@@ -895,14 +919,19 @@ How: re-ran everything"
                 .any(|d| d.text.contains("revision 1 requested: tighten the intro"))
         );
         let envelope = revision_envelope(&back, &state, "tighten the intro", "mission-control");
-        for needle in [
-            "revision: 1",
-            "previous result:\nfirst cut",
-            "feedback:\ntighten the intro",
-            "task.report (task_id rv1)",
-        ] {
-            assert!(envelope.contains(needle), "{needle}: {envelope}");
-        }
+        assert_eq!(
+            crate::envelope::attr(&envelope, "revision").as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            crate::envelope::child(&envelope, "previous_result").as_deref(),
+            Some("first cut")
+        );
+        assert_eq!(
+            crate::envelope::child(&envelope, "feedback").as_deref(),
+            Some("tighten the intro")
+        );
+        assert!(envelope.contains("task.report (task_id rv1)"), "{envelope}");
         let _ = task;
         assert!(revise_task(&store, "rv1", "again", "mission-control", "t").is_err());
     }
@@ -967,10 +996,9 @@ How: re-ran everything"
         assert_eq!(back.status, TaskStatus::InProgress);
         let state = store.task_state("rv1").unwrap().unwrap();
         assert_eq!((state.review_rounds, state.review_findings.len()), (1, 1));
-        assert!(
-            state
-                .render(false)
-                .contains("review findings to fix (round 1)")
+        assert_eq!(
+            crate::envelope::child_attrs(&state.render(false), "review_findings"),
+            [("round".to_string(), "1".to_string())]
         );
         assert_eq!(route(&state), VerifyMode::MissionControl);
         submit_for_review(

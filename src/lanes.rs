@@ -219,7 +219,7 @@ pub struct LaneResult {
     /// Full report for the lane record (TUI and follow-up).
     pub report: Option<String>,
     pub error: Option<String>,
-    /// Structured fields for the compact `[lane_report]` envelope.
+    /// Structured fields for the compact `<lane_report>` envelope.
     pub structured: Option<LaneStructuredReport>,
 }
 
@@ -325,7 +325,7 @@ impl Tool for MessageParent {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "message_parent".into(),
-            description: "Write to the agent that handed you this work, while you're still on it: a question you can't settle yourself, a finding that changes its plan or another lane's, or a heads-up before something hard to undo. With wait: true you pause for its answer (up to 10 minutes) and get it back here; otherwise carry on, and an answer arrives as a [parent_message].".into(),
+            description: "Write to the agent that handed you this work, while you're still on it: a question you can't settle yourself, a finding that changes its plan or another lane's, or a heads-up before something hard to undo. With wait: true you pause for its answer (up to 10 minutes) and get it back here; otherwise carry on, and an answer arrives as a <parent_message>.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -382,7 +382,7 @@ impl Tool for MessageParent {
         if !args.wait {
             return Ok(ToolResult::success(serde_json::json!({
                 "sent": true,
-                "note": "Sent. Carry on; an answer, if one comes, arrives as a [parent_message].",
+                "note": "Sent. Carry on; an answer, if one comes, arrives as a <parent_message>.",
             })));
         }
         let answers = self.mailbox.wait(PARENT_REPLY_WAIT).await;
@@ -390,7 +390,7 @@ impl Tool for MessageParent {
             return Ok(ToolResult::success(serde_json::json!({
                 "sent": true,
                 "answer": null,
-                "note": "No answer yet. Go on with your best judgment and say in your report what you assumed; a later answer arrives as a [parent_message].",
+                "note": "No answer yet. Go on with your best judgment and say in your report what you assumed; a later answer arrives as a <parent_message>.",
             })));
         }
         Ok(ToolResult::success(serde_json::json!({
@@ -548,10 +548,11 @@ impl LaneManager {
         let Some(mailbox) = self.mailboxes.get(lane_id) else {
             return Err(format!("lane `{lane_id}` can't take messages right now."));
         };
-        mailbox.push(format!(
-            "[parent_message]\n{}\n[/parent_message]",
-            text.trim()
-        ));
+        mailbox.push(
+            crate::envelope::Envelope::new("parent_message")
+                .child("body", text)
+                .render(),
+        );
         Ok(record.title.clone())
     }
 
@@ -736,7 +737,14 @@ impl LaneManager {
         if let Some(clash) = self.scope_clash(read_only, &paths) {
             return Err(clash);
         }
-        let id = self.push_record(title, brief, read_only, agent.clone(), profile.clone(), paths);
+        let id = self.push_record(
+            title,
+            brief,
+            read_only,
+            agent.clone(),
+            profile.clone(),
+            paths,
+        );
         self.launch(&id, title, brief, false, read_only, agent, profile);
         Ok(id)
     }
@@ -848,7 +856,7 @@ impl LaneManager {
         };
         if record.status == LaneStatus::Running {
             return Err(format!(
-                "lane `{lane_id}` is still running — its report will arrive as a [lane_report]."
+                "lane `{lane_id}` is still running — its report will arrive as a <lane_report>."
             ));
         }
         // A lane lost to a restart has no live task but its state file survives —
@@ -1530,7 +1538,14 @@ async fn run_lane(
                     crate::routing::mark_limited(name, crate::routing::reset_from(None));
                 }
                 brief = format!(
-                    "{brief}\n\n[routing] An earlier attempt at this on {on} stopped partway when that model hit its usage limit. Check the workspace for changes it already made before continuing."
+                    "{brief}\n\n{}",
+                    crate::envelope::Envelope::new("routing")
+                        .attr("kind", "usage_limit_retry")
+                        .child(
+                            "note",
+                            format!("An earlier attempt at this on {on} stopped partway when that model hit its usage limit. Check the workspace for changes it already made before continuing."),
+                        )
+                        .render()
                 );
                 resume = false;
                 last = Some(message);

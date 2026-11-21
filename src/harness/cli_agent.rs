@@ -1573,18 +1573,37 @@ impl CodingHarness {
     }
 
     fn compaction_save_prompt(&self) -> Option<String> {
-        self.memory_on().then(|| format!("[compaction] This conversation is about to be compacted. {}Then reply with one line saying what you saved.", DURABLE_SAVE))
+        self.memory_on().then(|| {
+            crate::envelope::Envelope::new("compaction")
+                .attr("kind", "save")
+                .child(
+                    "note",
+                    format!("This conversation is about to be compacted. {DURABLE_SAVE}Then reply with one line saying what you saved."),
+                )
+                .render()
+        })
     }
 
     fn idle_memory_prompt(&self) -> Option<String> {
-        self.memory_on().then(|| "[memory] The user has stepped away. Before they're back, save what this conversation established since your last memory save that holds beyond it: user preferences and rules, decisions and why, root causes, project facts and conventions, in global, project or agent memory. Update or remove stale entries instead of adding duplicates, keep entries short, and commit. If nothing durable came up, change nothing. Don't continue the work. Then reply with one line saying what you saved, or that nothing needed saving.".to_string())
+        self.memory_on().then(|| {
+            crate::envelope::Envelope::new("memory")
+                .attr("kind", "idle_save")
+                .child("note", "The user has stepped away. Before they're back, save what this conversation established since your last memory save that holds beyond it: user preferences and rules, decisions and why, root causes, project facts and conventions, in global, project or agent memory. Update or remove stale entries instead of adding duplicates, keep entries short, and commit. If nothing durable came up, change nothing. Don't continue the work. Then reply with one line saying what you saved, or that nothing needed saving.")
+                .render()
+        })
     }
 
     fn agy_compaction_prompt(&self) -> String {
         let save = if self.memory_on() { DURABLE_SAVE } else { "" };
-        format!(
-            "[compaction] This conversation is about to be compacted: it will continue in a fresh conversation that starts from your summary. {save}Then reply with only the summary, about 2k tokens: the user's requests in order (one line each), the goal and what counts as done, progress (done, in progress, left), decisions and constraints, the next steps and the exact values (paths, ids, error strings) they need."
-        )
+        crate::envelope::Envelope::new("compaction")
+            .attr("kind", "summary")
+            .child(
+                "note",
+                format!(
+                    "This conversation is about to be compacted: it will continue in a fresh conversation that starts from your summary. {save}Then reply with only the summary, about 2k tokens: the user's requests in order (one line each), the goal and what counts as done, progress (done, in progress, left), decisions and constraints, the next steps and the exact values (paths, ids, error strings) they need."
+                ),
+            )
+            .render()
     }
 
     fn compact_command(&self) -> String {
@@ -3070,9 +3089,9 @@ impl CodingHarness {
                                 {
                                     report_nudges += 1;
                                     state.messages.push(HarnessMessage::User {
-                                        content: LANE_REPORT_NUDGE.to_string(),
+                                        content: lane_report_nudge(),
                                     });
-                                    outbox.push(LANE_REPORT_NUDGE.to_string());
+                                    outbox.push(lane_report_nudge());
                                     state.status = HarnessStatus::Running;
                                     self.persist(&mut state, &lanes).await?;
                                 }
@@ -3253,7 +3272,7 @@ impl CodingHarness {
                                     "status": "success",
                                     "data": {
                                         "asked": true,
-                                        "note": "The question is on the user's screen. End your turn now: make no more tool calls and don't guess the answer. Their reply arrives as your next message, starting with [answer].",
+                                        "note": "The question is on the user's screen. End your turn now: make no more tool calls and don't guess the answer. Their reply arrives as your next message, starting with <answer>.",
                                     }
                                 }));
                                 self.persist(&mut state, &lanes).await?;
@@ -5213,7 +5232,14 @@ mod devinrel_tests {
 /// How many times a lane that ends its turn without terminate_loop is asked to go on.
 const LANE_REPORT_NUDGES: usize = 3;
 
-const LANE_REPORT_NUDGE: &str = "[lane] Your turn ended without `terminate_loop`, so this lane is not finished. If work remains, carry on with it now. When it is all done, call `terminate_loop` with `summary`, `findings`, `tests` and `open`; that call is the only way a lane finishes.";
+fn lane_report_nudge() -> String {
+    crate::envelope::Envelope::new("lane")
+        .child(
+            "note",
+            "Your turn ended without `terminate_loop`, so this lane is not finished. If work remains, carry on with it now. When it is all done, call `terminate_loop` with `summary`, `findings`, `tests` and `open`; that call is the only way a lane finishes.",
+        )
+        .render()
+}
 
 /// The report a CLI run handed back through terminate_loop, if it did.
 pub(crate) fn cli_closing(events: &[HarnessEvent]) -> Option<Value> {

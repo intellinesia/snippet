@@ -141,13 +141,13 @@ impl CodingHarness {
                         if text.is_empty() {
                             continue;
                         }
-                        if text.starts_with("[Recent activity orientation") {
+                        if crate::envelope::is(text, "recent_activity") {
                             push_unique(
                                 &mut decisions,
                                 format!("- Orientation: {}", preview_text(text, 320)),
                                 MAX_SECTION_ITEMS,
                             );
-                        } else if text.starts_with("[Compressed prior thread history") {
+                        } else if crate::envelope::is(text, "compressed_history") {
                             push_unique(
                                 &mut outcomes,
                                 format!("- Prior archive: {}", preview_text(text, 320)),
@@ -236,9 +236,7 @@ impl CodingHarness {
 
             let recent_start = messages.len().saturating_sub(RECENT_DETAIL_KEEP);
             let recent_tail = &messages[recent_start..];
-            let mut recent = String::from(
-                "[Recent activity orientation — keep this in mind while continuing the thread]\n",
-            );
+            let mut recent = String::new();
             for message in recent_tail.iter().take(8) {
                 let line = match message {
                     HarnessMessage::User { content } => {
@@ -277,6 +275,10 @@ impl CodingHarness {
                 recent.push('\n');
             }
 
+            let recent = crate::envelope::Envelope::new("recent_activity")
+                .child("note", "keep this in mind while continuing the thread")
+                .child("items", recent.trim_end())
+                .render();
             (summary, recent, recent_tail.len())
         };
 
@@ -572,7 +574,7 @@ impl CodingHarness {
         if !self.config.memory_enabled {
             return system_prompt;
         }
-        match system_prompt.rfind("\n\n[memory]\n") {
+        match system_prompt.rfind("\n\n<memory>\n") {
             Some(at) => format!(
                 "{}\n\n{}",
                 &system_prompt[..at],

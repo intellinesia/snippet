@@ -14,43 +14,90 @@ pub(crate) fn notice_text(event: &HarnessEvent) -> Option<String> {
             agent_id,
             body,
             outbound,
-        } if agent_id == "ambient mode" && !*outbound => Some(format!(
-            "[ambient mode] {body}\nContext only: no reply needed. Adjust how you answer to match the mode."
-        )),
+        } if agent_id == "ambient mode" && !*outbound => Some(
+            crate::envelope::Envelope::new("ambient_mode")
+                .child("body", body)
+                .child(
+                    "note",
+                    "Context only: no reply needed. Adjust how you answer to match the mode.",
+                )
+                .render(),
+        ),
         HarnessEvent::AgentMessage {
             agent_id,
             body,
             outbound,
-        } if agent_id == "voice classifier" && !*outbound => Some(format!(
-            "[heard, voice classifier] {body}\nContext only: the user did not address you. Do not reply or speak; use it to stay informed, and act only if it clearly matters to current work."
-        )),
+        } if agent_id == "voice classifier" && !*outbound => Some(
+            crate::envelope::Envelope::new("heard")
+                .attr("source", "voice classifier")
+                .child("body", body)
+                .child(
+                    "note",
+                    "Context only: the user did not address you. Do not reply or speak; use it to stay informed, and act only if it clearly matters to current work.",
+                )
+                .render(),
+        ),
         HarnessEvent::AgentMessage {
             agent_id,
             body,
             outbound,
-        } if agent_id == "room digest" && !*outbound => Some(format!(
-            "[room digest] {body}\nContext only: what was said around the user while they were not talking to you. Do not reply or speak. Keep items marked remember the way you keep other remembered notes, with the event ids as source."
-        )),
+        } if agent_id == "room digest" && !*outbound => Some(
+            crate::envelope::Envelope::new("room_digest")
+                .child("body", body)
+                .child(
+                    "note",
+                    "Context only: what was said around the user while they were not talking to you. Do not reply or speak. Keep items marked remember the way you keep other remembered notes, with the event ids as source.",
+                )
+                .render(),
+        ),
         HarnessEvent::AgentMessage {
             agent_id,
             body,
             outbound,
-        } => Some(if *outbound {
-            format!("[sent to {agent_id}]\n{body}")
-        } else {
-            format!("[reply from {agent_id}]\n{body}")
-        }),
+        } => Some(
+            crate::envelope::Envelope::new(if *outbound { "sent_to" } else { "reply_from" })
+                .attr("agent", agent_id)
+                .child("body", body)
+                .render(),
+        ),
         HarnessEvent::TaskDispatched {
             task_id,
             title,
             session_id,
             by,
-        } => Some(format!(
-            "[dispatched by {by}] {title}\ntask {task_id} → session {session_id}\nInformational: this work is already routed to a worker and will report back on its own. \
-             Do not dispatch it again."
-        )),
+        } => Some(
+            crate::envelope::Envelope::new("dispatched_by")
+                .attr("by", by)
+                .attr("title", title)
+                .attr("task_id", task_id)
+                .attr("session_id", session_id)
+                .child(
+                    "note",
+                    "Informational: this work is already routed to a worker and will report back on its own. Do not dispatch it again.",
+                )
+                .render(),
+        ),
         _ => None,
     }
+}
+
+/// A history summary as a provider sends it; content that is already an envelope goes through as is.
+pub(crate) fn summary_envelope(kind: &str, content: &str) -> String {
+    if crate::envelope::kind(content).is_some() {
+        return content.to_string();
+    }
+    crate::envelope::Envelope::new("summary")
+        .attr("kind", kind)
+        .child("body", content)
+        .render()
+}
+
+/// A tool result replayed as plain user text when its call is no longer in the history.
+pub(crate) fn tool_result_envelope(tool: &str, output: &str) -> String {
+    crate::envelope::Envelope::new("tool_result")
+        .attr("tool", tool)
+        .child("output", output)
+        .render()
 }
 
 pub(super) fn queue_held(state: &mut HarnessState, item: QueuedInput) {
@@ -211,22 +258,20 @@ pub(super) fn answered_since_last_user(events: &[HarnessEvent]) -> bool {
 }
 
 const SILENT_OK_INPUTS: &[&str] = &[
-    "<ambient_",
-    "<call_ended",
-    "[ambient mode]",
-    "[heard, voice classifier]",
-    "[recording]",
-    "[dispatched by",
-    "[coordination_board_message]",
-    "[task_plan]",
-    "[task_offer]",
-    "[mission_task_report]",
-    "[automated_wake]",
-    "[worker_question]",
-    "[recurring_run_report]",
-    "[agent_wake_report]",
-    "[direct_message]",
-    "[agent_reply]",
+    "ambient_mode",
+    "heard",
+    "recording",
+    "dispatched_by",
+    "coordination_board_message",
+    "task_plan",
+    "task_offer",
+    "mission_task_report",
+    "automated_wake",
+    "worker_question",
+    "recurring_run_report",
+    "agent_wake_report",
+    "direct_message",
+    "agent_reply",
 ];
 
 /// Whether the latest input is an ambient line or a daemon envelope, where
@@ -243,7 +288,9 @@ pub(super) fn last_input_allows_silence(events: &[HarnessEvent]) -> bool {
         .strip_prefix(steer_message("").trim_end())
         .map(str::trim_start)
         .unwrap_or(text);
-    SILENT_OK_INPUTS.iter().any(|tag| text.starts_with(tag))
+    text.starts_with("<ambient_")
+        || text.starts_with("<call_ended")
+        || crate::envelope::kind(text).is_some_and(|tag| SILENT_OK_INPUTS.contains(&tag))
 }
 
 /// Whether an empty final turn should be re-prompted for a reply. Mission

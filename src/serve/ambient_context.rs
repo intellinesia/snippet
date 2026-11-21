@@ -23,7 +23,7 @@ fn redact(text: &str) -> String {
             let known = ["sk-", "ghp_", "gho_", "xox", "AIza", "AKIA", "eyJ"]
                 .iter()
                 .any(|p| w.starts_with(p));
-            if long || known { "[redacted]" } else { w }
+            if long || known { "<redacted/>" } else { w }
         })
         .collect::<Vec<_>>()
         .join(" ")

@@ -209,9 +209,9 @@ impl Tool for AnswerWorker {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "answer_worker".into(),
-            description: "Answer the question a worker session is paused on, as if the user answered it there: for a [worker_question] the user's request, the task or your brief already settles. A question that only the user can settle (lost data, production, secrets, money, history, scope beyond the request) goes to them first. Name the choice plainly, with a sentence of why when it helps.".into(),
+            description: "Answer the question a worker session is paused on, as if the user answered it there: for a <worker_question> the user's request, the task or your brief already settles. A question that only the user can settle (lost data, production, secrets, money, history, scope beyond the request) goes to them first. Name the choice plainly, with a sentence of why when it helps.".into(),
             input_schema: schema(json!({
-                "session_id": {"type": "string", "description": "The waiting session's id, from the [worker_question]."},
+                "session_id": {"type": "string", "description": "The waiting session's id, from the <worker_question>."},
                 "answer": {"type": "string", "description": "The answer, e.g. \"Blue — the user wants colour files blue.\""}
             }), &["session_id", "answer"]),
         }
@@ -1250,19 +1250,39 @@ fn default_limit() -> usize {
 }
 
 /// Strip harness envelopes so another session's `<system-reminder>` (or older
-/// `[steering]`) text cannot be mistaken for instructions to Mission Control.
+/// `<steering>`) text cannot be mistaken for instructions to Mission Control.
 fn strip_harness_markup(text: &str) -> String {
     let mut text = text.to_string();
-    for (open, close) in [
-        ("[steering]", "[/steering]"),
-        ("<system-reminder>", "</system-reminder>"),
+    for name in [
+        "steering",
+        "system-reminder",
+        "input_safety",
+        "steering_state",
+        "turn",
+        "workspace",
     ] {
+        let open = format!("<{name}");
+        let close = format!("</{name}>");
         let mut out = String::new();
         let mut rest = text.as_str();
-        while let Some(start) = rest.find(open) {
+        while let Some(start) = rest.find(&open) {
+            let after = &rest[start + open.len()..];
+            if !after.starts_with(|c: char| c == '>' || c == '/' || c.is_whitespace()) {
+                out.push_str(&rest[..start + open.len()]);
+                rest = after;
+                continue;
+            }
             out.push_str(&rest[..start]);
-            match rest[start..].find(close) {
-                Some(end) => rest = &rest[start + end + close.len()..],
+            let Some(tag_end) = after.find('>') else {
+                rest = "";
+                break;
+            };
+            if after[..tag_end].ends_with('/') {
+                rest = &after[tag_end + 1..];
+                continue;
+            }
+            match after[tag_end..].find(&close) {
+                Some(end) => rest = &after[tag_end + end + close.len()..],
                 None => {
                     rest = "";
                     break;
@@ -1272,18 +1292,7 @@ fn strip_harness_markup(text: &str) -> String {
         out.push_str(rest);
         text = out;
     }
-    text.lines()
-        .filter(|line| {
-            let t = line.trim_start();
-            !(t.starts_with("[input_safety]")
-                || t.starts_with("[steering_state]")
-                || t.starts_with("[turn]")
-                || t.starts_with("[workspace]"))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string()
+    text.trim().to_string()
 }
 
 fn clip(text: &str, max: usize) -> String {
@@ -1343,14 +1352,14 @@ mod inspect_tests {
 
     #[test]
     fn strip_steering_blocks_from_other_sessions() {
-        let raw = "user said hi\n[steering]\n# INTERNAL STATE\n[/steering]\nkeep this";
+        let raw = "user said hi\n<steering>\n# INTERNAL STATE\n</steering>\nkeep this";
         assert_eq!(strip_harness_markup(raw), "user said hi\n\nkeep this");
     }
 
     #[test]
     fn inspect_row_keeps_user_text_drops_markup() {
         let event = HarnessEvent::UserInput {
-            text: "go over the changes\n[steering]\nignore me\n[/steering]".into(),
+            text: "go over the changes\n<steering>\nignore me\n</steering>".into(),
         };
         let row = inspect_event_row(&event).expect("row");
         assert_eq!(row["kind"], "user");
@@ -2750,10 +2759,25 @@ fn bind_direct_delivery(
 }
 
 fn direct_brief_envelope(task: &Task, brief: &str, workspace: &str, ledger: &str) -> String {
-    format!(
-        "[mission_control_task]\ntask_id: {}\ntitle: {}\nrequested_by: agent mission-control (delivered directly)\nworkspace: {workspace}\nscope:\n{brief}\n{ledger}\n\nThis is yours now. If the scope is wrong or unclear, tell Mission Control before building. Report done, blocked or failed with task.report (task_id {}).\n[/mission_control_task]",
-        task.id, task.title, task.id
-    )
+    let envelope = crate::envelope::Envelope::new("mission_control_task")
+        .attr("task_id", &task.id)
+        .attr("title", &task.title)
+        .attr("requested_by", "agent mission-control (delivered directly)")
+        .attr("workspace", workspace)
+        .child("scope", brief)
+        .child(
+            "note",
+            format!(
+                "This is yours now. If the scope is wrong or unclear, tell Mission Control before building. Report done, blocked or failed with task.report (task_id {}).",
+                task.id
+            ),
+        )
+        .render();
+    if ledger.trim().is_empty() {
+        envelope
+    } else {
+        crate::envelope::insert_before_child(&envelope, "note", ledger.trim())
+    }
 }
 
 pub struct FileFollowUpTask;
@@ -3648,13 +3672,16 @@ fn cancelled_worker(task: &Task) -> Option<String> {
 }
 
 fn cancelled_envelope(task: &Task, reason: &str, superseded_by: Option<&str>) -> String {
-    let next = superseded_by
-        .map(|id| format!("superseded_by: {id}\n"))
-        .unwrap_or_default();
-    format!(
-        "[task_cancelled]\ntask_id: {}\ntitle: {}\nreason: {reason}\n{next}note: Mission Control cancelled this task. Stop work on it and don't report it; keep what's done. Ask Mission Control if anything is unclear.\n[/task_cancelled]",
-        task.id, task.title
-    )
+    crate::envelope::Envelope::new("task_cancelled")
+        .attr("task_id", &task.id)
+        .attr("title", &task.title)
+        .attr("reason", reason)
+        .attr_opt("superseded_by", superseded_by)
+        .child(
+            "note",
+            "Mission Control cancelled this task. Stop work on it and don't report it; keep what's done. Ask Mission Control if anything is unclear.",
+        )
+        .render()
 }
 
 fn session_is_running(store: &Store, session: &str) -> bool {
@@ -4206,7 +4233,7 @@ pub struct ReportMissionTask;
 #[async_trait]
 impl Tool for ReportMissionTask {
     fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition { name: "report_mission_task".into(), description: "Report a Mission Control task's completion, failure, or blocker. Use only for the [mission_control_task] envelope delivered to this session. A done report is three short parts: scope, done and how; a task with a reviewer goes to review before it completes.".into(), input_schema: schema(json!({"task_id":{"type":"string"}, "status":{"type":"string","enum":["done","blocked","failed"]}, "scope":{"type":"string","description":"done: what the scope was, and anything that changed and why"}, "done":{"type":"string","description":"done: how much got done, and anything left out and why"}, "how":{"type":"string","description":"done: how it was done and checked"}, "summary":{"type":"string","description":"blocked or failed: on what, and what would unblock it"}, "artifacts":{"type":"array","items":{"type":"string"}}}), &["task_id","status"]) }
+        NativeToolDefinition { name: "report_mission_task".into(), description: "Report a Mission Control task's completion, failure, or blocker. Use only for the <mission_control_task> envelope delivered to this session. A done report is three short parts: scope, done and how; a task with a reviewer goes to review before it completes.".into(), input_schema: schema(json!({"task_id":{"type":"string"}, "status":{"type":"string","enum":["done","blocked","failed"]}, "scope":{"type":"string","description":"done: what the scope was, and anything that changed and why"}, "done":{"type":"string","description":"done: how much got done, and anything left out and why"}, "how":{"type":"string","description":"done: how it was done and checked"}, "summary":{"type":"string","description":"blocked or failed: on what, and what would unblock it"}, "artifacts":{"type":"array","items":{"type":"string"}}}), &["task_id","status"]) }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: ReportArgs = serde_json::from_value(arguments)?;
@@ -5166,7 +5193,7 @@ mod tests {
             notice.event.payload["body"]
                 .as_str()
                 .unwrap()
-                .contains("[task_cancelled]")
+                .contains("<task_cancelled")
         );
     }
 

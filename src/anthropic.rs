@@ -1066,7 +1066,7 @@ fn prepare_messages(
                 );
             }
             HarnessMessage::Summary { kind, content } => {
-                let text = format!("[summary:{kind}]\n{content}\n[/summary]");
+                let text = crate::harness::summary_envelope(kind, content);
                 push_block(&mut prepared, "user", text_block(text));
             }
         }

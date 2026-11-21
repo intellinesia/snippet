@@ -717,12 +717,13 @@ mod tests {
         let c = store.get_task("c").unwrap().unwrap();
         let full = crate::coordination::goals::goal_block(&store, &c, true);
         for needle in [
-            "goal: Launch: Site is live",
-            "goal acceptance: loads",
-            "this is slice 2",
+            "<goal title=\"Launch\">",
+            "<outcome>Site is live</outcome>",
+            "<acceptance>loads</acceptance>",
+            "<this label=\"slice 2\">",
             "slice 0 \"Slice a\" (done",
             "slice 1 \"Slice b\" (in progress",
-            "reports from finished slices",
+            "<finished_slice_reports>",
             "schema shipped",
         ] {
             assert!(full.contains(needle), "{needle} missing in\n{full}");

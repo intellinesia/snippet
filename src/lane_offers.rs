@@ -151,7 +151,12 @@ impl Store {
         })
     }
 
-    pub fn merge_lane_offer(&self, id: &str, addition: &str, now: &str) -> Result<bool, StoreError> {
+    pub fn merge_lane_offer(
+        &self,
+        id: &str,
+        addition: &str,
+        now: &str,
+    ) -> Result<bool, StoreError> {
         self.with_connection(|conn| {
             Ok(conn.execute(
                 "UPDATE lane_offers SET brief = brief || ?2, updated_at = ?3
@@ -281,7 +286,9 @@ pub fn withdraw(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("lane offer `{offer_id}` not found"))?;
     if offer.session_id != session_id {
-        return Err(format!("lane offer `{offer_id}` was made by another session"));
+        return Err(format!(
+            "lane offer `{offer_id}` was made by another session"
+        ));
     }
     let now = chrono::Utc::now().to_rfc3339();
     if !store
@@ -303,7 +310,10 @@ pub fn withdraw(
         &crate::coordination::NewBoardEntry {
             session_id: Some(session_id),
             workspace: None,
-            summary: &format!("{offer_id} — lane offer withdrawn: {} — {reason}", offer.title),
+            summary: &format!(
+                "{offer_id} — lane offer withdrawn: {} — {reason}",
+                offer.title
+            ),
             correlation_id: Some(offer_id),
             created_at: &now,
         },
@@ -312,13 +322,16 @@ pub fn withdraw(
 }
 
 pub fn declined_notice(offer: &LaneOffer) -> String {
-    format!(
-        "[lane_offer_declined]\noffer_id: {}\nagent: {}\ntitle: {}\nreason: {}\n[/lane_offer_declined]\nDo the piece yourself, offer it to another agent, or change the brief and offer again.",
-        offer.id,
-        offer.agent_id,
-        offer.title,
-        offer.note.as_deref().unwrap_or("none given")
-    )
+    crate::envelope::Envelope::new("lane_offer_declined")
+        .attr("offer_id", &offer.id)
+        .attr("agent", &offer.agent_id)
+        .attr("title", &offer.title)
+        .attr("reason", offer.note.as_deref().unwrap_or("none given"))
+        .child(
+            "note",
+            "Do the piece yourself, offer it to another agent, or change the brief and offer again.",
+        )
+        .render()
 }
 
 pub fn is_offer_id(id: &str) -> bool {
@@ -337,14 +350,19 @@ pub fn offer_body(offer: &LaneOffer, merged: bool) -> String {
     } else {
         "A session wants a lane worked as you."
     };
-    format!(
-        "[lane_offer]\noffer_id: {}\nfrom_session: {}\ntitle: {}\naccess: {access}\npaths: {paths}\nprofile: {}\nbrief:\n{}\n[/lane_offer]\n{heading} Claim it with task.claim (task_id: the offer id) and pass `context` with what the lane should know from your memory, skills or past work; it is added to the lane's brief. Decline with a reason if it isn't yours.",
-        offer.id,
-        offer.session_id,
-        offer.title,
-        offer.profile.as_deref().unwrap_or("the session's"),
-        offer.brief,
-    )
+    crate::envelope::Envelope::new("lane_offer")
+        .attr("offer_id", &offer.id)
+        .attr("from_session", &offer.session_id)
+        .attr("title", &offer.title)
+        .attr("access", access)
+        .attr("paths", paths)
+        .attr("profile", offer.profile.as_deref().unwrap_or("the session's"))
+        .child("brief", &offer.brief)
+        .child(
+            "note",
+            format!("{heading} Claim it with task.claim (task_id: the offer id) and pass `context` with what the lane should know from your memory, skills or past work; it is added to the lane's brief. Decline with a reason if it isn't yours."),
+        )
+        .render()
 }
 
 pub fn lane_brief(offer: &LaneOffer) -> String {
@@ -373,7 +391,9 @@ pub fn offer_lane(
     let title = request.title.as_str();
     let now = chrono::Utc::now().to_rfc3339();
     let since = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
-    if store.pending_lane_offer(session_id, agent_id, title)?.is_none()
+    if store
+        .pending_lane_offer(session_id, agent_id, title)?
+        .is_none()
         && let Some(claimed) =
             store.recently_claimed_lane_offer(session_id, agent_id, title, &since)?
     {
