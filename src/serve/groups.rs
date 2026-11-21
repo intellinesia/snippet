@@ -175,16 +175,16 @@ fn group_added_envelope(group: &crate::coordination::GroupSummary) -> String {
         .filter(|m| m.kind == "agent")
         .map(|m| m.id.as_str())
         .collect();
-    format!(
-        "[group_added]\nthread_id: {}\ntitle: {}\nmembers: {}\nlead: {}\n\
-         note: you were added to this group chat. Nothing to do now: do not post and write \
-         nothing, just end your turn. Posts reach you as [group_message]; answer with message.group (op: post).\n\
-         [/group_added]",
-        group.id,
-        group.title,
-        members.join(", "),
-        group.lead.as_deref().unwrap_or("none"),
-    )
+    crate::envelope::Envelope::new("group_added")
+        .attr("thread_id", &group.id)
+        .attr("title", &group.title)
+        .attr("members", members.join(", "))
+        .attr("lead", group.lead.as_deref().unwrap_or("none"))
+        .child(
+            "note",
+            "you were added to this group chat. Nothing to do now: do not post and write nothing, just end your turn. Posts reach you as <group_message>; answer with message.group (op: post).",
+        )
+        .render()
 }
 
 /// Tell each newly added agent's desk it joined the group, in the background.
@@ -387,7 +387,7 @@ async fn post_group(
     }
 }
 
-/// The `[group_message]` envelope handed to a woken agent. `history` is the
+/// The `<group_message>` envelope handed to a woken agent. `history` is the
 /// prior slice of the thread, rendered by the same digest the DM envelope uses.
 /// `members` pairs each agent in the group with the one-line summary of what
 /// it is for, so a woken agent can tell who is better placed for what.
@@ -425,87 +425,87 @@ fn group_message_envelope(
         .flatten()
         .filter_map(|v| v.as_str())
         .collect();
-    let mut envelope = format!(
-        "[group_message]\nthread_id: {}\ntitle: {}\nfrom: {}:{}\n",
-        event.thread_id, title, event.actor_kind, event.actor_id
-    );
-    if !members.is_empty() {
-        let line: Vec<String> = members
-            .iter()
-            .map(|(id, summary)| {
-                let summary: String = summary.chars().take(120).collect();
-                if summary.is_empty() {
-                    id.clone()
-                } else {
-                    format!("{id} ({summary})")
-                }
-            })
-            .collect();
-        envelope.push_str(&format!("members: {}\n", line.join("; ")));
-    }
-    if !mentions.is_empty() {
-        envelope.push_str(&format!("mentions: {}\n", mentions.join(", ")));
-    }
-    if let Some(post_id) = event.payload.get("in_reply_to").and_then(|v| v.as_str()) {
-        envelope.push_str(&format!("in_reply_to: {post_id}\n"));
-    }
-    match lead {
-        Some((_, true)) => envelope.push_str(
-            "lead: you. You lead this round: you own what it commits to (a schedule, a \
-             follow-up, the summary the user gets). Say so in your post when you take one on, \
-             and see it through.\n",
+    let member_line: Vec<String> = members
+        .iter()
+        .map(|(id, summary)| {
+            let summary: String = summary.chars().take(120).collect();
+            if summary.is_empty() {
+                id.clone()
+            } else {
+                format!("{id} ({summary})")
+            }
+        })
+        .collect();
+    let mut envelope = crate::envelope::Envelope::new("group_message")
+        .attr("event_id", &event.event_id)
+        .attr("thread_id", &event.thread_id)
+        .attr("title", title)
+        .attr("from", format!("{}:{}", event.actor_kind, event.actor_id))
+        .attr("mentions", mentions.join(", "))
+        .attr_opt(
+            "in_reply_to",
+            event.payload.get("in_reply_to").and_then(|v| v.as_str()),
+        )
+        .attr(
+            "reply_expected",
+            if reply_expected { "true" } else { "false" },
+        )
+        .child("members", member_line.join("; "));
+    envelope = match lead {
+        Some((_, true)) => envelope.child_with(
+            "lead",
+            &[("agent", "you")],
+            "You lead this round: you own what it commits to (a schedule, a follow-up, the summary the user gets). Say so in your post when you take one on, and see it through.",
         ),
-        Some((lead, false)) => envelope.push_str(&format!(
-            "lead: {lead} (owns this round's follow-ups and the summary to the user)\n"
-        )),
-        None => {}
-    }
-    let digest = super::direct::history_digest(history);
+        Some((lead, false)) => envelope.child_with(
+            "lead",
+            &[("agent", lead)],
+            "owns this round's follow-ups and the summary to the user",
+        ),
+        None => envelope,
+    };
+    let note = if wake == GroupWakeKind::Peer {
+        "another member just posted this. You are not asked to answer. If it covers \
+         what you were doing or about to say, stop and end your turn quietly. If you \
+         are still working on something it does not cover, you may post one line saying \
+         what (a heartbeat), or add what only you know. Otherwise end your turn without \
+         writing anything."
+    } else if !replies.is_empty() {
+        "this post has already been answered (replies below). Read them; post only if \
+         you add something they do not cover, and do not redo work someone has taken. \
+         Otherwise end your turn without writing anything, not even that you are staying quiet."
+    } else if reply_expected {
+        "this post is waiting on the group; answer in the thread with \
+         message.group (op: post), setting in_reply_to to the event you answer. \
+         One reply per agent per post. Before doing work from it, say in one line \
+         what you are taking; hand the parts another member is better placed for \
+         to them by naming them, instead of doing everything yourself."
+    } else {
+        "join only if you add something: an answer, a relevant view, a correction. \
+         If someone has already answered or said they are taking this, do not redo it; \
+         take only what is yours and say so in one line first. \
+         Otherwise end your turn without writing anything, not even that you are staying quiet."
+    };
+    envelope = envelope.child(
+        "note",
+        format!("{note} Recent history only; use read.thread for more."),
+    );
+    envelope = super::direct::with_history(envelope, history).child("body", body);
     let mut answered = String::new();
-    if !replies.is_empty() {
-        answered.push_str("replies so far:\n");
-        for reply in replies {
-            let text = reply
-                .payload
-                .get("body")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let text: String = text.chars().take(400).collect();
-            answered.push_str(&format!(
-                "- {}: {}\n",
-                reply.actor_id,
-                text.replace('\n', " ")
-            ));
-        }
+    for reply in replies {
+        let text = reply
+            .payload
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let text: String = text.chars().take(400).collect();
+        answered.push_str(&format!(
+            "- {}: {}\n",
+            reply.actor_id,
+            text.replace('\n', " ")
+        ));
     }
-    envelope.push_str(&format!(
-        "reply_expected: {}\nnote: {} Recent history only; use read.thread for more.\n\
-         {digest}body: {body}\n{answered}[/group_message]",
-        if reply_expected { "true" } else { "false" },
-        if wake == GroupWakeKind::Peer {
-            "another member just posted this. You are not asked to answer. If it covers \
-             what you were doing or about to say, stop and end your turn quietly. If you \
-             are still working on something it does not cover, you may post one line saying \
-             what (a heartbeat), or add what only you know. Otherwise end your turn without \
-             writing anything."
-        } else if !replies.is_empty() {
-            "this post has already been answered (replies below). Read them; post only if \
-             you add something they do not cover, and do not redo work someone has taken. \
-             Otherwise end your turn without writing anything, not even that you are staying quiet."
-        } else if reply_expected {
-            "this post is waiting on the group; answer in the thread with \
-             message.group (op: post), setting in_reply_to to the event you answer. \
-             One reply per agent per post. Before doing work from it, say in one line \
-             what you are taking; hand the parts another member is better placed for \
-             to them by naming them, instead of doing everything yourself."
-        } else {
-            "join only if you add something: an answer, a relevant view, a correction. \
-             If someone has already answered or said they are taking this, do not redo it; \
-             take only what is yours and say so in one line first. \
-             Otherwise end your turn without writing anything, not even that you are staying quiet."
-        }
-    ));
-    envelope
+    envelope.child("replies_so_far", answered).render()
 }
 
 /// The nudge the lead gets when a human's post has had no reply from anyone
@@ -519,13 +519,17 @@ fn group_unanswered_envelope(
         .get("body")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    format!(
-        "[owed_reply]\nfrom: {}:{}\nthread_id: {}\nevent_id: {}\nwaiting_minutes: {waiting_minutes}\n\
-         note: nobody in the group has answered this post and you lead the group. \
-         Answer it with message.group (op: post, in_reply_to this event), or name in one line \
-         the member who should and mention them.\nbody: {body}\n[/owed_reply]",
-        event.actor_kind, event.actor_id, event.thread_id, event.event_id
-    )
+    crate::envelope::Envelope::new("owed_reply")
+        .attr("from", format!("{}:{}", event.actor_kind, event.actor_id))
+        .attr("thread_id", &event.thread_id)
+        .attr("event_id", &event.event_id)
+        .attr("waiting_minutes", waiting_minutes.to_string())
+        .child(
+            "note",
+            "nobody in the group has answered this post and you lead the group. Answer it with message.group (op: post, in_reply_to this event), or name in one line the member who should and mention them.",
+        )
+        .child("body", body)
+        .render()
 }
 
 /// What a deferred wake did: handed over, found moot, or pushed back because
@@ -750,10 +754,9 @@ mod tests {
             replying: vec![],
         };
         let e = super::group_added_envelope(&group);
-        assert!(e.starts_with("[group_added]\nthread_id: group:1\ntitle: jh\n"));
-        assert!(e.contains("members: x-scout, snippet\nlead: snippet\n"));
+        assert!(e.starts_with("<group_added thread_id=\"group:1\" title=\"jh\" members=\"x-scout, snippet\" lead=\"snippet\">"));
         assert!(e.contains("do not post"));
-        assert!(e.ends_with("[/group_added]"));
+        assert!(e.ends_with("</group_added>"));
     }
 
     use super::*;
@@ -934,7 +937,7 @@ mod tests {
         assert!(env.contains("already been answered"));
         assert!(env.contains("- snippet: I'll take the scripts"));
         let peer = group_message_envelope(&reply, "t", GroupWakeKind::Peer, &[], &[], &[], None);
-        assert!(peer.contains("reply_expected: false"));
+        assert!(peer.contains("reply_expected=\"false\""));
         assert!(peer.contains("heartbeat"));
     }
 
@@ -975,15 +978,15 @@ mod tests {
             None,
         );
         for field in [
-            "thread_id: group:x",
-            "title: build",
-            "members: a (Reviews Rust PRs.); b",
-            "from: human:human",
-            "mentions: b",
-            "in_reply_to: p0",
-            "reply_expected: true",
+            "thread_id=\"group:x\"",
+            "title=\"build\"",
+            "<members>a (Reviews Rust PRs.); b</members>",
+            "from=\"human:human\"",
+            "mentions=\"b\"",
+            "in_reply_to=\"p0\"",
+            "reply_expected=\"true\"",
             "say in one line what you are taking",
-            "body: hi",
+            "<body>hi</body>",
         ] {
             assert!(expected.contains(field), "missing {field} in {expected}");
         }
@@ -998,7 +1001,7 @@ mod tests {
         );
         assert!(!deferred.contains("members:"));
         assert!(deferred.contains("do not redo it"));
-        assert!(deferred.contains("reply_expected: false"));
+        assert!(deferred.contains("reply_expected=\"false\""));
         assert!(!deferred.contains("lead:"));
         let led = group_message_envelope(
             &event,
@@ -1009,7 +1012,7 @@ mod tests {
             &[],
             Some(("b", true)),
         );
-        assert!(led.contains("lead: you. You lead this round"));
+        assert!(led.contains("<lead agent=\"you\">You lead this round"));
         let other = group_message_envelope(
             &event,
             "build",
@@ -1019,7 +1022,7 @@ mod tests {
             &[],
             Some(("b", false)),
         );
-        assert!(other.contains("lead: b (owns this round's follow-ups"));
+        assert!(other.contains("<lead agent=\"b\">owns this round's follow-ups"));
         assert!(
             deferred.contains(
                 "join only if you add something: an answer, a relevant view, a correction."
@@ -1082,20 +1085,20 @@ mod tests {
             &[],
             None,
         );
-        assert!(env.contains("history: last 2 message(s), oldest first"));
-        assert!(env.contains("  1 [agent] a: first post"));
-        assert!(env.contains("  2 [human] human: second post"));
+        assert!(env.contains("<history messages=\"2\" order=\"oldest first\">"));
+        assert!(env.contains("1 agent:a: first post"));
+        assert!(env.contains("2 human:human: second post"));
         assert!(!env.contains("auto ack"));
         assert!(env.contains("Recent history only; use read.thread for more."));
-        let digest_at = env.find("history:").expect("digest present");
-        let body_at = env.find("body: wake body").expect("body present");
+        let digest_at = env.find("<history").expect("digest present");
+        let body_at = env.find("<body>wake body</body>").expect("body present");
         assert!(digest_at < body_at, "body must stay last: {env}");
-        assert!(env.ends_with("[/group_message]"));
+        assert!(env.ends_with("</group_message>"));
 
         let env =
             group_message_envelope(&event, "build", GroupWakeKind::Asked, &[], &[], &[], None);
-        assert!(env.contains("history: (first message in this conversation)"));
-        assert!(env.find("history:").unwrap() < env.find("body: wake body").unwrap());
+        assert!(env.contains("<history>(first message in this conversation)</history>"));
+        assert!(env.find("<history").unwrap() < env.find("<body>wake body</body>").unwrap());
     }
 
     #[test]

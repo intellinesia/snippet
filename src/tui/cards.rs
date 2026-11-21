@@ -18,35 +18,20 @@ fn short(id: &str) -> String {
 }
 
 fn field(text: &str, name: &str) -> String {
-    let prefix = format!("{name}:");
-    text.lines()
-        .find_map(|l| l.strip_prefix(&prefix))
+    crate::envelope::attr(text, name)
+        .or_else(|| crate::envelope::child(text, name))
         .map(|v| v.trim().to_string())
         .unwrap_or_default()
 }
 
-fn last_body(text: &str, close: &str) -> String {
-    let end = text.rfind(close).unwrap_or(text.len());
-    match text[..end].rfind("\nbody: ") {
-        Some(start) => text[start + "\nbody: ".len()..end].trim().to_string(),
-        None => String::new(),
-    }
+fn last_body(text: &str) -> String {
+    crate::envelope::child(text, "body")
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default()
 }
 
 fn task_scope(text: &str) -> String {
-    let inline = field(text, "scope");
-    if !inline.is_empty() {
-        return inline;
-    }
-    let Some(start) = text.find("\nscope:\n") else {
-        return String::new();
-    };
-    let rest = &text[start + "\nscope:\n".len()..];
-    let cut = rest
-        .find("\n\nBegin now.")
-        .or_else(|| rest.find("[/mission_control_task]"))
-        .unwrap_or(rest.len());
-    rest[..cut].trim().to_string()
+    field(text, "scope")
 }
 
 fn thread_ref(id: &str) -> String {
@@ -58,7 +43,7 @@ fn thread_ref(id: &str) -> String {
 
 pub(super) fn envelope_card(text: &str) -> Option<Card> {
     let t = text.trim();
-    if t.contains("[mission_task_report]") {
+    if crate::envelope::is(t, "mission_task_report") {
         let status = field(t, "status");
         let (glyph, tone, label) = match status.as_str() {
             "done" | "completed" => ("✓", success(), "Done"),
@@ -82,7 +67,7 @@ pub(super) fn envelope_card(text: &str) -> Option<Card> {
             footer: None,
         });
     }
-    if t.contains("[mission_control_task]") {
+    if crate::envelope::is(t, "mission_control_task") {
         let id = field(t, "task_id");
         let title = field(t, "title");
         return Some(Card {
@@ -100,7 +85,7 @@ pub(super) fn envelope_card(text: &str) -> Option<Card> {
             footer: None,
         });
     }
-    if t.contains("[direct_message]") {
+    if crate::envelope::is(t, "direct_message") {
         let from = field(t, "from");
         let who = if field(t, "from_kind") == "human" || from == "local" || from.is_empty() {
             "you".to_string()
@@ -114,11 +99,11 @@ pub(super) fn envelope_card(text: &str) -> Option<Card> {
             reference: None,
             status: "Message".into(),
             title: None,
-            body: last_body(t, "[/direct_message]"),
+            body: last_body(t),
             footer: None,
         });
     }
-    if t.contains("[coordination_board_message]") {
+    if crate::envelope::is(t, "coordination_board_message") {
         let from = field(t, "from_id");
         let thread = field(t, "thread_id");
         let task = field(t, "task_title");
@@ -132,7 +117,7 @@ pub(super) fn envelope_card(text: &str) -> Option<Card> {
             reference: (!thread.is_empty()).then(|| thread_ref(&thread)),
             status: "Posted".into(),
             title: Some(task).filter(|s| !s.is_empty()),
-            body: last_body(t, "[/coordination_board_message]"),
+            body: last_body(t),
             footer: None,
         });
     }

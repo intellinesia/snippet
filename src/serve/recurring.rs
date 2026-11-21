@@ -265,12 +265,14 @@ async fn report_wake(
             Err(error) => format!("user: failed: {error}"),
         },
         ReportTo::MissionControl => {
-            let text = format!(
-                "[agent_wake_report]\nowner: {}\nschedule: {}\nsession_id: {}\nstatus: {status}\nsummary: {summary}\n[/agent_wake_report]\nA scheduled wake finished. Pass on what's worth the user's attention or act on it; otherwise no reply.",
-                wake.owner,
-                job.schedule.display(),
-                job.session_id,
-            );
+            let text = crate::envelope::Envelope::new("agent_wake_report")
+                .attr("owner", &wake.owner)
+                .attr("schedule", job.schedule.display().to_string())
+                .attr("session_id", &job.session_id)
+                .attr("status", status.to_string())
+                .child("summary", &summary)
+                .child("instructions", "A scheduled wake finished. Pass on what's worth the user's attention or act on it; otherwise no reply.")
+                .render();
             if super::mission_control::open_mission_control(daemon, None)
                 .await
                 .is_ok()
@@ -431,10 +433,13 @@ async fn report_run_to_mission_control(
         });
         return "mission_control: next wake";
     }
-    let text = format!(
-        "[recurring_run_report]\njob: {label}\nsession_id: {session_id}\nstatus: {status}\nsummary: {}\n[/recurring_run_report]\nWorkflow W6 · recurring run report: pass on what's worth the user's attention, note it in your brief if it changes anything, then stop. Don't read the session's files or logs; this report is the outcome.",
-        summary.trim()
-    );
+    let text = crate::envelope::Envelope::new("recurring_run_report")
+        .attr("job", label)
+        .attr("session_id", session_id)
+        .attr("status", status.to_string())
+        .child("summary", summary.trim())
+        .child("instructions", "Workflow W6 · recurring run report: pass on what's worth the user's attention, note it in your brief if it changes anything, then stop. Don't read the session's files or logs; this report is the outcome.")
+        .render();
     if super::mission_control::open_mission_control(daemon, None)
         .await
         .is_err()

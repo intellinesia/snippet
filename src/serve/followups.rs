@@ -1,4 +1,4 @@
-//! Delivers due `schedule_wake` rows as a `[wake]` envelope to the session that
+//! Delivers due `schedule_wake` rows as a `<wake>` envelope to the session that
 //! set them, opening an idle desk or work session first.
 
 use std::time::Duration;
@@ -18,10 +18,18 @@ pub fn wake_envelope(f: &Followup) -> String {
     } else {
         "snippet tool schedule_wake"
     };
-    format!(
-        "[wake]\nYou asked to be woken now (set {}).\n\n{}\n\nDo what the note says; {tool} again if it still needs waiting.",
-        f.created_at, f.note
-    )
+    crate::envelope::Envelope::new("wake")
+        .attr("set", &f.created_at)
+        .child(
+            "note",
+            format!("You asked to be woken now (set {}).", f.created_at),
+        )
+        .child("wake_note", &f.note)
+        .child(
+            "instructions",
+            format!("Do what the note says; {tool} again if it still needs waiting."),
+        )
+        .render()
 }
 
 async fn deliver(d: &Shared, f: &Followup) -> Result<(), String> {
@@ -81,7 +89,10 @@ mod tests {
             created_at: "2026-11-14T10:00:00Z".into(),
         };
         let e = wake_envelope(&f);
-        assert!(e.starts_with("[wake]"));
-        assert!(e.contains("check CI on #150"));
+        assert!(crate::envelope::is(&e, "wake"));
+        assert_eq!(
+            crate::envelope::child(&e, "wake_note").as_deref(),
+            Some("check CI on #150")
+        );
     }
 }

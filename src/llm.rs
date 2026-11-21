@@ -299,7 +299,7 @@ impl StreamBuffer {
 /// Serialized JSON escapes every string, so file contents, command output and
 /// diffs reached the model as `"fn main() {\n    println!(\"hi\");\n}"` —
 /// harder to read and to copy back exactly. Scalars render as `key: value`;
-/// multi-line or long text renders verbatim between `[key]` and `[/key]`; small
+/// multi-line or long text renders verbatim between `<key>` and `</key>`; small
 /// nested values stay compact JSON.
 /// A harness note (any System message after the first) as the model sees it:
 /// tagged so it can never pass for something the user wrote, and attached to
@@ -383,7 +383,7 @@ fn render_fields(obj: &serde_json::Map<String, Value>, out: &mut String) {
         match value {
             Value::String(s) if s.contains('\n') || s.chars().count() > 200 => {
                 blocks.push_str(&format!(
-                    "[{key}]\n{}\n[/{key}]\n",
+                    "<{key}>\n{}\n</{key}>\n",
                     s.trim_end_matches('\n')
                 ));
             }
@@ -394,7 +394,7 @@ fn render_fields(obj: &serde_json::Map<String, Value>, out: &mut String) {
                     out.push_str(&format!("{key}: {compact}\n"));
                 } else {
                     let pretty = serde_json::to_string_pretty(value).unwrap_or(compact);
-                    blocks.push_str(&format!("[{key}]\n{pretty}\n[/{key}]\n"));
+                    blocks.push_str(&format!("<{key}>\n{pretty}\n</{key}>\n"));
                 }
             }
             other => out.push_str(&format!("{key}: {other}\n")),

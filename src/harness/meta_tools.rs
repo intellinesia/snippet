@@ -41,7 +41,7 @@ impl CodingHarness {
                     "offer_id": offer_id,
                     "agent": agent,
                     "merged": merged,
-                    "note": format!("Offered to `{agent}`'s desk. When it claims, the lane starts in this session with whatever the desk adds, and its report arrives as a [lane_report]. Unclaimed after a while: call delegate.run again with the same title and agent to resend; it merges into this offer. To withdraw it, delegate.cancel with its offer id as lane_id. A decline arrives as [lane_offer_declined]."),
+                    "note": format!("Offered to `{agent}`'s desk. When it claims, the lane starts in this session with whatever the desk adds, and its report arrives as a <lane_report>. Unclaimed after a while: call delegate.run again with the same title and agent to resend; it merges into this offer. To withdraw it, delegate.cancel with its offer id as lane_id. A decline arrives as [lane_offer_declined]."),
                 }
             }),
             Err(error) => tool_error(format!("could not offer the lane to `{agent}`: {error}")),
@@ -378,7 +378,7 @@ impl CodingHarness {
                                             "messaged": true,
                                             "lane_id": lane_id,
                                             "title": title,
-                                            "note": "The lane is still working; it gets this between steps, or straight away if it's waiting on you. Its report still arrives as a [lane_report].",
+                                            "note": "The lane is still working; it gets this between steps, or straight away if it's waiting on you. Its report still arrives as a <lane_report>.",
                                         }
                                     }),
                                     MetaControl::Continue,
@@ -405,7 +405,7 @@ impl CodingHarness {
                                             "continued": true,
                                             "lane_id": lane_id,
                                             "title": title,
-                                            "note": "Lane resumed with its prior context; its report will arrive as a [lane_report] message.",
+                                            "note": "Lane resumed with its prior context; its report will arrive as a <lane_report> message.",
                                         }
                                     }),
                                     MetaControl::Continue,
@@ -518,7 +518,7 @@ impl CodingHarness {
                                 "lane_id": id,
                                 "title": brief.title,
                                 "access": if read_only { "read_only" } else { "full" },
-                                "note": "Lane runs in the background; its report will arrive as a [lane_report] message. Follow up later by re-calling delegate.run with this lane_id.",
+                                "note": "Lane runs in the background; its report will arrive as a <lane_report> message. Follow up later by re-calling delegate.run with this lane_id.",
                             });
                             if let Some(ref agent) = brief.agent {
                                 data["agent"] = json!(agent);
@@ -588,7 +588,7 @@ impl CodingHarness {
                                             "watch_id": record.id,
                                             "label": record.label,
                                             "path": record.path,
-                                            "note": "Tailing from the current end of file. Appended text arrives as a [file_watch] message (debounced per burst); ending your turn is how you wait for it.",
+                                            "note": "Tailing from the current end of file. Appended text arrives as a <file_watch> message (debounced per burst); ending your turn is how you wait for it.",
                                         }
                                     }),
                                     MetaControl::Continue,

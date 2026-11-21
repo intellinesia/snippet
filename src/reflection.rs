@@ -124,15 +124,21 @@ pub fn reflect_envelope(home: &std::path::Path, lines: &[BoardLine]) -> String {
         ));
     }
     let home = home.display();
-    format!(
-        "[reflect]\nSince you last reflected: {} board entries, {jobs} finished jobs.\n{listed}[/reflect]\n\
-         Look back at this work (read.board, read.session for detail) and keep what will make the next job go better: \
-         facts and lessons in your memory; a procedure worth repeating as a skill at {home}/skills/<name>/SKILL.md, \
-         which every agent can use at once; how you run recurring work in a playbook in your agent memory ({home}/memory/playbooks/<job>.md); and only when your role \
-         itself should change, {home}/identity.md (under 6 KB; the user is told and can revert). Commit what you change \
-         with git in the repo it lives in, the message saying why. If nothing was learned, change nothing. Then stop.",
-        lines.len()
-    )
+    crate::envelope::Envelope::new("reflect")
+        .attr("board_entries", lines.len().to_string())
+        .attr("finished_jobs", jobs.to_string())
+        .child("entries", listed)
+        .child(
+            "note",
+            format!(
+                "Look back at this work (read.board, read.session for detail) and keep what will make the next job go better: \
+                 facts and lessons in your memory; a procedure worth repeating as a skill at {home}/skills/<name>/SKILL.md, \
+                 which every agent can use at once; how you run recurring work in a playbook in your agent memory ({home}/memory/playbooks/<job>.md); and only when your role \
+                 itself should change, {home}/identity.md (under 6 KB; the user is told and can revert). Commit what you change \
+                 with git in the repo it lives in, the message saying why. If nothing was learned, change nothing. Then stop."
+            ),
+        )
+        .render()
 }
 
 pub fn identity_notice(agent_id: &str, commit: &str, subject: &str, size: usize) -> String {

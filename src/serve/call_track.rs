@@ -1016,7 +1016,7 @@ fn transcript_to(lines: &[Heard], cap: Option<usize>) -> String {
             .unwrap_or_default();
         let row = format!("[{at}] {who}{}\n", line.text.trim());
         if cap.is_some_and(|cap| out.len() + row.len() > cap) {
-            out.push_str("[transcript cut here: too long]\n");
+            out.push_str("<transcript_cut reason=\"too long\"/>\n");
             break;
         }
         out.push_str(&row);

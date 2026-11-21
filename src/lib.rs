@@ -7,6 +7,7 @@ pub mod accounts;
 pub mod agent_context;
 pub mod agent_tools;
 pub mod agent_wakes;
+pub mod envelope;
 pub mod ambient;
 pub mod ambient_tuning;
 pub mod anthropic;

@@ -618,9 +618,9 @@ pub fn scopes_for(workspace: Option<&Path>, agent: Option<&str>) -> Vec<MemoryRe
     repos
 }
 
-/// The `[memory]` block appended to the system prompt.
+/// The `<memory>` block appended to the system prompt.
 pub fn render_prompt(repos: &[MemoryRepo]) -> String {
-    let mut out = String::from("[memory]\n");
+    let mut out = String::from("<memory>\n");
     for repo in repos {
         let scope = match repo.kind {
             ScopeKind::Global => "Global".to_string(),
@@ -636,7 +636,7 @@ pub fn render_prompt(repos: &[MemoryRepo]) -> String {
             clip(repo.entry_point().trim(), ENTRY_PROMPT_CHARS)
         ));
     }
-    out.trim_end().to_string()
+    format!("{}\n</memory>", out.trim_end())
 }
 
 /// The project memory folder for a workspace, keyed by its repository so every

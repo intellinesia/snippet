@@ -379,11 +379,9 @@ pub fn goal_block(store: &Store, task: &Task, full: bool) -> String {
         Some(n) => format!("slice {n}"),
         None => "task".to_string(),
     };
-    let mut out = format!(
-        "[goal]\ngoal: {}: {}\n",
-        clip(&goal.title, 120),
-        clip(&goal.outcome, if full { 500 } else { 200 })
-    );
+    let mut env = crate::envelope::Envelope::new("goal")
+        .attr("title", clip(&goal.title, 120))
+        .child("outcome", clip(&goal.outcome, if full { 500 } else { 200 }));
     if full && !goal.acceptance.is_empty() {
         let checks: Vec<String> = goal
             .acceptance
@@ -391,19 +389,15 @@ pub fn goal_block(store: &Store, task: &Task, full: bool) -> String {
             .filter(|c| c.dropped.is_empty())
             .map(|c| clip(&c.criterion, 100))
             .collect();
-        out.push_str(&format!("goal acceptance: {}\n", checks.join("; ")));
+        env = env.child("acceptance", checks.join("; "));
     }
-    out.push_str(&format!(
-        "this is {}: {}\n",
-        label(task),
-        clip(&task.title, 100)
-    ));
+    env = env.child_with("this", &[("label", &label(task))], clip(&task.title, 100));
     let others: Vec<&Task> = siblings
         .iter()
         .filter(|t| t.status != TaskStatus::Cancelled)
         .collect();
     if !others.is_empty() {
-        out.push_str("other slices (each agent owns its own; do not redo theirs):\n");
+        let mut lines = Vec::new();
         for t in &others {
             let agent = store
                 .list_task_agents(&t.id)
@@ -411,14 +405,19 @@ pub fn goal_block(store: &Store, task: &Task, full: bool) -> String {
                 .and_then(|r| r.into_iter().find(|m| m.removed_at.is_none()))
                 .map(|m| format!(", {}", m.agent_id))
                 .unwrap_or_default();
-            out.push_str(&format!(
-                "  - {} \"{}\" ({}{agent}): {}\n",
+            lines.push(format!(
+                "- {} \"{}\" ({}{agent}): {}",
                 label(t),
                 clip(&t.title, 80),
                 slice_state(&t.status),
                 clip(&t.description, 100)
             ));
         }
+        env = env.child_with(
+            "other_slices",
+            &[("note", "each agent owns its own; do not redo theirs")],
+            lines.join("\n"),
+        );
     }
     if full {
         let blockers = store.blockers_of(&task.id).unwrap_or_default();
@@ -428,7 +427,7 @@ pub fn goal_block(store: &Store, task: &Task, full: bool) -> String {
             .filter_map(|t| {
                 t.result.as_ref().map(|r| {
                     format!(
-                        "  - {} \"{}\": {}\n",
+                        "- {} \"{}\": {}",
                         label(t),
                         clip(&t.title, 80),
                         clip(&r.summary, 300)
@@ -437,15 +436,9 @@ pub fn goal_block(store: &Store, task: &Task, full: bool) -> String {
             })
             .take(6)
             .collect();
-        if !reports.is_empty() {
-            out.push_str(&format!(
-                "reports from finished slices:\n{}",
-                reports.concat()
-            ));
-        }
+        env = env.child("finished_slice_reports", reports.join("\n"));
     }
-    out.push_str("[/goal]\n");
-    out
+    format!("{}\n", env.render())
 }
 
 const GOAL_COLUMNS: &str =

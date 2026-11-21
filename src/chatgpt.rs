@@ -495,7 +495,7 @@ fn build_responses_request(
                     // Orphaned result (call was compacted away) — send as plain text.
                     input.push(message_item(
                         "user",
-                        &format!("[tool_result {tool_name}]\n{output}\n[/tool_result]"),
+                        &crate::harness::tool_result_envelope(tool_name, &output),
                     ));
                 } else {
                     input.push(json!({
@@ -520,7 +520,7 @@ fn build_responses_request(
             HarnessMessage::Summary { kind, content } => {
                 input.push(message_item(
                     "user",
-                    &format!("[summary:{kind}]\n{content}\n[/summary]"),
+                    &crate::harness::summary_envelope(kind, content),
                 ));
             }
         }

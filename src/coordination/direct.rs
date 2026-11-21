@@ -100,7 +100,7 @@ pub struct InboxEntry {
     pub created_at: String,
 }
 
-/// The text a person reads, with any `[envelope]` stripped.
+/// The text a person reads, with any envelope stripped.
 pub(super) fn envelope_text(body: &str) -> String {
     parse_envelope(body).3
 }
@@ -108,47 +108,21 @@ pub(super) fn envelope_text(body: &str) -> String {
 /// Splits an envelope into its name, task, title and the text a person reads.
 fn parse_envelope(body: &str) -> (Option<String>, Option<String>, Option<String>, String) {
     let body = body.trim();
-    let Some((first, rest)) = body.split_once('\n') else {
+    let Some(name) = crate::envelope::kind(body) else {
         return (None, None, None, body.to_string());
     };
-    let name = first.strip_prefix('[').and_then(|f| f.strip_suffix(']'));
-    let Some(name) =
-        name.filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
-    else {
-        return (None, None, None, body.to_string());
-    };
-    let (mut task_id, mut title) = (None, None);
-    let mut lines = rest.lines().peekable();
-    let mut text = String::new();
-    while let Some(line) = lines.peek().copied() {
-        let Some((key, value)) = line.split_once(':') else {
-            break;
-        };
-        if key.is_empty() || !key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
-            break;
-        }
-        lines.next();
-        match key {
-            "task_id" => task_id = Some(value.trim().to_string()),
-            "title" => title = Some(value.trim().to_string()),
-            "briefing" => break,
-            "scope" => {
-                text.push_str(value.trim());
-                text.push('\n');
-                break;
-            }
-            _ => {}
-        }
-    }
-    text.push_str(&lines.collect::<Vec<_>>().join("\n"));
-    let closing = format!("[/{name}]");
-    let text = text
-        .split(closing.as_str())
-        .next()
+    let text = ["scope", "briefing", "body", "summary", "note"]
+        .iter()
+        .find_map(|c| crate::envelope::child(body, c))
         .unwrap_or_default()
         .trim()
         .to_string();
-    (Some(name.to_string()), task_id, title, text)
+    (
+        Some(name.to_string()),
+        crate::envelope::attr(body, "task_id"),
+        crate::envelope::attr(body, "title"),
+        text,
+    )
 }
 
 /// One message awaiting delivery to one recipient.

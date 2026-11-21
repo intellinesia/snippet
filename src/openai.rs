@@ -890,7 +890,7 @@ fn chat_messages_from_harness(index: usize, message: &HarnessMessage) -> Vec<Cha
         }
         HarnessMessage::Summary { kind, content } => vec![ChatMessage::text(
             "user",
-            &format!("[summary:{kind}]\n{content}\n[/summary]"),
+            &crate::harness::summary_envelope(kind, content),
         )],
     }
 }

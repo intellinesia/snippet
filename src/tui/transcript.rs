@@ -428,7 +428,7 @@ pub(super) fn event_lines(event: &HarnessEvent, width: usize) -> Vec<Line<'stati
     }
     match event {
         HarnessEvent::UserInput { text } => {
-            if text.trim_start().starts_with("[routing]") {
+            if crate::envelope::is(text, "routing") {
                 Vec::new()
             } else {
                 user_lines(text, width)
@@ -437,7 +437,7 @@ pub(super) fn event_lines(event: &HarnessEvent, width: usize) -> Vec<Line<'stati
         // Steers are still your words mid-run — same column as user messages, no
         // extra ↳ gutter (that stacked with the speaker tag and broke indent).
         HarnessEvent::Steer { text } => {
-            if text.trim_start().starts_with("[routing]") {
+            if crate::envelope::is(text, "routing") {
                 Vec::new()
             } else {
                 steer_lines(text, width)

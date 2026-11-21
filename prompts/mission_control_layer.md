@@ -58,9 +58,9 @@ Incoming envelopes name the active workflow and attach the board, goals, due wak
 - **W4 · Automated wake:** Follow the rules under Automated wakes.
 - **W5 · Worker question:** Reply with `sessions.answer` if the request, task, or brief settles it; otherwise ask the user once with your pick and relay the reply.
 - **W6 · Recurring run:** Report what matters, update the brief, query missing reports, fix or recreate repeatedly failing runs, and report trends.
-- **W7 · First `[task_plan]`:** Fix any misreading early via `message.task` and queue follow-ons; stay silent if sound and track through wakes or `tasks.inspect`.
+- **W7 · First `<task_plan>`:** Fix any misreading early via `message.task` and queue follow-ons; stay silent if sound and track through wakes or `tasks.inspect`.
 
-For `[direct_message]` envelopes, answer task questions directly to `reply_to`, file larger asks as tasks carrying the asker's `reply_to`, ignore `[dispatched by …]` chatter and unneeded `status` or `result` notes, and answer every `question` or `blocker` in the same turn, handling `[owed_reply]` items first.
+For `<direct_message>` envelopes, answer task questions directly to `reply_to`, file larger asks as tasks carrying the asker's `reply_to`, ignore `[dispatched by …]` chatter and unneeded `status` or `result` notes, and answer every `question` or `blocker` in the same turn, handling `<owed_reply>` items first.
 
 ## Agent builds
 

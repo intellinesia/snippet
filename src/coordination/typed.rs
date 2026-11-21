@@ -140,21 +140,26 @@ pub fn urgency_of(payload: &Value) -> Urgency {
 }
 
 /// Envelope lines for a typed message, empty when it is untyped and normal.
-pub fn envelope_lines(payload: &Value) -> String {
-    let mut out = String::new();
-    if let Some(kind) = payload.get("kind").and_then(Value::as_str) {
-        out.push_str(&format!("kind: {kind}\n"));
-    }
-    if let Some(to) = payload.get("to").and_then(Value::as_array) {
-        let names: Vec<&str> = to.iter().filter_map(Value::as_str).collect();
-        out.push_str(&format!("addressed_to: {}\n", names.join(", ")));
-    }
-    if urgency_of(payload) == Urgency::Urgent {
-        out.push_str(
-            "urgency: urgent (the sender interrupted your run for this; deal with it first)\n",
-        );
-    }
-    out
+pub fn envelope_attrs(
+    envelope: crate::envelope::Envelope,
+    payload: &Value,
+) -> crate::envelope::Envelope {
+    let names: Vec<&str> = payload
+        .get("to")
+        .and_then(Value::as_array)
+        .map(|to| to.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    envelope
+        .attr_opt("kind", payload.get("kind").and_then(Value::as_str))
+        .attr("addressed_to", names.join(", "))
+        .attr(
+            "urgency",
+            if urgency_of(payload) == Urgency::Urgent {
+                "urgent"
+            } else {
+                ""
+            },
+        )
 }
 
 #[cfg(test)]
@@ -181,8 +186,6 @@ mod tests {
         let fields = payload_fields(Some("blocker"), Urgency::Urgent, Some("t1"));
         let payload = Value::Object(fields);
         assert_eq!(urgency_of(&payload), Urgency::Urgent);
-        assert!(envelope_lines(&payload).contains("kind: blocker"));
-        assert_eq!(envelope_lines(&serde_json::json!({"body": "x"})), "");
     }
 
     #[test]

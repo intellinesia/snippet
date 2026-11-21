@@ -906,43 +906,20 @@ pub fn board_message_envelope_with_task(
         .get("body")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    let mut digest = String::new();
-    if history.is_empty() {
-        digest.push_str("history: (start of the room)\n");
-    } else {
-        digest.push_str(&format!(
-            "history: last {} message(s), oldest first\n",
-            history.len()
-        ));
-        for prior in history {
-            let prior_body = one_line(
-                prior
-                    .payload
-                    .get("body")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default(),
-            );
-            digest.push_str(&format!(
-                "  {} [{}] {}: {}\n",
-                prior.sequence, prior.actor_kind, prior.actor_id, prior_body
-            ));
-        }
-    }
-    let mut task_meta = String::new();
+    let mut envelope = crate::envelope::Envelope::new("coordination_board_message")
+        .attr("thread_id", &event.thread_id)
+        .attr("from_id", &event.actor_id)
+        .attr("from_kind", &event.actor_kind);
+    envelope = crate::coordination::typed::envelope_attrs(envelope, &event.payload);
+    let mut ledger_xml = None;
     if let Some(t) = task {
-        task_meta.push_str(&format!(
-            "task_id: {}\ntask_title: {}\ntask_status: {}\n",
-            t.id, t.title, t.status
-        ));
-        if !t.plan.trim().is_empty() {
-            task_meta.push_str(&format!("task_plan:\n{}\n", t.plan.trim()));
-        }
+        envelope = envelope
+            .attr("task_id", &t.id)
+            .attr("task_title", &t.title)
+            .attr("task_status", t.status.to_string())
+            .child("task_plan", t.plan.trim());
         // A ledger update's body already is the delta; the full ledger would bury it.
-        if let Some(ledger) =
-            ledger.filter(|l| !l.is_empty() && event.event_type != "task.state_updated")
-        {
-            task_meta.push_str(&format!("{ledger}\n"));
-        }
+        ledger_xml = ledger.filter(|l| !l.is_empty() && event.event_type != "task.state_updated");
     }
     let note = if event.event_type == "task.lease_transferred" {
         "the turn on this task has passed to you: it's yours to carry out here, and you may change files now."
@@ -952,19 +929,43 @@ pub fn board_message_envelope_with_task(
          message.send to the sender elsewhere) or act on it; if not, end your turn \
          without a reply."
     };
-    format!(
-        "[coordination_board_message]\nthread_id: {}\nfrom_id: {}\nfrom_kind: {}\n{tags}{task_meta}\
-         note: {note} task.inspect shows the task's plan and roster; only recent history is \
-         shown here, and read.room has more.\n{history}body: {body}\n\
-         [/coordination_board_message]",
-        event.thread_id,
-        event.actor_id,
-        event.actor_kind,
-        tags = crate::coordination::typed::envelope_lines(&event.payload),
-        task_meta = task_meta,
-        history = digest,
-        body = body,
-    )
+    envelope = envelope.child(
+        "note",
+        format!(
+            "{note} task.inspect shows the task's plan and roster; only recent history is shown here, and read.room has more."
+        ),
+    );
+    if history.is_empty() {
+        envelope = envelope.child("history", "(start of the room)");
+    } else {
+        let mut lines = String::new();
+        for prior in history {
+            let prior_body = one_line(
+                prior
+                    .payload
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
+            );
+            lines.push_str(&format!(
+                "{} {}:{}: {}\n",
+                prior.sequence, prior.actor_kind, prior.actor_id, prior_body
+            ));
+        }
+        envelope = envelope.child_with(
+            "history",
+            &[
+                ("messages", history.len().to_string().as_str()),
+                ("order", "oldest first"),
+            ],
+            lines,
+        );
+    }
+    let rendered = envelope.child("body", body).render();
+    match ledger_xml {
+        Some(xml) => crate::envelope::insert_before_child(&rendered, "note", xml.trim()),
+        None => rendered,
+    }
 }
 
 pub(super) fn should_wake_mission_control(actor_id: &str) -> bool {
@@ -1244,10 +1245,17 @@ pub(super) fn identity_overlay(d: &super::Daemon, agent_id: &str, session_id: &s
     .and_then(|home| home.read_identity());
     match identity {
         Ok(identity) => format!(
-            "[agent_identity]\nagent_id: {agent_id}\nYou are working this task as \
-             {agent_id} until the lease moves. This identity takes precedence over \
-             the one this session started with.\n\n{}\n[/agent_identity]\n",
-            identity.trim()
+            "{}\n",
+            crate::envelope::Envelope::new("agent_identity")
+                .attr("agent_id", agent_id)
+                .child(
+                    "note",
+                    format!(
+                        "You are working this task as {agent_id} until the lease moves. This identity takes precedence over the one this session started with."
+                    )
+                )
+                .child("identity", identity.trim())
+                .render()
         ),
         Err(error) => {
             eprintln!("[coordination] identity of `{agent_id}` unavailable: {error}");
@@ -1350,10 +1358,12 @@ pub async fn wake_coordination_thread_participants(d: &Shared, saved: &Coordinat
         let from_human = saved.actor_kind == "human";
         let envelope = match incoming {
             Some(agent_id) if target.inbox_agent.is_none() => {
-                format!(
-                    "{}{envelope}",
-                    identity_overlay(d, agent_id, &target.session)
-                )
+                let overlay = identity_overlay(d, agent_id, &target.session);
+                if overlay.trim().is_empty() {
+                    envelope.clone()
+                } else {
+                    crate::envelope::insert_before_child(&envelope, "note", overlay.trim())
+                }
             }
             _ => envelope.clone(),
         };

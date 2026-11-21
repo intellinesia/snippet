@@ -70,7 +70,7 @@ pub struct HarnessConfig {
     pub compact_at_pct: u8,
     /// Start fresh runs in manual approval mode (bash + file edits wait for y/n).
     pub manual_approval: bool,
-    /// Inject the `[memory]` block (each scope's path and MEMORY.md) into the
+    /// Inject the `<memory>` block (each scope's path and MEMORY.md) into the
     /// system prefix each session.
     pub memory_enabled: bool,
     /// Run the reflection pass after a request that did real work (main session only).
@@ -421,9 +421,19 @@ fn goal_dir_phrase(dir: &str) -> String {
     }
 }
 
+fn goal_envelope(kind: &str, text: &str, note: String) -> String {
+    crate::envelope::Envelope::new("goal")
+        .attr("kind", kind)
+        .child("note", note)
+        .child("goal_text", text)
+        .render()
+}
+
 fn goal_start_directive(text: &str) -> String {
-    format!(
-        "[goal] The user has given you a goal to carry through on your own: {text}\n\n\
+    goal_envelope(
+        "start",
+        text,
+        "The user has given you a goal to carry through on your own (see goal_text).\n\
 You'll get a nudge after each turn to keep going, so work through it end to end without \
 checking in on ordinary steps.\n\
 1. Pick a goal folder under `.snippet/goals/` (a new one, or a relevant existing one). It \
@@ -432,6 +442,7 @@ survives compaction, so keep your plan, findings, decisions and artifacts there.
 3. Start on the first step.\n\n\
 When the goal is fully done, call `complete_goal` with a short summary. If you hit something \
 only the user can resolve, say exactly what you need."
+            .to_string(),
     )
 }
 
@@ -451,7 +462,9 @@ fn goal_headline(text: &str) -> String {
 fn goal_reference(messages: &[HarnessMessage], text: &str) -> String {
     let started = messages.iter().any(|m| {
         matches!(m, HarnessMessage::User { content }
-            if content.starts_with("[goal] The user has given you a goal") && content.contains(text))
+            if crate::envelope::is(content, "goal")
+                && crate::envelope::attr(content, "kind").as_deref() == Some("start")
+                && crate::envelope::child(content, "goal_text").as_deref() == Some(text))
     });
     if started {
         goal_headline(text)
@@ -461,40 +474,54 @@ fn goal_reference(messages: &[HarnessMessage], text: &str) -> String {
 }
 
 fn goal_stalled_directive(text: &str) -> String {
-    format!(
-        "[goal] Your last turn ended without calling any tool or `complete_goal`, so nothing \
+    goal_envelope(
+        "stalled",
+        text,
+        "Your last turn ended without calling any tool or `complete_goal`, so nothing \
 happened. Saying you'll do something doesn't do it. In this reply, make the actual call for the \
-next step of: {text}. If it's finished, call `complete_goal`; if only the user can unblock \
+next step of the goal in goal_text. If it's finished, call `complete_goal`; if only the user can unblock \
 it, say exactly what you need."
+            .to_string(),
     )
 }
 
 fn goal_continue_directive(text: &str, dir: &str) -> String {
-    format!(
-        "[goal] Carry on with your goal: {text}\n\
-    Your plan and notes are in {where}. Pick up the next unfinished step and do it, keeping the \
+    goal_envelope(
+        "continue",
+        text,
+        format!(
+            "Carry on with your goal (see goal_text). Your plan and notes are in {}. Pick up the next unfinished step and do it, keeping the \
     plan current as you go; no recap needed unless something material changed. When it's fully \
     done, call `complete_goal`.",
-        where = goal_dir_phrase(dir)
+            goal_dir_phrase(dir)
+        ),
     )
 }
 
 fn goal_selfcheck_directive(text: &str, dir: &str, n: usize) -> String {
-    format!(
-        "[goal] Time for a check-in: you've taken {n} turns on this goal: {text}\n\
-    Re-read your plan in {where} and be honest with yourself: is this making real progress, or \
+    goal_envelope(
+        "check_in",
+        text,
+        format!(
+            "Time for a check-in: you've taken {n} turns on the goal in goal_text. \
+    Re-read your plan in {} and be honest with yourself: is this making real progress, or \
     going in circles? If it's done, call `complete_goal`. If you're blocked on something only the \
     user can give, say exactly what. Otherwise adjust course if needed and carry on.",
-        where = goal_dir_phrase(dir)
+            goal_dir_phrase(dir)
+        ),
     )
 }
 
 fn goal_cancel_directive(text: &str, dir: &str) -> String {
-    format!(
-        "[goal] The user has CANCELLED this goal. STOP working toward it now. Give a brief summary of \
-    what you accomplished and where you left off (your work is saved in {where}). Take no further \
-    action on the goal: {text}",
-        where = goal_dir_phrase(dir)
+    goal_envelope(
+        "cancel",
+        text,
+        format!(
+            "The user has CANCELLED this goal. STOP working toward it now. Give a brief summary of \
+    what you accomplished and where you left off (your work is saved in {}). Take no further \
+    action on the goal in goal_text.",
+            goal_dir_phrase(dir)
+        ),
     )
 }
 
@@ -684,13 +711,16 @@ impl HarnessState {
             self.messages.truncate(message_index);
         } else {
             self.messages.push(HarnessMessage::System {
-                content: format!(
-                    "[rewind] The user rewound this session to before their message \"{}\". \
-                     Everything after that point was undone, including file changes. Your \
-                     context summary still describes some of that later work: treat it as \
-                     not having happened.",
-                    cp.label
-                ),
+                content: crate::envelope::Envelope::new("rewind")
+                    .attr("message", &cp.label)
+                    .child(
+                        "note",
+                        "The user rewound this session to before the message named in `message`. \
+                         Everything after that point was undone, including file changes. Your \
+                         context summary still describes some of that later work: treat it as \
+                         not having happened.",
+                    )
+                    .render(),
             });
         }
         // A rewind moves history backwards, which an append-only store cannot
@@ -1064,7 +1094,7 @@ use prompts::*;
 pub use state::*;
 use transcript::*;
 
-pub(crate) use transcript::notice_text;
+pub(crate) use transcript::{notice_text, summary_envelope, tool_result_envelope};
 
 #[cfg(test)]
 mod tests;
@@ -1094,10 +1124,5 @@ pub(crate) fn is_daemon_envelope(text: &str) -> bool {
     {
         return true;
     }
-    first.len() > 2
-        && first.starts_with('[')
-        && first.ends_with(']')
-        && first[1..first.len() - 1]
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c == '_')
+    crate::envelope::kind(first).is_some_and(|tag| tag != "ambient_turn")
 }

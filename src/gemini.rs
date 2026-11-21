@@ -486,7 +486,7 @@ fn build_contents(
             HarnessMessage::Summary { kind, content } => push_content(
                 &mut contents,
                 "user",
-                vec![json!({ "text": format!("[summary:{kind}]\n{content}\n[/summary]") })],
+                vec![json!({ "text": crate::harness::summary_envelope(kind, content) })],
             ),
         }
     }

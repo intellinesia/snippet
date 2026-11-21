@@ -72,7 +72,9 @@ impl CodingHarness {
         state.pending_question = None;
         state.messages.push(HarnessMessage::User {
             content: if answering {
-                format!("[answer]\n{text}")
+                crate::envelope::Envelope::new("answer")
+                    .child("body", &text)
+                    .render()
             } else {
                 text.clone()
             },
@@ -649,11 +651,18 @@ impl CodingHarness {
             .map(|r| r.title.clone())
             .unwrap_or_else(|| progress.id.clone());
         state.messages.push(HarnessMessage::User {
-            content: format!(
-                "[lane_message]\nlane: \"{title}\" ({id})\nnote: one of your lanes wrote to you while working. If it asks something, answer with delegate.run, lane_id {id}, and your answer as the description; it may be waiting on you. If it's an update, use it; no reply is needed.\nbody: {body}\n[/lane_message]",
-                id = progress.id,
-                body = progress.text.trim(),
-            ),
+            content: crate::envelope::Envelope::new("lane_message")
+                .attr("lane", &progress.id)
+                .attr("subject", &title)
+                .child(
+                    "note",
+                    format!(
+                        "one of your lanes wrote to you while working. If it asks something, answer with delegate.run, lane_id {id}, and your answer as the description; it may be waiting on you. If it's an update, use it; no reply is needed.",
+                        id = progress.id
+                    ),
+                )
+                .child("body", progress.text.trim())
+                .render(),
         });
         state.events.push(HarnessEvent::AgentMessage {
             agent_id: format!("lane «{title}»"),
@@ -1062,7 +1071,7 @@ impl CodingHarness {
     }
 
     /// Fold a file-watch wake into history: advance the persisted tail offset and
-    /// inject a `[file_watch]` envelope carrying the appended text, mirroring how
+    /// inject a `<file_watch>` envelope carrying the appended text, mirroring how
     /// lane reports arrive. The follow-up id is demoted to an internal handle so
     /// the agent speaks of the watch by subject, never "watch-1".
     pub(super) fn inject_watch_event(
@@ -1085,10 +1094,20 @@ impl CodingHarness {
         // scrub the appended text like any tool result.
         let appended = crate::vault::Vault::load().scrub_str(event.appended.trim_end());
         state.messages.push(HarnessMessage::User {
-            content: format!(
-                "[file_watch]\nsubject = \"{}\"\npath = \"{}\"\nappended:{skipped_note}\n{}\n[orchestration] Act if needed; otherwise end quietly. Remove this watch when done.\n[follow_up_id = \"{}\"]  # internal handle for process.unwatch; to the user, call this work by its subject\n[/file_watch]",
-                event.label, event.path, appended, event.id
-            ),
+            content: crate::envelope::Envelope::new("file_watch")
+                .attr("subject", &event.label)
+                .attr("path", &event.path)
+                .attr("follow_up_id", &event.id)
+                .child("appended", format!("{skipped_note}\n{appended}"))
+                .child(
+                    "orchestration",
+                    "Act if needed; otherwise end quietly. Remove this watch when done.",
+                )
+                .child(
+                    "note",
+                    "follow_up_id is an internal handle for process.unwatch; to the user, call this work by its subject",
+                )
+                .render(),
         });
         let preview: String = appended.trim().chars().take(120).collect();
         state.events.push(HarnessEvent::SystemDecision {
@@ -1128,12 +1147,12 @@ fn idle_goal_turns(messages: &[HarnessMessage]) -> usize {
     for message in messages.iter().rev() {
         match message {
             HarnessMessage::Assistant { tool_calls, .. } if !tool_calls.is_empty() => acted = true,
-            HarnessMessage::User { content } if content.starts_with("[goal]") => {
+            HarnessMessage::User { content } if crate::envelope::is(content, "goal") => {
                 if acted {
                     break;
                 }
                 idle += 1;
-                if content.starts_with("[goal] The user has given you a goal") {
+                if crate::envelope::attr(content, "kind").as_deref() == Some("start") {
                     break;
                 }
             }
@@ -1151,48 +1170,32 @@ pub(crate) fn render_lane_report(result: &LaneResult, outstanding: usize) -> Str
         LaneStatus::Cancelled => "cancelled",
         LaneStatus::Running => "running",
     };
-    let mut lines = vec![
-        "[lane_report]".to_string(),
-        format!(
-            "lane: {}  subject: {}  status: {status}",
-            result.id, result.title
-        ),
-    ];
+    let mut envelope = crate::envelope::Envelope::new("lane_report")
+        .attr("lane", &result.id)
+        .attr("subject", &result.title)
+        .attr("status", status);
 
     match result.status {
         LaneStatus::Completed => {
             if let Some(s) = &result.structured {
-                if !s.summary.trim().is_empty() {
-                    lines.push(format!("summary: {}", s.summary.trim()));
-                }
+                envelope = envelope.child("summary", s.summary.trim());
                 if !s.findings.is_empty() {
-                    lines.push("findings:".to_string());
-                    for f in &s.findings {
-                        lines.push(format!("- {} ({})", f.claim, f.location));
-                    }
+                    let findings = s
+                        .findings
+                        .iter()
+                        .map(|f| format!("- {} ({})", f.claim, f.location))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    envelope = envelope.child("findings", findings);
                 }
-                if let Some(changed) = s
-                    .changed
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                {
-                    lines.push(format!("changed: {changed}"));
-                }
-                if let Some(tests) = s.tests.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                    lines.push(format!("tests: {tests}"));
-                }
-                if let Some(open) = s.open.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                    lines.push(format!("open: {open}"));
-                }
-                if let Some(unverified) = s
-                    .unverified_citations
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                {
-                    lines.push(format!("unverified citations: {unverified}"));
-                }
+                envelope = envelope
+                    .child_opt("changed", s.changed.as_deref().map(str::trim))
+                    .child_opt("tests", s.tests.as_deref().map(str::trim))
+                    .child_opt("open", s.open.as_deref().map(str::trim))
+                    .child_opt(
+                        "unverified_citations",
+                        s.unverified_citations.as_deref().map(str::trim),
+                    );
             } else {
                 let raw = result
                     .report
@@ -1210,22 +1213,28 @@ pub(crate) fn render_lane_report(result: &LaneResult, outstanding: usize) -> Str
                 } else {
                     raw.to_string()
                 };
-                lines.push(format!("summary: {summary}"));
+                envelope = envelope.child("summary", summary);
             }
         }
         LaneStatus::Failed => {
             let err = result.error.as_deref().unwrap_or("unknown error");
-            lines.push(format!(
-                "FAILED: {err}. Follow up this lane (`delegate.run` with `lane_id=\"{}\"`) with a narrower or corrected brief, or handle the slice yourself; do not drop it.",
-                result.id
-            ));
+            envelope = envelope.child(
+                "failed",
+                format!(
+                    "{err}. Follow up this lane (`delegate.run` with `lane_id=\"{}\"`) with a narrower or corrected brief, or handle the slice yourself; do not drop it.",
+                    result.id
+                ),
+            );
         }
         LaneStatus::Paused => {
             let err = result.error.as_deref().unwrap_or("hit the lane time limit");
-            lines.push(format!(
-                "PAUSED: {err}. Context and partial work are saved; continue it (`delegate.run` with `lane_id=\"{}\"`), take the slice over, or `delegate.cancel` it.",
-                result.id
-            ));
+            envelope = envelope.child(
+                "paused",
+                format!(
+                    "{err}. Context and partial work are saved; continue it (`delegate.run` with `lane_id=\"{}\"`), take the slice over, or `delegate.cancel` it.",
+                    result.id
+                ),
+            );
         }
         LaneStatus::Cancelled | LaneStatus::Running => {}
     }
@@ -1241,9 +1250,7 @@ pub(crate) fn render_lane_report(result: &LaneResult, outstanding: usize) -> Str
     } else {
         "All lanes reported; integrate and check the findings you rely on.".to_string()
     };
-    lines.push(cue);
-    lines.push("[/lane_report]".to_string());
-    lines.join("\n")
+    envelope.child("note", cue).render()
 }
 
 /// The `turn_changes` event for a turn's per-file numstat, or `None` when nothing changed.
@@ -1297,17 +1304,10 @@ fn extract_ambient_text(raw: &str) -> Option<String> {
 }
 
 fn extract_direct_body(raw: &str) -> Option<String> {
-    if !raw.trim_start().starts_with("[direct_message]") {
+    if !crate::envelope::is(raw, "direct_message") {
         return None;
     }
-    let body_start = raw.find("\nbody: ")?;
-    let rest = &raw[body_start + 7..];
-    let body = rest
-        .split("\n[/direct_message]")
-        .next()
-        .unwrap_or(rest)
-        .trim();
-    Some(body.to_string())
+    crate::envelope::child(raw, "body").map(|b| b.trim().to_string())
 }
 
 pub(super) fn parse_question_answer(raw: &str) -> (String, Option<String>) {
@@ -1584,19 +1584,33 @@ mod lane_report_tests {
             }),
         };
         let rendered = render_lane_report(&completed, 0);
-        let expected = "\
-[lane_report]
-lane: lane-3  subject: lane report  status: completed
-summary: Implemented compact lane reports.
-findings:
-- Added findings schema (src/meta.rs:163)
-- Updated envelope format (src/harness/events.rs:999)
-changed: 3 files (+45/-12): src/lanes.rs (+30/-8), src/harness/events.rs (+10/-4), src/meta.rs (+5/-0)
-tests: 3 targeted suites passed
-unverified citations: src/harness/events.rs:999 (file has 950 lines)
-All lanes reported; integrate and check the findings you rely on.
-[/lane_report]";
-        assert_eq!(rendered, expected);
+        use crate::envelope::{attr, child, is};
+        assert!(is(&rendered, "lane_report"));
+        assert_eq!(attr(&rendered, "lane").as_deref(), Some("lane-3"));
+        assert_eq!(attr(&rendered, "subject").as_deref(), Some("lane report"));
+        assert_eq!(attr(&rendered, "status").as_deref(), Some("completed"));
+        assert_eq!(
+            child(&rendered, "summary").as_deref(),
+            Some("Implemented compact lane reports.")
+        );
+        assert_eq!(
+            child(&rendered, "findings").as_deref(),
+            Some(
+                "- Added findings schema (src/meta.rs:163)\n- Updated envelope format (src/harness/events.rs:999)"
+            )
+        );
+        assert_eq!(
+            child(&rendered, "tests").as_deref(),
+            Some("3 targeted suites passed")
+        );
+        assert_eq!(
+            child(&rendered, "unverified_citations").as_deref(),
+            Some("src/harness/events.rs:999 (file has 950 lines)")
+        );
+        assert_eq!(
+            child(&rendered, "note").as_deref(),
+            Some("All lanes reported; integrate and check the findings you rely on.")
+        );
 
         let long_prose = "x".repeat(1800);
         let prose_outcome = crate::harness::HarnessOutcome {
@@ -1619,12 +1633,21 @@ All lanes reported; integrate and check the findings you rely on.
             structured: Some(prose_structured),
         };
         let rendered_prose = render_lane_report(&prose_result, 2);
-        assert!(rendered_prose.contains(&format!(
-            "summary: {} (clipped; full text on the lane record)",
-            "x".repeat(1500)
-        )));
-        assert!(rendered_prose.contains("changed: 1 files (+2/-1): src/lib.rs (+2/-1)"));
-        assert!(rendered_prose.contains("\n2 lane(s) still out.\n[/lane_report]"));
+        assert_eq!(
+            crate::envelope::child(&rendered_prose, "summary").unwrap(),
+            format!(
+                "{} (clipped; full text on the lane record)",
+                "x".repeat(1500)
+            )
+        );
+        assert_eq!(
+            crate::envelope::child(&rendered_prose, "changed").as_deref(),
+            Some("1 files (+2/-1): src/lib.rs (+2/-1)")
+        );
+        assert_eq!(
+            crate::envelope::child(&rendered_prose, "note").as_deref(),
+            Some("2 lane(s) still out.")
+        );
 
         let failed = render_lane_report(
             &LaneResult {
@@ -1638,8 +1661,19 @@ All lanes reported; integrate and check the findings you rely on.
             },
             1,
         );
-        assert!(failed.contains("lane: lane-5  subject: broken slice  status: failed"));
-        assert!(failed.contains("FAILED: compile error."));
+        assert_eq!(
+            crate::envelope::attr(&failed, "lane").as_deref(),
+            Some("lane-5")
+        );
+        assert_eq!(
+            crate::envelope::attr(&failed, "status").as_deref(),
+            Some("failed")
+        );
+        assert!(
+            crate::envelope::child(&failed, "failed")
+                .unwrap()
+                .starts_with("compile error.")
+        );
         assert!(failed.contains("delegate.run"));
 
         let paused = render_lane_report(
@@ -1654,13 +1688,20 @@ All lanes reported; integrate and check the findings you rely on.
             },
             0,
         );
-        assert!(paused.contains("lane: lane-6  subject: slow slice  status: paused"));
-        assert!(paused.contains("PAUSED: timed out."));
+        assert_eq!(
+            crate::envelope::attr(&paused, "status").as_deref(),
+            Some("paused")
+        );
+        assert!(
+            crate::envelope::child(&paused, "paused")
+                .unwrap()
+                .starts_with("timed out.")
+        );
         assert!(paused.contains("delegate.cancel"));
     }
 
     #[test]
-    fn typical_completed_lane_envelope_is_under_1200_bytes() {
+    fn typical_completed_lane_envelope_is_under_1400_bytes() {
         let summary = "a".repeat(400);
         let findings = vec![
             LaneFinding {
@@ -1700,7 +1741,7 @@ All lanes reported; integrate and check the findings you rely on.
              the deliverable now, checking the findings it rests on against their file:line first. If \
              something is missing, follow up the lane that owns it rather than redoing the work.";
         let before_envelope = format!(
-            "[lane_report]\nsubject = \"lane report\"\nstatus = Completed\n{legacy_body}\n[orchestration] {legacy_cue}\n[follow_up_id = \"lane-7\"]  # internal handle for a delegate_task follow-up; to the user, call this work by its subject\n[/lane_report]"
+            "<lane_report subject=\"lane report\" status=\"Completed\" follow_up_id=\"lane-7\">\n<summary>\n{legacy_body}\n</summary>\n<orchestration>{legacy_cue}</orchestration>\n</lane_report>"
         );
 
         let after_envelope = render_lane_report(
@@ -1730,8 +1771,8 @@ All lanes reported; integrate and check the findings you rely on.
             after_envelope.len()
         );
         assert!(
-            after_envelope.len() < 1200,
-            "expected under 1200 bytes, got {}",
+            after_envelope.len() < 1400,
+            "expected under 1400 bytes, got {}",
             after_envelope.len()
         );
         assert!(before_envelope.len() > after_envelope.len());

@@ -276,60 +276,60 @@ impl TaskState {
     /// The ledger as an envelope block. `full` lists everything; otherwise it is
     /// the compact form used where a worker already holds the brief.
     pub fn render(&self, full: bool) -> String {
-        let mut out = format!("[task_ledger v{}]\n", self.version);
-        let line = |label: &str, value: &str, out: &mut String| {
-            if !value.trim().is_empty() {
-                out.push_str(&format!("{label}: {}\n", value.trim()));
-            }
-        };
-        if full {
-            line("brief", &self.brief, &mut out);
+        use crate::envelope::Envelope;
+        let mut env = Envelope::new("task_ledger").attr("version", self.version.to_string());
+        let brief = if full {
+            self.brief.clone()
         } else {
-            line("brief", &clip(&self.brief, 300), &mut out);
-        }
-        line("audience", &self.audience, &mut out);
-        line("definition of good", &self.definition_of_good, &mut out);
+            clip(&self.brief, 300)
+        };
+        env = env
+            .child("brief", brief)
+            .child("audience", &self.audience)
+            .child("definition_of_good", &self.definition_of_good);
         if !self.deliverables.is_empty() {
-            line("deliverables", &self.deliverables.join("; "), &mut out);
+            env = env.child("deliverables", self.deliverables.join("; "));
         }
         let (keep, files) = if full { (10, 20) } else { (3, 8) };
         if !self.decisions.is_empty() {
-            out.push_str("decisions:\n");
             let skip = self.decisions.len().saturating_sub(keep);
+            let mut lines = Vec::new();
             if skip > 0 {
-                out.push_str(&format!("  (+{skip} earlier)\n"));
+                lines.push(format!("(+{skip} earlier)"));
             }
             for d in self.decisions.iter().skip(skip) {
-                out.push_str(&format!(
-                    "  - {} ({}): {}\n",
+                lines.push(format!(
+                    "- {} ({}): {}",
                     d.author,
                     d.at.get(..10).unwrap_or(&d.at),
                     clip(&d.text, 240)
                 ));
             }
+            env = env.child("decisions", lines.join("\n"));
         }
         if !self.open_questions.is_empty() {
-            line("open questions", &self.open_questions.join("; "), &mut out);
+            env = env.child("open_questions", self.open_questions.join("; "));
         }
         if self.revision > 0 {
-            line("revision", &self.revision.to_string(), &mut out);
+            env = env.attr("revision", self.revision.to_string());
         }
         if let Some(mode) = self.verify_mode {
-            line("verification", mode.as_str(), &mut out);
+            env = env.attr("verification", mode.as_str());
         }
-        if !self.waiver.is_empty() {
-            line("verification waived", &self.waiver, &mut out);
-        }
+        env = env.child("verification_waived", &self.waiver);
         if !self.review_findings.is_empty() {
-            out.push_str(&format!(
-                "review findings to fix (round {}):\n",
-                self.review_rounds
-            ));
-            for f in &self.review_findings {
-                out.push_str(&format!("  - {}\n", clip(f, 400)));
-            }
+            let items: Vec<String> = self
+                .review_findings
+                .iter()
+                .map(|f| format!("- {}", clip(f, 400)))
+                .collect();
+            env = env.child_with(
+                "review_findings",
+                &[("round", &self.review_rounds.to_string())],
+                items.join("\n"),
+            );
         }
-        line("current step", &self.current_step, &mut out);
+        env = env.child("current_step", &self.current_step);
         if !self.changed_files.is_empty() {
             let shown: Vec<&str> = self
                 .changed_files
@@ -343,14 +343,13 @@ impl TaskState {
             } else {
                 String::new()
             };
-            line(
-                &format!("changed files ({})", self.changed_files.len()),
-                &format!("{}{tail}", shown.join(", ")),
-                &mut out,
+            env = env.child_with(
+                "changed_files",
+                &[("count", &self.changed_files.len().to_string())],
+                format!("{}{tail}", shown.join(", ")),
             );
         }
-        out.push_str("[/task_ledger]");
-        out
+        env.render()
     }
 }
 
@@ -592,8 +591,8 @@ mod tests {
         assert_eq!(state.changed_files, ["src/a.rs", "src/b.rs"]);
         let text = state.render(false);
         assert!(
-            text.contains("changed files (2): src/a.rs, src/b.rs")
-                && text.starts_with("[task_ledger v2]"),
+            crate::envelope::child(&text, "changed_files").as_deref() == Some("src/a.rs, src/b.rs")
+                && crate::envelope::attr(&text, "version").as_deref() == Some("2"),
             "{text}"
         );
     }

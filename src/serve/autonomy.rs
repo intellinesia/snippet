@@ -361,14 +361,13 @@ async fn wake_for_worker_questions(daemon: &Shared) {
         if !mission_autonomy::remember_question(&key) {
             continue;
         }
-        let text = format!(
-            "[worker_question]\ntask_id: {}\ntask: {}\nsession_id: {}\nquestion:\n{}\n[/worker_question]\nWorkflow W5 · worker question: the worker is paused on it. Answer with sessions.answer (session_id {}) when the user's request, the task or your brief settles it; otherwise ask the user once with your recommendation. Then stop.",
-            task.id,
-            task.title,
-            task.session_id,
-            question_text(question),
-            task.session_id,
-        );
+        let text = crate::envelope::Envelope::new("worker_question")
+            .attr("task_id", &task.id)
+            .attr("task", &task.title)
+            .attr("session_id", &task.session_id)
+            .child("question", question_text(question))
+            .child("instructions", format!("Workflow W5 · worker question: the worker is paused on it. Answer with sessions.answer (session_id {}) when the user's request, the task or your brief settles it; otherwise ask the user once with your recommendation. Then stop.", task.session_id))
+            .render();
         deliver_to_mission_control(daemon, text).await;
     }
 }
@@ -605,23 +604,13 @@ fn round_envelope(
     now: i64,
 ) -> String {
     let since = state.last_round_at;
-    let mut out = String::from("[automated_wake]\n");
-    out.push_str(&format!(
-        "time: {}\nlast wake: {}\n",
-        mission_autonomy::user_now(&state.settings)
-            .format("%a %d %b %H:%M (UTC%:z, the user's time)"),
-        if since == 0 {
-            "never (automated wakes were just switched on)".to_string()
-        } else {
-            ago(now - since)
-        }
-    ));
-    if mission_autonomy::in_quiet_hours(&state.settings) {
-        out.push_str("quiet hours: yes — non-urgent pings are held until morning\n");
-    } else if state.day_opened
-        != mission_autonomy::user_now(&state.settings)
-            .format("%Y-%m-%d")
-            .to_string()
+    let mut out = String::new();
+    let quiet_hours = mission_autonomy::in_quiet_hours(&state.settings);
+    if !quiet_hours
+        && state.day_opened
+            != mission_autonomy::user_now(&state.settings)
+                .format("%Y-%m-%d")
+                .to_string()
     {
         out.push_str("\n## Start of the user's day\nYour first wake today. Open their day in a few lines, by speech or ping as well as here: what finished, what's stuck on them, what's out there worth their attention (deadlines, scout and recurring findings, an opening), and the two or three things you'd do today with your pick.\n");
     }
@@ -746,8 +735,32 @@ fn round_envelope(
     } else {
         brief.trim()
     });
-    out.push_str("\n[/automated_wake]\nWorkflow W4 · wake: move the work, nudge the user or propose the next thing, then stop. Just waiting is right only when every goal has something moving it and no nudge is due; it needs no reply. Running and waiting tasks report on their own: don't inspect them, read their logs or schedule a check for them.");
-    out
+    crate::envelope::Envelope::new("automated_wake")
+        .attr(
+            "time",
+            mission_autonomy::user_now(&state.settings)
+                .format("%a %d %b %H:%M (UTC%:z, the user's time)")
+                .to_string(),
+        )
+        .attr(
+            "last_wake",
+            if since == 0 {
+                "never (automated wakes were just switched on)".to_string()
+            } else {
+                ago(now - since)
+            },
+        )
+        .attr(
+            "quiet_hours",
+            if quiet_hours {
+                "yes — non-urgent pings are held until morning"
+            } else {
+                ""
+            },
+        )
+        .child("body", out)
+        .child("instructions", "Workflow W4 · wake: move the work, nudge the user or propose the next thing, then stop. Just waiting is right only when every goal has something moving it and no nudge is due; it needs no reply. Running and waiting tasks report on their own: don't inspect them, read their logs or schedule a check for them.")
+        .render()
 }
 
 fn round_summary(

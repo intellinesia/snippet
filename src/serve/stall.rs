@@ -242,10 +242,12 @@ pub(super) fn goal_stall_wake(
         return None;
     }
     let lines = stalled_goal_lines(store, now);
-    Some(format!(
-        "[automated_wake]\nA goal has stopped moving.{}\n[/automated_wake]\nWorkflow W4 · decide for each: move it, replan it, nudge the user or park it, then stop.",
-        stalled_goals_section(&lines)
-    ))
+    Some(crate::envelope::Envelope::new("automated_wake")
+        .attr("kind", "stalled_goals")
+        .child("note", "A goal has stopped moving.")
+        .child("body", stalled_goals_section(&lines))
+        .child("instructions", "Workflow W4 · decide for each: move it, replan it, nudge the user or park it, then stop.")
+        .render())
 }
 
 /// User turns in a seat's session since the task's last progress that mean the
@@ -336,10 +338,12 @@ pub(super) fn owed_sweep(store: &Store, now: DateTime<Utc>) -> Vec<(String, Stri
         {
             continue;
         }
-        let notice = format!(
-            "[owed_reply]\nfrom: {}\nthread_id: {}\nwaiting_minutes: {waiting}\nnote: a question or blocker sent to you has had no reply. Answer it with message.send to the thread, or say in one line why it needs no answer.\n[/owed_reply]",
-            row.sender, row.thread_id
-        );
+        let notice = crate::envelope::Envelope::new("owed_reply")
+            .attr("from", &row.sender)
+            .attr("thread_id", &row.thread_id)
+            .attr("waiting_minutes", waiting.to_string())
+            .child("note", "a question or blocker sent to you has had no reply. Answer it with message.send to the thread, or say in one line why it needs no answer.")
+            .render();
         notices.push((super::direct::recipient_session_id(&row.recipient), notice));
     }
     notices
@@ -435,9 +439,9 @@ mod tests {
         let first = owed_sweep(&store, Utc::now());
         assert_eq!(first.len(), 1, "only the stale one");
         assert!(
-            first[0].1.contains("[owed_reply]")
-                && first[0].1.contains("from: w")
-                && first[0].1.contains("waiting_minutes: 30")
+            crate::envelope::is(&first[0].1, "owed_reply")
+                && crate::envelope::attr(&first[0].1, "from").as_deref() == Some("w")
+                && crate::envelope::attr(&first[0].1, "waiting_minutes").as_deref() == Some("30")
         );
         assert_eq!(first[0].0, crate::mission_control::SESSION_ID);
         assert!(

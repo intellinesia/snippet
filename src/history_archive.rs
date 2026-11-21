@@ -410,24 +410,20 @@ pub fn render_turn(turn: &ArchivedTurnDetail) -> String {
 /// Format the ultra-dense IBM-style micro-pointer manifest.
 /// Produces ~12-15 tokens per turn instead of thousands of tokens of lossy text.
 pub fn render_micro_pointers(goal: &str, turns: &[ArchivedTurnSummary]) -> String {
-    let mut out = String::from("[archived_history]\n");
-    if !goal.trim().is_empty() {
-        let g = goal
-            .trim()
-            .lines()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(120)
-            .collect::<String>();
-        out.push_str(&format!("Initial Goal: {g}\n"));
-    }
-    out.push_str("#id|tool|summary|paths|status\n");
+    let goal = goal
+        .trim()
+        .lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(120)
+        .collect::<String>();
+    let mut rows = String::new();
     for turn in turns {
         let tool_or_role = turn.tool_name.as_deref().unwrap_or(&turn.role);
         let safe_sum = turn.summary.replace('|', "/").replace('\n', " ");
         let safe_paths = turn.affected_paths.replace('|', "/");
-        out.push_str(&format!(
+        rows.push_str(&format!(
             "#{id}|{tool}|{summary}|{paths}|{status}\n",
             id = turn.archive_id,
             tool = tool_or_role,
@@ -436,8 +432,14 @@ pub fn render_micro_pointers(goal: &str, turns: &[ArchivedTurnSummary]) -> Strin
             status = turn.status
         ));
     }
-    out.push_str("Search these with `snippet history search 'term'` and read full messages with `snippet history show <id> [<id>...]` or `snippet history show --from <id> --to <id>` (bash).\n");
-    out
+    crate::envelope::Envelope::new("archived_history")
+        .child("initial_goal", goal)
+        .child_with("turns", &[("columns", "#id|tool|summary|paths|status")], rows)
+        .child(
+            "note",
+            "Search these with `snippet history search 'term'` and read full messages with `snippet history show <id> [<id>...]` or `snippet history show --from <id> --to <id>` (bash).",
+        )
+        .render()
 }
 
 fn sanitize_fts5_query(raw: &str) -> String {
@@ -740,7 +742,7 @@ mod tests {
 
         // Verify micro-pointer output: old unlabeled bash falls back to command, labeled bash uses label
         let manifest = render_micro_pointers("Fix error E0308", &summaries);
-        assert!(manifest.contains("[archived_history]"));
+        assert!(crate::envelope::is(&manifest, "archived_history"));
         assert!(manifest.contains("#1|user|Please fix compiler error E0308 in auth.rs||ok"));
         assert!(manifest.contains("#2|bash|bash: cargo check||exit 1"));
         assert!(manifest.contains("#3|change_files|edited src/auth.rs (+1 -1)||ok"));

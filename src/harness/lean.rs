@@ -21,65 +21,52 @@ pub(super) fn handover(
     branch: Option<&str>,
     pointers: &str,
 ) -> String {
-    let mut out = String::from(
-        "[lean_continuation] This conversation continues from an earlier stretch. Its history is archived, not sent: \
-         bring back what you need with `snippet history search <words>` and `snippet history show --from <id> --to <id>` rather than guessing.",
-    );
     let requests: Vec<String> = messages
         .iter()
         .filter_map(|m| match m {
-            HarnessMessage::User { content } if !content.trim_start().starts_with('[') => {
-                Some(clip(content, 400))
+            HarnessMessage::User { content } if !is_daemon_envelope(content) => {
+                Some(format!("- {}", clip(content, 400)))
             }
             _ => None,
         })
         .collect();
-    if !requests.is_empty() {
-        out.push_str("\n\nRecent user requests, oldest first:");
-        for r in requests
-            .iter()
-            .skip(requests.len().saturating_sub(REQUESTS))
-        {
-            out.push_str(&format!("\n- {r}"));
-        }
-    }
-    let plan = render_plan(&state.plan);
-    if !plan.is_empty() {
-        out.push_str(&format!("\n\n{plan}"));
-    }
-    if let Some(branch) = branch {
-        out.push_str(&format!("\n\nBranch: {branch}"));
-    }
+    let requests = requests
+        .iter()
+        .skip(requests.len().saturating_sub(REQUESTS))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
     let running: Vec<String> = state
         .lanes
         .iter()
         .filter(|l| l.status == LaneStatus::Running)
         .map(|l| format!("\"{}\" ({})", l.title, l.id))
         .collect();
-    if !running.is_empty() {
-        out.push_str(&format!("\n\nLanes still running: {}", running.join(", ")));
-    }
-    if !state.watches.is_empty() {
-        let w: Vec<String> = state
-            .watches
-            .iter()
-            .map(|w| format!("\"{}\" ({})", w.label, w.id))
-            .collect();
-        out.push_str(&format!("\n\nActive watches: {}", w.join(", ")));
-    }
+    let watches: Vec<String> = state
+        .watches
+        .iter()
+        .map(|w| format!("\"{}\" ({})", w.label, w.id))
+        .collect();
     let last = messages.iter().rev().find_map(|m| match m {
         HarnessMessage::Assistant { content, .. } if !content.trim().is_empty() => {
             Some(clip(content, 1500))
         }
         _ => None,
     });
-    if let Some(last) = last {
-        out.push_str(&format!("\n\nYour last reply:\n{last}"));
-    }
-    if !pointers.trim().is_empty() {
-        out.push_str(&format!("\n\n{}", pointers.trim()));
-    }
-    out
+    crate::envelope::Envelope::new("lean_continuation")
+        .attr_opt("branch", branch)
+        .child(
+            "note",
+            "This conversation continues from an earlier stretch. Its history is archived, not sent: \
+             bring back what you need with `snippet history search <words>` and `snippet history show --from <id> --to <id>` rather than guessing.",
+        )
+        .child_with("requests", &[("order", "oldest first")], requests)
+        .child("plan", render_plan(&state.plan))
+        .child("lanes_running", running.join(", "))
+        .child("active_watches", watches.join(", "))
+        .child_opt("last_reply", last)
+        .child("pointers", pointers.trim())
+        .render()
 }
 
 impl CodingHarness {
@@ -126,13 +113,14 @@ impl CodingHarness {
         let Some((older, pointers)) = self.archive_history(state) else {
             return;
         };
-        let mut content = format!(
-            "[compacted] {} earlier messages are archived: bring back what you need with `snippet history search <words>` and `snippet history show --from <id> --to <id>`.",
-            older.len()
-        );
-        if !pointers.trim().is_empty() {
-            content.push_str(&format!("\n\n{}", pointers.trim()));
-        }
+        let content = crate::envelope::Envelope::new("compacted")
+            .attr("archived_messages", older.len().to_string())
+            .child(
+                "note",
+                "earlier messages are archived: bring back what you need with `snippet history search <words>` and `snippet history show --from <id> --to <id>`.",
+            )
+            .child("pointers", pointers.trim())
+            .render();
         state.messages.push(HarnessMessage::Summary {
             kind: "cli_compaction".into(),
             content,
@@ -189,7 +177,7 @@ mod tests {
                 content: "fix the header".into(),
             },
             HarnessMessage::User {
-                content: "[file_watch] noise".into(),
+                content: "<file_watch subject=\"noise\"/>".into(),
             },
             HarnessMessage::Assistant {
                 content: "Header fixed.".into(),
@@ -199,8 +187,19 @@ mod tests {
         let text = handover(&messages, &state, Some("ui-polish"), "");
         assert!(text.contains("- fix the header"));
         assert!(!text.contains("noise"));
-        assert!(text.contains("[>] Ship it"));
-        assert!(text.contains("Branch: ui-polish"));
-        assert!(text.ends_with("Header fixed."));
+        assert!(crate::envelope::is(&text, "lean_continuation"));
+        assert!(
+            crate::envelope::child(&text, "plan")
+                .unwrap()
+                .contains("[>] Ship it")
+        );
+        assert_eq!(
+            crate::envelope::attr(&text, "branch").as_deref(),
+            Some("ui-polish")
+        );
+        assert_eq!(
+            crate::envelope::child(&text, "last_reply").as_deref(),
+            Some("Header fixed.")
+        );
     }
 }

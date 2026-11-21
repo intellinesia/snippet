@@ -396,23 +396,29 @@ pub(super) const REFLECTION_READS: usize = 2;
 
 pub(super) fn reflection_instruction(repos: &[crate::memory::MemoryRepo], since: &str) -> String {
     let scope = if since.is_empty() {
-        String::new()
+        ""
     } else {
-        format!(
-            "\n\nCover everything since memory was last curated: from the user's message that begins \"{since}\" to now, including requests too small to have been reflected on."
-        )
+        "\n\nCover everything since memory was last curated: from the user's message in `since` to now, including requests too small to have been reflected on."
     };
-    format!(
-        "{REFLECTION_INSTRUCTION}{scope}\n\nMemory now, by each repo's MEMORY.md and index:\n{}",
-        render_indexes(repos)
-    )
+    crate::envelope::Envelope::new("reflection")
+        .child("note", format!("{REFLECTION_INSTRUCTION}{scope}"))
+        .child("since", since)
+        .child_with(
+            "memory",
+            &[("by", "each repo's MEMORY.md and index")],
+            render_indexes(repos),
+        )
+        .render()
 }
 
 pub(super) fn reflection_opened(repos: &[crate::memory::MemoryRepo], files: &[Value]) -> String {
-    format!(
-        "[reflection] The files you asked for:\n{}\nNow reply with only the {{\"changes\": [...]}} object.",
-        read_topic_files(repos, files)
-    )
+    crate::envelope::Envelope::new("reflection")
+        .child("files", read_topic_files(repos, files))
+        .child(
+            "note",
+            "Now reply with only the {\"changes\": [...]} object.",
+        )
+        .render()
 }
 
 pub(super) fn opened_names(files: &[Value]) -> String {
@@ -495,10 +501,13 @@ pub(super) fn unseen_files(
 }
 
 pub(super) fn reflection_held(repos: &[crate::memory::MemoryRepo], files: &[Value]) -> String {
-    format!(
-        "[reflection] Some changes go to files whose entries you hadn't seen, so nothing was applied yet. Here they are:\n{}\nSend the complete {{\"changes\": [...]}} again: replace or remove the entries these files already have where your new ones change or contradict them, and add only what's new.",
-        read_topic_files(repos, files)
-    )
+    crate::envelope::Envelope::new("reflection")
+        .child("files", read_topic_files(repos, files))
+        .child(
+            "note",
+            "Some changes go to files whose entries you hadn't seen, so nothing was applied yet; they are in files. Send the complete {\"changes\": [...]} again: replace or remove the entries these files already have where your new ones change or contradict them, and add only what's new.",
+        )
+        .render()
 }
 
 /// The files a reflection reply asks to open first, from `{"read": [...]}`.
@@ -515,19 +524,23 @@ pub(super) fn parse_reflection_read(text: &str) -> Option<Vec<Value>> {
 }
 
 pub(super) fn reflection_retry(applied: &[(String, String)], errors: &[String]) -> String {
-    format!(
-        "[reflection] Already applied (do not resend):\n{}\n\nRejected; fix these and resend only them as the same JSON, or send {{\"changes\": []}} to drop them:\n{}",
-        if applied.is_empty() {
-            "(nothing)".to_string()
-        } else {
-            applied
-                .iter()
-                .map(|(_, l)| l.as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        errors.join("\n")
-    )
+    let applied = if applied.is_empty() {
+        "(nothing)".to_string()
+    } else {
+        applied
+            .iter()
+            .map(|(_, l)| l.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    crate::envelope::Envelope::new("reflection")
+        .child("applied", applied)
+        .child("rejected", errors.join("\n"))
+        .child(
+            "note",
+            "Already applied (do not resend); rejected: fix those and resend only them as the same JSON, or send {\"changes\": []} to drop them.",
+        )
+        .render()
 }
 
 /// The `{"changes": [...]}` object in a reflection reply, fenced or bare.

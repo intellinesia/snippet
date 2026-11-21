@@ -80,7 +80,7 @@ pub(super) fn review_brief(
 const MAX_REVIEW_NUDGES: u32 = 3;
 
 /// What the review clock owes a Mission Control or user verdict: one
-/// `[review_due]` envelope per further timeout (at most three), then the user.
+/// `<review_due>` envelope per further timeout (at most three), then the user.
 /// `None` while the current window is still open or the task was escalated.
 pub(super) fn review_due_action(
     state: &crate::coordination::TaskState,
@@ -189,10 +189,13 @@ async fn review_due(
             let _ = d
                 .store
                 .modify_task_state(&task.id, &stamp, |s| s.review_nudges = nudges);
-            let envelope = format!(
-                "[review_due]\ntask_id: {}\ntitle: {}\nin review for: {age_minutes} minutes\nworker's report:\n{report}\nNo verdict has arrived. Call tasks.review with verdict approve, or changes with findings; if neither fits, hand it to the user.\n[/review_due]",
-                task.id, task.title
-            );
+            let envelope = crate::envelope::Envelope::new("review_due")
+                .attr("task_id", &task.id)
+                .attr("title", &task.title)
+                .attr("in_review_minutes", age_minutes.to_string())
+                .child("report", report)
+                .child("note", "No verdict has arrived. Call tasks.review with verdict approve, or changes with findings; if neither fits, hand it to the user.")
+                .render();
             super::autonomy::deliver_to_mission_control(d, envelope).await;
         }
         ReviewDue::Escalate => {
@@ -238,11 +241,12 @@ async fn start_review(d: &Daemon, task: &Task, state: &TaskState, now: &str) {
                     .store
                     .modify_task_state(&task.id, now, |s| s.review_started_at = now.to_string());
                 let brief = review_brief(task, state, &workspace, true);
-                let envelope = format!(
-                    "[review_request]\ntask_id: {}\nround: {}\nYou are the reviewer seated on this task, in your own conversation. Only your approval finishes the work. Ask the worker anything you need in the room (message.task with `to`).\n\n{brief}\n[/review_request]",
-                    task.id,
-                    state.review_rounds + 1,
-                );
+                let envelope = crate::envelope::Envelope::new("review_request")
+                    .attr("task_id", &task.id)
+                    .attr("round", (state.review_rounds + 1).to_string())
+                    .child("note", "You are the reviewer seated on this task, in your own conversation. Only your approval finishes the work. Ask the worker anything you need in the room (message.task with `to`).")
+                    .child("brief", &brief)
+                    .render();
                 d.deliver(&session, LoopInput::UserMessage(envelope)).await;
             }
             Err(error) => crate::review_tools::escalate(
@@ -326,7 +330,7 @@ mod tests {
         });
         let brief = review_brief(&task, &state, dir.path(), true);
         for needle in [
-            "[task_ledger v1]",
+            "<task_ledger version=\"1\">",
             "worker's report:\nchanged a",
             "a.txt",
             "thread_id `task:r1`",

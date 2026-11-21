@@ -264,10 +264,18 @@ mod seat_layer_tests {
         );
         for (name, body, limit) in [
             ("DESK_LAYER", DESK_LAYER, DESK_LAYER_MAX_BYTES),
-            ("WORK_SESSION_LAYER", WORK_SESSION_LAYER, WORK_SESSION_LAYER_MAX_BYTES),
+            (
+                "WORK_SESSION_LAYER",
+                WORK_SESSION_LAYER,
+                WORK_SESSION_LAYER_MAX_BYTES,
+            ),
             ("LANE_LAYER", LANE_LAYER, LANE_LAYER_MAX_BYTES),
         ] {
-            assert!(body.len() < limit, "{name} is {} bytes (limit {limit})", body.len());
+            assert!(
+                body.len() < limit,
+                "{name} is {} bytes (limit {limit})",
+                body.len()
+            );
         }
     }
 
@@ -293,8 +301,8 @@ mod seat_layer_tests {
                 "{name} must not repeat envelope overview"
             );
             assert!(
-                !(body.contains("[direct_message]") && body.contains("[group_message]")),
-                "{name} must not repeat the [direct_message] envelope list"
+                !(body.contains("<direct_message>") && body.contains("<group_message>")),
+                "{name} must not repeat the <direct_message> envelope list"
             );
         }
     }

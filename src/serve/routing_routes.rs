@@ -61,7 +61,12 @@ async fn continue_on(
     send_input(
         d,
         id,
-        format!("[routing] {from} hit its usage limit, so this session now runs on {to}. Pick up where the last turn stopped and finish it."),
+        crate::envelope::Envelope::new("routing")
+            .attr("kind", "switched")
+            .attr("from", &from)
+            .attr("to", &to)
+            .child("note", format!("{from} hit its usage limit, so this session now runs on {to}. Pick up where the last turn stopped and finish it."))
+            .render(),
     )
     .await;
     Ok(())
@@ -172,7 +177,11 @@ pub(crate) async fn resolve_limit(State(d): State<Shared>, Json(req): Json<Limit
                 send_input(
                     &d2,
                     &session,
-                    format!("[routing] {current}'s usage window has reset. Pick up where the last turn stopped and finish it."),
+                    crate::envelope::Envelope::new("routing")
+                        .attr("kind", "window_reset")
+                        .attr("from", &current)
+                        .child("note", format!("{current}'s usage window has reset. Pick up where the last turn stopped and finish it."))
+                        .render(),
                 )
                 .await;
             });
