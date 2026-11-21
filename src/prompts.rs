@@ -88,7 +88,7 @@ pub fn coding_prompt(context: &PromptContext) -> String {
     parts.join("\n\n")
 }
 
-const HUMAN_MANAGED_LINE: &str = "The user leads this session: follow their direction and do not run ahead. Be ambitious inside it: propose the bigger version and the next step, and build them once they agree. Your desk keeps track but does not drive it.";
+const HUMAN_MANAGED_LINE: &str = "The user leads this session; your desk keeps track but does not drive it.";
 const AGENT_MANAGED_LINE: &str = "You run this session for your desk, toward its objective. The user may drop in: take their word as direction; the session stays yours.";
 
 fn work_session_layer(context: &PromptContext) -> String {
@@ -229,10 +229,10 @@ mod seat_layer_tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
-    const HARNESS_CORE_MAX_BYTES: usize = 9_500;
-    const DESK_LAYER_MAX_BYTES: usize = 5_000;
-    const WORK_SESSION_LAYER_MAX_BYTES: usize = 5_500;
-    const LANE_LAYER_MAX_BYTES: usize = 2_000;
+    const HARNESS_CORE_MAX_BYTES: usize = 4_500;
+    const DESK_LAYER_MAX_BYTES: usize = 3_200;
+    const WORK_SESSION_LAYER_MAX_BYTES: usize = 2_000;
+    const LANE_LAYER_MAX_BYTES: usize = 1_400;
 
     #[test]
     fn every_seat_prompt_includes_harness_core_exactly_once() {

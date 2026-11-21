@@ -246,7 +246,7 @@ pub(super) fn goal_stall_wake(
         .attr("kind", "stalled_goals")
         .child("note", "A goal has stopped moving.")
         .child("body", stalled_goals_section(&lines))
-        .child("instructions", "No reply is expected.")
+        .child("instructions", "Each goal below is open with no task, next step or user question moving it.")
         .render())
 }
 
