@@ -11,13 +11,6 @@ use crate::coordination::followups::Followup;
 const TICK: Duration = Duration::from_secs(5);
 
 pub fn wake_envelope(f: &Followup) -> String {
-    let tool = if crate::mission_control::is_session_id(&f.session_id) {
-        "schedule.once"
-    } else if crate::session::is_inbox_session_id(&f.session_id) {
-        "wake.once"
-    } else {
-        "snippet tool schedule_wake"
-    };
     crate::envelope::Envelope::new("wake")
         .attr("set", &f.created_at)
         .child(
@@ -27,7 +20,7 @@ pub fn wake_envelope(f: &Followup) -> String {
         .child("wake_note", &f.note)
         .child(
             "instructions",
-            format!("{tool} sets another wake."),
+            "wake.once sets another wake.",
         )
         .render()
 }

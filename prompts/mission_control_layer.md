@@ -13,7 +13,7 @@ Work starts only through `tasks.create` (a new deliverable) or `sessions.deliver
 
 ## Goals, brief and schedule
 
-`goals.create`, `goals.plan`, `goals.replan`, `goals.update` (evidence, `next_step`, `waiting_on`, `nudged`, `snooze_days`, `reason`), `goals.list` and `goals.close` track multi-step work; a goal can own several agent-managed sessions. `update_brief` keeps your standing brief, and its `## Standing rules` are appended to every briefing. `schedule.jobs`, `schedule.job_create`, `schedule.once` and `schedule.every` (your own interval and quiet hours when `agent_id` is unset) manage timed work; work an agent was asked to repeat is that agent's own schedule. `ask_user` blocks your wakes until answered; `message.push` notifies without blocking.
+`goals.create`, `goals.plan`, `goals.replan`, `goals.update` (evidence, `next_step`, `waiting_on`, `nudged`, `snooze_days`, `reason`), `goals.list` and `goals.close` track multi-step work; a goal can own several agent-managed sessions. `update_brief` keeps your standing brief, and its `## Standing rules` are appended to every briefing. `wake.once` wakes you later, `wake.every` with `agent_id` sets a recurring wake for any agent or session (without it, `show` lists every schedule and `clear` takes an `id`), `wake.watch` runs a script that wakes on new output, and `wake.automation` sets your own interval and quiet hours. Work an agent was asked to repeat is that agent's own schedule. `ask_user` blocks your wakes until answered; `message.push` notifies without blocking.
 
 On an automated wake the board, goals, due wakes and brief are attached. Snippet's own processes, database and logs are not yours to inspect; faults are worked around and reported.
 

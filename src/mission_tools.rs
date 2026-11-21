@@ -63,9 +63,6 @@ pub fn add_mission_control_tools(registry: &mut ToolRegistry) {
     registry.insert(UpdateMissionTask);
     registry.insert(AssignTaskAgent);
     registry.insert(TransferMissionTaskLease);
-    registry.insert(CreateRecurringJob);
-    registry.insert(ListRecurringJobs);
-    registry.insert(CancelRecurringJob);
     registry.insert(RetryMissionTask);
     registry.insert(CancelMissionTask);
     registry.insert(CleanUpSessions);
@@ -95,6 +92,7 @@ pub fn add_mission_control_tools(registry: &mut ToolRegistry) {
     registry.insert(RecordingPolicyTool);
     registry.insert(UpdateBrief);
     registry.insert(ScheduleFollowup);
+    registry.insert(crate::agent_wakes::AutomatedWakesTool);
     registry.insert(PingUser);
     registry.insert(AnswerWorker);
     registry.insert(ReadFile);
@@ -4370,213 +4368,6 @@ impl Tool for ReportMissionTask {
     }
 }
 
-#[derive(Deserialize)]
-struct CreateRecurringArgs {
-    title: String,
-    #[serde(default)]
-    session_id: Option<String>,
-    schedule: String,
-    #[serde(default)]
-    prompt: String,
-    #[serde(default)]
-    plan_path: Option<String>,
-    #[serde(default)]
-    report_group: Option<String>,
-}
-
-pub struct ListRecurringJobs;
-#[async_trait]
-impl Tool for ListRecurringJobs {
-    fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition {
-            name: "list_recurring_jobs".into(),
-            description: "List the recurring jobs: id, title, target session, schedule, plan file, next run. Check it before scheduling something that may already exist.".into(),
-            input_schema: schema(json!({}), &[]),
-        }
-    }
-    async fn execute(
-        &self,
-        _ctx: &ToolContext,
-        _arguments: Value,
-    ) -> Result<ToolResult, ToolError> {
-        let jobs = crate::recurring::list_jobs(&crate::recurring::default_root())
-            .map_err(ToolError::msg)?;
-        let rows: Vec<Value> = jobs
-            .iter()
-            .map(|job| {
-                json!({
-                    "id": job.id,
-                    "title": job.title,
-                    "session_id": job.session_id,
-                    "schedule": job.schedule.display(),
-                    "plan_path": job.plan_path,
-                    "enabled": job.enabled,
-                    "next_run": crate::recurring::fmt_local_and_utc(job.next_run_at),
-                    "report_group": job.report_group,
-                })
-            })
-            .collect();
-        Ok(ToolResult::success(json!({"jobs": rows})))
-    }
-}
-
-#[derive(Deserialize)]
-struct CancelRecurringArgs {
-    id: String,
-}
-
-pub struct CancelRecurringJob;
-#[async_trait]
-impl Tool for CancelRecurringJob {
-    fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition {
-            name: "cancel_recurring_job".into(),
-            description: "Stop a recurring job for good, by its id from list_recurring_jobs."
-                .into(),
-            input_schema: schema(json!({"id": {"type": "string"}}), &["id"]),
-        }
-    }
-    async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: CancelRecurringArgs =
-            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let user_wake = crate::recurring::list_jobs(&crate::recurring::default_root())
-            .unwrap_or_default()
-            .into_iter()
-            .any(|j| {
-                j.id == args.id.trim()
-                    && j.wake
-                        .is_some_and(|w| w.set_by == crate::agent_wakes::Setter::User)
-            });
-        if user_wake {
-            return Err(ToolError::msg(
-                "the user set this wake schedule; ask them to change it",
-            ));
-        }
-        crate::recurring::delete_job(&crate::recurring::default_root(), args.id.trim())
-            .map_err(ToolError::msg)?;
-        Ok(ToolResult::success(
-            json!({"cancelled": true, "id": args.id.trim()}),
-        ))
-    }
-}
-
-pub struct CreateRecurringJob;
-#[async_trait]
-impl Tool for CreateRecurringJob {
-    fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition {
-            name: "create_recurring_job".into(),
-            description: "Schedule repeat work: each run sets a goal on the target session, and its complete_goal summary reaches the user, you and report_group if set. schedule: `every 5m|1h|1d` (5m min), `daily HH:MM`, or one-off `at HH:MM` / `in 30m`. Clock times are the user's local time, not UTC. Give a prompt, a plan_path reread each run, or both. The first run starts at once, or when the session is free.".into(),
-            input_schema: schema(
-                json!({
-                    "title": {"type": "string"},
-                    "session_id": {"type": "string", "description": "Target worker session id (defaults to current session; never Mission Control)"},
-                    "schedule": {"type": "string", "description": "e.g. `every 1h`, `daily 09:00`, `at 14:00`, `in 30m`"},
-                    "prompt": {"type": "string"},
-                    "plan_path": {"type": "string"},
-                    "report_group": {"type": "string", "description": "group:<id> the work came from"}
-                }),
-                &["title", "schedule"],
-            ),
-        }
-    }
-    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let _ = root(ctx)?;
-        let args: CreateRecurringArgs = serde_json::from_value(arguments)?;
-        let target_session_id = match args
-            .session_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            Some(id) => id.to_string(),
-            None => match ctx.durable_session_id().as_deref() {
-                Some(id) => id.to_string(),
-                None => return Err(ToolError::msg("session_id is required")),
-            },
-        };
-        let session_id = target_session_id.as_str();
-        if crate::mission_control::is_session_id(session_id) {
-            return Err(ToolError::msg(
-                "a recurring job can't run in Mission Control's own chat: pass session_id of a worker session (read.sessions, or create one), and the run reports back to you",
-            ));
-        }
-        if state_path_for_id(session_id).is_none() {
-            return Err(ToolError::msg(
-                "unknown target session — pass an id from read.sessions or omit to target current session",
-            ));
-        }
-        let schedule = crate::recurring::Schedule::parse(&args.schedule).map_err(ToolError::msg)?;
-        let report_group = args
-            .report_group
-            .as_deref()
-            .map(str::trim)
-            .filter(|g| !g.is_empty())
-            .map(str::to_string);
-        if let Some(group) = &report_group {
-            crate::recurring::check_report_group(
-                &crate::recurring::default_root(),
-                session_id,
-                group,
-            )
-            .map_err(ToolError::msg)?;
-        }
-        let title = args.title.trim().to_lowercase();
-        let plan = args
-            .plan_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|p| !p.is_empty());
-        let existing =
-            crate::recurring::list_jobs(&crate::recurring::default_root()).unwrap_or_default();
-        if let Some(twin) = existing.iter().find(|job| {
-            job.enabled
-                && job.session_id == session_id
-                && (job.title.trim().to_lowercase() == title
-                    || (plan.is_some() && job.plan_path.as_deref() == plan))
-        }) {
-            return Err(ToolError::msg(format!(
-                "session `{session_id}` already has a recurring job for this: `{}` ({}, {}). Keep it, or schedule.job_cancel it first if this one should replace it.",
-                twin.title,
-                twin.id,
-                twin.schedule.display()
-            )));
-        }
-        let job = crate::recurring::create_job(
-            &crate::recurring::default_root(),
-            args.title.trim(),
-            session_id,
-            args.prompt.trim(),
-            schedule,
-            args.plan_path.as_deref(),
-        )
-        .map_err(ToolError::msg)?;
-        let job = match report_group {
-            Some(group) => {
-                crate::recurring::update_job(&crate::recurring::default_root(), &job.id, |j| {
-                    j.report_group = Some(group)
-                })
-                .map_err(ToolError::msg)?
-            }
-            None => job,
-        };
-        let then = job.schedule.next_after(job.next_run_at.max(job.created_at));
-        Ok(ToolResult::success(json!({
-            "job": {
-                "id": job.id,
-                "title": job.title,
-                "session_id": job.session_id,
-                "schedule": job.schedule.display(),
-                "plan_path": job.plan_path,
-                "report_group": job.report_group,
-                "first_run": "now",
-                "then": crate::recurring::fmt_local_and_utc(then),
-            },
-            "note": "Scheduled. The first run starts within seconds (or right after the session's current goal), so don't also create a task for it.",
-        })))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4924,24 +4715,6 @@ mod tests {
         let roster = db.list_task_agents("t2").unwrap();
         assert_eq!(roster.len(), 1);
         assert_eq!(roster[0].agent_id, "rust-pr-reviewer");
-    }
-
-    #[tokio::test]
-    async fn recurring_job_refuses_mission_control_as_its_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = ToolContext::mission_control(dir.path())
-            .unwrap()
-            .with_durable_session_id(crate::mission_control::SESSION_ID);
-        for args in [
-            json!({"title": "digest", "schedule": "daily 08:30", "prompt": "x"}),
-            json!({"title": "digest", "schedule": "daily 08:30", "prompt": "x", "session_id": crate::mission_control::SESSION_ID}),
-        ] {
-            let err = CreateRecurringJob.execute(&ctx, args).await.unwrap_err();
-            assert!(
-                err.to_string().contains("Mission Control's own chat"),
-                "{err}"
-            );
-        }
     }
 
     #[tokio::test]

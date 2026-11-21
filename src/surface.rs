@@ -318,7 +318,7 @@ const TASK: Surface = Surface {
 
 const WAKE: Surface = Surface {
     name: "wake",
-    intro: "Schedule wakes and manage background watches.",
+    intro: "Wakes: once, on a schedule, or from a watched script.",
     acts: &[
         act(
             "once",
@@ -328,12 +328,17 @@ const WAKE: Surface = Surface {
         op(
             "every",
             "wake_schedule",
-            "recurring wake with a brief on a schedule (show, set, clear).",
+            "recurring wake with a brief (show, set, clear).",
         ),
         op(
             "watch",
             "watch",
             "background script that wakes you on new output (poll or stream).",
+        ),
+        op(
+            "automation",
+            "automated_wakes",
+            "Mission Control's own heartbeat interval and quiet hours.",
         ),
     ],
 };
@@ -434,39 +439,6 @@ const SESSIONS: Surface = Surface {
     ],
 };
 
-const SCHEDULE: Surface = Surface {
-    name: "schedule",
-    intro: "Schedule wakes, watches, and recurring jobs.",
-    acts: &[
-        act(
-            "once",
-            "schedule_wake",
-            "wake once in_minutes from now with a note.",
-        ),
-        op(
-            "every",
-            "wake_schedule",
-            "recurring wake for an agent or Mission Control.",
-        ),
-        op(
-            "watch",
-            "watch",
-            "background script that wakes on new output.",
-        ),
-        act(
-            "job_create",
-            "create_recurring_job",
-            "create a recurring job.",
-        ),
-        act("jobs", "list_recurring_jobs", "list recurring jobs."),
-        act(
-            "job_cancel",
-            "cancel_recurring_job",
-            "cancel a recurring job.",
-        ),
-    ],
-};
-
 const AMBIENT: Surface = Surface {
     name: "ambient",
     intro: "Control ambient listening, room state, expectations, tuning, and recordings.",
@@ -494,7 +466,7 @@ const AMBIENT: Surface = Surface {
 
 pub const SURFACES: &[&Surface] = &[
     &WEB, &PROCESS, &PRESENT, &DELEGATE, &SKILL, &MESSAGE, &READ, &TASK, &WAKE, &TASKS, &GOALS,
-    &SESSIONS, &SCHEDULE, &AMBIENT,
+    &SESSIONS, &AMBIENT,
 ];
 
 fn keep_for(role: SeatRole) -> &'static [&'static str] {
@@ -532,12 +504,12 @@ fn keep_for(role: SeatRole) -> &'static [&'static str] {
 fn surfaces_for(role: SeatRole) -> &'static [&'static Surface] {
     match role {
         SeatRole::Work => &[
-            &PROCESS, &WEB, &PRESENT, &DELEGATE, &MESSAGE, &READ, &SKILL, &TASK,
+            &PROCESS, &WEB, &PRESENT, &DELEGATE, &MESSAGE, &READ, &SKILL, &TASK, &WAKE,
         ],
         SeatRole::Desk => &[&WEB, &MESSAGE, &READ, &TASK, &WAKE],
         SeatRole::Lane => &[&PROCESS, &WEB, &SKILL],
         SeatRole::MissionControl => &[
-            &WEB, &PRESENT, &MESSAGE, &READ, &AMBIENT, &TASKS, &GOALS, &SESSIONS, &SCHEDULE,
+            &WEB, &PRESENT, &MESSAGE, &READ, &AMBIENT, &TASKS, &GOALS, &SESSIONS, &WAKE,
         ],
     }
 }
