@@ -398,6 +398,13 @@ fn relay_agent_id(store: &crate::store::Store, session_id: &str) -> Option<Strin
                 .find(|m| m.removed_at.is_none() && m.status == "active")
                 .map(|m| m.agent_id)
         })
+        .or_else(|| {
+            let row = store.get_session_row(session_id).ok().flatten()?;
+            Some(crate::session::owner_agent_id_for(
+                &row.id,
+                row.agent_id.as_deref(),
+            ))
+        })
 }
 
 fn relay_agent_name(store: &crate::store::Store, agent_id: &str, session_id: &str) -> String {
@@ -548,6 +555,83 @@ pub(crate) fn relay_question(
         Some(&key),
         extra,
     );
+}
+
+/// When an agent-managed session stops, tell the desk that manages it.
+pub(crate) fn relay_stop(
+    store: &crate::store::Store,
+    session_id: &str,
+    status: &str,
+    state: &crate::harness::HarnessState,
+) {
+    use crate::harness::HarnessEvent as E;
+    if crate::mission_control::is_session_id(session_id)
+        || crate::session::is_inbox_session_id(session_id)
+    {
+        return;
+    }
+    let Some(row) = store.get_session_row(session_id).ok().flatten() else {
+        return;
+    };
+    if row.managed_by != "agent" {
+        return;
+    }
+    let desk = crate::session::owner_agent_id_for(&row.id, row.agent_id.as_deref());
+    let start = state
+        .events
+        .iter()
+        .rposition(|e| matches!(e, E::UserInput { .. }))
+        .unwrap_or(0);
+    let last_said = state.events[start..].iter().rev().find_map(|e| match e {
+        E::AssistantText { text, .. } if !text.trim().is_empty() => {
+            let text = text.trim();
+            Some(match text.char_indices().nth(600) {
+                Some((cut, _)) => format!("{}…", &text[..cut]),
+                None => text.to_string(),
+            })
+        }
+        _ => None,
+    });
+    let question = state
+        .pending_question
+        .as_ref()
+        .map(super::autonomy::question_text)
+        .filter(|q| !q.trim().is_empty());
+    let title = row
+        .title
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or("untitled");
+    let mut envelope = crate::envelope::Envelope::new("session_stopped")
+        .attr("session", session_id)
+        .attr("title", title)
+        .attr("status", status);
+    if let Some(text) = last_said {
+        envelope = envelope.child("last_said", text);
+    }
+    if let Some(text) = question.as_deref() {
+        envelope = envelope.child("question", text);
+    }
+    let note =
+        format!("a session you manage stopped. message.send to session:{session_id} reaches it.");
+    let body = envelope.child("note", note).render();
+    let key = format!("session-stopped:{session_id}:{}", state.events.len());
+    let mut extra = serde_json::Map::new();
+    extra.insert("kind".into(), json!("status"));
+    extra.insert("auto".into(), json!("session_stopped"));
+    if let Err(error) = store.send_direct_message_typed(
+        ("session", session_id),
+        ("agent", &desk),
+        &body,
+        &key,
+        &chrono::Utc::now().to_rfc3339(),
+        None,
+        None,
+        None,
+        extra,
+    ) {
+        eprintln!("relay stop for {session_id}: {error}");
+    }
 }
 
 /// The newest relayed `ask_user` question for `session_id`, when its agent's
@@ -3076,6 +3160,38 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_managed_session_tells_its_desk_once_when_it_stops() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let mut state = waiting_question_state();
+        state.events.push(E::AssistantText {
+            text: "Need a call on the deploy.".into(),
+            quiet: false,
+        });
+        for id in ["sess-agent", "sess-human"] {
+            store
+                .import_session(id, "wk", &state, &Default::default())
+                .unwrap();
+        }
+        store.set_session_managed_by("sess-agent", "agent").unwrap();
+        store.set_session_managed_by("sess-human", "human").unwrap();
+        for id in ["sess-agent", "sess-agent", "sess-human"] {
+            super::relay_stop(&store, id, "waiting_for_input", &state);
+        }
+        let thread = |id: &str| {
+            let thread =
+                crate::coordination::direct_thread_id(("agent", "snippet"), ("session", id));
+            store.recent_direct_thread_events(&thread, 50).unwrap()
+        };
+        let sent = thread("sess-agent");
+        assert_eq!(sent.len(), 1);
+        let body = sent[0].payload["body"].as_str().unwrap();
+        assert!(body.contains("session_stopped"));
+        assert!(body.contains("Need a call on the deploy."));
+        assert!(body.contains("Ship now or wait for review?"));
+        assert!(thread("sess-human").is_empty());
+    }
+
+    #[test]
     fn relay_question_posts_once_per_question_event() {
         let store = crate::store::Store::open_in_memory().unwrap();
         store.create_agent(&agent("a")).unwrap();
@@ -3123,11 +3239,19 @@ mod tests {
         let asked = waiting_question_state();
         state.pending_question = asked.pending_question.clone();
         state.events.extend(asked.events);
-        state.human_waiting.push(crate::harness::HumanWait { thread_id: "direct:agent:a|human:local".into(), since: String::new(), steered: false });
+        state.human_waiting.push(crate::harness::HumanWait {
+            thread_id: "direct:agent:a|human:local".into(),
+            since: String::new(),
+            steered: false,
+        });
         super::relay_desk_reply(&store, "sess-unowned", &mut state);
         super::relay_question(&store, "sess-unowned", &state);
         let events = thread_events(&store, "a");
-        assert!(events.iter().all(|e| e.payload.get("kind") != Some(&json!("notice"))));
+        assert!(
+            events
+                .iter()
+                .all(|e| e.payload.get("kind") != Some(&json!("notice")))
+        );
         assert_eq!(
             events
                 .iter()

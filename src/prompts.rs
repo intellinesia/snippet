@@ -88,7 +88,8 @@ pub fn coding_prompt(context: &PromptContext) -> String {
     parts.join("\n\n")
 }
 
-const HUMAN_MANAGED_LINE: &str = "The user leads this session; your desk keeps track but does not drive it.";
+const HUMAN_MANAGED_LINE: &str =
+    "The user leads this session; your desk keeps track but does not drive it.";
 const AGENT_MANAGED_LINE: &str = "You run this session for your desk, toward its objective. The user may drop in: take their word as direction; the session stays yours.";
 
 fn work_session_layer(context: &PromptContext) -> String {

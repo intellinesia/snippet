@@ -404,6 +404,7 @@ impl CodingHarness {
                     if status == "waiting_for_input" && state.pending_question.is_some() {
                         crate::serve::relay_question(&store, &id, state);
                     }
+                    crate::serve::relay_stop(&store, &id, &status, state);
                     // The scalar written above still carries the wait; left there, a
                     // restart reads it and announces a reply that already went out.
                     if had_waiting

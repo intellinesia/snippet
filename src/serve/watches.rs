@@ -182,9 +182,19 @@ pub fn watch_envelope(watch: &cw::Watch, event: &str, body: &[String], held: usi
         .attr("mode", watch.mode.to_string())
         .attr("event", event)
         .attr("lines", body.len().to_string())
-        .attr("held", if held > 0 { held.to_string() } else { String::new() })
+        .attr(
+            "held",
+            if held > 0 {
+                held.to_string()
+            } else {
+                String::new()
+            },
+        )
         .child("body", text)
-        .child("note", format!("your own watch fired. {watch_tool} (op: update) changes it or removes it."))
+        .child(
+            "note",
+            format!("your own watch fired. {watch_tool} (op: update) changes it or removes it."),
+        )
         .render()
 }
 

@@ -1244,8 +1244,7 @@ pub(crate) fn render_lane_report(result: &LaneResult, outstanding: usize) -> Str
         result.status,
         LaneStatus::Failed | LaneStatus::Paused | LaneStatus::Cancelled
     ) {
-        "No lane still out."
-            .to_string()
+        "No lane still out.".to_string()
     } else {
         "All lanes reported.".to_string()
     };
@@ -1791,12 +1790,7 @@ mod lane_report_tests {
             },
             0,
         );
-        assert!(
-            failed_last.contains(
-                "No lane still out."
-            ),
-            "{failed_last}"
-        );
+        assert!(failed_last.contains("No lane still out."), "{failed_last}");
         assert!(!failed_last.contains("All lanes reported"), "{failed_last}");
 
         let citation = "src/a.rs:1234";

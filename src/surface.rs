@@ -198,11 +198,7 @@ const MESSAGE: Surface = Surface {
             "group_thread",
             "create or post in group threads, set the lead, add members.",
         ),
-        act(
-            "push",
-            "ping_user",
-            "push-notify the user's phone.",
-        ),
+        act("push", "ping_user", "push-notify the user's phone."),
     ],
 };
 

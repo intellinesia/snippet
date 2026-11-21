@@ -327,10 +327,7 @@ pub fn declined_notice(offer: &LaneOffer) -> String {
         .attr("agent", &offer.agent_id)
         .attr("title", &offer.title)
         .attr("reason", offer.note.as_deref().unwrap_or("none given"))
-        .child(
-            "note",
-            "The offer was declined; the piece is unclaimed.",
-        )
+        .child("note", "The offer was declined; the piece is unclaimed.")
         .render()
 }
 

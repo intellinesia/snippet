@@ -242,12 +242,17 @@ pub(super) fn goal_stall_wake(
         return None;
     }
     let lines = stalled_goal_lines(store, now);
-    Some(crate::envelope::Envelope::new("automated_wake")
-        .attr("kind", "stalled_goals")
-        .child("note", "A goal has stopped moving.")
-        .child("body", stalled_goals_section(&lines))
-        .child("instructions", "Each goal below is open with no task, next step or user question moving it.")
-        .render())
+    Some(
+        crate::envelope::Envelope::new("automated_wake")
+            .attr("kind", "stalled_goals")
+            .child("note", "A goal has stopped moving.")
+            .child("body", stalled_goals_section(&lines))
+            .child(
+                "instructions",
+                "Each goal below is open with no task, next step or user question moving it.",
+            )
+            .render(),
+    )
 }
 
 /// User turns in a seat's session since the task's last progress that mean the
