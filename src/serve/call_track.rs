@@ -1114,7 +1114,7 @@ fn ended_message(
         })
         .unwrap_or_default();
     format!(
-        "<call_ended id=\"{}\" device=\"{}\" started=\"{}\" ended=\"{}\" lines=\"{}\"{attr}>The user asked Snippet to take notes on this conversation and it has ended.{saved} Speaker labels, where present, are best-effort voice matching (You is the user); otherwise infer who said what only where the content makes it clear, and never invent names. Reply in this chat in text only, without speaking: a short summary, the decisions made, and the action items with owners and dates where they were stated. Keep commitments the user made the way you keep other remembered notes. If nothing of substance was said, say so in one line.\n<transcript>\n{}</transcript></call_ended>",
+        "<call_ended id=\"{}\" device=\"{}\" started=\"{}\" ended=\"{}\" lines=\"{}\"{attr}>The user asked Snippet to take notes on this conversation, and it has ended.{saved} Speaker labels, where present, are best-effort voice matching (You is the user); names not in the transcript are unknown. The notes are expected in this chat as text: a short summary, the decisions, and action items with owners and dates where stated, or one line if nothing of substance was said. Commitments the user made are worth remembering.\n<transcript>\n{}</transcript></call_ended>",
         super::ambient_watch::escape(id),
         super::ambient_watch::escape(device),
         iso(started_at),
