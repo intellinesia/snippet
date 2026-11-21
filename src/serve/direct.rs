@@ -425,6 +425,10 @@ pub(crate) fn relay_desk_reply(
     if state.human_waiting.is_empty() {
         return;
     }
+    if state.pending_question.is_some() {
+        state.human_waiting.clear();
+        return;
+    }
     let waiting = state.human_waiting.len();
     let about_thread =
         turn_about_thread(&state.events).filter(|t| agent_from_thread_id(t).is_some());
@@ -469,7 +473,11 @@ pub(crate) fn relay_question(
     let Some(question) = state.pending_question.as_ref() else {
         return;
     };
-    let Some(agent_id) = relay_agent_id(store, session_id) else {
+    let Some(agent_id) = turn_about_thread(&state.events)
+        .as_deref()
+        .and_then(agent_from_thread_id)
+        .or_else(|| relay_agent_id(store, session_id))
+    else {
         return;
     };
     let Some(index) = state
@@ -2418,7 +2426,6 @@ mod tests {
             thread_id: event.thread_id.clone(),
             since: "s".into(),
             steered: false,
-            event_index: 0,
         });
         task_state.events.push(E::UserInput { text: fwd_env });
         task_state.events.push(E::AssistantText {
@@ -2494,7 +2501,6 @@ mod tests {
             thread_id: human.thread_id.clone(),
             since: "s".into(),
             steered: false,
-            event_index: 0,
         });
         state.events.push(E::UserInput {
             text: "<direct_message thread_id=\"direct:agent:a|human:local\" from_kind=\"human\" reply_to=\"human\">\n<body>real human message</body>\n</direct_message>".into(),
@@ -2509,7 +2515,6 @@ mod tests {
             thread_id: human.thread_id.clone(),
             since: "s2".into(),
             steered: false,
-            event_index: 0,
         });
         super::relay_restart(&store, "inbox-a", &state);
 
@@ -2775,7 +2780,6 @@ mod tests {
             thread_id: "t".into(),
             since: "s".into(),
             steered: true,
-            event_index: 0,
         });
         state.events.push(E::UserInput { text: "<direct_message thread_id=\"t\" from_kind=\"human\" reply_to=\"human\">\n<body>hi</body>\n</direct_message>".into() });
         state.events.push(E::AssistantText {
@@ -3097,6 +3101,40 @@ mod tests {
         );
         assert!(ask.payload["question"]["asked_at"].as_str().is_some());
         assert_eq!(ask.idempotency_key, "ask:sess-1:0");
+    }
+
+    #[test]
+    fn a_question_after_a_desk_forward_reaches_the_desk_chat_instead_of_a_no_reply_notice() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store.create_agent(&agent("a")).unwrap();
+        let mut state = crate::harness::HarnessState::blank("/tmp", None);
+        state.events.push(E::UserInput {
+            text: crate::envelope::Envelope::new("direct_message")
+                .attr("from", "agent:a")
+                .attr("reply_to", "human")
+                .attr("about_thread", "direct:agent:a|human:local")
+                .child("body", "remove it")
+                .render(),
+        });
+        state.events.push(E::ToolCall {
+            tool_name: "bash".into(),
+            arguments: json!({"command": "ls"}),
+        });
+        let asked = waiting_question_state();
+        state.pending_question = asked.pending_question.clone();
+        state.events.extend(asked.events);
+        state.human_waiting.push(crate::harness::HumanWait { thread_id: "direct:agent:a|human:local".into(), since: String::new(), steered: false });
+        super::relay_desk_reply(&store, "sess-unowned", &mut state);
+        super::relay_question(&store, "sess-unowned", &state);
+        let events = thread_events(&store, "a");
+        assert!(events.iter().all(|e| e.payload.get("kind") != Some(&json!("notice"))));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.payload.get("auto").and_then(|v| v.as_str()) == Some("ask"))
+                .count(),
+            1
+        );
     }
 
     #[test]
