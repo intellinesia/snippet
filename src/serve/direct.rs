@@ -1586,6 +1586,10 @@ pub(super) struct DirectMessagesQuery {
     peer_id: String,
     #[serde(default)]
     after_sequence: u64,
+    #[serde(default)]
+    before_sequence: Option<u64>,
+    #[serde(default)]
+    latest: bool,
     #[serde(default = "default_direct_limit")]
     limit: u32,
 }
@@ -1595,7 +1599,8 @@ fn default_direct_limit() -> u32 {
 
 /// GET /coordination/direct/messages — one page of the conversation between two
 /// participants, oldest first. The thread is derived from the pair, so a client
-/// never needs to know or remember a thread id.
+/// never needs to know or remember a thread id. `latest` reads the newest page
+/// and `before_sequence` the page before it.
 pub(super) async fn direct_list_messages(
     State(d): State<Shared>,
     Query(q): Query<DirectMessagesQuery>,
@@ -1603,10 +1608,15 @@ pub(super) async fn direct_list_messages(
     let from = (q.actor_kind.as_str(), q.actor_id.as_str());
     let to = (q.peer_kind.as_str(), q.peer_id.as_str());
     let thread_id = crate::coordination::direct_thread_id(from, to);
-    match d
-        .store
-        .direct_thread_events(&thread_id, q.after_sequence, q.limit.clamp(1, 200))
-    {
+    let limit = q.limit.clamp(1, 200);
+    let page = if q.latest || q.before_sequence.is_some() {
+        d.store
+            .direct_thread_events_before(&thread_id, q.before_sequence, limit)
+    } else {
+        d.store
+            .direct_thread_events(&thread_id, q.after_sequence, limit)
+    };
+    match page {
         Ok(mut events) => {
             d.store.attach_desk_decisions(&mut events);
             let event_ids: Vec<String> =
@@ -2141,6 +2151,8 @@ mod tests {
                 peer_kind: "agent".into(),
                 peer_id: "a".into(),
                 after_sequence: 0,
+                before_sequence: None,
+                latest: false,
                 limit: 50,
             }),
         )

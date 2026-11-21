@@ -916,6 +916,28 @@ impl Store {
         })
     }
 
+    /// The newest `limit` messages of a direct thread below `before_sequence`,
+    /// oldest first; `None` reads from the newest message.
+    pub fn direct_thread_events_before(
+        &self,
+        thread_id: &str,
+        before_sequence: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<CoordinationEvent>, StoreError> {
+        let before = before_sequence.map_or(i64::MAX, |s| s as i64);
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {EVENT_COLUMNS} FROM board_events
+                 WHERE thread_id = ?1 AND sequence < ?2
+                 ORDER BY sequence DESC LIMIT ?3"
+            ))?;
+            let rows = stmt.query_map(params![thread_id, before, limit], event_from_row)?;
+            let mut events: Vec<CoordinationEvent> = rows.collect::<Result<_, _>>()?;
+            events.reverse();
+            Ok(events)
+        })
+    }
+
     /// The latest message a session (or one of its lanes) sent to `recipient`
     /// before `before`. A reply to a session lands on a different thread from
     /// the question when the session spoke as an agent, so it is found by origin.
