@@ -1281,6 +1281,7 @@ pub async fn run_serve(
         .route("/fs/write", post(write_fs_file))
         .route("/fs/mkdir", post(make_fs_dir))
         .route("/fs/delete", post(delete_fs_path))
+        .route("/fs/rename", post(rename_fs_path))
         .route("/fs/download", get(download_fs_file))
         .route("/attach", get(attach_ws))
         .route("/shells", get(shells_ws))

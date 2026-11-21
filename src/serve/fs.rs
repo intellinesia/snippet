@@ -400,6 +400,38 @@ pub(super) async fn delete_fs_path(Json(req): Json<FsDeleteReq>) -> Response {
     }
 }
 
+#[derive(Deserialize)]
+pub(super) struct FsRenameReq {
+    from: String,
+    to: String,
+}
+
+// POST /fs/rename {from, to}: rename or move a file or directory. Never overwrites.
+pub(super) async fn rename_fs_path(Json(req): Json<FsRenameReq>) -> Response {
+    if req.from.trim().is_empty() || req.to.trim().is_empty() {
+        return api_error(StatusCode::BAD_REQUEST, "from and to required");
+    }
+    let (from, to) = (PathBuf::from(&req.from), PathBuf::from(&req.to));
+    match std::fs::symlink_metadata(&from) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return api_error(StatusCode::NOT_FOUND, "from not found");
+        }
+        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+    if std::fs::symlink_metadata(&to).is_ok() {
+        return api_error(StatusCode::CONFLICT, "to already exists");
+    }
+    match std::fs::rename(&from, &to) {
+        Ok(()) => Json(serde_json::json!({"ok": true, "path": req.to})).into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "rename: from and to are on different filesystems",
+        ),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("rename: {e}")),
+    }
+}
+
 // GET /fs/download?path= — serve a file's raw bytes (any type). Sets a real
 // content-type from the extension and honors HTTP Range requests (206 Partial
 // Content), so the app can stream/seek images, video, and audio — not just
@@ -689,6 +721,34 @@ mod tests {
             args,
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+
+    #[tokio::test]
+    async fn rename_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        let req = FsRenameReq {
+            from: a.display().to_string(),
+            to: b.display().to_string(),
+        };
+        let res = rename_fs_path(Json(req)).await;
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "b");
+        let (d, moved) = (dir.path().join("d"), dir.path().join("e"));
+        std::fs::create_dir(&d).unwrap();
+        std::fs::write(d.join("x"), "x").unwrap();
+        for (from, to) in [(&a, dir.path().join("c.txt")), (&d, moved.clone())] {
+            let req = FsRenameReq {
+                from: from.display().to_string(),
+                to: to.display().to_string(),
+            };
+            assert_eq!(rename_fs_path(Json(req)).await.status(), StatusCode::OK);
+            assert!(to.exists() && !from.exists());
+        }
+        assert!(moved.join("x").exists());
     }
 
     #[test]
