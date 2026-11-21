@@ -214,13 +214,7 @@ fn direct_message_envelope(
             "A colleague"
         },
         answer = if reply_to == "human" {
-            if about_thread.is_some() {
-                "Your plain reply text is delivered to the user automatically; use message.send \
-                 only for extra messages."
-            } else {
-                "Your plain reply text is delivered to them automatically; use message.send \
-                 only for extra messages."
-            }
+            "Answer with message.send to `human`; plain reply text is not delivered."
         } else {
             "Answer with message.send to `reply_to` above, which is where they're reading."
         },
@@ -287,7 +281,17 @@ fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool 
             Some((n, a)) => (n.as_str(), a),
             None => (tool_name.as_str(), arguments),
         };
-        if resolved_name == "send_agent_message"
+        let posted_to_human = resolved_name == "post_chat"
+            && resolved_args
+                .get("thread_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|t| t.starts_with("direct:") && t.contains("human:"))
+            && resolved_args
+                .get("reaction")
+                .and_then(|v| v.as_str())
+                .is_none_or(|r| r.trim().is_empty());
+        if posted_to_human
+            || resolved_name == "send_agent_message"
             && resolved_args
                 .get("reaction")
                 .and_then(|v| v.as_str())
@@ -320,6 +324,7 @@ fn sent_to_human_ok(turn: &[crate::harness::HarnessEvent], from: usize) -> bool 
 
 /// What to say to the human when a turn ends with `waiting` human messages
 /// outstanding: `(turn start index, line)`, or None when they already got a reply.
+#[cfg(test)]
 pub(crate) fn turn_end_relay(
     waiting: usize,
     who: &str,
@@ -351,37 +356,21 @@ fn turn_end_relay_with_notice(
     if sent_to_human_ok(turn, last_dm) {
         return None;
     }
-    let text = turn.iter().rev().find_map(|e| match e {
-        E::AssistantText { text, .. } if !text.trim().is_empty() => Some(text.trim().to_string()),
-        _ => None,
-    });
-    let (line, is_system_notice) = match text {
-        Some(text) => (text, false),
-        None => {
-            eprintln!("[relay] no reply from {who}");
-            let last_tool = turn
-                .iter()
-                .rev()
-                .find_map(|e| match e {
-                    E::ToolCall {
-                        tool_name,
-                        arguments,
-                    } => Some(crate::surface::resolve(tool_name, arguments)),
-                    _ => None,
-                })
-                .unwrap_or_else(|| "none".to_string());
-            (
-                format!("{who} finished this turn without a reply; its last step was {last_tool}."),
-                true,
-            )
-        }
-    };
-    let line = if waiting >= 2 {
-        format!("Answering your {waiting} messages:\n\n{line}")
-    } else {
-        line
-    };
-    Some((start, line, is_system_notice))
+    eprintln!("[relay] no reply from {who}");
+    let last_tool = turn
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            E::ToolCall {
+                tool_name,
+                arguments,
+            } => Some(crate::surface::resolve(tool_name, arguments)),
+            _ => None,
+        })
+        .unwrap_or_else(|| "none".to_string());
+    let line =
+        format!("{who} finished this turn without posting a reply; its last step was {last_tool}.");
+    Some((start, line, true))
 }
 
 fn turn_about_thread(events: &[crate::harness::HarnessEvent]) -> Option<String> {
@@ -503,7 +492,7 @@ pub(crate) fn relay_desk_reply(
     };
     let relay = turn_end_relay_with_notice(waiting, &name, &state.events);
     state.human_waiting.clear();
-    let Some((start, text, is_system_notice)) = relay else {
+    let Some((start, text, _)) = relay else {
         return;
     };
     let key = format!("desk-relay:{session_id}:{start}");
@@ -514,26 +503,10 @@ pub(crate) fn relay_desk_reply(
     if let Some(thread) = about_thread {
         extra.insert("target_thread".into(), json!(thread));
     }
-    if is_system_notice {
-        extra.insert("system".into(), json!(true));
-        extra.insert("kind".into(), json!("notice"));
-        post_to_human(
-            store, &agent_id, session_id, origin, about_task, &key, &text, extra,
-        );
-        return;
-    }
-    let kind = crate::coordination::reach::Kind::from_reply(&text, None, false);
-    crate::coordination::reach::reach_with_key(
-        store,
-        &agent_id,
-        kind,
-        &name,
-        &text,
-        false,
-        origin,
-        about_task,
-        Some(&key),
-        extra,
+    extra.insert("system".into(), json!(true));
+    extra.insert("kind".into(), json!("notice"));
+    post_to_human(
+        store, &agent_id, session_id, origin, about_task, &key, &text, extra,
     );
 }
 
@@ -1215,7 +1188,32 @@ fn desk_open_tasks_envelope(
     envelope: String,
 ) -> String {
     let tasks = store.open_tasks_of_agent(agent_id, 12).unwrap_or_default();
+    let task_sessions: std::collections::HashSet<String> =
+        tasks.iter().map(|t| t.session_id.clone()).collect();
     let (mut running, mut assisting, mut offers) = (String::new(), String::new(), String::new());
+    let mut sessions = String::new();
+    for row in store.list_all_sessions().unwrap_or_default() {
+        let owner = row
+            .agent_id
+            .as_deref()
+            .unwrap_or(crate::coordination::SNIPPET_AGENT_ID);
+        if owner != agent_id
+            || matches!(row.kind.as_str(), "inbox" | "mission_control")
+            || !matches!(row.status.as_str(), "running" | "waiting_for_input")
+            || row.id.starts_with("inbox-")
+            || task_sessions.contains(&row.id)
+        {
+            continue;
+        }
+        let title: String = row
+            .title
+            .as_deref()
+            .unwrap_or("untitled")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        sessions.push_str(&format!("  {}  {}  session:{}\n", row.status, title, row.id));
+    }
     for task in tasks {
         let title: String = task.title.split_whitespace().collect::<Vec<_>>().join(" ");
         let line = format!(
@@ -1255,13 +1253,14 @@ fn desk_open_tasks_envelope(
         ("running (you lead)", running),
         ("assisting (the user leads)", assisting),
         ("offers", offers),
+        ("sessions working as you, no task", sessions),
     ] {
         if !body.is_empty() {
             tasks_block.push_str(&format!(" {label}:\n{body}"));
         }
     }
     if tasks_block == "now:\n" {
-        tasks_block = "now: no open tasks\n".to_string();
+        tasks_block = "now: no open tasks or working sessions\n".to_string();
     }
     let envelope = envelope.replacen(
         "\nnote: ",
@@ -1808,15 +1807,6 @@ mod tests {
     }
 
     #[test]
-    fn relays_plain_reply_to_human_dm() {
-        let events = vec![dm("human"), say("draft"), say("Yes, boss.")];
-        assert_eq!(
-            super::turn_end_relay(1, "Scout", &events),
-            Some((0, "Yes, boss.".into()))
-        );
-    }
-
-    #[test]
     fn no_relay_when_tool_sent_to_human() {
         for to in ["human", "local", "human:local"] {
             let mut events = vec![dm("human")];
@@ -1851,12 +1841,12 @@ mod tests {
             super::turn_end_relay(1, "Scout", &events),
             Some((
                 0,
-                "Scout finished this turn without a reply; its last step was bash.".into()
+                "Scout finished this turn without posting a reply; its last step was bash.".into()
             ))
         );
         assert_eq!(
             super::turn_end_relay(1, "Scout", &[dm("human"), say("  ")])
-                .map(|r| r.1.contains("without a reply")),
+                .map(|r| r.1.contains("without posting a reply")),
             Some(true)
         );
     }
@@ -1866,16 +1856,6 @@ mod tests {
         assert_eq!(
             super::turn_end_relay(0, "Scout", &[dm("human"), say("x")]),
             None
-        );
-    }
-
-    #[test]
-    fn steered_second_message_is_prefixed() {
-        let steer = E::Steer { text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: and?\n[/direct_message]".into() };
-        let events = vec![dm("human"), steer, say("Both answered.")];
-        assert_eq!(
-            super::turn_end_relay(2, "Scout", &events),
-            Some((0, "Answering your 2 messages:\n\nBoth answered.".into()))
         );
     }
 
@@ -1924,7 +1904,10 @@ mod tests {
         events.push(say("x"));
         assert_eq!(
             super::turn_end_relay(1, "Scout", &events),
-            Some((3, "x".into()))
+            Some((
+                3,
+                "Scout finished this turn without posting a reply; its last step was none.".into()
+            ))
         );
     }
     use super::*;
@@ -1988,7 +1971,7 @@ mod tests {
             !envelope.contains("Workspace work requires a task"),
             "the desk layer teaches that, not every message"
         );
-        assert!(envelope.contains("plain reply text is delivered to them automatically"));
+        assert!(envelope.contains("plain reply text is not delivered"));
         assert!(envelope.ends_with("body: please review this\n[/direct_message]"));
     }
 
@@ -2422,7 +2405,7 @@ mod tests {
         assert!(fwd_env.contains("\nreply_to: human\n"), "{fwd_env}");
         assert!(!fwd_env.contains("reply_to: session:inbox-a"), "{fwd_env}");
         assert!(
-            fwd_env.contains("Your plain reply text is delivered to the user automatically;"),
+            fwd_env.contains("plain reply text is not delivered"),
             "{fwd_env}"
         );
         assert_eq!(
@@ -2463,7 +2446,10 @@ mod tests {
             .unwrap();
         assert_eq!(thread_events.len(), 2);
         assert_eq!(thread_events[1].actor_id, "a");
-        assert_eq!(thread_events[1].payload["body"], "Handled in task t1.");
+        assert_eq!(
+            thread_events[1].payload["body"],
+            "Scout finished this turn without posting a reply; its last step was none."
+        );
     }
 
     #[tokio::test]
@@ -2485,7 +2471,7 @@ mod tests {
         match desk_rx.try_recv().expect("desk got the message") {
             LoopInput::UserMessage(text) => {
                 assert!(
-                    text.contains("\nnow: no open tasks\nbody: anyone there?\n"),
+                    text.contains("\nnow: no open tasks or working sessions\nbody: anyone there?\n"),
                     "{text}"
                 );
             }
@@ -2533,7 +2519,7 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert_eq!(
             events[1].payload["body"],
-            "Scout finished this turn without a reply; its last step was bash."
+            "Scout finished this turn without posting a reply; its last step was bash."
         );
         assert_eq!(events[1].payload["system"], json!(true));
         assert_eq!(events[1].payload["kind"], json!("notice"));
@@ -2803,7 +2789,10 @@ mod tests {
         let sent = store.recent_direct_thread_events(&thread, 5).unwrap();
         assert_eq!(sent.len(), 1, "reply goes out as the task's worker");
         assert_eq!(sent[0].payload["about_task"], "t1");
-        assert_eq!(sent[0].payload["body"], "Almost done.");
+        assert_eq!(
+            sent[0].payload["body"],
+            "Scout finished this turn without posting a reply; its last step was none."
+        );
     }
 
     #[test]
@@ -2922,132 +2911,6 @@ mod tests {
             st.settings.utc_offset_minutes = Some(diff_hours * 60);
         })
         .unwrap();
-    }
-
-    #[test]
-    fn worker_question_in_quiet_hours_posts_chat_with_held_push_and_no_ping() {
-        let store = crate::store::Store::open_in_memory().unwrap();
-        let agent_id = "reach-quiet-worker";
-        store
-            .create_agent(&crate::coordination::types::Agent {
-                id: agent_id.into(),
-                display_name: "Quiet Worker".into(),
-                handle: agent_id.into(),
-                kind: crate::coordination::types::AgentKind::Worker,
-                status: crate::coordination::types::AgentStatus::Active,
-                capabilities: vec![],
-            })
-            .unwrap();
-        let mut task = crate::coordination::Task::filed_by_human(
-            "t-quiet".into(),
-            "Task quiet".into(),
-            "d".into(),
-            "s1".into(),
-            0,
-            "2026-01-01T00:00:00Z".into(),
-        );
-        task.status = crate::coordination::TaskStatus::InProgress;
-        task.session_id = "quiet-task-session".into();
-        store.create_task(&task).unwrap();
-        store
-            .add_task_agent_full(
-                "t-quiet",
-                agent_id,
-                "implementer",
-                Some("quiet-task-session"),
-                "",
-                "active",
-                "2026-01-01T00:00:00Z",
-            )
-            .unwrap();
-
-        force_quiet_hours(&store, true);
-        assert_eq!(
-            crate::mission_autonomy::quiet_and_call_in(&store),
-            (true, false)
-        );
-
-        let mut dev_rx = crate::session::subscribe_device_events();
-        let mut state = crate::harness::HarnessState::blank("/tmp", None);
-        state.human_waiting.push(crate::harness::HumanWait {
-            thread_id: "t".into(),
-            since: "s".into(),
-            steered: false,
-            event_index: 0,
-        });
-        state.events.push(E::UserInput {
-            text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: status?\n[/direct_message]".into(),
-        });
-        state.events.push(E::AssistantText {
-            text: "Should I migrate the production schema now?".into(),
-            quiet: false,
-        });
-
-        super::relay_desk_reply(&store, "quiet-task-session", &mut state);
-
-        let thread =
-            crate::coordination::direct::direct_thread_id(("agent", agent_id), ("human", "local"));
-        let sent = store.recent_direct_thread_events(&thread, 10).unwrap();
-        assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].payload["channel"], "chat");
-        assert_eq!(sent[0].payload["kind"], "question");
-        assert_eq!(sent[0].payload["held"], json!(["push"]));
-
-        let mut chat_events = 0usize;
-        let mut ping_events = 0usize;
-        while let Ok(ev) = dev_rx.try_recv() {
-            if ev["kind"] == "ping" && ev["agent"] == agent_id {
-                ping_events += 1;
-            }
-            if ev["kind"] == "coordination_event" && ev["event"]["actor_id"] == agent_id {
-                assert_eq!(ev["event"]["payload"]["channel"], "chat");
-                assert_eq!(ev["event"]["payload"]["held"], json!(["push"]));
-                chat_events += 1;
-            }
-        }
-        assert_eq!(
-            chat_events, 1,
-            "expected exactly one chat coordination_event"
-        );
-        assert_eq!(
-            ping_events, 0,
-            "expected no ping device event in quiet hours"
-        );
-        assert_eq!(
-            crate::mission_autonomy::load_from(&store).held_pings.len(),
-            1
-        );
-
-        // Outside quiet hours, a worker question emits both chat and a tagged ping event.
-        force_quiet_hours(&store, false);
-        assert_eq!(
-            crate::mission_autonomy::quiet_and_call_in(&store),
-            (false, false)
-        );
-        state.human_waiting.push(crate::harness::HumanWait {
-            thread_id: "t".into(),
-            since: "s2".into(),
-            steered: false,
-            event_index: 2,
-        });
-        state.events.push(E::UserInput {
-            text: "[direct_message]\nthread_id: t\nfrom_kind: human\nreply_to: human\nbody: next?\n[/direct_message]".into(),
-        });
-        state.events.push(E::AssistantText {
-            text: "Ready to cut the release?".into(),
-            quiet: false,
-        });
-        super::relay_desk_reply(&store, "quiet-task-session", &mut state);
-
-        let mut day_pings = Vec::new();
-        while let Ok(ev) = dev_rx.try_recv() {
-            if ev["kind"] == "ping" && ev["agent"] == agent_id {
-                day_pings.push(ev);
-            }
-        }
-        assert_eq!(day_pings.len(), 1);
-        assert_eq!(day_pings[0]["channel"], "push");
-        assert_eq!(day_pings[0]["agent"], agent_id);
     }
 
     #[tokio::test]
