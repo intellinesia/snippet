@@ -77,12 +77,6 @@ pub fn tokens_path() -> PathBuf {
     home.join(".snippet").join("chatgpt_auth.json")
 }
 
-/// Read stored tokens synchronously (used at model construction, which is sync).
-pub fn load_blocking() -> Option<ChatGptTokens> {
-    let raw = std::fs::read_to_string(tokens_path()).ok()?;
-    serde_json::from_str(&raw).ok()
-}
-
 pub fn save_blocking(tokens: &ChatGptTokens) -> Result<(), String> {
     let path = tokens_path();
     if let Some(parent) = path.parent() {

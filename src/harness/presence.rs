@@ -40,10 +40,6 @@ pub fn record_session_presence(
     }
 }
 
-pub fn session_presence(session: &str) -> Option<SessionPresence> {
-    live_map().lock().ok()?.get(session).cloned()
-}
-
 pub fn snapshot_presence() -> std::collections::HashMap<String, SessionPresence> {
     live_map().lock().map(|m| m.clone()).unwrap_or_default()
 }

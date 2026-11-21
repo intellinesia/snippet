@@ -32,11 +32,9 @@ impl Trigger {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-#[allow(dead_code)]
 pub(super) struct Interrupted {
     pub spoke: bool,
     pub mission_control: bool,
-    pub generation: u64,
     pub already: bool,
 }
 
@@ -51,7 +49,6 @@ struct Inner {
     interrupted_gen: Option<u64>,
     resume_armed: Option<(u64, Instant)>,
     classifying: u32,
-    #[allow(dead_code)]
     last_transition: Instant,
 }
 
@@ -159,10 +156,7 @@ pub(super) async fn interrupt_since(
 ) -> Interrupted {
     let generation = crate::ambient::run_generation();
     let delivery = trigger == Trigger::Delivery;
-    let mut out = Interrupted {
-        generation,
-        ..Interrupted::default()
-    };
+    let mut out = Interrupted::default();
     if !delivery && STATE.lock().unwrap().already_interrupted(generation) {
         out.already = true;
         return out;

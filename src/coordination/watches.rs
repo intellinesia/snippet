@@ -10,9 +10,6 @@ use serde_json::{Value, json};
 use super::{Store, StoreError};
 
 pub const MAX_WATCHES_PER_OWNER: usize = 8;
-pub const MIN_POLL_INTERVAL_SECS: i64 = 60;
-pub const MAX_POLL_INTERVAL_SECS: i64 = 86_400;
-pub const DEFAULT_POLL_INTERVAL_SECS: i64 = 300;
 pub const DEFAULT_MAX_WAKES_PER_DAY: i32 = 48;
 pub const MAX_WAKES_PER_DAY_CEILING: i32 = 288;
 /// `pending` holds at most this many bytes of held lines.
