@@ -35,9 +35,6 @@ fn turn_page_start(events: &[crate::harness::HarnessEvent]) -> usize {
     start.min(len.saturating_sub(MIN_EVENTS))
 }
 
-const WIRE_STRING_LIMIT: usize = 500;
-const WIRE_ARRAY_LIMIT: usize = 30;
-
 pub(crate) fn clip_json(
     value: &mut serde_json::Value,
     string_limit: usize,
@@ -71,17 +68,13 @@ pub(crate) fn clip_json(
     }
 }
 
-pub(crate) fn wire_events(
-    events: &[crate::harness::HarnessEvent],
-    compact: bool,
-) -> serde_json::Value {
-    wire_events_slice(events, 0, compact)
+pub(crate) fn wire_events(events: &[crate::harness::HarnessEvent]) -> serde_json::Value {
+    wire_events_slice(events, 0)
 }
 
 pub(crate) fn wire_events_slice(
     all: &[crate::harness::HarnessEvent],
     start: usize,
-    compact: bool,
 ) -> serde_json::Value {
     let mut pending: std::collections::VecDeque<(String, String)> =
         std::collections::VecDeque::new();
@@ -120,27 +113,6 @@ pub(crate) fn wire_events_slice(
                 o.insert("arguments".into(), args);
             }
             o.insert("surface_tool".into(), serde_json::Value::String(surface));
-        }
-        if compact {
-            match event {
-                crate::harness::HarnessEvent::ToolResult { .. } => {
-                    if let Some(o) = v.as_object_mut()
-                        && let Some(result) = o.get_mut("result")
-                        && clip_json(result, WIRE_STRING_LIMIT, WIRE_ARRAY_LIMIT)
-                    {
-                        o.insert("result_clipped".into(), serde_json::json!(true));
-                    }
-                }
-                crate::harness::HarnessEvent::ToolCall { .. } => {
-                    if let Some(o) = v.as_object_mut()
-                        && let Some(args) = o.get_mut("arguments")
-                        && clip_json(args, WIRE_STRING_LIMIT, WIRE_ARRAY_LIMIT)
-                    {
-                        o.insert("result_clipped".into(), serde_json::json!(true));
-                    }
-                }
-                _ => {}
-            }
         }
         out.push(v);
     }
@@ -611,8 +583,6 @@ pub(crate) async fn fork_session(State(d): State<Shared>, Json(req): Json<ForkRe
 pub(crate) struct AttachQuery {
     pub(crate) session: String,
     #[serde(default)]
-    pub(crate) compact: Option<String>,
-    #[serde(default)]
     pub(crate) stream_delta: Option<String>,
 }
 
@@ -848,7 +818,7 @@ mod wire_surface_tests {
     use serde_json::json;
 
     #[test]
-    fn wire_events_rewrites_surface_calls_and_results_in_full_and_compact_modes() {
+    fn wire_events_rewrites_surface_calls_and_results() {
         let events = vec![
             HarnessEvent::ToolCall {
                 tool_name: "web".into(),
@@ -868,8 +838,8 @@ mod wire_surface_tests {
             },
         ];
 
-        for compact in [false, true] {
-            let wired = wire_events(&events, compact);
+        {
+            let wired = wire_events(&events);
             let arr = wired.as_array().unwrap();
             assert_eq!(arr[0]["tool_name"], "web_search");
             assert_eq!(arr[0]["arguments"], json!({"query": "rust"}));
@@ -883,7 +853,7 @@ mod wire_surface_tests {
         }
 
         // Delta slice containing only ToolResult still resolves its preceding ToolCall.
-        let delta = wire_events_slice(&events, 1, false);
+        let delta = wire_events_slice(&events, 1);
         let arr = delta.as_array().unwrap();
         assert_eq!(arr[0]["tool_name"], "web_search");
         assert_eq!(arr[0]["surface_tool"], "web");
