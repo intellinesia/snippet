@@ -1199,12 +1199,23 @@ fn desk_open_tasks_envelope(
             .unwrap_or(crate::coordination::SNIPPET_AGENT_ID);
         if owner != agent_id
             || matches!(row.kind.as_str(), "inbox" | "mission_control")
-            || !matches!(row.status.as_str(), "running" | "waiting_for_input")
             || row.id.starts_with("inbox-")
             || task_sessions.contains(&row.id)
         {
             continue;
         }
+        let state = if matches!(row.status.as_str(), "running" | "waiting_for_input") {
+            row.status.clone()
+        } else {
+            let Some(minutes) = chrono::DateTime::parse_from_rfc3339(&row.updated_at)
+                .ok()
+                .map(|at| (chrono::Utc::now() - at.with_timezone(&chrono::Utc)).num_minutes())
+                .filter(|m| (0..=10).contains(m))
+            else {
+                continue;
+            };
+            format!("{}, active {minutes}m ago", row.status)
+        };
         let title: String = row
             .title
             .as_deref()
@@ -1212,7 +1223,7 @@ fn desk_open_tasks_envelope(
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        sessions.push_str(&format!("  {}  {}  session:{}\n", row.status, title, row.id));
+        sessions.push_str(&format!("  {state}  {title}  session:{}\n", row.id));
     }
     for task in tasks {
         let title: String = task.title.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1253,7 +1264,7 @@ fn desk_open_tasks_envelope(
         ("running (you lead)", running),
         ("assisting (the user leads)", assisting),
         ("offers", offers),
-        ("sessions working as you, no task", sessions),
+        ("sessions as you, no task (working or active in the last 10m)", sessions),
     ] {
         if !body.is_empty() {
             tasks_block.push_str(&format!(" {label}:\n{body}"));
