@@ -1660,8 +1660,8 @@ async fn deliver_direct(
     Ok(())
 }
 
-const USER_CHAT_POSTS: u32 = 3;
-const USER_CHAT_FRESH_MINUTES: i64 = 30;
+const USER_CHAT_POSTS: u32 = 6;
+const USER_CHAT_FRESH_MINUTES: i64 = 120;
 
 /// What the user last saw in the desk's chat with them, so a colleague's news is not told twice.
 fn with_user_chat(store: &crate::store::Store, agent_id: &str, envelope: String) -> String {
