@@ -329,7 +329,7 @@ const WAKE: Surface = Surface {
         act(
             "once",
             "schedule_wake",
-            "wake this seat once in_minutes from now with a note.",
+            "wake this seat once, in_seconds or in_minutes from now, with a note.",
         ),
         op(
             "every",

@@ -11,19 +11,22 @@ use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 pub struct SessionWakeTool;
 
 pub const MAX_MINUTES: i64 = 7 * 24 * 60;
+const MIN_SECONDS: i64 = 10;
 
 #[derive(Deserialize)]
 struct Args {
     #[serde(default)]
     in_minutes: Option<i64>,
     #[serde(default)]
+    in_seconds: Option<i64>,
+    #[serde(default)]
     note: Option<String>,
     #[serde(default)]
     cancel: Option<String>,
 }
 
-fn due_at(minutes: i64) -> String {
-    (chrono::Utc::now() + chrono::Duration::minutes(minutes))
+fn due_at(seconds: i64) -> String {
+    (chrono::Utc::now() + chrono::Duration::seconds(seconds))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
@@ -32,10 +35,11 @@ impl Tool for SessionWakeTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "schedule_wake".into(),
-            description: "Wake this session once, in_minutes from now, with your note as a [wake] envelope: to check back on something nobody will tell you about. Omit in_minutes to list pending wakes; cancel takes an id.".into(),
+            description: "Wake this session once, in_seconds or in_minutes from now, with your note as a [wake] envelope: thinking time before you act, or a check on something nobody will tell you about. Omit both to list pending wakes; cancel takes an id.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "in_seconds": {"type": "integer", "minimum": MIN_SECONDS, "maximum": 3600},
                     "in_minutes": {"type": "integer", "minimum": 1, "maximum": MAX_MINUTES},
                     "note": {"type": "string"},
                     "cancel": {"type": "string"}
@@ -60,7 +64,21 @@ impl Tool for SessionWakeTool {
             let removed = store.cancel_followup(&session, id).map_err(err)?;
             return Ok(ToolResult::success(json!({ "cancelled": removed })));
         }
-        let Some(minutes) = args.in_minutes else {
+        let seconds = match (args.in_seconds, args.in_minutes) {
+            (Some(s), _) if !(MIN_SECONDS..=3600).contains(&s) => {
+                return Err(ToolError::msg(format!(
+                    "in_seconds must be {MIN_SECONDS} to 3600"
+                )));
+            }
+            (Some(s), _) => Some(s),
+            (None, Some(m)) if !(1..=MAX_MINUTES).contains(&m) => {
+                return Err(ToolError::msg(format!(
+                    "in_minutes must be 1 to {MAX_MINUTES}"
+                )));
+            }
+            (None, m) => m.map(|m| m * 60),
+        };
+        let Some(seconds) = seconds else {
             let pending = store.pending_followups(&session).map_err(err)?;
             let rows: Vec<Value> = pending
                 .iter()
@@ -68,18 +86,13 @@ impl Tool for SessionWakeTool {
                 .collect();
             return Ok(ToolResult::success(json!({ "pending": rows })));
         };
-        if !(1..=MAX_MINUTES).contains(&minutes) {
-            return Err(ToolError::msg(format!(
-                "in_minutes must be 1 to {MAX_MINUTES}"
-            )));
-        }
         let note = args.note.unwrap_or_default();
         let now = crate::coordination::watches::now_rfc3339();
         let owner = ctx
             .agent_id()
             .filter(|_| crate::session::is_inbox_session_id(&session));
         let f = store
-            .schedule_followup(&session, owner, &due_at(minutes), &note, &now)
+            .schedule_followup(&session, owner, &due_at(seconds), &note, &now)
             .map_err(err)?;
         Ok(ToolResult::success(
             json!({ "id": f.id, "due_at": f.due_at, "session": f.session_id }),
@@ -101,7 +114,7 @@ mod tests {
     #[test]
     fn due_at_is_in_the_future_and_sortable() {
         let now = crate::coordination::watches::now_rfc3339();
-        let later = due_at(5);
+        let later = due_at(300);
         assert!(later > now);
         assert!(later.ends_with('Z'));
     }
