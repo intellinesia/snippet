@@ -106,7 +106,16 @@ pub struct QueuedAnswer {
 }
 
 pub fn queue_answer(session_id: &str, answer: &str, by: &str) -> Result<(), String> {
-    update(|state| {
+    queue_answer_in(&store()?, session_id, answer, by)
+}
+
+pub fn queue_answer_in(
+    store: &Store,
+    session_id: &str,
+    answer: &str,
+    by: &str,
+) -> Result<(), String> {
+    update_in(store, |state| {
         state.answers.push(QueuedAnswer {
             session_id: session_id.to_string(),
             answer: answer.to_string(),
