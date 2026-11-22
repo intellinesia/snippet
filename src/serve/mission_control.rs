@@ -1334,10 +1334,7 @@ fn task_artifacts_block(session_id: &str, created_at: &str) -> String {
     }
 }
 
-fn report_text(
-    task: &Task,
-    marker: &crate::coordination::NotificationMarker,
-) -> String {
+fn report_text(task: &Task, marker: &crate::coordination::NotificationMarker) -> String {
     if marker.kind == "plan" {
         crate::envelope::Envelope::new("task_plan")
             .attr("task_id", &task.id)
