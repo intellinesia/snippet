@@ -1744,8 +1744,6 @@ struct ClaimAndDispatchArgs {
     #[serde(default)]
     profile: Option<String>,
     #[serde(default)]
-    report_to: Option<String>,
-    #[serde(default)]
     context: Option<String>,
 }
 
@@ -1755,12 +1753,11 @@ impl Tool for ClaimAndDispatchTask {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "claim_and_dispatch_task".into(),
-            description: "Claim an offered task to start it in its target session under your identity. Pass `profile` only to move it to another model; otherwise the session keeps its model and prompt cache. `report_to`: chat for results (default: the waking chat). Finished or running tasks are refused.".into(),
+            description: "Claim an offered task to start it in its target session under your identity. Pass `profile` only to move it to another model; otherwise the session keeps its model and prompt cache. Finished or running tasks are refused.".into(),
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string", "description": "The task ID to claim"},
                     "profile": {"type": "string", "description": "Optional inference profile name. Omit to preserve prompt cache affinity."},
-                    "report_to": {"type": "string", "description": "`group:<id>` or `direct:<thread>`"},
                     "context": {"type": "string", "description": "What the worker should know from your memory, skills or past work that the brief does not say; added to its brief."}
                 }),
                 &["task_id"],
@@ -1822,31 +1819,7 @@ impl Tool for ClaimAndDispatchTask {
             ));
         }
         crate::mission_tools::require_working_agent(&db, &actor_id)?;
-        let report_to = args
-            .report_to
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string);
-        if let Some(thread) = report_to.as_deref() {
-            crate::coordination::origin::validate_report_to(&db, thread, Some(&actor_id))
-                .map_err(ToolError::msg)?;
-        }
         let now = now_rfc3339();
-        // A desk defaults its report-back chat to the thread of the most
-        // recent human-facing delivery that woke it; an existing origin
-        // (filed by Mission Control) is kept unless `report_to` overrides.
-        let desk_session = ctx
-            .durable_session_id()
-            .or(ctx.lane_origin().map(|(session, _)| session));
-        let default_origin = if report_to.is_none()
-            && task.origin_thread.is_none()
-            && desk_session.is_some_and(crate::session::is_inbox_session_id)
-        {
-            crate::coordination::origin::default_origin_thread(&db, &actor_id, &now)
-        } else {
-            None
-        };
         let desk_context = args
             .context
             .as_deref()
@@ -1867,15 +1840,6 @@ impl Tool for ClaimAndDispatchTask {
                         "{}\n\nFrom your desk ({actor_id}), when it took this on:\n{context}",
                         t.description
                     );
-                }
-                if let Some(thread) = report_to.as_deref() {
-                    t.origin_thread = Some(thread.to_string());
-                    t.origin_attention = None;
-                    t.origin_attention_event = None;
-                } else if t.origin_thread.is_none()
-                    && let Some(thread) = default_origin.as_deref()
-                {
-                    t.origin_thread = Some(thread.to_string());
                 }
             })
             .map_err(|e| ToolError::msg(format!("queue task: {e}")))?;
@@ -2442,40 +2406,15 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// Mirror a freshly presented artifact into the origin chat of the
-/// InProgress task this session works — human-delivery only, so no agent is
-/// woken by the card.
+/// A freshly presented artifact is offered to the desk managing its session,
+/// which decides whether and how the user sees it.
 pub(crate) fn mirror_origin_artifact(
     ctx: &ToolContext,
     session: &str,
     artifact: &crate::artifacts::Artifact,
 ) {
     let Ok(db) = db(ctx) else { return };
-    let Ok(tasks) = db.tasks_worked_in(session, Some(&crate::coordination::TaskStatus::InProgress))
-    else {
-        return;
-    };
-    let Some(task) = tasks.into_iter().find(|t| {
-        t.origin_thread
-            .as_deref()
-            .is_some_and(|thread| !thread.trim().is_empty())
-            && t.reporting_session.as_deref() == Some(session)
-    }) else {
-        mirror_artifact_to_desk(&db, session, artifact);
-        return;
-    };
-    let Some(card) = artifact_payload(session, artifact) else {
-        return;
-    };
-    let body = format!("Artifact: {}", artifact.title);
-    if let Err(error) =
-        crate::coordination::origin::post_origin_event(&db, &task, "artifact", card, &body, false)
-    {
-        eprintln!(
-            "[origin] artifact mirror failed for task {}: {error}",
-            task.id
-        );
-    }
+    mirror_artifact_to_desk(&db, session, artifact);
 }
 
 /// An agent-managed session's artifact is offered to its desk, which shares it

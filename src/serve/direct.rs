@@ -586,9 +586,6 @@ fn question_reaches_desk(
     session_id: &str,
     state: &crate::harness::HarnessState,
 ) -> bool {
-    if crate::coordination::origin::origin_route(store, session_id).is_some() {
-        return false;
-    }
     let managed = store
         .get_session_row(session_id)
         .ok()
@@ -860,21 +857,12 @@ pub(crate) fn relay_stop(
     }
     let mut note =
         format!("a session you manage stopped. message.send to session:{session_id} reaches it.");
-    let shown_in = crate::coordination::origin::origin_route(store, session_id);
-    if let Some((_, chat)) = shown_in.as_ref()
-        && (state.pending_question.is_some() || pending_approval(state).is_some())
-    {
-        envelope = envelope.attr("shown_in", chat);
-        note.push_str(&format!(
-            " Its card is already shown to the user in {chat}; do not pass it on."
-        ));
-    }
     if let Some((index, summary)) = pending_approval(state) {
         envelope = envelope
             .child("approval", &summary)
             .attr("desk_may_answer", "no")
             .child("held_for_user", "approvals stay with the user");
-        if shown_in.is_none() {
+        {
             note.push_str(&format!(
                 " Tell the user about the approval in your own words; only they can approve it, in the session. If you post nothing in your chat with them within {} minutes, the daemon tells them itself.",
                 DESK_FALLBACK_SECS / 60
@@ -900,7 +888,7 @@ pub(crate) fn relay_stop(
     }
     if let Some(text) = question.as_deref() {
         envelope = envelope.child("question", text);
-        if shown_in.is_none() {
+        {
             note.push_str(&format!(
                 " Pass its question to the user in your own words unless you answer it; if you post nothing in your chat with them within {} minutes, the daemon posts the question card itself.",
                 DESK_FALLBACK_SECS / 60
@@ -3698,89 +3686,6 @@ mod tests {
         );
         assert!(ask.payload["question"]["asked_at"].as_str().is_some());
         assert_eq!(ask.idempotency_key, "ask:sess-1:0");
-    }
-
-    #[test]
-    fn each_wait_reaches_the_user_in_one_place() {
-        use crate::coordination::TaskStatus;
-        let store = crate::store::Store::open_in_memory().unwrap();
-        store.create_agent(&agent("a")).unwrap();
-        let human_led = waiting_question_state();
-        import_waiting_session(&store, "sess-human", "a", &human_led);
-        store.set_session_managed_by("sess-human", "human").unwrap();
-        super::relay_question(&store, "sess-human", &human_led);
-
-        let group = store
-            .create_group(
-                "g",
-                ("agent", "a"),
-                &["a".into()],
-                None,
-                "2026-01-01T00:00:00Z",
-            )
-            .unwrap()
-            .id;
-        let mut task = crate::coordination::Task::filed_by_human(
-            "t1".into(),
-            "Task t1".into(),
-            "do it".into(),
-            "s1".into(),
-            0,
-            "2026-01-01T00:00:00Z".into(),
-        );
-        task.origin_thread = Some(group.clone());
-        task.status = TaskStatus::InProgress;
-        task.session_id = "sess-task".into();
-        store.create_task(&task).unwrap();
-        store
-            .add_task_agent_full(
-                "t1",
-                "a",
-                "implementer",
-                None,
-                "",
-                "active",
-                "2026-01-01T00:00:00Z",
-            )
-            .unwrap();
-        let mut approval = crate::harness::HarnessState::blank("/tmp", None);
-        approval.status = crate::harness::HarnessStatus::WaitingForInput;
-        approval.events.push(E::ApprovalRequest {
-            tool_name: "bash".into(),
-            summary: "run ls".into(),
-            index: 1,
-            total: 1,
-            title: None,
-            reason: None,
-            rule: None,
-        });
-        import_waiting_session(&store, "sess-task", "a", &approval);
-        store.set_session_managed_by("sess-task", "agent").unwrap();
-        super::relay_stop(&store, "sess-task", "waiting_for_input", &approval);
-        crate::coordination::origin::sweep(&store);
-        super::run_desk_fallbacks(&store, "2999-01-01T00:00:00Z", |_| true);
-
-        assert!(
-            thread_events(&store, "a").is_empty(),
-            "nothing in the desk chat"
-        );
-        let told = store
-            .recent_direct_thread_events(
-                &crate::coordination::direct_thread_id(("session", "sess-task"), ("agent", "a")),
-                10,
-            )
-            .unwrap();
-        let body = told[0].payload["body"].as_str().unwrap();
-        assert!(body.contains("do not pass it on"), "{body}");
-        assert!(!body.contains("Tell the user"), "{body}");
-        let cards = store
-            .recent_direct_thread_events(&group, 10)
-            .unwrap_or_default();
-        let cards: Vec<_> = cards
-            .iter()
-            .filter(|e| e.payload.get("approval").is_some())
-            .collect();
-        assert_eq!(cards.len(), 1, "one approval card in the origin group");
     }
 
     #[test]
