@@ -132,6 +132,31 @@ fn push_candidate(best: &mut Option<Candidate>, cand: Candidate) {
     }
 }
 
+/// The desk's own question to the user still waiting on them: its latest post in
+/// their direct thread is a `question` and the user has not written since.
+pub fn open_desk_ask(store: &Store, agent_id: &str) -> Option<serde_json::Value> {
+    let thread = crate::coordination::direct_thread_id(
+        ("agent", agent_id),
+        ("human", crate::coordination::LOCAL_HUMAN_ID),
+    );
+    let events = store.recent_direct_thread_events(&thread, 30).ok()?;
+    let last = events
+        .iter()
+        .rev()
+        .find(|e| e.actor_kind == "human" || (e.actor_kind == "agent" && e.actor_id == agent_id))?;
+    let asked = last.actor_kind == "agent"
+        && last.payload.get("kind").and_then(|k| k.as_str()) == Some("question")
+        && last.payload.get("auto").is_none();
+    asked.then(|| {
+        serde_json::json!({
+            "event_id": last.event_id,
+            "thread_id": thread,
+            "text": last.payload.get("body").cloned().unwrap_or_default(),
+            "at": last.created_at,
+        })
+    })
+}
+
 /// Compute `(presence, needs_you)` for `agent_id`.
 pub fn agent_presence_and_needs(store: &Store, agent_id: &str) -> (Option<AgentPresence>, u64) {
     let mut best: Option<Candidate> = None;
@@ -353,7 +378,8 @@ pub fn agent_presence_and_needs(store: &Store, agent_id: &str) -> (Option<AgentP
         }
     }
 
-    let needs_you = (question_sessions.len() + review_tasks.len()) as u64;
+    let own_ask = u64::from(open_desk_ask(store, agent_id).is_some());
+    let needs_you = (question_sessions.len() + review_tasks.len()) as u64 + own_ask;
     (best.map(Candidate::into_presence), needs_you)
 }
 
@@ -614,6 +640,38 @@ mod tests {
     use crate::coordination::types::{Agent, AgentKind, AgentStatus};
     use crate::coordination::{BoardEntryKind, NewBoardEntry, PendingReport, WorkStep};
     use crate::llm::HarnessMessage;
+
+    #[test]
+    fn a_desk_question_needs_the_user_until_they_write() {
+        let store = Store::open_in_memory().unwrap();
+        let say = |from: (&str, &str), to: (&str, &str), key: &str, kind: Option<&str>| {
+            let mut extra = serde_json::Map::new();
+            if let Some(kind) = kind {
+                extra.insert("kind".into(), kind.into());
+            }
+            store
+                .send_direct_message_typed(
+                    from,
+                    to,
+                    "text",
+                    key,
+                    "2026-01-01T00:00:00Z",
+                    None,
+                    None,
+                    None,
+                    extra,
+                )
+                .unwrap();
+        };
+        let desk = ("agent", "scout");
+        let human = ("human", crate::coordination::LOCAL_HUMAN_ID);
+        say(desk, human, "a", Some("result"));
+        assert!(open_desk_ask(&store, "scout").is_none());
+        say(desk, human, "b", Some("question"));
+        assert!(open_desk_ask(&store, "scout").is_some());
+        say(human, desk, "c", None);
+        assert!(open_desk_ask(&store, "scout").is_none());
+    }
 
     fn test_daemon() -> Shared {
         std::sync::Arc::new(crate::serve::Daemon {

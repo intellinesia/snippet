@@ -278,6 +278,99 @@ impl Tool for AnswerSession {
 }
 
 #[derive(Deserialize)]
+struct SteerSessionArgs {
+    session_id: String,
+    #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
+    to_agent: Option<String>,
+    #[serde(default)]
+    note: String,
+}
+
+/// The canonical id of `session` when `desk` manages it, or why it may not steer it.
+pub(crate) fn desk_managed_session(
+    store: &crate::store::Store,
+    desk: &str,
+    session: &str,
+) -> Result<String, String> {
+    let id =
+        crate::conversations::canonical_session_id(session.trim().trim_start_matches("session:"));
+    let row = store
+        .get_session_row(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown session `{id}`"))?;
+    if row.managed_by != "agent"
+        || crate::session::owner_agent_id_for(&row.id, row.agent_id.as_deref()) != desk
+    {
+        return Err(format!("`{id}` is not a session your desk manages"));
+    }
+    Ok(row.id)
+}
+
+pub struct SteerSession;
+#[async_trait]
+impl Tool for SteerSession {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "steer_session".into(),
+            description: "A session your desk manages: profile sets its model; to_agent hands it on with its context.".into(),
+            input_schema: schema(json!({
+                "session_id": {"type": "string"},
+                "profile": {"type": "string"},
+                "to_agent": {"type": "string"},
+                "note": {"type": "string"}
+            }), &["session_id"]),
+        }
+    }
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let args: SteerSessionArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let caller = ctx.durable_session_id().unwrap_or_default();
+        if !crate::session::is_inbox_session_id(caller) {
+            return Err(ToolError::msg("only a desk steers sessions this way"));
+        }
+        let desk = crate::session::owner_agent_id_for(caller, ctx.agent_id());
+        let store = ctx.store().map_err(|e| ToolError::msg(e.to_string()))?;
+        let session =
+            desk_managed_session(&store, &desk, &args.session_id).map_err(ToolError::msg)?;
+        let profile = args
+            .profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        let to_agent = args
+            .to_agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty());
+        if profile.is_none() && to_agent.is_none() {
+            return Err(ToolError::msg("give profile, to_agent or both"));
+        }
+        let daemon = crate::serve::live_daemon()
+            .ok_or_else(|| ToolError::msg("the daemon is not running"))?;
+        let mut out = json!({"session": session});
+        if let Some(profile) = profile {
+            daemon
+                .run_session_on_profile(&session, profile, true)
+                .await
+                .map_err(ToolError::msg)?;
+            crate::serve::config_routes::notify_models(Some(&session));
+            out["profile"] = json!(profile);
+        }
+        if let Some(to) = to_agent {
+            let handed =
+                crate::serve::handoff::hand_off_session(daemon, &session, to, &args.note, &desk)
+                    .await
+                    .map_err(|e| ToolError::msg(e.message()))?;
+            out["handed_to"] = json!(handed.to);
+            out["pending"] = json!(handed.pending);
+        }
+        Ok(ToolResult::success(out))
+    }
+}
+
+#[derive(Deserialize)]
 struct UpdateBriefArgs {
     #[serde(default)]
     content: Option<String>,
@@ -5193,5 +5286,40 @@ mod surface_tests {
         ] {
             assert!(!names.iter().any(|n| n == gone), "{gone}");
         }
+    }
+}
+
+#[cfg(test)]
+mod steer_session_tests {
+    use crate::harness::HarnessState;
+
+    fn session(store: &crate::store::Store, id: &str, agent: Option<&str>, managed_by: &str) {
+        store
+            .import_session(
+                id,
+                "wk",
+                &HarnessState::blank("/tmp", None),
+                &crate::conversations::SessionExtras {
+                    agent_id: agent.map(str::to_string),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        store.set_session_managed_by(id, managed_by).unwrap();
+    }
+
+    #[test]
+    fn a_desk_steers_only_the_sessions_it_manages() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        session(&store, "mine", Some("scout"), "agent");
+        session(&store, "users", Some("scout"), "human");
+        session(&store, "theirs", Some("other"), "agent");
+        assert_eq!(
+            super::desk_managed_session(&store, "scout", "session:mine").unwrap(),
+            "mine"
+        );
+        assert!(super::desk_managed_session(&store, "scout", "users").is_err());
+        assert!(super::desk_managed_session(&store, "scout", "theirs").is_err());
+        assert!(super::desk_managed_session(&store, "scout", "missing").is_err());
     }
 }
