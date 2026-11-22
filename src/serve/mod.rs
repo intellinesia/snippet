@@ -1257,12 +1257,9 @@ pub async fn run_serve(
         .route("/coordination/direct/read", post(direct::direct_mark_read))
         .route("/coordination/direct/answer", post(direct::direct_answer))
         .route("/sessions", get(list_sessions).post(open_session))
-        .route("/sessions/counts", get(session_counts))
         .route("/usage", get(usage_summary))
         .route("/notifications", get(notification_replay))
-        .merge(recurring::router())
         .merge(agent_wakes::router())
-        .merge(watches::router())
         .merge(keep_warm::router())
         .merge(memory_routes::router())
         .merge(artifact_routes::router())
@@ -1286,7 +1283,6 @@ pub async fn run_serve(
         .route("/events", get(events_ws))
         .route("/config", get(get_config))
         .route("/config/profile", put(put_profile).delete(delete_profile))
-        .route("/config/active", post(set_active))
         .route("/config/keep_task_profile", post(set_keep_task_profile))
         .route("/config/manual_approval", post(set_manual_approval))
         .route("/config/voice", post(config_routes::set_voice))
@@ -1299,7 +1295,6 @@ pub async fn run_serve(
         )
         .route("/ambient/events", get(ambient_routes::list))
         .route("/ambient/stream", get(ambient_stream::stream))
-        .route("/ambient/stats", get(ambient_routes::stats))
         .route("/ambient/lease", post(ambient_routes::lease))
         .route(
             "/ambient/recording",
@@ -1345,7 +1340,6 @@ pub async fn run_serve(
         .route("/session/delete", post(delete_session))
         .route("/session/settle", post(settle_routes::settle_route))
         .route("/session/keep_awake", post(settle_routes::keep_awake_route))
-        .route("/session/managed_by", post(settle_routes::managed_by_route))
         .route(
             "/session/resume_mode",
             post(settle_routes::resume_mode_route),
@@ -1693,21 +1687,6 @@ async fn usage_summary(State(d): State<Shared>, Query(q): Query<UsageQuery>) -> 
         .filter_map(|p| providers.remove(&p))
         .collect();
     Json(serde_json::json!({ "providers": list, "since": q.since })).into_response()
-}
-
-// GET /sessions/counts — {folder: count} across all sessions (cheap, from
-// sidecars), for the app's per-folder session badges without downloading the list.
-async fn session_counts() -> Response {
-    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for s in list_device_sessions() {
-        if s.parent_session_id.is_some() {
-            continue;
-        }
-        if !s.folder.is_empty() {
-            *counts.entry(s.folder).or_insert(0) += 1;
-        }
-    }
-    Json(counts).into_response()
 }
 
 #[derive(Deserialize)]

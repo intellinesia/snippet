@@ -13,20 +13,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use axum::Router;
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{get, post};
 use regex::Regex;
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::{Shared, api_error};
+use super::Shared;
 use crate::coordination::types::AgentStatus;
 use crate::coordination::watches as cw;
 use crate::store::Store;
@@ -1225,142 +1219,6 @@ async fn stream_loop(
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
-
-pub fn router() -> Router<Shared> {
-    Router::new()
-        .route("/agents/{id}/watches", get(list_watches))
-        .route("/agents/{id}/watches/{watch_id}/events", get(watch_events))
-        .route("/agents/{id}/watches/{watch_id}/script", get(watch_script))
-        .route(
-            "/agents/{id}/watches/{watch_id}",
-            post(set_enabled).delete(delete_watch),
-        )
-}
-
-fn store_error(error: crate::store::StoreError) -> Response {
-    match error {
-        crate::store::StoreError::InvalidInput(message) => {
-            api_error(StatusCode::BAD_REQUEST, message)
-        }
-        other => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("watch: {other}")),
-    }
-}
-
-fn find_watch(d: &Shared, owner: &str, watch_id: &str) -> Result<cw::Watch, Box<Response>> {
-    match d.store.watch_by_id(watch_id) {
-        Ok(Some(watch)) if watch.owner == owner => Ok(watch),
-        Ok(_) => Err(Box::new(api_error(StatusCode::NOT_FOUND, "no such watch"))),
-        Err(error) => Err(Box::new(store_error(error))),
-    }
-}
-
-async fn list_watches(
-    State(d): State<Shared>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-) -> Response {
-    match d.store.list_watches(Some(&id)) {
-        Ok(watches) => {
-            let mut views = Vec::new();
-            for watch in &watches {
-                match d.store.watch_view(watch) {
-                    Ok(view) => views.push(view),
-                    Err(error) => return store_error(error),
-                }
-            }
-            Json(json!({"watches": views})).into_response()
-        }
-        Err(error) => store_error(error),
-    }
-}
-
-#[derive(Deserialize)]
-struct EventsQuery {
-    #[serde(default)]
-    limit: Option<u32>,
-}
-
-async fn watch_events(
-    State(d): State<Shared>,
-    axum::extract::Path((id, watch_id)): axum::extract::Path<(String, String)>,
-    Query(q): Query<EventsQuery>,
-) -> Response {
-    let watch = match find_watch(&d, &id, &watch_id) {
-        Ok(watch) => watch,
-        Err(response) => return *response,
-    };
-    match d.store.list_watch_events(&watch.id, q.limit.unwrap_or(20)) {
-        Ok(events) => {
-            let events: Vec<Value> = events
-                .into_iter()
-                .map(|e| json!({"kind": e.kind, "at": e.at, "excerpt": e.excerpt}))
-                .collect();
-            Json(json!({"events": events})).into_response()
-        }
-        Err(error) => store_error(error),
-    }
-}
-
-async fn watch_script(
-    State(d): State<Shared>,
-    axum::extract::Path((id, watch_id)): axum::extract::Path<(String, String)>,
-) -> Response {
-    let watch = match find_watch(&d, &id, &watch_id) {
-        Ok(watch) => watch,
-        Err(response) => return *response,
-    };
-    match std::fs::read_to_string(&watch.script_path) {
-        Ok(script) => Json(json!({"script": script})).into_response(),
-        Err(_) => api_error(StatusCode::NOT_FOUND, "script file is gone"),
-    }
-}
-
-#[derive(Deserialize)]
-struct EnabledReq {
-    enabled: bool,
-}
-
-async fn set_enabled(
-    State(d): State<Shared>,
-    axum::extract::Path((id, watch_id)): axum::extract::Path<(String, String)>,
-    Json(req): Json<EnabledReq>,
-) -> Response {
-    let watch = match find_watch(&d, &id, &watch_id) {
-        Ok(watch) => watch,
-        Err(response) => return *response,
-    };
-    match d.store.update_watch(
-        &watch.id,
-        &cw::WatchPatch {
-            enabled: Some(req.enabled),
-            ..cw::WatchPatch::default()
-        },
-    ) {
-        Ok(Some(updated)) => match d.store.watch_view(&updated) {
-            Ok(view) => Json(view).into_response(),
-            Err(error) => store_error(error),
-        },
-        Ok(None) => api_error(StatusCode::NOT_FOUND, "no such watch"),
-        Err(error) => store_error(error),
-    }
-}
-
-async fn delete_watch(
-    State(d): State<Shared>,
-    axum::extract::Path((id, watch_id)): axum::extract::Path<(String, String)>,
-) -> Response {
-    let watch = match find_watch(&d, &id, &watch_id) {
-        Ok(watch) => watch,
-        Err(response) => return *response,
-    };
-    match d.store.delete_watch(&watch.id) {
-        Ok(true) => {
-            cw::remove_watch_files(&d.mission_control_root, &watch.owner, &watch.name);
-            Json(json!({"removed": true})).into_response()
-        }
-        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such watch"),
-        Err(error) => store_error(error),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Entry point

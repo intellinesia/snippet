@@ -98,6 +98,17 @@ impl Store {
         })
     }
 
+    pub fn all_pending_followups(&self) -> Result<Vec<Followup>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {COLUMNS} FROM session_followups
+                 WHERE delivered_at IS NULL ORDER BY due_at"
+            ))?;
+            let rows = stmt.query_map([], row)?.collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+    }
+
     /// Drop a pending wake; only the session that set it may.
     pub fn cancel_followup(&self, session_id: &str, id: &str) -> Result<bool, StoreError> {
         self.with_connection(|conn| {

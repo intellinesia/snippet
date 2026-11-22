@@ -1,23 +1,21 @@
 use super::api_error;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{Json, Path as AxumPath, Query, State};
+use axum::extract::{Json, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, post};
 use serde::Deserialize;
 
 use super::{Daemon, LoopInput, Shared, apply_profile, live_from_handle, record_dispatch_notice};
-use crate::config::workspaces_root;
-use crate::coordination::{HandoffMode, NotificationMarker, Task, TaskResult, TaskStatus};
+use crate::coordination::{HandoffMode, NotificationMarker, Task, TaskStatus};
 use crate::mission_control::{self, ManagedSession};
 use crate::serve::task_summary;
 use crate::session::{
     SessionRole, SessionSidecar, read_session_profile, start_mission_control_session,
-    start_session, write_session_sidecar,
+    write_session_sidecar,
 };
 
 pub fn router() -> Router<Shared> {
@@ -25,26 +23,11 @@ pub fn router() -> Router<Shared> {
         .route("/agents/build", post(build_agent_from_prompt))
         .route("/mission-control/overview", get(overview))
         .route(
-            "/mission-control/settings",
-            get(settings).put(update_settings),
-        )
-        .route(
             "/mission-control/autonomy",
             get(autonomy).post(update_autonomy),
         )
         .route("/mission-control/open", post(open))
         .route("/mission-control/tasks", get(tasks).post(create_task))
-        .route("/mission-control/tasks/{id}", get(task).put(update_task))
-        .route("/mission-control/tasks/{id}/archive", post(archive_task))
-        .route(
-            "/mission-control/sessions",
-            get(sessions).post(create_session),
-        )
-        .route("/mission-control/sessions/{id}", put(update_session))
-        .route(
-            "/mission-control/sessions/{id}/archive",
-            post(archive_session),
-        )
 }
 
 #[derive(Deserialize)]
@@ -123,23 +106,6 @@ pub fn validated_owned_paths(
         out.push(root);
     }
     Ok(out)
-}
-
-#[derive(Deserialize)]
-struct MissionSessionReq {
-    #[serde(default)]
-    session_id: String,
-    folder: String,
-    #[serde(default)]
-    title: String,
-    #[serde(default)]
-    profile: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct MissionSessionUpdate {
-    #[serde(default)]
-    title: Option<String>,
 }
 
 fn mission_task_view(store: &crate::store::Store, task: &Task) -> serde_json::Value {
@@ -351,14 +317,6 @@ async fn tasks(State(d): State<Shared>, Query(q): Query<MissionListQuery>) -> Re
                 .collect::<Vec<_>>(),
         )
         .into_response(),
-        Err(error) => mission_error(error.to_string()),
-    }
-}
-
-async fn task(State(d): State<Shared>, AxumPath(id): AxumPath<String>) -> Response {
-    match d.store.get_task(&id) {
-        Ok(Some(task)) => Json(mission_task_view(&d.store, &task)).into_response(),
-        Ok(None) => api_error(StatusCode::NOT_FOUND, "no such task"),
         Err(error) => mission_error(error.to_string()),
     }
 }
@@ -1040,234 +998,6 @@ async fn create_task(State(d): State<Shared>, Json(req): Json<MissionTaskReq>) -
     Json(mission_task_view(&d.store, &task)).into_response()
 }
 
-async fn update_task(
-    State(d): State<Shared>,
-    AxumPath(id): AxumPath<String>,
-    Json(req): Json<MissionTaskReq>,
-) -> Response {
-    let root = &d.mission_control_root;
-    let existing = match d.store.get_task(&id) {
-        Ok(Some(task)) => task,
-        Ok(None) => return mission_error("unknown task".to_string()),
-        Err(error) => return mission_error(error.to_string()),
-    };
-    let effective_session_id = if req.session_id.trim().is_empty() {
-        existing.session_id.clone()
-    } else {
-        req.session_id.trim().to_string()
-    };
-    let workspace_for_paths: PathBuf =
-        match mission_control::get_session(root, &effective_session_id) {
-            Ok(session) => session.workspace,
-            Err(error) => return mission_error(error),
-        };
-    let validated_paths = if req.owned_paths.is_empty() {
-        None
-    } else {
-        Some(
-            match validated_owned_paths(&req.owned_paths, &workspace_for_paths) {
-                Ok(paths) => paths,
-                Err(error) => return mission_error(error),
-            },
-        )
-    };
-    let status = match req
-        .status
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(raw) => match super::coordination::parse_task_status(raw) {
-            Ok(status) => Some(status),
-            Err(error) => return mission_error(error),
-        },
-        None => None,
-    };
-    let handoff_mode = match req.handoff_mode.as_deref() {
-        None => None,
-        Some(mode_raw) => match HandoffMode::parse(mode_raw) {
-            Some(mode) => Some(mode),
-            None => {
-                return mission_error(format!(
-                    "handoff_mode must be 'resume' or 'fresh', got '{mode_raw}'"
-                ));
-            }
-        },
-    };
-    let updated = d
-        .store
-        .update_task_in(&id, &chrono::Utc::now().to_rfc3339(), |task| {
-            if !req.title.trim().is_empty() {
-                task.title = req.title.trim().to_string();
-            }
-            if !req.description.trim().is_empty() {
-                task.description = req.description.trim().to_string();
-            }
-            if !req.session_id.trim().is_empty() && req.session_id.trim() != existing.session_id {
-                task.session_id = req.session_id.trim().to_string();
-                task.reporting_session = None;
-            }
-            if let Some(paths) = &validated_paths {
-                task.owned_paths = paths.clone();
-            }
-            if let Some(mode) = handoff_mode {
-                task.handoff_mode = mode;
-            }
-        });
-    let updated = match (updated, status) {
-        (Ok(_), Some(status)) => {
-            let note = format!("Marked {status} by Mission Control.");
-            match d
-                .store
-                .move_task(&id, status, &note, &chrono::Utc::now().to_rfc3339())
-            {
-                Ok(task) => Ok(task),
-                Err(error) => return super::coordination::store_error(error),
-            }
-        }
-        (updated, _) => updated,
-    };
-    match updated {
-        Ok(task) if task.status == TaskStatus::Todo => match dispatch_mission_task(&d, &id).await {
-            Ok(task) => Json(mission_task_view(&d.store, &task)).into_response(),
-            Err(error) => mission_error(error),
-        },
-        Ok(task) => Json(mission_task_view(&d.store, &task)).into_response(),
-        Err(error) => mission_error(error.to_string()),
-    }
-}
-
-async fn archive_task(State(d): State<Shared>, AxumPath(id): AxumPath<String>) -> Response {
-    match d.store.complete_task(
-        &id,
-        TaskStatus::Cancelled,
-        TaskResult {
-            summary: "Archived by Mission Control.".to_string(),
-            ..Default::default()
-        },
-        &chrono::Utc::now().to_rfc3339(),
-    ) {
-        Ok(task) => Json(mission_task_view(&d.store, &task)).into_response(),
-        Err(error) => mission_error(error.to_string()),
-    }
-}
-
-async fn sessions(State(d): State<Shared>, Query(q): Query<MissionListQuery>) -> Response {
-    let root = &d.mission_control_root;
-    let tasks = d.store.list_tasks(None, None).unwrap_or_default();
-    match mission_control::list_sessions(root, false) {
-        Ok(sessions) => Json(
-            sessions
-                .iter()
-                .filter(|session| {
-                    q.archived.is_none_or(|archived| {
-                        archived
-                            == matches!(session.status, mission_control::SessionStatus::Archived)
-                    })
-                })
-                .map(|session| {
-                    mission_session_view(
-                        session,
-                        tasks
-                            .iter()
-                            .filter(|task| task.session_id == session.id)
-                            .count(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-        )
-        .into_response(),
-        Err(error) => mission_error(error),
-    }
-}
-
-async fn create_session(State(d): State<Shared>, Json(req): Json<MissionSessionReq>) -> Response {
-    let folder = PathBuf::from(&req.folder);
-    if !folder.is_dir() {
-        return mission_error("folder is not a directory".to_string());
-    }
-    let session_id = if req.session_id.trim().is_empty() {
-        let base_state = {
-            d.config
-                .lock()
-                .unwrap()
-                .for_workspace(folder.clone())
-                .state_path
-        };
-        let path = base_state
-            .parent()
-            .map(|parent| {
-                parent
-                    .join("conversations")
-                    .join(format!("{}.json", uuid::Uuid::new_v4()))
-            })
-            .unwrap_or(base_state);
-        let id = path
-            .strip_prefix(workspaces_root())
-            .unwrap_or(&path)
-            .display()
-            .to_string();
-        let cfg = {
-            let config = d.config.lock().unwrap();
-            let mut workspace = config.for_workspace(folder.clone());
-            apply_profile(&mut workspace, &req.profile);
-            workspace
-        };
-        let handle = start_session(
-            &cfg,
-            path,
-            None,
-            false,
-            Some(Arc::new(std::sync::Mutex::new(
-                crate::llm::StreamBuffer::default(),
-            ))),
-        );
-        let mut live = d.sessions.lock().await;
-        live.insert(id.clone(), live_from_handle(handle, req.profile.clone()));
-        id
-    } else {
-        req.session_id.trim().to_string()
-    };
-    let label = if req.title.trim().is_empty() {
-        "Managed session"
-    } else {
-        req.title.trim()
-    };
-    let root = &d.mission_control_root;
-    let session = match mission_control::create_session(root, &session_id, label, &folder) {
-        Ok(session) => session,
-        Err(error) => return mission_error(error),
-    };
-    Json(mission_session_view(&session, 0)).into_response()
-}
-
-async fn update_session(
-    State(d): State<Shared>,
-    AxumPath(id): AxumPath<String>,
-    Json(req): Json<MissionSessionUpdate>,
-) -> Response {
-    match mission_control::update_session(&d.mission_control_root, &id, |session| {
-        if let Some(title) = req
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|title| !title.is_empty())
-        {
-            session.label = title.to_string();
-        }
-    }) {
-        Ok(session) => Json(mission_session_view(&session, 0)).into_response(),
-        Err(error) => mission_error(error),
-    }
-}
-
-async fn archive_session(State(d): State<Shared>, AxumPath(id): AxumPath<String>) -> Response {
-    match mission_control::archive_session(&d.mission_control_root, &id) {
-        Ok(session) => Json(mission_session_view(&session, 0)).into_response(),
-        Err(error) => mission_error(error),
-    }
-}
-
 #[derive(Deserialize)]
 struct MissionOpenReq {
     #[serde(default)]
@@ -1784,25 +1514,6 @@ async fn update_autonomy(Json(req): Json<AutonomyReq>) -> Response {
     });
     match result {
         Ok(()) => Json(autonomy_view()).into_response(),
-        Err(error) => mission_error(error),
-    }
-}
-
-#[derive(Deserialize)]
-struct MissionSettingsReq {
-    notification_policy: String,
-}
-
-async fn settings(State(d): State<Shared>) -> Response {
-    Json(mission_control::load_settings(&d.mission_control_root)).into_response()
-}
-
-async fn update_settings(State(d): State<Shared>, Json(req): Json<MissionSettingsReq>) -> Response {
-    match mission_control::set_notification_policy(
-        &d.mission_control_root,
-        &req.notification_policy,
-    ) {
-        Ok(settings) => Json(settings).into_response(),
         Err(error) => mission_error(error),
     }
 }

@@ -79,7 +79,10 @@ impl Boards {
                 slot.loading = false;
                 slot.at = Some(Instant::now());
                 match result {
-                    Ok(v) => {
+                    Ok(mut v) => {
+                        if let Some(wakes) = v.get_mut("wakes") {
+                            v = wakes.take();
+                        }
                         slot.value = Some(v);
                         slot.error = None;
                     }
@@ -156,8 +159,8 @@ pub(crate) fn board_request(app: &App, tab: PaneTab) -> Option<BoardRequest> {
         )),
         PaneTab::Jobs => Some((
             "jobs".into(),
-            "/recurring".into(),
-            vec![],
+            "/wakes".into(),
+            vec![("kind", "every".into())],
             Duration::from_secs(10),
         )),
         PaneTab::Usage => {
@@ -284,8 +287,8 @@ impl App {
                     let title = job_title(&job);
                     self.boards.act(
                         info,
-                        reqwest::Method::PUT,
-                        format!("/recurring/{}", urlencode(&s(&job, "id"))),
+                        reqwest::Method::PATCH,
+                        format!("/wakes/{}", urlencode(&s(&job, "id"))),
                         vec![],
                         Some(serde_json::json!({ "enabled": !enabled })),
                         format!("{} {title}.", if enabled { "Paused" } else { "Resumed" }),
@@ -315,7 +318,7 @@ impl App {
             ConfirmAction::DeleteJob(id, title) => self.boards.act(
                 info,
                 reqwest::Method::DELETE,
-                format!("/recurring/{}", urlencode(&id)),
+                format!("/wakes/{}", urlencode(&id)),
                 vec![],
                 None,
                 format!("Deleted {title}."),
