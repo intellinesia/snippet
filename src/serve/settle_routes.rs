@@ -384,13 +384,18 @@ fn announce_conversion(d: &Shared, row: &crate::conversations::SessionRow, mode:
     };
     let daemon = d.clone();
     let session_id = row.id.clone();
+    let unstarted = !d.store.session_has_user_message(&row.id).unwrap_or(true);
     tokio::spawn(async move {
-        daemon
-            .deliver(
-                &session_id,
-                crate::harness::LoopInput::UserMessage(session_note),
-            )
-            .await;
+        if unstarted {
+            daemon.rebuild_session_model(&session_id).await;
+        } else {
+            daemon
+                .deliver(
+                    &session_id,
+                    crate::harness::LoopInput::UserMessage(session_note),
+                )
+                .await;
+        }
     });
     if agent != crate::mission_control::SESSION_ID {
         let _ = d.store.send_direct_message(

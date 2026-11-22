@@ -495,6 +495,16 @@ impl Store {
         })
     }
 
+    pub fn session_has_user_message(&self, session_id: &str) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM session_messages WHERE session_id = ?1 AND role = 'user')",
+                params![session_id],
+                |row| row.get(0),
+            )
+        })
+    }
+
     /// Every session for a workspace, newest activity first — the session list.
     ///
     /// Reads only the `sessions` rows: the previous implementation had to open

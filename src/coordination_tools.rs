@@ -660,7 +660,7 @@ impl Tool for SendAgentMessage {
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: SendAgentMessageArgs =
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let recipient = args.recipient_agent_id.trim();
+        let recipient = bare_address(&args.recipient_agent_id);
         if recipient.is_empty() {
             return Err(ToolError::msg("recipient_agent_id must not be empty"));
         }
@@ -1414,7 +1414,7 @@ impl Tool for PostTaskCoordination {
         let to: Vec<String> = args
             .to
             .iter()
-            .map(|a| a.trim().to_string())
+            .map(|a| bare_address(a).to_string())
             .filter(|a| !a.is_empty())
             .collect();
         if !to.is_empty() {
@@ -2069,13 +2069,23 @@ fn require_group_member(
     )))
 }
 
+/// An address as the envelopes write it (`agent:snippet`, `human:local`) in
+/// the bare form the tools take (`snippet`, `human`).
+pub(crate) fn bare_address(raw: &str) -> &str {
+    let raw = raw.trim();
+    if raw == "human" || raw.starts_with("human:") {
+        return "human";
+    }
+    raw.strip_prefix("agent:").map(str::trim).unwrap_or(raw)
+}
+
 fn string_list(arguments: &Value, key: &str) -> Vec<String> {
     arguments
         .get(key)
         .and_then(|v| v.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|v| v.as_str().map(str::trim).map(str::to_string))
+        .filter_map(|v| v.as_str().map(bare_address).map(str::to_string))
         .filter(|s| !s.is_empty())
         .collect()
 }
@@ -2238,7 +2248,7 @@ impl Tool for GroupThread {
                 let lead = arguments
                     .get("lead")
                     .and_then(Value::as_str)
-                    .map(str::trim)
+                    .map(bare_address)
                     .filter(|l| !l.is_empty());
                 if let Some(lead) = lead
                     && !deduped.iter().any(|m| m == lead)
@@ -2368,7 +2378,7 @@ impl Tool for GroupThread {
                 let agent = arguments
                     .get("agent")
                     .and_then(Value::as_str)
-                    .map(str::trim)
+                    .map(bare_address)
                     .filter(|a| !a.is_empty())
                     .ok_or_else(|| ToolError::msg("`agent` is required"))?;
                 let group = require_group(&db, thread_id)?;
@@ -2387,7 +2397,7 @@ impl Tool for GroupThread {
                 let agent = arguments
                     .get("agent")
                     .and_then(Value::as_str)
-                    .map(str::trim)
+                    .map(bare_address)
                     .filter(|a| !a.is_empty())
                     .ok_or_else(|| ToolError::msg("`agent` is required"))?;
                 let group = require_group(&db, thread_id)?;
@@ -2565,7 +2575,7 @@ impl Tool for ShareArtifactTool {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        let target = args.to.trim();
+        let target = bare_address(&args.to);
         if target.is_empty() {
             return Err(ToolError::msg("to must not be empty"));
         }
@@ -3060,7 +3070,7 @@ impl Tool for PostChat {
         let mentions: Vec<String> = args
             .mentions
             .iter()
-            .map(|m| m.trim().to_string())
+            .map(|m| bare_address(m).to_string())
             .filter(|m| !m.is_empty())
             .collect();
         let in_reply_to = args
@@ -3198,6 +3208,17 @@ mod tests {
 
     fn migrate(root: &std::path::Path) -> Store {
         Store::open(root.join("snippet.db")).unwrap()
+    }
+
+    #[test]
+    fn envelope_addresses_resolve_to_the_bare_forms_the_tools_take() {
+        assert_eq!(bare_address(" agent:snippet "), "snippet");
+        assert_eq!(bare_address("snippet"), "snippet");
+        assert_eq!(bare_address("human:local"), "human");
+        assert_eq!(bare_address("human"), "human");
+        assert_eq!(bare_address("session:abc/def"), "session:abc/def");
+        assert_eq!(bare_address("task:t1"), "task:t1");
+        assert_eq!(bare_address("group:g1"), "group:g1");
     }
 
     /// A session cannot read or post in a room it has no place in, such as

@@ -1254,9 +1254,6 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
                 .unwrap_or_else(|| json!({}));
             let known: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
             let (name, arguments) = normalise_call(&raw_name, raw_arguments, &known);
-            if name != raw_name {
-                tracing::debug!("normalised tool call {raw_name} -> {name}");
-            }
             let (reply, rx) = oneshot::channel();
             let mut rx = Box::pin(rx);
             let name_for_record = name.clone();

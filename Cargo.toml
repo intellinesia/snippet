@@ -31,7 +31,6 @@ thiserror = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.8"
 uuid = { version = "1", features = ["v4"] }
-tracing = "0.1"
 flate2 = "1.0"
 tar = "0.4"
 tokio-util = { version = "0.7", features = ["io"] }
