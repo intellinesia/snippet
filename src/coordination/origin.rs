@@ -253,6 +253,83 @@ pub fn post_origin_event(
     Ok(Some(event))
 }
 
+/// The desk an agent-managed session reports to when no task's origin chat
+/// already carries its cards.
+pub fn managing_desk(store: &Store, session: &str) -> Option<String> {
+    if crate::mission_control::is_session_id(session)
+        || crate::session::is_inbox_session_id(session)
+    {
+        return None;
+    }
+    let row = store.get_session_row(session).ok().flatten()?;
+    if row.managed_by != "agent" {
+        return None;
+    }
+    let routed_by_task = store
+        .tasks_worked_in(session, Some(&super::TaskStatus::InProgress))
+        .unwrap_or_default()
+        .iter()
+        .any(|t| {
+            t.origin_thread
+                .as_deref()
+                .is_some_and(|o| !o.trim().is_empty())
+        });
+    if routed_by_task {
+        return None;
+    }
+    Some(crate::session::owner_agent_id_for(
+        &row.id,
+        row.agent_id.as_deref(),
+    ))
+}
+
+/// Post a card from an agent-managed session into its desk's chat with the
+/// user, once per `key`.
+pub fn post_to_managing_desk(
+    store: &Store,
+    session: &str,
+    key: &str,
+    body: &str,
+    mut extra: serde_json::Map<String, serde_json::Value>,
+) -> Option<CoordinationEvent> {
+    let desk = managing_desk(store, session)?;
+    extra.insert("channel".into(), serde_json::json!("chat"));
+    extra.insert("session".into(), serde_json::json!(session));
+    let now = chrono::Utc::now().to_rfc3339();
+    let event = store
+        .send_direct_message_typed(
+            ("agent", desk.as_str()),
+            ("human", LOCAL_HUMAN_ID),
+            body,
+            key,
+            &now,
+            None,
+            None,
+            None,
+            extra,
+        )
+        .map_err(|e| eprintln!("[origin] desk mirror failed for {session}: {e}"))
+        .ok()?;
+    if event.created_at == now {
+        crate::session::emit_device_event(serde_json::json!({
+            "kind": "coordination_event",
+            "event": event.clone(),
+        }));
+    }
+    Some(event)
+}
+
+/// A session's title for a one-line card.
+pub fn session_label(store: &Store, session: &str) -> String {
+    store
+        .get_session_row(session)
+        .ok()
+        .flatten()
+        .and_then(|r| r.title)
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| session.to_string())
+}
+
 fn clip(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
