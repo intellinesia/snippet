@@ -1080,11 +1080,6 @@ pub async fn run_serve(
     config.ensure_setups();
     let store = crate::store::Store::open(crate::store::default_db_path())
         .map_err(|error| format!("open store: {error}"))?;
-    // Once at boot: stamp outcomes on origin cards posted before they existed.
-    let stamped = crate::coordination::origin::sweep_outcomes(&store);
-    if !stamped.is_empty() {
-        eprintln!("[origin] stamped card outcomes at startup: {stamped:?}");
-    }
     let daemon: Shared = Arc::new(Daemon {
         config: std::sync::Mutex::new(config),
         config_path,
