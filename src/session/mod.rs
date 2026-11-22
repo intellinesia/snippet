@@ -1224,7 +1224,7 @@ pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> V
     let mut plans = store.map(|s| s.session_plans()).unwrap_or_default();
     let mut lanes_map = store.map(|s| s.session_running_lanes()).unwrap_or_default();
     let mut wakes = store.map(|s| s.session_next_wakes()).unwrap_or_default();
-    let mc_wake = store
+    let lead_wake = store
         .map(crate::mission_autonomy::load_from)
         .and_then(|a| a.followups.iter().map(|f| f.due_at).min());
     let now = now_unix_secs();
@@ -1267,7 +1267,7 @@ pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> V
             let lanes = lanes_map.remove(&row.id);
             let wake_db = wakes.remove(&row.id);
             let next_wake_at = if crate::lead::is_session_id(&row.id) {
-                match (wake_db, mc_wake) {
+                match (wake_db, lead_wake) {
                     (Some(a), Some(b)) => Some(a.min(b)),
                     (a, b) => a.or(b),
                 }

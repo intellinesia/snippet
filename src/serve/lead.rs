@@ -286,7 +286,7 @@ async fn overview(State(d): State<Shared>) -> Response {
             mission_session_view(session, count)
         })
         .collect::<Vec<_>>();
-    let mc_session_id = Some(lead::SESSION_ID);
+    let lead_session_id = Some(lead::SESSION_ID);
     Json(serde_json::json!({
         "active_tasks": active_tasks,
         "completed_tasks": done_tasks,
@@ -295,7 +295,7 @@ async fn overview(State(d): State<Shared>) -> Response {
         "total_sessions": sessions.len(),
         "recent_tasks": recent_tasks,
         "recent_sessions": recent_sessions,
-        "mc_session_id": mc_session_id,
+        "lead_session_id": lead_session_id,
     }))
     .into_response()
 }

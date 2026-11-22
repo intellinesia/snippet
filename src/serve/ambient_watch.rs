@@ -375,8 +375,8 @@ pub(super) struct Moment {
     pub phrases: Vec<String>,
     pub expecting: Option<(String, String)>,
     pub pending: Option<String>,
-    pub mc_chat: Vec<Value>,
-    pub mc_tools: Vec<Value>,
+    pub lead_chat: Vec<Value>,
+    pub lead_tools: Vec<Value>,
     pub media_playing: bool,
     pub during_playback: bool,
     pub user_voice: Option<f64>,
@@ -540,8 +540,8 @@ pub(super) fn classifier_state(m: &Moment) -> Value {
         "conversation": if m.open { "open: the user and the assistant are talking back and forth" } else { "closed" },
         "assistant": assistant,
         "lead": {
-            "recent_chat": m.mc_chat,
-            "recent_tools": m.mc_tools,
+            "recent_chat": m.lead_chat,
+            "recent_tools": m.lead_tools,
         },
         "recent": recent.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
         "phone_playing_media": m.media_playing,
@@ -820,7 +820,7 @@ pub(crate) async fn classify(
             Ok((duration_ms, device, users, assistant))
         })
         .unwrap_or_default();
-    let (pending, mc_chat, mc_tools) = if chat_context {
+    let (pending, lead_chat, lead_tools) = if chat_context {
         let mc = super::ambient_context::lead(d);
         (
             mc["pending_question"].as_str().map(str::to_string),
@@ -869,8 +869,8 @@ pub(crate) async fn classify(
         phrases: phrases.clone(),
         expecting: expectation.map(|e| (e.kind, e.about)),
         pending,
-        mc_chat,
-        mc_tools,
+        lead_chat,
+        lead_tools,
         media_playing,
         during_playback,
         user_voice: early_voice
@@ -994,7 +994,7 @@ pub(crate) async fn classify_live(
             );
         }
     }
-    let (pending, mc_chat, mc_tools) = if chat_context {
+    let (pending, lead_chat, lead_tools) = if chat_context {
         let mc = super::ambient_context::lead(d);
         (
             mc["pending_question"].as_str().map(str::to_string),
@@ -1016,8 +1016,8 @@ pub(crate) async fn classify_live(
         phrases: phrases.clone(),
         expecting: expectation.map(|e| (e.kind, e.about)),
         pending,
-        mc_chat,
-        mc_tools,
+        lead_chat,
+        lead_tools,
         media_playing: false,
         during_playback,
         user_voice: None,

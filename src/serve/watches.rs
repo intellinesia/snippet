@@ -242,9 +242,9 @@ fn systemd_run_available() -> bool {
 /// Scope units are named `<prefix><watch id>-<nonce>` so a restarted daemon can
 /// stop the scripts its previous run left behind. The prefix hashes the data
 /// root, so a second daemon with its own root never stops this one's scripts.
-pub(crate) fn scope_prefix(mc_root: &Path) -> String {
+pub(crate) fn scope_prefix(lead_root: &Path) -> String {
     let mut hash: u32 = 0x811c_9dc5;
-    for byte in mc_root.to_string_lossy().bytes() {
+    for byte in lead_root.to_string_lossy().bytes() {
         hash = (hash ^ byte as u32).wrapping_mul(0x0100_0193);
     }
     format!("snippet-watch-{hash:08x}-")
@@ -407,7 +407,7 @@ struct PollOutcome {
 
 pub struct WatchRunner {
     store: Store,
-    mc_root: PathBuf,
+    lead_root: PathBuf,
     sink: Arc<dyn WatchSink>,
     tx: mpsc::UnboundedSender<WatchMsg>,
     rx: mpsc::UnboundedReceiver<WatchMsg>,
@@ -417,17 +417,17 @@ pub struct WatchRunner {
 }
 
 impl WatchRunner {
-    pub fn new(store: Store, mc_root: PathBuf, sink: Arc<dyn WatchSink>) -> Self {
+    pub fn new(store: Store, lead_root: PathBuf, sink: Arc<dyn WatchSink>) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
             store,
-            mc_root: mc_root.clone(),
+            lead_root: lead_root.clone(),
             sink,
             tx,
             rx,
             tasks: HashMap::new(),
             restarts: HashMap::new(),
-            scope_prefix: scope_prefix(&mc_root),
+            scope_prefix: scope_prefix(&lead_root),
         }
     }
 
@@ -461,8 +461,8 @@ impl WatchRunner {
     /// Spawn the watch's process here so the supervisor knows its pid and can
     /// kill the whole group on stop; the reader task owns the child after.
     async fn spawn_script_task(&mut self, watch: &cw::Watch, stream: bool) {
-        let watches_dir = cw::watches_dir(&self.mc_root, &watch.owner);
-        let state_dir = cw::state_dir(&self.mc_root, &watch.owner, &watch.name);
+        let watches_dir = cw::watches_dir(&self.lead_root, &watch.owner);
+        let state_dir = cw::state_dir(&self.lead_root, &watch.owner, &watch.name);
         let _ = std::fs::create_dir_all(&state_dir);
         let script = PathBuf::from(&watch.script_path);
         let script_text = std::fs::read_to_string(&script).unwrap_or_default();

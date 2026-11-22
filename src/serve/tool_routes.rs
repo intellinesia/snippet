@@ -317,8 +317,8 @@ mod tests {
 
     fn daemon_with_disk_store(dir: &Path) -> Shared {
         let store = crate::store::Store::open(dir.join("snippet.db")).unwrap();
-        let mc_root = dir.join("mc");
-        std::fs::create_dir_all(&mc_root).unwrap();
+        let lead_root = dir.join("mc");
+        std::fs::create_dir_all(&lead_root).unwrap();
         let recurring_root = dir.join("recurring");
         std::fs::create_dir_all(&recurring_root).unwrap();
         std::sync::Arc::new(Daemon {
@@ -332,7 +332,7 @@ mod tests {
             seen_nonces: std::sync::Mutex::new(HashMap::new()),
             queue_hidden: std::sync::Mutex::new(HashMap::new()),
             queue_revision: AtomicU64::new(0),
-            lead_root: mc_root,
+            lead_root: lead_root,
             store,
             coordination_events: tokio::sync::broadcast::channel(32).0,
             recurring_root,
@@ -434,7 +434,7 @@ mod tests {
         assert!(desk_names.contains(&"share_artifact"));
         assert!(!desk_names.contains(&"schedule_wake"));
 
-        let mc_list = app
+        let lead_list = app
             .clone()
             .oneshot(
                 Request::get("/api/tools?token=secret-token&session_id=lead")
@@ -443,18 +443,18 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(mc_list.status(), StatusCode::OK);
-        let mc_json = body_json(mc_list).await;
-        assert_eq!(mc_json["seat"], "lead");
-        let mc_names: Vec<&str> = mc_json["tools"]
+        assert_eq!(lead_list.status(), StatusCode::OK);
+        let lead_json = body_json(lead_list).await;
+        assert_eq!(lead_json["seat"], "lead");
+        let lead_names: Vec<&str> = lead_json["tools"]
             .as_array()
             .unwrap()
             .iter()
             .filter_map(|t| t["name"].as_str())
             .collect();
-        assert!(mc_names.contains(&"register_agent"));
-        assert!(mc_names.contains(&"list_profiles"));
-        assert!(!mc_names.contains(&"record_coordination_note"));
+        assert!(lead_names.contains(&"register_agent"));
+        assert!(lead_names.contains(&"list_profiles"));
+        assert!(!lead_names.contains(&"record_coordination_note"));
 
         let denied = app
             .clone()

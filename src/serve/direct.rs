@@ -2629,7 +2629,7 @@ mod tests {
         assert_eq!(saved["payload"]["kind"], "reaction");
         assert_eq!(saved["payload"]["body"], "");
 
-        let mut mc_rx = fake_busy_session(&d, crate::lead::SESSION_ID).await;
+        let mut lead_rx = fake_busy_session(&d, crate::lead::SESSION_ID).await;
         let mut react_extra = serde_json::Map::new();
         crate::coordination::typed::apply_reply_and_reaction(
             &mut react_extra,
@@ -2660,7 +2660,7 @@ mod tests {
         )
         .await
         .unwrap();
-        match mc_rx.try_recv().expect("reaction queued on busy session") {
+        match lead_rx.try_recv().expect("reaction queued on busy session") {
             LoopInput::Queue(item) => {
                 assert_eq!(
                     item.text,

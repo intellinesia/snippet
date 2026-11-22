@@ -77,7 +77,7 @@ pub struct GateInput {
     pub alone: bool,
     pub room_busy: bool,
     pub call_active: bool,
-    pub mc_busy: bool,
+    pub lead_busy: bool,
     pub quiet_hours: bool,
     pub user_on_call: bool,
     pub user_voice_recent: bool,
@@ -97,7 +97,7 @@ pub fn clarify_allowed(g: GateInput) -> Result<(), &'static str> {
     if g.call_active {
         return Err("call pending or tracked");
     }
-    if g.mc_busy {
+    if g.lead_busy {
         return Err("lead is busy");
     }
     if g.quiet_hours {
@@ -875,7 +875,7 @@ pub fn current_gate_input(store: &Store, device: &str, now_s: i64) -> GateInput 
     let alone = crate::ambient_tuning::current(device).profile == Profile::Alone;
     let room_busy = crate::ambient::room_busy();
     let call_active = super::call_track::has_active_call();
-    let mc_busy = super::autonomy::lead_busy();
+    let lead_busy = super::autonomy::lead_busy();
     let autonomy = crate::mission_autonomy::load();
     let quiet_hours = crate::mission_autonomy::in_quiet_hours(&autonomy.settings);
     let user_on_call = crate::mission_autonomy::user_call().is_some();
@@ -892,7 +892,7 @@ pub fn current_gate_input(store: &Store, device: &str, now_s: i64) -> GateInput 
         alone,
         room_busy,
         call_active,
-        mc_busy,
+        lead_busy,
         quiet_hours,
         user_on_call,
         user_voice_recent: uv_recent,
@@ -1032,7 +1032,7 @@ impl Tool for AmbientRoom {
                                 "alone": gate.alone,
                                 "room_not_busy": !gate.room_busy,
                                 "no_call_active": !gate.call_active,
-                                "mc_not_busy": !gate.mc_busy,
+                                "lead_not_busy": !gate.lead_busy,
                                 "not_quiet_hours": !gate.quiet_hours,
                                 "user_not_on_call": !gate.user_on_call,
                                 "user_voice_recent": gate.user_voice_recent,
@@ -1270,7 +1270,7 @@ mod tests {
             alone: true,
             room_busy: false,
             call_active: false,
-            mc_busy: false,
+            lead_busy: false,
             quiet_hours: false,
             user_on_call: false,
             user_voice_recent: true,
@@ -1310,7 +1310,7 @@ mod tests {
             (
                 "mc busy",
                 GateInput {
-                    mc_busy: true,
+                    lead_busy: true,
                     ..ok.clone()
                 },
             ),

@@ -66,7 +66,7 @@ fn resolve_owner(ctx: &ToolContext, agent_id: Option<&str>) -> Result<String, To
     Ok(owner)
 }
 
-fn mc_root(ctx: &ToolContext) -> PathBuf {
+fn lead_root(ctx: &ToolContext) -> PathBuf {
     ctx.lead_root()
         .unwrap_or_else(|| crate::lead::LeadStore::default_root(None))
 }
@@ -314,7 +314,7 @@ impl Tool for WatchTool {
             .store()
             .map_err(|e| ToolError::msg(format!("open store: {e}")))?;
         check_owner(&store, &owner)?;
-        let root = mc_root(ctx);
+        let root = lead_root(ctx);
         match args.action.as_str() {
             "list" => {
                 let watches = store

@@ -2641,12 +2641,12 @@ impl Tool for DeliverToSession {
         if let Some(id) = reviewer.as_deref() {
             require_working_agent(&store, id)?;
         }
-        let mc_root = ctx
+        let lead_root = ctx
             .lead_root()
             .unwrap_or_else(lead::workspace_path);
-        if lead::get_session(&mc_root, &session_id).is_err() {
+        if lead::get_session(&lead_root, &session_id).is_err() {
             let _ = lead::create_session(
-                &mc_root,
+                &lead_root,
                 &session_id,
                 state.title.as_deref().unwrap_or("Managed session"),
                 std::path::Path::new(&state.workspace),

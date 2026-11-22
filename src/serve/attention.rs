@@ -453,7 +453,7 @@ mod tests {
         let t0 = Instant::now();
         let c = Clock(t0);
         let mut inner = Inner::new(t0);
-        let mut mc_deliveries: Vec<&'static str> = Vec::new();
+        let mut lead_deliveries: Vec<&'static str> = Vec::new();
 
         // t = 0 ms: user barges in on gen 1; final classifier guard is acquired for this turn.
         assert!(inner.mark_interrupted(1, c.at(0)));
@@ -470,22 +470,22 @@ mod tests {
         for step in 1..=7 {
             let ms = step * 500;
             let quiet = ms >= 2500;
-            poll_resume(&mut inner, ms, quiet, &mut mc_deliveries);
+            poll_resume(&mut inner, ms, quiet, &mut lead_deliveries);
         }
-        assert!(mc_deliveries.is_empty());
+        assert!(lead_deliveries.is_empty());
 
         // t = 3500 ms: final verdict arrives; second interrupt check for gen 1 is a no-op,
         // user turn advances to gen 2 and delivers to Lead, then classify guard drops.
         assert!(inner.already_interrupted(1));
-        mc_deliveries.push("<ambient_turn>");
+        lead_deliveries.push("<ambient_turn>");
         inner.delivered(2, c.at(3500));
         inner.classifying -= 1;
 
         // Polling past the 60 s cap produces no <ambient_resume>.
         for step in 8..=130 {
-            poll_resume(&mut inner, step * 500, true, &mut mc_deliveries);
+            poll_resume(&mut inner, step * 500, true, &mut lead_deliveries);
         }
-        assert_eq!(mc_deliveries, vec!["<ambient_turn>"]);
+        assert_eq!(lead_deliveries, vec!["<ambient_turn>"]);
     }
 
     #[tokio::test]

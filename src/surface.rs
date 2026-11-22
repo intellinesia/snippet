@@ -994,16 +994,16 @@ mod tests {
             lane_names
         );
 
-        let (mc_defs, _) = crate::lanes::role_tool_definitions("lead", None).unwrap();
-        let (mc_names, mc_bytes) = sizes(&mc_defs);
+        let (lead_defs, _) = crate::lanes::role_tool_definitions("lead", None).unwrap();
+        let (lead_names, lead_bytes) = sizes(&lead_defs);
         println!(
-            "MC ({}): {mc_bytes} bytes -> {:?}",
-            mc_names.len(),
-            mc_names
+            "MC ({}): {lead_bytes} bytes -> {:?}",
+            lead_names.len(),
+            lead_names
         );
 
         assert_eq!(desk_names.len(), 9);
-        assert_eq!(mc_names.len(), 14);
+        assert_eq!(lead_names.len(), 14);
         assert!(cli_names.iter().any(|n| n == "custom_tool"));
         assert!(cli_names.iter().any(|n| n == "complete_goal"));
         for hidden in [
@@ -1016,7 +1016,7 @@ mod tests {
             "set_session_title",
             "report_progress",
         ] {
-            for names in [&work_names, &cli_names, &desk_names, &lane_names, &mc_names] {
+            for names in [&work_names, &cli_names, &desk_names, &lane_names, &lead_names] {
                 assert!(
                     !names.iter().any(|n| n == hidden),
                     "{hidden} leaked into {names:?}"

@@ -393,8 +393,8 @@ async fn daemon_http(
 /// accepts is still delivered after a restart.
 async fn agent_cli(action: AgentAction) -> Result<(), Box<dyn std::error::Error>> {
     if let AgentAction::Revert { agent_id } = action {
-        let mc_root = snippet::lead::LeadStore::default_root(None);
-        let agents_root = snippet::coordination::agents_root(&mc_root);
+        let lead_root = snippet::lead::LeadStore::default_root(None);
+        let agents_root = snippet::coordination::agents_root(&lead_root);
         let home = snippet::coordination::AgentHome::new(agents_root, &agent_id)
             .map_err(|error| error.to_string())?;
         let summary = home

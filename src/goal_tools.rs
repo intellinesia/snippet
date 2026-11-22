@@ -10,7 +10,7 @@ use crate::llm::NativeToolDefinition;
 use crate::store::Store;
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 
-fn mc_store(ctx: &ToolContext) -> Result<Store, ToolError> {
+fn lead_store(ctx: &ToolContext) -> Result<Store, ToolError> {
     ctx.lead_root().ok_or_else(|| {
         ToolError::msg("Goal tools are only available in the Lead session.")
     })?;
@@ -182,7 +182,7 @@ impl Tool for CreateGoal {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: CreateGoalArgs = serde_json::from_value(arguments)?;
-        let store = mc_store(ctx)?;
+        let store = lead_store(ctx)?;
         if args.title.trim().is_empty() || args.outcome.trim().is_empty() {
             return Err(ToolError::msg("title and outcome must be non-empty"));
         }
@@ -257,7 +257,7 @@ impl Tool for UpdateGoal {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: UpdateGoalArgs = serde_json::from_value(arguments)?;
-        let store = mc_store(ctx)?;
+        let store = lead_store(ctx)?;
         let mut goal = find(&store, &args.id)?;
         if let Some(t) = args
             .title
@@ -336,7 +336,7 @@ impl Tool for CloseGoal {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: CloseGoalArgs = serde_json::from_value(arguments)?;
-        let store = mc_store(ctx)?;
+        let store = lead_store(ctx)?;
         let mut goal = find(&store, &args.id)?;
         if goal.status != GoalStatus::Open {
             return Err(ToolError::msg(format!(
@@ -388,7 +388,7 @@ impl Tool for ListGoals {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: ListGoalsArgs = serde_json::from_value(arguments)?;
-        let store = mc_store(ctx)?;
+        let store = lead_store(ctx)?;
         let status =
             match args.status.as_deref().map(str::trim) {
                 None | Some("") | Some("open") => Some(GoalStatus::Open),

@@ -176,13 +176,13 @@ mod tests {
         ));
 
         // Refuses Lead, desk, and lane contexts.
-        let mc_ctx = ToolContext::lead(dir.path())
+        let lead_ctx = ToolContext::lead(dir.path())
             .unwrap()
             .with_durable_session_id(crate::lead::SESSION_ID)
             .with_store_path(&db_path);
         assert!(
             HandOffSession
-                .execute(&mc_ctx, json!({ "to_agent": "rook", "note": "x" }))
+                .execute(&lead_ctx, json!({ "to_agent": "rook", "note": "x" }))
                 .await
                 .is_err()
         );
