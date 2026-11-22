@@ -231,7 +231,7 @@ mod seat_layer_tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     const HARNESS_CORE_MAX_BYTES: usize = 4_500;
-    const DESK_LAYER_MAX_BYTES: usize = 4_200;
+    const DESK_LAYER_MAX_BYTES: usize = 4_800;
     const WORK_SESSION_LAYER_MAX_BYTES: usize = 2_500;
     const LANE_LAYER_MAX_BYTES: usize = 1_400;
 

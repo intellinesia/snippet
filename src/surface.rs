@@ -486,7 +486,7 @@ fn keep_for(role: SeatRole) -> &'static [&'static str] {
             "complete_goal",
             "custom_tool",
         ],
-        SeatRole::Desk => &["bash", "change_files", "complete_goal"],
+        SeatRole::Desk => &["bash", "change_files", "view_image", "complete_goal"],
         SeatRole::Lane => &[
             "bash",
             "change_files",
@@ -1002,7 +1002,7 @@ mod tests {
             mc_names
         );
 
-        assert_eq!(desk_names.len(), 8);
+        assert_eq!(desk_names.len(), 9);
         assert_eq!(mc_names.len(), 14);
         assert!(cli_names.iter().any(|n| n == "custom_tool"));
         assert!(cli_names.iter().any(|n| n == "complete_goal"));

@@ -571,6 +571,7 @@ pub(crate) fn coordination_tool_registry(exa_api_key: Option<String>) -> ToolReg
     tools.insert(crate::followup_tool::SessionWakeTool);
     tools.insert(crate::builtins::BashTool);
     tools.insert(crate::builtins::ChangeFilesTool);
+    tools.insert(crate::builtins::ViewImageTool);
     if let Some(key) = exa_api_key.filter(|k| !k.trim().is_empty()) {
         tools.insert(crate::builtins::WebSearchTool {
             api_key: key.clone(),

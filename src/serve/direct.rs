@@ -1651,11 +1651,78 @@ async fn deliver_direct(
         deliver_by_urgency(d, &session_id, envelope, &event.payload, true).await;
     } else if is_task_offer(&event.payload) {
         let envelope = desk_open_tasks_envelope(&d.store, agent_id, envelope);
+        let envelope = with_user_chat(&d.store, agent_id, envelope);
         deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
     } else {
+        let envelope = with_user_chat(&d.store, agent_id, envelope);
         deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
     }
     Ok(())
+}
+
+const USER_CHAT_POSTS: u32 = 3;
+const USER_CHAT_FRESH_MINUTES: i64 = 30;
+
+/// What the user last saw in the desk's chat with them, so a colleague's news is not told twice.
+fn with_user_chat(store: &crate::store::Store, agent_id: &str, envelope: String) -> String {
+    if agent_id == crate::mission_control::SESSION_ID {
+        return envelope;
+    }
+    let thread = crate::coordination::direct_thread_id(
+        ("agent", agent_id),
+        ("human", crate::coordination::LOCAL_HUMAN_ID),
+    );
+    let posts = store
+        .recent_direct_thread_events(&thread, USER_CHAT_POSTS)
+        .unwrap_or_default();
+    let fresh = posts.last().and_then(|e| {
+        chrono::DateTime::parse_from_rfc3339(&e.created_at)
+            .ok()
+            .map(|at| (chrono::Utc::now() - at.with_timezone(&chrono::Utc)).num_minutes())
+    });
+    if !fresh.is_some_and(|m| m <= USER_CHAT_FRESH_MINUTES) {
+        return envelope;
+    }
+    let lines: Vec<String> = posts
+        .iter()
+        .filter(|e| e.payload.get("reaction").is_none())
+        .map(|e| {
+            let who = if e.actor_kind == "human" {
+                "user"
+            } else {
+                "you"
+            };
+            let what = if e.payload.get("task_result").is_some() {
+                " (task result card)"
+            } else {
+                ""
+            };
+            let body: String = e
+                .payload
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(200)
+                .collect();
+            let at = e.created_at.get(11..16).unwrap_or_default();
+            format!("{at} {who}{what}: {body}")
+        })
+        .collect();
+    if lines.is_empty() {
+        return envelope;
+    }
+    let block = crate::envelope::Envelope::new("user_chat")
+        .attr("order", "oldest first")
+        .text(format!(
+            "The user has already read these in your chat with them; post only what they lack.\n{}",
+            lines.join("\n")
+        ))
+        .render();
+    crate::envelope::insert_before_child(&envelope, "body", &block)
 }
 
 fn is_task_offer(payload: &serde_json::Value) -> bool {
@@ -3120,6 +3187,32 @@ mod tests {
             direct_message_envelope(&event(3, "local", "follow up", "agent:a"), &[real, notice]);
         assert!(digest_env.contains("hello"));
         assert!(!digest_env.contains("finished this turn without a reply"));
+    }
+
+    #[tokio::test]
+    async fn a_colleague_message_shows_the_desk_what_the_user_already_read() {
+        let d = test_daemon();
+        d.store.create_agent(&agent("a")).unwrap();
+        let stale = human_says(&d.store, "old news", "k-old");
+        let env = || direct_message_envelope(&stale, &[]);
+        assert!(!super::with_user_chat(&d.store, "a", env()).contains("<user_chat"));
+        d.store
+            .send_direct_message_typed(
+                ("agent", "a"),
+                ("human", "local"),
+                "Round 7 board is shared",
+                "k-new",
+                &chrono::Utc::now().to_rfc3339(),
+                None,
+                None,
+                None,
+                Default::default(),
+            )
+            .unwrap();
+        let out = super::with_user_chat(&d.store, "a", env());
+        assert!(out.contains("<user_chat"), "{out}");
+        assert!(out.contains("you: Round 7 board is shared"), "{out}");
+        assert!(out.find("<user_chat").unwrap() < out.find("<body>").unwrap());
     }
 
     #[tokio::test]
