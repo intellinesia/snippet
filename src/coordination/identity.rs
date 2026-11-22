@@ -110,20 +110,26 @@ impl AgentHome {
         match git_output(&self.root, &["init", "-q"]) {
             Ok(out) if out.status.success() => {}
             Ok(out) => {
-                tracing::warn!(
-                    agent_id = %self.agent_id,
-                    stderr = %String::from_utf8_lossy(&out.stderr).trim(),
-                    "agent home git init failed"
+                eprintln!(
+                    "[agent-home] {} git init failed: {}",
+                    self.agent_id,
+                    String::from_utf8_lossy(&out.stderr).trim()
                 );
                 return Ok(());
             }
             Err(error) => {
-                tracing::warn!(agent_id = %self.agent_id, %error, "agent home git init unavailable");
+                eprintln!(
+                    "[agent-home] {} git init unavailable: {error}",
+                    self.agent_id
+                );
                 return Ok(());
             }
         }
         if let Err(error) = atomic_write(&self.root.join(".gitignore"), HOME_GITIGNORE.as_bytes()) {
-            tracing::warn!(agent_id = %self.agent_id, %error, "agent home .gitignore write failed");
+            eprintln!(
+                "[agent-home] {} .gitignore write failed: {error}",
+                self.agent_id
+            );
             return Ok(());
         }
         self.commit("Start agent home");
@@ -137,15 +143,18 @@ impl AgentHome {
         match git_output(&self.root, &["add", "-A"]) {
             Ok(out) if out.status.success() => {}
             Ok(out) => {
-                tracing::warn!(
-                    agent_id = %self.agent_id,
-                    stderr = %String::from_utf8_lossy(&out.stderr).trim(),
-                    "agent home git add failed"
+                eprintln!(
+                    "[agent-home] {} git add failed: {}",
+                    self.agent_id,
+                    String::from_utf8_lossy(&out.stderr).trim()
                 );
                 return;
             }
             Err(error) => {
-                tracing::warn!(agent_id = %self.agent_id, %error, "agent home git add unavailable");
+                eprintln!(
+                    "[agent-home] {} git add unavailable: {error}",
+                    self.agent_id
+                );
                 return;
             }
         }
@@ -156,29 +165,35 @@ impl AgentHome {
                 }
             }
             Ok(out) => {
-                tracing::warn!(
-                    agent_id = %self.agent_id,
-                    stderr = %String::from_utf8_lossy(&out.stderr).trim(),
-                    "agent home git status failed"
+                eprintln!(
+                    "[agent-home] {} git status failed: {}",
+                    self.agent_id,
+                    String::from_utf8_lossy(&out.stderr).trim()
                 );
                 return;
             }
             Err(error) => {
-                tracing::warn!(agent_id = %self.agent_id, %error, "agent home git status unavailable");
+                eprintln!(
+                    "[agent-home] {} git status unavailable: {error}",
+                    self.agent_id
+                );
                 return;
             }
         }
         match git_output(&self.root, &["commit", "-q", "-m", reason]) {
             Ok(out) if out.status.success() => {}
             Ok(out) => {
-                tracing::warn!(
-                    agent_id = %self.agent_id,
-                    stderr = %String::from_utf8_lossy(&out.stderr).trim(),
-                    "agent home git commit failed"
+                eprintln!(
+                    "[agent-home] {} git commit failed: {}",
+                    self.agent_id,
+                    String::from_utf8_lossy(&out.stderr).trim()
                 );
             }
             Err(error) => {
-                tracing::warn!(agent_id = %self.agent_id, %error, "agent home git commit unavailable");
+                eprintln!(
+                    "[agent-home] {} git commit unavailable: {error}",
+                    self.agent_id
+                );
             }
         }
     }

@@ -50,7 +50,11 @@ impl CodingHarness {
                 .map(str::trim)
                 .is_none_or(str::is_empty)
             {
-                state.title = Some(text.clone());
+                let label: String = crate::session::request_label(&text)
+                    .chars()
+                    .take(120)
+                    .collect();
+                state.title = Some(label).filter(|t| !t.trim().is_empty());
             }
             self.finish_checkpoint(state, vars).await;
             self.begin_checkpoint(state, vars, &text);

@@ -44,21 +44,21 @@ pub async fn followup_loop(d: Shared) {
         let due = match d.store.due_followups(&now, 20) {
             Ok(due) => due,
             Err(error) => {
-                tracing::warn!(%error, "followups: due query failed");
+                eprintln!("[followups] due query failed: {error}");
                 continue;
             }
         };
         for f in due {
             let error = deliver(&d, &f).await.err();
             if let Some(error) = &error {
-                tracing::warn!(id = %f.id, session = %f.session_id, %error, "followup dropped");
+                eprintln!("[followups] {} for {} dropped: {error}", f.id, f.session_id);
             }
             let at = crate::coordination::watches::now_rfc3339();
             if let Err(e) = d
                 .store
                 .mark_followup_delivered(&f.id, &at, error.as_deref())
             {
-                tracing::warn!(id = %f.id, error = %e, "followups: mark delivered failed");
+                eprintln!("[followups] mark {} delivered failed: {e}", f.id);
             }
         }
     }

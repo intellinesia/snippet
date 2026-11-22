@@ -162,7 +162,6 @@ async fn handle_ws(
     let (mut sender, mut receiver) = socket.split();
     let (history_tx, history_rx) = tokio::sync::mpsc::unbounded_channel::<(usize, Option<usize>)>();
     let history_request_tx = history_tx.clone();
-    let (event_request_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<usize>();
     let (ping_tx, mut ping_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
     let push_daemon = daemon.clone();
@@ -185,7 +184,6 @@ async fn handle_ws(
             session_woke: false,
         };
         let mut check_state_next = true;
-        let mut pending_event: Option<usize> = None;
         let mut pending_history: Option<(usize, Option<usize>)> = None;
         let mut pinged = false;
         let mut last_state_fingerprint = None;
@@ -463,38 +461,6 @@ async fn handle_ws(
                     }
                 }
             }
-            let event_request = match pending_event.take().or_else(|| event_rx.try_recv().ok()) {
-                Some(index) => {
-                    let path = state_path.clone();
-                    let ctx_start = index.saturating_sub(20);
-                    tokio::task::spawn_blocking(move || read_session_state_tail(&path, ctx_start))
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|(state, _)| (index, index - ctx_start, state))
-                }
-                None => None,
-            };
-            if let Some((index, rel, state)) = event_request {
-                let mut one = if rel < state.events.len() {
-                    wire_events_slice(&state.events[..=rel], rel)
-                } else {
-                    serde_json::json!([serde_json::Value::Null])
-                };
-                stamp_event_times(&state_path, index, &mut one).await;
-                let frame = serde_json::json!({
-                    "wire": "event",
-                    "index": index,
-                    "event": one[0],
-                });
-                if sender
-                    .send(Message::Text(frame.to_string().into()))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
             if let Some((before, limit)) = pending_history
                 .take()
                 .or_else(|| history_rx.try_recv().ok())
@@ -568,7 +534,6 @@ async fn handle_ws(
                 (last_frame_sent + HEARTBEAT).min(tokio::time::Instant::now() + PUSH_FALLBACK_TICK);
             tokio::select! {
                 _ = signals.changed() => {}
-                Some(index) = event_rx.recv() => pending_event = Some(index),
                 Some(request) = history_rx.recv() => pending_history = Some(request),
                 Some(()) = ping_rx.recv() => pinged = true,
                 _ = tokio::time::sleep_until(deadline) => check_state_next = true,
@@ -603,12 +568,6 @@ async fn handle_ws(
                             .and_then(|v| v.as_u64())
                             .map(|v| v as usize);
                         let _ = history_request_tx.send((before, limit));
-                        continue;
-                    }
-                    if val.get("kind").and_then(|k| k.as_str()) == Some("event") {
-                        if let Some(index) = val.get("index").and_then(|v| v.as_u64()) {
-                            let _ = event_request_tx.send(index as usize);
-                        }
                         continue;
                     }
                     if let Some(nonce) = val.get("nonce").and_then(|n| n.as_str())
