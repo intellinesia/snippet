@@ -832,7 +832,18 @@ impl Tool for SendAgentMessage {
             && ctx
                 .durable_session_id()
                 .is_some_and(crate::session::is_inbox_session_id);
-        let reply_to = reply_to.filter(|_| reaction.is_some() || desk_to_user);
+        let reply_to = reply_to.filter(|id| {
+            reaction.is_some()
+                || (desk_to_user
+                    && db.event_by_id(id).ok().flatten().is_some_and(|e| {
+                        e.actor_kind == "human"
+                            && e.thread_id
+                                == crate::coordination::direct_thread_id(
+                                    ("agent", ctx.agent_id().unwrap_or_default()),
+                                    ("human", to_id),
+                                )
+                    }))
+        });
         crate::coordination::typed::apply_reply_and_reaction(
             &mut extra,
             reply_to.as_deref(),
@@ -3930,23 +3941,45 @@ mod tests {
         assert!(events[2].payload.get("reply_to").is_none());
 
         let human = crate::coordination::LOCAL_HUMAN_ID;
-        for (session, quoted) in [("s-sender", false), ("inbox-sender", true)] {
+        let thread = crate::coordination::direct_thread_id(("agent", "sender"), ("human", human));
+        let said = db
+            .send_direct_message_typed(
+                ("human", human),
+                ("agent", "sender"),
+                "do it",
+                "k-human",
+                &now_rfc3339(),
+                None,
+                None,
+                None,
+                Default::default(),
+            )
+            .unwrap();
+        let said_id = said.event_id.clone();
+        for (session, quote, quoted) in [
+            ("s-sender", said_id.as_str(), false),
+            ("inbox-sender", said_id.as_str(), true),
+            ("inbox-sender", "human", false),
+            ("inbox-sender", target_id.as_str(), false),
+        ] {
             let ctx = context(dir.path(), session).with_agent_id("sender");
             SendAgentMessage
                 .execute(
                     &ctx,
-                    json!({"recipient_agent_id": "human", "reply_to": target_id, "body": "on it"}),
+                    json!({"recipient_agent_id": "human", "reply_to": quote, "body": "on it"}),
                 )
                 .await
                 .unwrap();
-            let thread =
-                crate::coordination::direct_thread_id(("agent", "sender"), ("human", human));
             let last = db
                 .direct_thread_events(&thread, 0, 50)
                 .unwrap()
                 .pop()
                 .unwrap();
-            assert_eq!(last.payload.get("reply_to").is_some(), quoted, "{session}");
+            assert_eq!(
+                last.payload.get("reply_to").is_some(),
+                quoted,
+                "{session} {quote}"
+            );
         }
     }
 
