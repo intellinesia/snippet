@@ -283,40 +283,30 @@ pub fn managing_desk(store: &Store, session: &str) -> Option<String> {
     ))
 }
 
-/// Post a card from an agent-managed session into its desk's chat with the
-/// user, once per `key`.
-pub fn post_to_managing_desk(
+/// Tell the desk managing `session` something it may pass on to the user, once
+/// per `key`. Nothing reaches the desk's chat with the user unless it posts it.
+pub fn tell_managing_desk(
     store: &Store,
     session: &str,
     key: &str,
     body: &str,
-    mut extra: serde_json::Map<String, serde_json::Value>,
+    extra: serde_json::Map<String, serde_json::Value>,
 ) -> Option<CoordinationEvent> {
     let desk = managing_desk(store, session)?;
-    extra.insert("channel".into(), serde_json::json!("chat"));
-    extra.insert("session".into(), serde_json::json!(session));
-    let now = chrono::Utc::now().to_rfc3339();
-    let event = store
+    store
         .send_direct_message_typed(
+            ("session", session),
             ("agent", desk.as_str()),
-            ("human", LOCAL_HUMAN_ID),
             body,
             key,
-            &now,
+            &chrono::Utc::now().to_rfc3339(),
             None,
             None,
             None,
             extra,
         )
-        .map_err(|e| eprintln!("[origin] desk mirror failed for {session}: {e}"))
-        .ok()?;
-    if event.created_at == now {
-        crate::session::emit_device_event(serde_json::json!({
-            "kind": "coordination_event",
-            "event": event.clone(),
-        }));
-    }
-    Some(event)
+        .map_err(|e| eprintln!("[origin] desk notice failed for {session}: {e}"))
+        .ok()
 }
 
 /// A session's title for a one-line card.

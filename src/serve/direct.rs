@@ -289,7 +289,7 @@ fn turn_end_relay_with_notice(
     who: &str,
     events: &[crate::harness::HarnessEvent],
     forwarder: Option<&str>,
-) -> Option<(usize, String, bool)> {
+) -> Option<(usize, String, String)> {
     use crate::harness::HarnessEvent as E;
     if waiting == 0 {
         return None;
@@ -322,7 +322,7 @@ fn turn_end_relay_with_notice(
         .unwrap_or_else(|| "none".to_string());
     let line =
         format!("{who} finished this turn without posting a reply; its last step was {last_tool}.");
-    Some((start, line, true))
+    Some((start, line, last_tool))
 }
 
 fn turn_about_thread(events: &[crate::harness::HarnessEvent]) -> Option<String> {
@@ -456,21 +456,31 @@ pub(crate) fn relay_desk_reply(
     let forwarder = about_thread.as_deref().and_then(agent_from_thread_id);
     let relay = turn_end_relay_with_notice(waiting, &name, &state.events, forwarder.as_deref());
     state.human_waiting.clear();
-    let Some((start, text, _)) = relay else {
+    let (Some((start, _, last_step)), Some(desk)) = (relay, forwarder) else {
         return;
     };
-    let key = format!("desk-relay:{session_id}:{start}");
-    let origin = session_id.starts_with("inbox-").then_some(session_id);
-    let task = store.open_task_of_session(session_id).ok().flatten();
-    let about_task = task.as_ref().map(|t| t.id.as_str());
-    let mut extra = serde_json::Map::new();
-    if let Some(thread) = about_thread {
-        extra.insert("target_thread".into(), json!(thread));
+    if crate::session::is_inbox_session_id(session_id) || agent_id != desk {
+        return;
     }
-    extra.insert("system".into(), json!(true));
-    extra.insert("kind".into(), json!("notice"));
-    post_to_human(
-        store, &agent_id, session_id, origin, about_task, &key, &text, extra,
+    let body = crate::envelope::Envelope::new("session_no_reply")
+        .attr("session", session_id)
+        .child("note", format!(
+            "the work you forwarded ended its turn without replying (last step: {last_step}). message.send to session:{session_id} reaches it; the user saw nothing."
+        ))
+        .render();
+    let mut extra = serde_json::Map::new();
+    extra.insert("kind".into(), json!("status"));
+    extra.insert("auto".into(), json!("session_no_reply"));
+    let _ = store.send_direct_message_typed(
+        ("session", session_id),
+        ("agent", &desk),
+        &body,
+        &format!("desk-relay:{session_id}:{start}"),
+        &chrono::Utc::now().to_rfc3339(),
+        None,
+        None,
+        None,
+        extra,
     );
 }
 
@@ -547,6 +557,10 @@ pub(crate) fn relay_question(
         question_obj["request_id"] = json!(id);
     }
     extra.insert("question".into(), question_obj);
+    if !crate::session::is_inbox_session_id(session_id) {
+        tell_desk_of_question(store, &agent_id, session_id, index, question, &body, extra);
+        return;
+    }
     crate::coordination::reach::reach_with_key(
         store,
         &agent_id,
@@ -559,6 +573,183 @@ pub(crate) fn relay_question(
         Some(&key),
         extra,
     );
+}
+
+const DESK_FALLBACK_SECS: i64 = 120;
+
+#[allow(clippy::too_many_arguments)]
+fn schedule_desk_fallback(
+    store: &crate::store::Store,
+    desk: &str,
+    session_id: &str,
+    what: &str,
+    key: String,
+    index: usize,
+    body: String,
+    extra: serde_json::Map<String, serde_json::Value>,
+) {
+    let now = chrono::Utc::now();
+    let fallback = crate::coordination::desk_fallbacks::DeskFallback {
+        key,
+        desk: desk.to_string(),
+        session_id: session_id.to_string(),
+        what: what.to_string(),
+        event_index: index,
+        body,
+        extra,
+        created_at: now.to_rfc3339(),
+        due_at: (now + chrono::Duration::seconds(DESK_FALLBACK_SECS)).to_rfc3339(),
+    };
+    if let Err(error) = store.schedule_desk_fallback(&fallback) {
+        eprintln!("[relay] schedule fallback for {session_id}: {error}");
+    }
+}
+
+/// A work session's question goes to its desk, which passes it on in its own
+/// words; the card itself is the fallback when the desk stays silent.
+fn tell_desk_of_question(
+    store: &crate::store::Store,
+    desk: &str,
+    session_id: &str,
+    index: usize,
+    question: &serde_json::Value,
+    body: &str,
+    mut card: serde_json::Map<String, serde_json::Value>,
+) {
+    let name = relay_agent_name(store, desk, desk);
+    let label = crate::coordination::origin::session_label(store, session_id);
+    card.insert("fallback".into(), json!(true));
+    schedule_desk_fallback(
+        store,
+        desk,
+        session_id,
+        "question",
+        format!("ask:{session_id}:{index}"),
+        index,
+        format!("Automatic fallback: {name} has not passed this on. {label} asks:\n{body}"),
+        card,
+    );
+    let managed = store
+        .get_session_row(session_id)
+        .ok()
+        .flatten()
+        .is_some_and(|row| row.managed_by == "agent");
+    if managed {
+        return;
+    }
+    let mut envelope = crate::envelope::Envelope::new("session_question")
+        .attr("session", session_id)
+        .attr("title", &label)
+        .child("question", body);
+    let mut note = format!(
+        "pass it to the user in your own words; if you post nothing in your chat with them within {} minutes, the daemon posts the question card itself.",
+        DESK_FALLBACK_SECS / 60
+    );
+    match desk_answer_refusal(question) {
+        None => {
+            envelope = envelope.attr("desk_may_answer", "yes");
+            note.push_str(" task.answer answers it for the user.");
+        }
+        Some(reason) => {
+            envelope = envelope
+                .attr("desk_may_answer", "no")
+                .child("held_for_user", reason);
+        }
+    }
+    let mut extra = serde_json::Map::new();
+    extra.insert("kind".into(), json!("question"));
+    extra.insert("auto".into(), json!("session_question"));
+    let _ = store.send_direct_message_typed(
+        ("session", session_id),
+        ("agent", desk),
+        &envelope.child("note", note).render(),
+        &format!("session-question:{session_id}:{index}"),
+        &chrono::Utc::now().to_rfc3339(),
+        None,
+        None,
+        None,
+        extra,
+    );
+}
+
+/// Whether the desk itself has written to the user since `since`.
+fn desk_spoke_since(store: &crate::store::Store, desk: &str, since: &str) -> bool {
+    let thread = crate::coordination::direct_thread_id(
+        ("agent", desk),
+        ("human", crate::coordination::LOCAL_HUMAN_ID),
+    );
+    store
+        .recent_direct_thread_events(&thread, 30)
+        .unwrap_or_default()
+        .iter()
+        .any(|e| {
+            e.actor_kind == "agent"
+                && e.actor_id == desk
+                && e.created_at.as_str() > since
+                && e.payload.get("system").and_then(|v| v.as_bool()) != Some(true)
+                && e.payload.get("auto").is_none()
+        })
+}
+
+fn fallback_still_pending(f: &crate::coordination::desk_fallbacks::DeskFallback) -> bool {
+    let Some(state) = crate::session::state_path_for_id(&f.session_id)
+        .and_then(|path| crate::session::read_session_meta(&path))
+    else {
+        return false;
+    };
+    match f.what.as_str() {
+        "approval" => pending_approval(&state).map(|(i, _)| i) == Some(f.event_index),
+        "question" => {
+            state.status == crate::harness::HarnessStatus::WaitingForInput
+                && state.pending_question.is_some()
+                && state
+                    .events
+                    .iter()
+                    .rposition(|e| matches!(e, crate::harness::HarnessEvent::UserQuestion { .. }))
+                    == Some(f.event_index)
+        }
+        _ => false,
+    }
+}
+
+fn run_desk_fallbacks(
+    store: &crate::store::Store,
+    now: &str,
+    pending: impl Fn(&crate::coordination::desk_fallbacks::DeskFallback) -> bool,
+) {
+    let Ok(due) = store.due_desk_fallbacks(now, 20) else {
+        return;
+    };
+    for f in due {
+        if !desk_spoke_since(store, &f.desk, &f.created_at) && pending(&f) {
+            let mut extra = f.extra.clone();
+            extra.insert("fallback".into(), json!(true));
+            extra.insert("session".into(), json!(f.session_id));
+            post_to_human(
+                store,
+                &f.desk,
+                &f.session_id,
+                None,
+                None,
+                &f.key,
+                &f.body,
+                extra,
+            );
+        }
+        let _ = store.finish_desk_fallback(&f.key, now);
+    }
+}
+
+pub(crate) async fn desk_fallback_loop(store: crate::store::Store) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+    loop {
+        tick.tick().await;
+        run_desk_fallbacks(
+            &store,
+            &chrono::Utc::now().to_rfc3339(),
+            fallback_still_pending,
+        );
+    }
 }
 
 /// The approval a session is paused on: its event index and summary.
@@ -650,21 +841,34 @@ pub(crate) fn relay_stop(
             .child("approval", &summary)
             .attr("desk_may_answer", "no")
             .child("held_for_user", "approvals stay with the user");
-        let mut extra = serde_json::Map::new();
-        extra.insert("kind".into(), json!("notice"));
-        extra.insert("system".into(), json!(true));
-        crate::coordination::origin::post_to_managing_desk(
-            store,
-            session_id,
-            &format!("desk-approval:{session_id}:{index}"),
-            &format!(
-                "{title} is waiting on your approval: {summary}. Only you can approve it, in the session."
-            ),
-            extra,
-        );
+        note.push_str(&format!(
+            " Tell the user about the approval in your own words; only they can approve it, in the session. If you post nothing in your chat with them within {} minutes, the daemon tells them itself.",
+            DESK_FALLBACK_SECS / 60
+        ));
+        if crate::coordination::origin::managing_desk(store, session_id).is_some() {
+            let mut extra = serde_json::Map::new();
+            extra.insert("kind".into(), json!("notice"));
+            extra.insert("system".into(), json!(true));
+            schedule_desk_fallback(
+                store,
+                &desk,
+                session_id,
+                "approval",
+                format!("desk-approval:{session_id}:{index}"),
+                index,
+                format!(
+                    "Automatic fallback: {title} is waiting on your approval: {summary}. Only you can approve it, in the session."
+                ),
+                extra,
+            );
+        }
     }
     if let Some(text) = question.as_deref() {
         envelope = envelope.child("question", text);
+        note.push_str(&format!(
+            " Pass its question to the user in your own words unless you answer it; if you post nothing in your chat with them within {} minutes, the daemon posts the question card itself.",
+            DESK_FALLBACK_SECS / 60
+        ));
         match state
             .pending_question
             .as_ref()
@@ -837,6 +1041,7 @@ pub(crate) fn desk_answer(
     extra.insert("system".into(), json!(true));
     extra.insert("kind".into(), json!("notice"));
     extra.insert("answered_by".into(), json!(desk));
+    extra.insert("audit".into(), json!(true));
     if let Some(asked) = latest_question_event(store, session_id) {
         extra.insert("answer_to".into(), json!(asked.event_id));
     }
@@ -848,7 +1053,9 @@ pub(crate) fn desk_answer(
         None,
         task.as_ref().map(|t| t.id.as_str()),
         &format!("desk-answer:{session_id}:{index}"),
-        &format!("Answered by desk {name} on your behalf: {answer}\nQuestion: {question_text}"),
+        &format!(
+            "System audit: desk {name} answered on your behalf: {answer}\nQuestion: {question_text}"
+        ),
         extra,
     );
     Ok(question_text)
@@ -2755,12 +2962,22 @@ mod tests {
             .store
             .recent_direct_thread_events(&event.thread_id, 10)
             .unwrap();
-        assert_eq!(thread_events.len(), 2);
-        assert_eq!(thread_events[1].actor_id, "a");
-        assert_eq!(
-            thread_events[1].payload["body"],
-            "Scout finished this turn without posting a reply; its last step was none."
-        );
+        assert_eq!(thread_events.len(), 1, "nothing is posted into the desk's chat");
+        let to_desk = d
+            .store
+            .recent_direct_thread_events(
+                &crate::coordination::direct_thread_id(
+                    ("session", "unindexed-task-session"),
+                    ("agent", "a"),
+                ),
+                10,
+            )
+            .unwrap();
+        let told = to_desk
+            .iter()
+            .filter(|e| e.payload["auto"] == "session_no_reply")
+            .count();
+        assert_eq!(told, 1, "the forwarding desk is told once");
     }
 
     #[tokio::test]
@@ -2825,19 +3042,13 @@ mod tests {
         let events = store
             .recent_direct_thread_events(&human.thread_id, 10)
             .unwrap();
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 2, "a desk's own silent turn posts no notice");
         assert_eq!(
             events[1].payload["body"],
-            "Scout finished this turn without posting a reply; its last step was bash."
+            "Snippet restarted while Scout was answering; it will pick this up."
         );
         assert_eq!(events[1].payload["system"], json!(true));
         assert_eq!(events[1].payload["kind"], json!("notice"));
-        assert_eq!(
-            events[2].payload["body"],
-            "Snippet restarted while Scout was answering; it will pick this up."
-        );
-        assert_eq!(events[2].payload["system"], json!(true));
-        assert_eq!(events[2].payload["kind"], json!("notice"));
         assert_eq!(
             store.agent_last_messages().unwrap()["a"].text,
             "real human message"
@@ -3095,12 +3306,8 @@ mod tests {
         let thread =
             crate::coordination::direct::direct_thread_id(("agent", "a"), ("human", "local"));
         let sent = store.recent_direct_thread_events(&thread, 5).unwrap();
-        assert_eq!(sent.len(), 1, "reply goes out as the task's worker");
-        assert_eq!(sent[0].payload["about_task"], "t1");
-        assert_eq!(
-            sent[0].payload["body"],
-            "Scout finished this turn without posting a reply; its last step was none."
-        );
+        assert!(sent.is_empty(), "no notice in the desk's chat");
+        assert!(state.human_waiting.is_empty());
     }
 
     #[test]
@@ -3419,16 +3626,33 @@ mod tests {
         import_waiting_session(&store, "sess-1", "a", &state);
         super::relay_question(&store, "sess-1", &state);
         super::relay_question(&store, "sess-1", &state);
+        assert!(thread_events(&store, "a").is_empty(), "the desk speaks first");
+        let told = store
+            .recent_direct_thread_events(
+                &crate::coordination::direct_thread_id(("session", "sess-1"), ("agent", "a")),
+                10,
+            )
+            .unwrap();
+        assert_eq!(told.len(), 1);
+        assert_eq!(told[0].payload["auto"], "session_question");
+        let later = "2999-01-01T00:00:00Z";
+        super::run_desk_fallbacks(&store, later, |_| true);
+        super::run_desk_fallbacks(&store, later, |_| true);
         let asks: Vec<_> = thread_events(&store, "a")
             .into_iter()
             .filter(|e| e.payload.get("auto").and_then(|v| v.as_str()) == Some("ask"))
             .collect();
         assert_eq!(asks.len(), 1);
+        assert_eq!(asks[0].payload["fallback"], true);
         let ask = &asks[0];
         assert_eq!(ask.payload["kind"], "question");
-        assert_eq!(
-            ask.payload["body"],
-            "Deploy: Ship now or wait for review?\nWhich channel?"
+        assert!(
+            ask.payload["body"]
+                .as_str()
+                .unwrap()
+                .ends_with("asks:\nDeploy: Ship now or wait for review?\nWhich channel?"),
+            "{}",
+            ask.payload["body"]
         );
         assert_eq!(ask.payload["question"]["session"], "sess-1");
         assert_eq!(
@@ -3440,7 +3664,7 @@ mod tests {
     }
 
     #[test]
-    fn a_question_after_a_desk_forward_reaches_the_desk_chat_instead_of_a_no_reply_notice() {
+    fn a_question_after_a_desk_forward_reaches_the_desk_instead_of_a_no_reply_event() {
         let store = crate::store::Store::open_in_memory().unwrap();
         store.create_agent(&agent("a")).unwrap();
         let mut state = crate::harness::HarnessState::blank("/tmp", None);
@@ -3466,19 +3690,18 @@ mod tests {
         });
         super::relay_desk_reply(&store, "sess-unowned", &mut state);
         super::relay_question(&store, "sess-unowned", &state);
-        let events = thread_events(&store, "a");
-        assert!(
-            events
-                .iter()
-                .all(|e| e.payload.get("kind") != Some(&json!("notice")))
-        );
-        assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.payload.get("auto").and_then(|v| v.as_str()) == Some("ask"))
-                .count(),
-            1
-        );
+        assert!(thread_events(&store, "a").is_empty());
+        let told = store
+            .recent_direct_thread_events(
+                &crate::coordination::direct_thread_id(
+                    ("session", "sess-unowned"),
+                    ("agent", "a"),
+                ),
+                10,
+            )
+            .unwrap();
+        assert_eq!(told.len(), 1, "only the question, no no-reply event");
+        assert_eq!(told[0].payload["auto"], "session_question");
     }
 
     #[test]
@@ -3585,23 +3808,58 @@ mod tests {
         for id in ["sess-agent", "sess-agent", "sess-human"] {
             super::relay_stop(&store, id, "waiting_for_input", &state);
         }
-        let notices: Vec<_> = thread_events(&store, "snippet")
-            .into_iter()
-            .filter(|e| {
-                e.payload["body"]
-                    .as_str()
-                    .unwrap_or("")
-                    .contains("waiting on your approval")
-            })
-            .collect();
+        assert!(thread_events(&store, "snippet").is_empty(), "the desk speaks first");
+        let later = "2999-01-01T00:00:00Z";
+        super::run_desk_fallbacks(&store, later, |_| true);
+        super::run_desk_fallbacks(&store, later, |_| true);
+        let notices = thread_events(&store, "snippet");
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].payload["session"], "sess-agent");
+        assert_eq!(notices[0].payload["fallback"], true);
+        assert!(
+            notices[0].payload["body"]
+                .as_str()
+                .unwrap()
+                .starts_with("Automatic fallback: Ship is waiting on your approval")
+        );
         let thread =
             crate::coordination::direct_thread_id(("agent", "snippet"), ("session", "sess-agent"));
         let stopped = store.recent_direct_thread_events(&thread, 50).unwrap();
         let body = stopped[0].payload["body"].as_str().unwrap();
         assert!(body.contains("desk_may_answer=\"no\""));
         assert!(body.contains("approvals stay with the user"));
+    }
+
+    #[test]
+    fn a_desk_that_speaks_or_a_settled_wait_suppresses_the_fallback() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store.create_agent(&agent("a")).unwrap();
+        let state = waiting_question_state();
+        import_waiting_session(&store, "sess-1", "a", &state);
+        super::relay_question(&store, "sess-1", &state);
+        super::run_desk_fallbacks(&store, "2999-01-01T00:00:00Z", |_| false);
+        assert!(thread_events(&store, "a").is_empty(), "answered already");
+
+        let mut second = waiting_question_state();
+        second.events.insert(0, E::AssistantText { text: "x".into(), quiet: false });
+        super::relay_question(&store, "sess-1", &second);
+        store
+            .send_direct_message_typed(
+                ("agent", "a"),
+                ("human", crate::coordination::LOCAL_HUMAN_ID),
+                "The build session asks whether to ship now.",
+                "desk-own",
+                &chrono::Utc::now().to_rfc3339(),
+                None,
+                None,
+                None,
+                serde_json::Map::new(),
+            )
+            .unwrap();
+        super::run_desk_fallbacks(&store, "2999-01-01T00:00:00Z", |_| true);
+        let events = thread_events(&store, "a");
+        assert_eq!(events.len(), 1, "only the desk's own words");
+        assert_eq!(events[0].idempotency_key, "desk-own");
     }
 
     #[test]
@@ -3649,6 +3907,7 @@ mod tests {
         let state = waiting_question_state();
         import_waiting_session(&store, "sess-1", "a", &state);
         super::relay_question(&store, "sess-1", &state);
+        super::run_desk_fallbacks(&store, "2999-01-01T00:00:00Z", |_| true);
         let ask = thread_events(&store, "a")
             .into_iter()
             .find(|e| e.payload.get("auto").and_then(|v| v.as_str()) == Some("ask"))
@@ -3697,6 +3956,7 @@ mod tests {
         let state = waiting_question_state();
         import_waiting_session(&store, "sess-1", "a", &state);
         super::relay_question(&store, "sess-1", &state);
+        super::run_desk_fallbacks(&store, "2999-01-01T00:00:00Z", |_| true);
         // What the ws `answer` frame does: find the relayed question, mirror it.
         for _ in 0..2 {
             let question = super::latest_question_event(&store, "sess-1").unwrap();
