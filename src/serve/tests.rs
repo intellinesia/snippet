@@ -12,7 +12,7 @@ fn test_daemon() -> Daemon {
         seen_nonces: std::sync::Mutex::new(HashMap::new()),
         queue_hidden: std::sync::Mutex::new(HashMap::new()),
         queue_revision: AtomicU64::new(0),
-        mission_control_root: tempfile::tempdir().expect("temporary directory").keep(),
+        lead_root: tempfile::tempdir().expect("temporary directory").keep(),
         store: crate::store::Store::open_in_memory().unwrap(),
         coordination_events: tokio::sync::broadcast::channel(256).0,
         recurring_root: tempfile::tempdir().expect("temporary directory").keep(),
@@ -163,16 +163,16 @@ async fn message_route_requires_a_body() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-/// A human post must wake Mission Control (that is what makes the board
-/// interactive); Mission Control's own reply must not, or it would loop.
+/// A human post must wake Lead (that is what makes the board
+/// interactive); Lead's own reply must not, or it would loop.
 #[test]
-fn board_posts_wake_mission_control_except_its_own() {
-    assert!(coordination::should_wake_mission_control("human"));
-    assert!(coordination::should_wake_mission_control(
+fn board_posts_wake_lead_except_its_own() {
+    assert!(coordination::should_wake_lead("human"));
+    assert!(coordination::should_wake_lead(
         "rust-pr-reviewer"
     ));
-    assert!(!coordination::should_wake_mission_control(
-        crate::mission_control::SESSION_ID
+    assert!(!coordination::should_wake_lead(
+        crate::lead::SESSION_ID
     ));
 }
 
@@ -313,7 +313,7 @@ fn the_task_api_exposes_ledger_acceptance_verify_mode_review_and_revision_additi
             "api1",
             &patch,
             None,
-            "mission-control",
+            "lead",
             "2020-01-02T00:00:00Z",
         )
         .unwrap();
@@ -384,13 +384,13 @@ fn board_message_envelope_includes_bounded_history() {
     };
     let current = prior(5, "human", "what is the status?");
     let history = [
-        prior(3, "mission-control", "started the review"),
+        prior(3, "lead", "started the review"),
         prior(4, "reviewer", "found two issues"),
     ];
 
     let envelope = coordination::board_message_envelope(&current, &history);
     // Both prior turns appear, attributed.
-    assert!(envelope.contains("mission-control: started the review"));
+    assert!(envelope.contains("lead: started the review"));
     assert!(envelope.contains("reviewer: found two issues"));
     assert_eq!(
         crate::envelope::child_attrs(&envelope, "history")
@@ -526,7 +526,7 @@ fn member(agent_id: &str, status: &str) -> crate::coordination::TaskAgent {
 
 fn room() -> Vec<(String, String)> {
     vec![
-        ("mission-control".into(), "agent".into()),
+        ("lead".into(), "agent".into()),
         ("snippet".into(), "agent".into()),
         ("reviewer".into(), "agent".into()),
     ]
@@ -548,7 +548,7 @@ fn a_post_never_wakes_the_session_it_came_from() {
     let roster = [member("snippet", "active"), member("reviewer", "waiting")];
     let targets =
         coordination::wake_targets(&event, &[], &room(), &roster, Some("work-1"), &[], None);
-    assert_eq!(sessions(&targets), ["mission-control", "inbox-reviewer"]);
+    assert_eq!(sessions(&targets), ["lead", "inbox-reviewer"]);
 }
 
 #[test]
@@ -621,12 +621,12 @@ fn a_long_agent_exchange_stops_waking_until_a_human_posts() {
             None
         )
         .is_empty(),
-        "result posts always wake Mission Control even after a long exchange"
+        "result posts always wake Lead even after a long exchange"
     );
 
     history.push(board_event(
         "message.posted",
-        ("agent", "mission-control"),
+        ("agent", "lead"),
         serde_json::json!({"body": "next revision"}),
     ));
     assert!(
@@ -640,7 +640,7 @@ fn a_long_agent_exchange_stops_waking_until_a_human_posts() {
             None
         )
         .is_empty(),
-        "a post from Mission Control re-arms the room just like a human post"
+        "a post from Lead re-arms the room just like a human post"
     );
 }
 
@@ -699,10 +699,10 @@ fn a_lease_transfer_wakes_only_the_incoming_agent() {
     assert_eq!(sessions(&targets), ["work-1"]);
 }
 
-/// Reports and worker messages reach Mission Control as task notifications,
+/// Reports and worker messages reach Lead as task notifications,
 /// so the room post must not wake it a second time.
 #[test]
-fn notified_events_do_not_wake_mission_control_twice() {
+fn notified_events_do_not_wake_lead_twice() {
     let event = board_event(
         "task.reported",
         ("agent", "snippet"),
@@ -726,11 +726,11 @@ fn removed_members_and_quiet_events_wake_no_one() {
     let roster = [member("snippet", "active"), gone];
     let targets =
         coordination::wake_targets(&event, &[], &room(), &roster, Some("work-1"), &[], None);
-    assert_eq!(sessions(&targets), ["mission-control"]);
+    assert_eq!(sessions(&targets), ["lead"]);
 
     let assigned = board_event(
         "task.agent_assigned",
-        ("agent", "mission-control"),
+        ("agent", "lead"),
         serde_json::json!({}),
     );
     assert!(
@@ -748,7 +748,7 @@ fn queued_task(id: &str, paths: &[&str]) -> crate::coordination::Task {
         paths.iter().map(PathBuf::from).collect(),
         crate::coordination::HandoffMode::Resume,
         "agent",
-        "mission-control",
+        "lead",
         "2026-01-01T00:00:00Z".into(),
     )
 }
@@ -766,7 +766,7 @@ async fn a_path_conflict_waits_in_the_queue_without_a_dependency() {
         .unwrap();
 
     for _ in 0..3 {
-        let task = mission_control::dispatch_mission_task(&d, "waiter")
+        let task = lead::dispatch_mission_task(&d, "waiter")
             .await
             .unwrap();
         assert_eq!(task.status, crate::coordination::TaskStatus::Todo);
@@ -781,7 +781,7 @@ async fn a_path_conflict_waits_in_the_queue_without_a_dependency() {
 }
 
 /// A failed dependency parks its dependent once. It used to re-queue it every
-/// tick, where dispatch blocked it again and messaged Mission Control.
+/// tick, where dispatch blocked it again and messaged Lead.
 #[tokio::test]
 async fn a_failed_dependency_parks_its_dependent_once() {
     let d = test_daemon();
@@ -808,7 +808,7 @@ async fn a_failed_dependency_parks_its_dependent_once() {
         )
         .unwrap();
 
-    let parked = mission_control::dispatch_mission_task(&d, "second")
+    let parked = lead::dispatch_mission_task(&d, "second")
         .await
         .unwrap();
     assert_eq!(parked.status, crate::coordination::TaskStatus::Blocked);
@@ -850,7 +850,7 @@ async fn a_cancelled_dependency_releases_its_dependent() {
         .unwrap();
 
     // Past the dependency check, it fails only on the unknown test session.
-    let _ = mission_control::dispatch_mission_task(&d, "second").await;
+    let _ = lead::dispatch_mission_task(&d, "second").await;
     let second = d.store.get_task("second").unwrap().unwrap();
     assert!(
         second
@@ -858,7 +858,7 @@ async fn a_cancelled_dependency_releases_its_dependent() {
             .iter()
             .all(|n| !n.message.contains("dependency"))
     );
-    let line = mission_control::input_line(&d.store.get_task("first").unwrap().unwrap());
+    let line = lead::input_line(&d.store.get_task("first").unwrap().unwrap());
     assert!(line.contains("blocker first cancelled"), "{line}");
     assert!(line.contains("user dropped it"));
 }
@@ -895,7 +895,7 @@ fn the_task_api_adds_the_derived_board_fields() {
 fn identity_overlay_is_only_for_a_foreign_agent() {
     let d = test_daemon();
     let home = crate::coordination::AgentHome::new(
-        crate::coordination::agents_root(&d.mission_control_root),
+        crate::coordination::agents_root(&d.lead_root),
         "reviewer",
     )
     .unwrap();
@@ -935,7 +935,7 @@ async fn a_self_started_task_is_never_offered_back() {
         crate::session::WorkspaceMode::Folder,
     )
     .unwrap();
-    // The tool files under its own mission-control root, so the daemon's
+    // The tool files under its own lead root, so the daemon's
     // dispatch stops at the unknown session AFTER await_claim has run —
     // exactly where an offer would have been sent.
     let tool_root = tempfile::tempdir().unwrap();
@@ -944,7 +944,7 @@ async fn a_self_started_task_is_never_offered_back() {
         .with_durable_session_id(crate::session::inbox_session_id("desk-agent"))
         .with_store_path(dir.path().join("snippet.db"))
         .with_agent_id("desk-agent")
-        .with_mission_control_root(tool_root.path());
+        .with_lead_root(tool_root.path());
     let res = crate::mission_tools::StartTask
         .execute(
             &ctx,
@@ -958,10 +958,10 @@ async fn a_self_started_task_is_never_offered_back() {
         .unwrap();
     let task_id = res.value["data"]["task_id"].as_str().unwrap().to_string();
 
-    let _ = mission_control::dispatch_mission_task(&d, &task_id).await;
+    let _ = lead::dispatch_mission_task(&d, &task_id).await;
 
     let thread = crate::coordination::direct_thread_id(
-        ("agent", "mission-control"),
+        ("agent", "lead"),
         ("agent", "desk-agent"),
     );
     let offers = |events: &[crate::coordination::types::CoordinationEvent]| {
@@ -978,10 +978,10 @@ async fn a_self_started_task_is_never_offered_back() {
     assert_eq!(offers(&events), 0, "the desk was offered its own task");
 
     // Contrast: a task filed the old way (offered roster) IS offered back.
-    let mc_ctx = crate::tools::ToolContext::mission_control(dir.path())
+    let mc_ctx = crate::tools::ToolContext::lead(dir.path())
         .unwrap()
         .with_store_path(dir.path().join("snippet.db"))
-        .with_mission_control_root(tool_root.path());
+        .with_lead_root(tool_root.path());
     let filed = crate::mission_tools::create_task_value(
         &mc_ctx,
         serde_json::json!({
@@ -994,7 +994,7 @@ async fn a_self_started_task_is_never_offered_back() {
     .await
     .unwrap();
     let other_id = filed["task"]["id"].as_str().unwrap().to_string();
-    let _ = mission_control::dispatch_mission_task(&d, &other_id).await;
+    let _ = lead::dispatch_mission_task(&d, &other_id).await;
     let events = d.store.direct_thread_events(&thread, 0, 50).unwrap();
     assert_eq!(offers(&events), 1, "an offered task still gets its offer");
     assert!(events.iter().any(|e| {
@@ -1039,7 +1039,7 @@ async fn a_blocked_self_started_task_starts_without_an_offer() {
         vec![],
         crate::coordination::HandoffMode::Resume,
         "agent",
-        "mission-control",
+        "lead",
         "2026-01-01T00:00:00Z".into(),
     );
     d.store.create_task(&blocker).unwrap();
@@ -1049,7 +1049,7 @@ async fn a_blocked_self_started_task_starts_without_an_offer() {
         .with_durable_session_id(crate::session::inbox_session_id("desk-agent"))
         .with_store_path(dir.path().join("snippet.db"))
         .with_agent_id("desk-agent")
-        .with_mission_control_root(tool_root.path());
+        .with_lead_root(tool_root.path());
     let res = crate::mission_tools::StartTask
         .execute(
             &ctx,
@@ -1081,10 +1081,10 @@ async fn a_blocked_self_started_task_starts_without_an_offer() {
         vec![task_id.clone()]
     );
 
-    let _ = mission_control::dispatch_mission_task(&d, &task_id).await;
+    let _ = lead::dispatch_mission_task(&d, &task_id).await;
 
     let thread = crate::coordination::direct_thread_id(
-        ("agent", "mission-control"),
+        ("agent", "lead"),
         ("agent", "desk-agent"),
     );
     let events = d.store.direct_thread_events(&thread, 0, 50).unwrap();
@@ -1131,7 +1131,7 @@ async fn a_paused_worker_holds_its_task_in_the_queue() {
         )
         .unwrap();
     for _ in 0..2 {
-        let task = mission_control::dispatch_mission_task(&d, "t1")
+        let task = lead::dispatch_mission_task(&d, "t1")
             .await
             .unwrap();
         assert_eq!(task.status, crate::coordination::TaskStatus::Todo);
@@ -1375,7 +1375,7 @@ async fn agent_character_route_validates_and_resolves_defaults() {
     use axum::body::to_bytes;
 
     let d = authed_daemon();
-    let mc = create_agent(State(d.clone()), Json(create_agent_req("mission-control"))).await;
+    let mc = create_agent(State(d.clone()), Json(create_agent_req("lead"))).await;
     assert_eq!(mc.status(), StatusCode::CREATED);
     let snip = create_agent(State(d.clone()), Json(create_agent_req("snippet"))).await;
     assert_eq!(snip.status(), StatusCode::CREATED);
@@ -1403,7 +1403,7 @@ async fn agent_character_route_validates_and_resolves_defaults() {
             )
         })
         .collect();
-    assert_eq!(by_id.get("mission-control").map(String::as_str), Some("14"));
+    assert_eq!(by_id.get("lead").map(String::as_str), Some("14"));
     assert_eq!(by_id.get("snippet").map(String::as_str), Some("01"));
     assert_eq!(by_id.get("custom-char").map(String::as_str), Some("07"));
 
@@ -1493,7 +1493,7 @@ fn handoff_test_daemon() -> (Shared, tempfile::TempDir) {
          [setups.p_task]\nprovider = \"openai\"\nmodel = \"m4\"\napi_key = \"\"\n",
     )
     .unwrap();
-    mission_control::register_builtin_agents(&d);
+    lead::register_builtin_agents(&d);
     for (id, status) in [
         ("rook", crate::coordination::types::AgentStatus::Active),
         ("sage", crate::coordination::types::AgentStatus::Active),
@@ -1783,11 +1783,11 @@ async fn handoff_refuses_invalid_targets_and_oversized_notes() {
     );
     insert_test_session(
         &d,
-        crate::mission_control::SESSION_ID,
+        crate::lead::SESSION_ID,
         ws.path(),
         "idle",
-        "mission_control",
-        "mission_control",
+        "lead",
+        "lead",
         None,
     );
     insert_test_session(
@@ -1810,7 +1810,7 @@ async fn handoff_refuses_invalid_targets_and_oversized_notes() {
     );
 
     // Refuses MC, desk, coordination session.
-    for target in [crate::mission_control::SESSION_ID, "inbox-rook", "coord-1"] {
+    for target in [crate::lead::SESSION_ID, "inbox-rook", "coord-1"] {
         assert!(
             handoff::hand_off_session(&d, target, "sage", "hi", "human")
                 .await
@@ -1833,7 +1833,7 @@ async fn handoff_refuses_invalid_targets_and_oversized_notes() {
         handoff::hand_off_session(
             &d,
             "s-ref",
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             "hi",
             "human"
         )

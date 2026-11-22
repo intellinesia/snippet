@@ -746,13 +746,13 @@ pub async fn api_json(
     serde_json::from_str(&text).map_err(|e| format!("{path} body: {e}"))
 }
 
-/// POST /mission-control/open — the dedicated Mission Control session's id,
+/// POST /lead/open — the dedicated Lead session's id,
 /// created on first use.
-pub async fn open_mission_control(info: &DaemonInfo) -> Result<String, String> {
+pub async fn open_lead(info: &DaemonInfo) -> Result<String, String> {
     let v = api_json(
         info,
         reqwest::Method::POST,
-        "/mission-control/open",
+        "/lead/open",
         &[],
         Some(serde_json::json!({})),
     )
@@ -760,5 +760,5 @@ pub async fn open_mission_control(info: &DaemonInfo) -> Result<String, String> {
     v.get("id")
         .and_then(|id| id.as_str())
         .map(str::to_string)
-        .ok_or_else(|| "mission control: no session id".to_string())
+        .ok_or_else(|| "lead: no session id".to_string())
 }

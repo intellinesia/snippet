@@ -165,7 +165,7 @@ pub fn watch_envelope(watch: &cw::Watch, event: &str, body: &[String], held: usi
         }
         text.truncate(end);
     }
-    let watch_tool = if watch.owner == crate::mission_control::SESSION_ID {
+    let watch_tool = if watch.owner == crate::lead::SESSION_ID {
         "wake.watch"
     } else {
         "wake.watch"
@@ -347,7 +347,7 @@ impl DaemonSink {
 #[async_trait]
 impl WatchSink for DaemonSink {
     async fn deliver(&self, owner: &str, envelope: String) -> Result<(), String> {
-        if owner != crate::mission_control::SESSION_ID {
+        if owner != crate::lead::SESSION_ID {
             super::direct::ensure_agent_inbox(&self.d, owner).await?;
         }
         let session_id = super::direct::recipient_session_id(owner);
@@ -432,7 +432,7 @@ impl WatchRunner {
     }
 
     fn owner_active(&self, owner: &str) -> bool {
-        if owner == crate::mission_control::SESSION_ID {
+        if owner == crate::lead::SESSION_ID {
             return true;
         }
         match self.store.get_agent(owner) {
@@ -1228,7 +1228,7 @@ async fn stream_loop(
 pub async fn watch_loop(d: Shared) {
     let mut runner = WatchRunner::new(
         d.store.clone(),
-        d.mission_control_root.clone(),
+        d.lead_root.clone(),
         Arc::new(DaemonSink::new(d)),
     );
     runner.run().await;
@@ -1241,10 +1241,10 @@ mod tests {
 
     #[test]
     fn scope_prefix_is_stable_and_root_specific() {
-        let a = scope_prefix(Path::new("/home/x/.snippet/mission-control"));
+        let a = scope_prefix(Path::new("/home/x/.snippet/lead"));
         assert_eq!(
             a,
-            scope_prefix(Path::new("/home/x/.snippet/mission-control"))
+            scope_prefix(Path::new("/home/x/.snippet/lead"))
         );
         assert_ne!(a, scope_prefix(Path::new("/tmp/test-root")));
         assert!(a.starts_with("snippet-watch-") && a.ends_with('-'));

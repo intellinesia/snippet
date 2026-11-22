@@ -45,7 +45,7 @@ pub mod members;
 pub mod memory;
 pub mod meta;
 pub mod mission_autonomy;
-pub mod mission_control;
+pub mod lead;
 pub mod mission_tools;
 pub mod openai;
 pub mod ownership;

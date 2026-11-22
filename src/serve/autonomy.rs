@@ -8,7 +8,7 @@ use super::Shared;
 use crate::coordination::TaskStatus;
 use crate::harness::{HarnessStatus, LoopInput};
 use crate::mission_autonomy;
-use crate::mission_control::SESSION_ID;
+use crate::lead::SESSION_ID;
 
 const TICK: Duration = Duration::from_secs(1);
 const ROUND_EVERY: Duration = Duration::from_secs(5);
@@ -24,7 +24,7 @@ fn spawn_quick_wake(daemon: Shared, w: crate::ambient::QuickWake) {
             );
             return;
         }
-        if mission_control_busy() {
+        if lead_busy() {
             return;
         }
         let since = chrono::Utc::now().timestamp() - (w.seconds as i64 + 15);
@@ -66,7 +66,7 @@ fn spawn_quick_wake(daemon: Shared, w: crate::ambient::QuickWake) {
             w.seconds,
             super::ambient_watch::escape(&w.note)
         );
-        deliver_to_mission_control(&daemon, envelope).await;
+        deliver_to_lead(&daemon, envelope).await;
     });
 }
 
@@ -94,10 +94,10 @@ pub async fn autonomy_loop(daemon: Shared) {
             continue;
         }
         mission_autonomy::release_held_pings();
-        if !crate::mission_control::awaiting_user() {
+        if !crate::lead::awaiting_user() {
             wake_for_worker_questions(&daemon).await;
         }
-        if mission_control_busy() {
+        if lead_busy() {
             continue;
         }
         let now = chrono::Utc::now().timestamp();
@@ -148,7 +148,7 @@ pub async fn autonomy_loop(daemon: Shared) {
             }
         });
         eprintln!("[autonomy] round fired");
-        deliver_to_mission_control(&daemon, envelope).await;
+        deliver_to_lead(&daemon, envelope).await;
     }
 }
 
@@ -190,7 +190,7 @@ static HEARD_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex
 
 static LAST_RESUME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
 
-pub(super) fn mission_control_inputs() -> u64 {
+pub(super) fn lead_inputs() -> u64 {
     MC_INPUTS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
@@ -211,12 +211,12 @@ pub(super) fn heard_quiet() -> bool {
 }
 
 pub(super) fn last_resume_matches_inputs() -> bool {
-    LAST_RESUME.load(std::sync::atomic::Ordering::SeqCst) == mission_control_inputs()
+    LAST_RESUME.load(std::sync::atomic::Ordering::SeqCst) == lead_inputs()
 }
 
 pub(super) fn mark_resume_delivered() {
     LAST_RESUME.store(
-        mission_control_inputs(),
+        lead_inputs(),
         std::sync::atomic::Ordering::SeqCst,
     );
 }
@@ -226,11 +226,11 @@ pub(super) fn resume_after_barge_in(daemon: Shared) {
     super::attention::arm_resume(&daemon, crate::ambient::run_generation(), true);
 }
 
-pub(super) async fn deliver_to_mission_control(daemon: &Shared, text: String) {
+pub(super) async fn deliver_to_lead(daemon: &Shared, text: String) {
     note_input();
     super::attention::delivered(crate::ambient::run_generation());
-    if let Err(error) = super::mission_control::open_mission_control(daemon, None).await {
-        eprintln!("[autonomy] could not open Mission Control: {error}");
+    if let Err(error) = super::lead::open_lead(daemon, None).await {
+        eprintln!("[autonomy] could not open Lead: {error}");
         return;
     }
     daemon
@@ -238,16 +238,16 @@ pub(super) async fn deliver_to_mission_control(daemon: &Shared, text: String) {
         .await;
 }
 
-pub(super) async fn interrupt_mission_control(daemon: &Shared) -> bool {
-    if !mission_control_busy() {
+pub(super) async fn interrupt_lead(daemon: &Shared) -> bool {
+    if !lead_busy() {
         return false;
     }
     daemon.deliver(SESSION_ID, LoopInput::Interrupt).await;
     true
 }
 
-pub(super) fn mission_control_busy() -> bool {
-    crate::session::read_session_meta(&crate::mission_control::session_state_path()).is_some_and(
+pub(super) fn lead_busy() -> bool {
+    crate::session::read_session_meta(&crate::lead::session_state_path()).is_some_and(
         |s| {
             matches!(
                 s.status,
@@ -363,7 +363,7 @@ async fn wake_for_worker_questions(daemon: &Shared) {
             .child("question", question_text(question))
             .child("instructions", format!("Worker question: the worker is paused until it is answered. sessions.answer (session_id {}) answers it.", task.session_id))
             .render();
-        deliver_to_mission_control(daemon, text).await;
+        deliver_to_lead(daemon, text).await;
     }
 }
 
@@ -754,7 +754,7 @@ fn round_envelope(
             },
         )
         .child("body", out)
-        .child("instructions", "Mission Control wake. No reply is expected. Running and waiting tasks report on their own.")
+        .child("instructions", "Lead wake. No reply is expected. Running and waiting tasks report on their own.")
         .render()
 }
 

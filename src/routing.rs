@@ -11,18 +11,18 @@ use crate::llm::RateLimitSnapshot;
 #[serde(rename_all = "snake_case")]
 pub enum Route {
     Memory,
-    Mission,
+    Lead,
     Inbox,
     Lanes,
 }
 
 impl Route {
-    pub const ALL: [Route; 4] = [Route::Memory, Route::Mission, Route::Inbox, Route::Lanes];
+    pub const ALL: [Route; 4] = [Route::Memory, Route::Lead, Route::Inbox, Route::Lanes];
 
     pub fn key(self) -> &'static str {
         match self {
             Route::Memory => "memory",
-            Route::Mission => "mission",
+            Route::Lead => "lead",
             Route::Inbox => "inbox",
             Route::Lanes => "lanes",
         }
@@ -38,7 +38,7 @@ pub struct RoutingConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub memory: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mission: Vec<String>,
+    pub lead: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inbox: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -53,7 +53,7 @@ impl RoutingConfig {
     pub fn get(&self, route: Route) -> &[String] {
         match route {
             Route::Memory => &self.memory,
-            Route::Mission => &self.mission,
+            Route::Lead => &self.lead,
             Route::Inbox => &self.inbox,
             Route::Lanes => &self.lanes,
         }
@@ -62,7 +62,7 @@ impl RoutingConfig {
     pub fn set(&mut self, route: Route, profiles: Vec<String>) {
         let slot = match route {
             Route::Memory => &mut self.memory,
-            Route::Mission => &mut self.mission,
+            Route::Lead => &mut self.lead,
             Route::Inbox => &mut self.inbox,
             Route::Lanes => &mut self.lanes,
         };

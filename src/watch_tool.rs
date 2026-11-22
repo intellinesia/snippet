@@ -41,16 +41,16 @@ struct WatchArgs {
     agent_id: Option<String>,
 }
 
-/// Owner resolution mirrors `WakeScheduleTool`: Mission Control may name any
+/// Owner resolution mirrors `WakeScheduleTool`: Lead may name any
 /// agent, everyone else owns the watch as their own agent id.
 fn resolve_owner(ctx: &ToolContext, agent_id: Option<&str>) -> Result<String, ToolError> {
     let named = agent_id.map(str::trim).filter(|a| !a.is_empty());
-    let owner = match (ctx.is_mission_control(), named) {
+    let owner = match (ctx.is_lead(), named) {
         (true, Some(other)) => other.to_string(),
-        (true, None) => crate::mission_control::SESSION_ID.to_string(),
+        (true, None) => crate::lead::SESSION_ID.to_string(),
         (false, Some(_)) => {
             return Err(ToolError::msg(
-                "only Mission Control can manage another agent's watches",
+                "only Lead can manage another agent's watches",
             ));
         }
         (false, None) => ctx
@@ -58,7 +58,7 @@ fn resolve_owner(ctx: &ToolContext, agent_id: Option<&str>) -> Result<String, To
             .filter(|a| *a != crate::coordination::SNIPPET_AGENT_ID)
             .ok_or_else(|| {
                 ToolError::msg(
-                    "a watch wakes an agent's desk, and this session runs as no named agent; ask that agent or Mission Control (agent_id) to add it",
+                    "a watch wakes an agent's desk, and this session runs as no named agent; ask that agent or Lead (agent_id) to add it",
                 )
             })?
             .to_string(),
@@ -67,12 +67,12 @@ fn resolve_owner(ctx: &ToolContext, agent_id: Option<&str>) -> Result<String, To
 }
 
 fn mc_root(ctx: &ToolContext) -> PathBuf {
-    ctx.mission_control_root()
-        .unwrap_or_else(|| crate::mission_control::MissionControlStore::default_root(None))
+    ctx.lead_root()
+        .unwrap_or_else(|| crate::lead::LeadStore::default_root(None))
 }
 
 fn check_owner(store: &Store, owner: &str) -> Result<(), ToolError> {
-    if owner == crate::mission_control::SESSION_ID {
+    if owner == crate::lead::SESSION_ID {
         return Ok(());
     }
     match store.get_agent(owner) {
@@ -527,11 +527,11 @@ mod tests {
             .unwrap()
             .with_agent_id(agent)
             .with_store_path(dir.join("snippet.db"))
-            .with_mission_control_root(dir.join("mc"))
+            .with_lead_root(dir.join("mc"))
     }
 
     fn ctx_mc(dir: &std::path::Path) -> ToolContext {
-        ToolContext::mission_control(dir.join("mc"))
+        ToolContext::lead(dir.join("mc"))
             .unwrap()
             .with_store_path(dir.join("snippet.db"))
     }
@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mission_control_can_manage_an_agent() {
+    async fn lead_can_manage_an_agent() {
         let dir = tempfile::tempdir().unwrap();
         let db = Store::open(dir.path().join("snippet.db")).unwrap();
         db.create_agent(&worker("a")).unwrap();
@@ -642,7 +642,7 @@ mod tests {
             .execute(&ctx, json!({"action":"add","name":"own","script":"echo y"}))
             .await
             .unwrap();
-        assert_eq!(own.value["data"]["owner"], "mission-control");
+        assert_eq!(own.value["data"]["owner"], "lead");
         // Naming an unknown agent is refused.
         assert!(
             tool.execute(&ctx, json!({"action":"list","agent_id":"ghost"}))

@@ -131,7 +131,7 @@ impl MemoryRepo {
             key: format!("agent:{agent_id}"),
             label: agent_id.to_string(),
             root: crate::coordination::agents_root(
-                &crate::config::snippet_home().join("mission-control"),
+                &crate::config::snippet_home().join("lead"),
             )
             .join(agent_id)
             .join("memory"),
@@ -200,7 +200,7 @@ impl MemoryRepo {
                 out.push(Self::project_dir(&dir, root));
             }
         }
-        let agents = crate::coordination::agents_root(&home.join("mission-control"));
+        let agents = crate::coordination::agents_root(&home.join("lead"));
         for entry in read_dirs(&agents) {
             if entry.join("memory").is_dir()
                 && let Some(repo) = entry

@@ -46,7 +46,7 @@ fn notification_stop_generation_survives_writes_but_not_resumption() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store.db");
     let store = crate::store::Store::open(&path).unwrap();
-    let mut settings = crate::mission_control::ControlSettings::default();
+    let mut settings = crate::lead::ControlSettings::default();
     settings.notification_policy = "all_sessions".into();
     store.save_control_settings(&settings).unwrap();
     status(&store, "idle");
@@ -90,7 +90,7 @@ fn notification_stop_generation_survives_writes_but_not_resumption() {
 fn notification_stop_stale_scan_is_bounded_and_advances() {
     let dir = tempfile::tempdir().unwrap();
     let store = crate::store::Store::open(&dir.path().join("store.db")).unwrap();
-    let mut settings = crate::mission_control::ControlSettings::default();
+    let mut settings = crate::lead::ControlSettings::default();
     settings.notification_policy = "all_sessions".into();
     store.save_control_settings(&settings).unwrap();
     status(&store, "idle");

@@ -67,13 +67,13 @@ pub(super) fn envelope_card(text: &str) -> Option<Card> {
             footer: None,
         });
     }
-    if crate::envelope::is(t, "mission_control_task") {
+    if crate::envelope::is(t, "lead_task") {
         let id = field(t, "task_id");
         let title = field(t, "title");
         return Some(Card {
             glyph: "◆",
             tone: accent(),
-            kind: "Task from Mission Control".into(),
+            kind: "Task from Lead".into(),
             reference: (!id.is_empty()).then(|| short(&id)),
             status: "New task".into(),
             title: Some(if title.is_empty() {

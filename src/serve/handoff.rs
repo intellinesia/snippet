@@ -81,23 +81,23 @@ pub(crate) fn validate_handoff_request(
     let id = crate::session::state_path_for_id(session)
         .map(|p| crate::session::session_id_for_state_path(&p))
         .unwrap_or_else(|| crate::conversations::canonical_session_id(session));
-    if crate::mission_control::is_session_id(&id)
+    if crate::lead::is_session_id(&id)
         || is_agent_desk(&id)
         || crate::session::is_lane_session_id(&id)
     {
         return Err(HandoffError::BadRequest(
-            "cannot hand off Mission Control, an agent desk, or a lane".into(),
+            "cannot hand off Lead, an agent desk, or a lane".into(),
         ));
     }
     let row = store
         .get_session_row(&id)
         .map_err(|e| HandoffError::Internal(e.to_string()))?
         .ok_or_else(|| HandoffError::NotFound(format!("unknown session `{id}`")))?;
-    if matches!(row.role.as_str(), "mission_control" | "coordination")
-        || matches!(row.kind.as_str(), "mission_control" | "inbox")
+    if matches!(row.role.as_str(), "lead" | "coordination")
+        || matches!(row.kind.as_str(), "lead" | "inbox")
     {
         return Err(HandoffError::BadRequest(
-            "cannot hand off Mission Control, an agent desk, or a coordination session".into(),
+            "cannot hand off Lead, an agent desk, or a coordination session".into(),
         ));
     }
     if note.chars().count() > MAX_NOTE_CHARS {

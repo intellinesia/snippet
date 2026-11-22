@@ -165,28 +165,28 @@ fn validate_quiet(start: Option<&str>, end: Option<&str>) -> Result<(), String> 
 }
 
 /// The directory a watch's script and state live in: the agent home's
-/// `watches/`, or Mission Control's own home for owner `mission-control`.
-pub fn watches_dir(mission_control_root: &Path, owner: &str) -> PathBuf {
-    if owner == crate::mission_control::SESSION_ID {
-        return mission_control_root.join("watches");
+/// `watches/`, or Lead's own home for owner `lead`.
+pub fn watches_dir(lead_root: &Path, owner: &str) -> PathBuf {
+    if owner == crate::lead::SESSION_ID {
+        return lead_root.join("watches");
     }
-    super::AgentHome::new(super::agents_root(mission_control_root), owner)
+    super::AgentHome::new(super::agents_root(lead_root), owner)
         .map(|home| home.watches_path())
-        .unwrap_or_else(|_| mission_control_root.join("watches"))
+        .unwrap_or_else(|_| lead_root.join("watches"))
 }
 
-pub fn script_path(mission_control_root: &Path, owner: &str, name: &str) -> PathBuf {
-    watches_dir(mission_control_root, owner).join(format!("{name}.sh"))
+pub fn script_path(lead_root: &Path, owner: &str, name: &str) -> PathBuf {
+    watches_dir(lead_root, owner).join(format!("{name}.sh"))
 }
 
-pub fn state_dir(mission_control_root: &Path, owner: &str, name: &str) -> PathBuf {
-    watches_dir(mission_control_root, owner).join(format!("{name}.state"))
+pub fn state_dir(lead_root: &Path, owner: &str, name: &str) -> PathBuf {
+    watches_dir(lead_root, owner).join(format!("{name}.state"))
 }
 
 /// Remove the script and state dir; missing pieces are not an error.
-pub fn remove_watch_files(mission_control_root: &Path, owner: &str, name: &str) {
-    let _ = std::fs::remove_file(script_path(mission_control_root, owner, name));
-    let _ = std::fs::remove_dir_all(state_dir(mission_control_root, owner, name));
+pub fn remove_watch_files(lead_root: &Path, owner: &str, name: &str) {
+    let _ = std::fs::remove_file(script_path(lead_root, owner, name));
+    let _ = std::fs::remove_dir_all(state_dir(lead_root, owner, name));
 }
 
 impl Store {

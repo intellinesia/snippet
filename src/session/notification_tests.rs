@@ -36,7 +36,7 @@ fn durable_notification_journal_deduplicates_and_survives_reopen() {
 
 #[test]
 fn notification_policy_pagination_expiry_and_legacy_filtering() {
-    let mut settings = crate::mission_control::ControlSettings::default();
+    let mut settings = crate::lead::ControlSettings::default();
     settings.notification_policy = "all_sessions".into();
     let future = chrono::Utc::now().timestamp() + 100;
     let row = |id, expiry| json!({"event_id":id,"notification_id":"uuid","expires_at":expiry,"destination":{"type":"session","id":"worker"}});
@@ -55,9 +55,9 @@ fn notification_policy_pagination_expiry_and_legacy_filtering() {
     assert_eq!(page["next_cursor"], 4);
     assert_eq!(page["has_more"], false);
     assert!(page["events"].as_array().unwrap().is_empty());
-    settings.notification_policy = "mission_control_only".into();
+    settings.notification_policy = "lead_only".into();
     assert!(!notification_allowed(&settings, &rows[2]));
-    settings.mission_control_session_id = Some("worker".into());
+    settings.lead_session_id = Some("worker".into());
     assert!(notification_allowed(&settings, &rows[2]));
 }
 
@@ -89,7 +89,7 @@ fn actionable_candidates_do_not_include_ui_only_events() {
     );
     assert_eq!(mention["title"], "scout mentioned you");
     assert!(notification_allowed(
-        &crate::mission_control::ControlSettings::default(),
+        &crate::lead::ControlSettings::default(),
         &mention
     ));
     for payload in [

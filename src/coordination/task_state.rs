@@ -36,7 +36,7 @@ pub enum VerifyMode {
     #[serde(rename = "self")]
     SelfCheck,
     Reviewer,
-    MissionControl,
+    Lead,
     User,
 }
 
@@ -48,7 +48,7 @@ impl VerifyMode {
         match self {
             Self::SelfCheck => "self",
             Self::Reviewer => "reviewer",
-            Self::MissionControl => "mission_control",
+            Self::Lead => "lead",
             Self::User => "user",
         }
     }
@@ -112,11 +112,11 @@ pub struct TaskState {
     pub review_started_at: String,
     #[serde(default)]
     pub review_escalated: bool,
-    /// review_due envelopes already sent while Mission Control or the user
+    /// review_due envelopes already sent while Lead or the user
     /// held the verdict; persisted so a restart does not re-nag.
     #[serde(default)]
     pub review_nudges: u32,
-    /// Why verification was waived (set by Mission Control on the user's word).
+    /// Why verification was waived (set by Lead on the user's word).
     #[serde(default)]
     pub waiver: String,
     /// How many times finished work was reopened with feedback.
@@ -520,7 +520,7 @@ mod tests {
                     "current_step": "writing tests",
                 })),
                 Some(1),
-                "mission-control",
+                "lead",
                 "2026-01-02T00:00:00Z",
             )
             .unwrap();
@@ -529,7 +529,7 @@ mod tests {
         assert!(
             changes
                 .iter()
-                .any(|c| c.contains("decision by mission-control: use sqlite"))
+                .any(|c| c.contains("decision by lead: use sqlite"))
         );
         let (again, none) = db
             .patch_task_state(

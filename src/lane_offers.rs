@@ -428,7 +428,7 @@ pub fn offer_lane(
         }
     };
     store.send_direct_message(
-        ("agent", crate::mission_control::SESSION_ID),
+        ("agent", crate::lead::SESSION_ID),
         ("agent", agent_id),
         &offer_body(&offer, merged),
         &uuid::Uuid::new_v4().to_string(),

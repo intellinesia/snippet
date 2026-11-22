@@ -1,4 +1,4 @@
-//! Durable recurring jobs that poke Mission Control or any conversation session.
+//! Durable recurring jobs that poke Lead or any conversation session.
 //!
 //! **Detection:** jobs live in the device SQLite database, alongside every other
 //! durable record. The serve tick loop is the only reader. It claims due jobs and
@@ -176,7 +176,7 @@ fn display_days(mask: u8) -> String {
     }
 }
 
-/// The user's offset from Mission Control's settings, else the server's.
+/// The user's offset from Lead's settings, else the server's.
 pub fn user_offset() -> chrono::FixedOffset {
     crate::mission_autonomy::offset_or_local(crate::mission_autonomy::user_offset_minutes())
 }
@@ -264,7 +264,7 @@ fn next_time_after(from: u64, hour: u8, minute: u8, days: u8, offset: chrono::Fi
 pub struct RecurringJob {
     pub id: String,
     pub title: String,
-    /// Target conversation: `mission-control` or any session id.
+    /// Target conversation: `lead` or any session id.
     pub session_id: String,
     pub prompt: String,
     /// Optional markdown/plan file, read at fire time (relative to the session
@@ -805,7 +805,7 @@ mod tests {
         let job = create_job(
             root.path(),
             "Nightly review",
-            "mission-control",
+            "lead",
             "Review the inbox",
             Schedule::Interval { every_secs: 3600 },
             None,
@@ -824,7 +824,7 @@ mod tests {
         let job = create_job(
             root.path(),
             "One-off",
-            "mission-control",
+            "lead",
             "Say hi at noon",
             Schedule::Once { at: epoch_secs() },
             None,
@@ -847,7 +847,7 @@ mod tests {
         let raw = serde_json::to_string(&RecurringJob {
             id: "x".into(),
             title: "t".into(),
-            session_id: "mission-control".into(),
+            session_id: "lead".into(),
             prompt: "p".into(),
             plan_path: None,
             schedule: Schedule::Interval { every_secs: 3600 },
@@ -876,14 +876,14 @@ mod tests {
         let job = create_job(
             root.path(),
             "Check CI",
-            "mission-control",
+            "lead",
             "summarize CI",
             Schedule::parse("every 1h").unwrap(),
             None,
         )
         .unwrap();
         assert!(job.enabled);
-        assert_eq!(job.session_id, "mission-control");
+        assert_eq!(job.session_id, "lead");
         assert!(!job.queued);
         // First run is immediate: due on the next tick, not a full interval out.
         assert!(job.next_run_at <= job.created_at);
@@ -992,7 +992,7 @@ mod tests {
         let job = RecurringJob {
             id: "abc".into(),
             title: "Ping".into(),
-            session_id: "mission-control".into(),
+            session_id: "lead".into(),
             prompt: "say hello".into(),
             plan_path: None,
             schedule: Schedule::Interval { every_secs: 300 },

@@ -1,7 +1,7 @@
 //! Per-agent "last message" preview for the agent list and inbox.
 //!
 //! One row per agent, written only from the user's own thread with it (direct
-//! messages, or Mission Control's session), so listing agents never loads a
+//! messages, or Lead's session), so listing agents never loads a
 //! thread. Desk, task and group turns never count. An empty `text` row is a
 //! "looked, found nothing" marker that stops the lazy backfill repeating.
 
@@ -57,8 +57,8 @@ fn rfc3339_of(ms: i64) -> String {
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-fn is_mission_control(agent_id: &str) -> bool {
-    agent_id == crate::mission_control::SESSION_ID
+fn is_lead(agent_id: &str) -> bool {
+    agent_id == crate::lead::SESSION_ID
 }
 
 impl Store {
@@ -161,7 +161,7 @@ impl Store {
             }
         }
 
-        let sessions: Vec<String> = if is_mission_control(agent_id) {
+        let sessions: Vec<String> = if is_lead(agent_id) {
             vec![agent_id.to_string()]
         } else {
             Vec::new()
@@ -336,9 +336,9 @@ mod tests {
     }
 
     #[test]
-    fn mission_control_keeps_its_last_reply() {
+    fn lead_keeps_its_last_reply() {
         let db = Store::open_in_memory().unwrap();
-        let mc = crate::mission_control::SESSION_ID;
+        let mc = crate::lead::SESSION_ID;
         db.note_agent_last_message(mc, "Routed it to Snippet.", "2026-01-01T00:00:00Z", "agent")
             .unwrap();
         assert_eq!(
@@ -348,9 +348,9 @@ mod tests {
     }
 
     #[test]
-    fn mission_control_backfills_from_its_own_session() {
+    fn lead_backfills_from_its_own_session() {
         let db = Store::open_in_memory().unwrap();
-        let mc = crate::mission_control::SESSION_ID;
+        let mc = crate::lead::SESSION_ID;
         db.save_session_scalar(
             mc,
             "k",

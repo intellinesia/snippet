@@ -153,7 +153,7 @@ pub(crate) fn board_request(app: &App, tab: PaneTab) -> Option<BoardRequest> {
         )),
         PaneTab::Tasks => Some((
             "tasks".into(),
-            "/mission-control/tasks".into(),
+            "/lead/tasks".into(),
             vec![("archived", "false".into())],
             Duration::from_secs(5),
         )),
@@ -434,33 +434,33 @@ impl App {
         }
     }
 
-    /// Open the dedicated Mission Control session in the main view. The HTTP
+    /// Open the dedicated Lead session in the main view. The HTTP
     /// call runs on the next tick (key handlers are synchronous).
-    pub(crate) fn open_mission_control(&mut self) {
-        self.pending_mission_control = true;
-        self.status = "Opening Mission Control…".into();
+    pub(crate) fn open_lead(&mut self) {
+        self.pending_lead = true;
+        self.status = "Opening Lead…".into();
     }
 
-    pub(crate) async fn apply_pending_mission_control(&mut self) {
-        if !std::mem::take(&mut self.pending_mission_control) {
+    pub(crate) async fn apply_pending_lead(&mut self) {
+        if !std::mem::take(&mut self.pending_lead) {
             return;
         }
         let Some(info) = self.sidecar.clone() else {
             self.status = "snippet serve is not available".into();
             return;
         };
-        match crate::serve::sidecar::open_mission_control(&info).await {
+        match crate::serve::sidecar::open_lead(&info).await {
             Ok(id) => {
-                // Mission Control lives outside this workspace: attach by its
+                // Lead lives outside this workspace: attach by its
                 // own path. Its task and report envelopes render as cards.
-                self.switch_conversation("mission-control");
+                self.switch_conversation("lead");
                 self.active_state_path = crate::config::workspaces_root().join(&id);
                 self.shell.focus = Focus::Composer;
                 self.screen = Screen::Main;
                 self.spawn_loop(None, true);
-                self.status = "Mission Control".into();
+                self.status = "Lead".into();
             }
-            Err(e) => self.status = format!("Mission Control: {e}"),
+            Err(e) => self.status = format!("Lead: {e}"),
         }
     }
 }

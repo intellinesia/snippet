@@ -70,12 +70,12 @@ pub fn ensure_schema(connection: &rusqlite::Connection) -> Result<(), rusqlite::
              last_active INTEGER,
              -- Per-conversation model override (profile name). Was `.profile`.
              profile TEXT,
-             -- 'mission_control' | 'standard'. Was `.role`.
+             -- 'lead' | 'standard'. Was `.role`.
              role TEXT NOT NULL DEFAULT 'standard',
              -- The agent working this session, if any. Was `.role`'s agent_id.
              agent_id TEXT,
              -- What kind of session this is: 'default' | 'conversation' |
-             -- 'inbox' | 'mission_control'. This used to be parsed out of the
+             -- 'inbox' | 'lead'. This used to be parsed out of the
              -- id's suffix, which is the coupling opaque ids remove.
              kind TEXT NOT NULL DEFAULT 'conversation',
              -- Unix seconds when the session was settled (parked: not routed to,
@@ -176,11 +176,11 @@ pub struct SessionRow {
     pub last_active: Option<i64>,
     /// Per-conversation model override (profile name). Was `.profile`.
     pub profile: Option<String>,
-    /// `mission_control` or `standard`. Was `.role`.
+    /// `lead` or `standard`. Was `.role`.
     pub role: String,
     /// The agent working this session. Was `.role`'s `agent_id`.
     pub agent_id: Option<String>,
-    /// `default` | `conversation` | `inbox` | `mission_control`.
+    /// `default` | `conversation` | `inbox` | `lead`.
     pub kind: String,
     /// When the session was settled, unix seconds; `None` while awake.
     pub settled_at: Option<i64>,
@@ -214,7 +214,7 @@ pub struct SessionExtras {
     pub last_active: Option<i64>,
     /// Model override (profile name). Was `.profile`.
     pub profile: Option<String>,
-    /// `mission_control` or `standard`. Was `.role`.
+    /// `lead` or `standard`. Was `.role`.
     pub role: Option<String>,
     /// The agent working this session. Was `.role`'s `agent_id`.
     pub agent_id: Option<String>,
@@ -902,8 +902,8 @@ impl Store {
                     created_at,
                     now,
                     scalar_json,
-                    if crate::mission_control::is_session_id(id) {
-                        "mission_control"
+                    if crate::lead::is_session_id(id) {
+                        "lead"
                     } else {
                         "standard"
                     }

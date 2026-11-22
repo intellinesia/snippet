@@ -16,7 +16,7 @@ use rusqlite::Connection;
 pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
     connection.execute_batch(
         r#"
-         -- Managed sessions: the registry the Mission Control UI lists. The
+         -- Managed sessions: the registry the Lead UI lists. The
          -- CONVERSATION of such a session lives in `sessions`, keyed by id;
          -- this holds the label/workspace/status the UI shows.
          CREATE TABLE IF NOT EXISTS managed_sessions (
@@ -33,7 +33,7 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
          -- so a read never has to decide which one wins.
          CREATE TABLE IF NOT EXISTS control_settings (
              id INTEGER PRIMARY KEY CHECK (id = 1),
-             mission_control_session_id TEXT,
+             lead_session_id TEXT,
              notification_policy TEXT NOT NULL
          );
 

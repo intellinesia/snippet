@@ -279,7 +279,7 @@ static GIT_CACHE: std::sync::Mutex<Option<GitCache>> = std::sync::Mutex::new(Non
 pub fn attach_git(sessions: &mut [crate::session::SessionInfo]) {
     let t = now();
     for s in sessions.iter_mut() {
-        if crate::mission_control::is_session_id(&s.id)
+        if crate::lead::is_session_id(&s.id)
             || crate::session::is_inbox_session_id(&s.id)
         {
             continue;

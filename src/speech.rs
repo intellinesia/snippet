@@ -121,7 +121,7 @@ async fn prepare() -> Result<(String, crate::ambient::Conversation), String> {
         TTL.store(ttl.max(1), Ordering::Relaxed);
     }
     let conversation =
-        crate::ambient::open_conversation("mission-control", TTL.load(Ordering::Relaxed));
+        crate::ambient::open_conversation("lead", TTL.load(Ordering::Relaxed));
     Ok((device, conversation))
 }
 
@@ -785,7 +785,7 @@ pub async fn consume_tool_stream(
     }
 }
 
-pub fn mission_control_stream() -> crate::llm::StreamHandle {
+pub fn lead_stream() -> crate::llm::StreamHandle {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(consume_tool_stream(rx));
     let mut b = crate::llm::StreamBuffer::default();

@@ -415,7 +415,7 @@ impl CodingHarness {
         let window = self.config.context_window_tokens.max(1);
         let mut threshold =
             window.saturating_mul(self.config.compact_at_pct.clamp(1, 100) as u64) / 100;
-        if self.context.workspace_root() == crate::mission_control::workspace_path()
+        if self.context.workspace_root() == crate::lead::workspace_path()
             && crate::ambient::conversation().is_some()
         {
             threshold = threshold.max(window.saturating_mul(97) / 100);

@@ -4,8 +4,8 @@ use crate::harness::HarnessEvent;
 use crate::routing::{self, LimitHit, Route};
 
 fn route_for(id: &str) -> Option<Route> {
-    if id == crate::mission_control::SESSION_ID {
-        Some(Route::Mission)
+    if id == crate::lead::SESSION_ID {
+        Some(Route::Lead)
     } else if crate::session::is_inbox_session_id(id) {
         Some(Route::Inbox)
     } else {

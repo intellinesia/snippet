@@ -1,4 +1,4 @@
-//! Mission Control's goal tools: a goal is the user's whole outcome, held as
+//! Lead's goal tools: a goal is the user's whole outcome, held as
 //! data with its own acceptance criteria and the tasks that serve it.
 
 use async_trait::async_trait;
@@ -11,8 +11,8 @@ use crate::store::Store;
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 
 fn mc_store(ctx: &ToolContext) -> Result<Store, ToolError> {
-    ctx.mission_control_root().ok_or_else(|| {
-        ToolError::msg("Goal tools are only available in the Mission Control session.")
+    ctx.lead_root().ok_or_else(|| {
+        ToolError::msg("Goal tools are only available in the Lead session.")
     })?;
     ctx.store()
         .map_err(|e| ToolError::msg(format!("open store: {e}")))
@@ -414,7 +414,7 @@ mod tests {
     use crate::coordination::{Task, TaskStatus};
 
     fn mc(dir: &std::path::Path) -> ToolContext {
-        ToolContext::mission_control(dir)
+        ToolContext::lead(dir)
             .unwrap()
             .with_store_path(dir.join("snippet.db"))
     }
@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn goal_tools_refuse_outside_mission_control() {
+    async fn goal_tools_refuse_outside_lead() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ToolContext::new(dir.path())
             .unwrap()
@@ -561,7 +561,7 @@ mod tests {
             call(&ListGoals, &ctx, json!({}))
                 .await
                 .unwrap_err()
-                .contains("Mission Control")
+                .contains("Lead")
         );
     }
 

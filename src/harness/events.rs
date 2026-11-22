@@ -1915,7 +1915,7 @@ mod d1_decision_record_harness_tests {
                 &mut vars,
                 "Which target?\n→ Staging".to_string(),
                 Some(DecisionSource {
-                    by: "mission-control".into(),
+                    by: "lead".into(),
                     via: "agent".into(),
                 }),
             )
@@ -1948,7 +1948,7 @@ mod d1_decision_record_harness_tests {
         assert_eq!(decision.1, "0:2026-11-16T00:01:00Z");
         assert_eq!(decision.2, "answered");
         assert_eq!(decision.3.as_deref(), Some("Staging"));
-        assert_eq!(decision.4, "mission-control");
+        assert_eq!(decision.4, "lead");
         assert_eq!(decision.5, "agent");
     }
 

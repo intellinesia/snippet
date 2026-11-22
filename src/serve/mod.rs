@@ -24,7 +24,7 @@ use tokio::task::JoinHandle;
 
 use crate::config::{InferenceProfileConfig, SnippetConfig, save_config, workspaces_root};
 use crate::harness::{HarnessEvent, LoopInput};
-use crate::mission_control as mc;
+use crate::lead as mc;
 use crate::session::{
     SessionRole, list_device_sessions, read_session_meta, read_session_profile,
     read_session_sidecar, read_session_state, read_session_state_tail, replay_notification_events,
@@ -67,8 +67,8 @@ mod lifecycle;
 pub mod maintenance;
 mod memory_routes;
 pub(crate) use maintenance::*;
-mod mission_control;
-pub use mission_control::{mission_error, validated_owned_paths};
+mod lead;
+pub use lead::{mission_error, validated_owned_paths};
 mod agent_wakes;
 mod followups;
 mod goals;
@@ -199,7 +199,7 @@ pub(crate) struct Daemon {
     /// for every connected client; the harness later persists the real removal.
     queue_hidden: std::sync::Mutex<HashMap<String, Vec<String>>>,
     queue_revision: AtomicU64,
-    mission_control_root: PathBuf,
+    lead_root: PathBuf,
     store: crate::store::Store,
     coordination_events:
         tokio::sync::broadcast::Sender<crate::coordination::types::CoordinationEvent>,
@@ -348,7 +348,7 @@ impl Daemon {
             w
         };
         // Role-aware resume. ONE place decides the role — see `start_role_aware`.
-        // A session opened as Mission Control must come back with the MC
+        // A session opened as Lead must come back with the MC
         // prompt/tools/lane restrictions, and an agent session with its
         // specialized identity, rather than silently downgrading either.
         let handle = self.start_role_aware(&cfg, sp.clone(), None).await;
@@ -364,7 +364,7 @@ impl Daemon {
     /// The single place that decides role. Two callers need it and previously
     /// only one had it: `ensure_live` dispatched on the `.role` sidecar, while
     /// `set_session_model` always started a plain session. Switching the model
-    /// mid-conversation therefore DOWNGRADED a Mission Control or agent session
+    /// mid-conversation therefore DOWNGRADED a Lead or agent session
     /// to an ordinary one — losing the MC prompt/tools/lane restrictions until
     /// the next daemon restart restored them from the sidecar.
     ///
@@ -390,14 +390,14 @@ impl Daemon {
         let sidecar = crate::session::read_session_sidecar_in(&self.store, &sp)
             .or_else(|| read_session_sidecar(&sp));
         if let Some(sidecar) = sidecar.as_ref()
-            && sidecar.role == SessionRole::MissionControl
+            && sidecar.role == SessionRole::Lead
         {
-            return crate::session::start_mission_control_session(
+            return crate::session::start_lead_session(
                 cfg,
                 sp,
                 initial,
                 true,
-                Some(crate::speech::mission_control_stream()),
+                Some(crate::speech::lead_stream()),
             );
         }
         let session_id = session_id_for_state_path(&sp);
@@ -407,7 +407,7 @@ impl Daemon {
                 .and_then(|s| s.agent_id.clone())
                 .unwrap_or_else(|| session_id.trim_start_matches("inbox-").to_string());
             let identity = crate::coordination::AgentHome::new(
-                crate::coordination::agents_root(&self.mission_control_root),
+                crate::coordination::agents_root(&self.lead_root),
                 &agent_id,
             )
             .ok()
@@ -432,7 +432,7 @@ impl Daemon {
             // Identity revision is re-read on every resume, so an agent whose
             // identity was updated comes back with the new guidance.
             match crate::coordination::AgentHome::new(
-                crate::coordination::agents_root(&self.mission_control_root),
+                crate::coordination::agents_root(&self.lead_root),
                 agent_id,
             ) {
                 Ok(home) => match crate::session::start_specialized_agent_session(
@@ -473,7 +473,7 @@ impl Daemon {
     /// - `POST /session/model` — the user is pinning THIS chat to a model. The
     ///   choice outlives the run, so it is written to `sessions.profile` and
     ///   survives a daemon restart or a resume.
-    /// - A dispatch — Mission Control is choosing a model for ONE assignment.
+    /// - A dispatch — Lead is choosing a model for ONE assignment.
     ///   The next task may want a different one, and the session's own default
     ///   is not the dispatcher's to overwrite. So the profile is in-memory only:
     ///   it drives this run, and a later start falls back to whatever the
@@ -685,8 +685,8 @@ impl Daemon {
         {
             return Some(profile);
         }
-        let route = if id == crate::mission_control::SESSION_ID {
-            crate::routing::Route::Mission
+        let route = if id == crate::lead::SESSION_ID {
+            crate::routing::Route::Lead
         } else if crate::session::is_inbox_session_id(id) {
             crate::routing::Route::Inbox
         } else {
@@ -756,7 +756,7 @@ impl Daemon {
                 .append_conversation_events(session, &[ev], &now)
                 .map_err(|e| e.to_string())?;
         }
-        // Role-aware restart keeps Mission Control and agent identities intact.
+        // Role-aware restart keeps Lead and agent identities intact.
         let handle = self.start_role_aware(&cfg, sp.clone(), initial).await;
         if persist && let Some(name) = profile {
             crate::session::write_session_profile_in(&self.store, &sp, name);
@@ -831,7 +831,7 @@ impl Daemon {
             old.join.abort();
         }
         // ONE resolver for every role. This path used to handle only
-        // `mission_control`, so a config reload silently rebuilt a specialized
+        // `lead`, so a config reload silently rebuilt a specialized
         // agent as an ordinary session — losing its identity, prompt and tool
         // set, with nothing logged. Routing both readers through
         // `start_role_aware` makes that asymmetry unrepresentable.
@@ -1091,7 +1091,7 @@ pub async fn run_serve(
         seen_nonces: std::sync::Mutex::new(HashMap::new()),
         queue_hidden: std::sync::Mutex::new(HashMap::new()),
         queue_revision: AtomicU64::new(0),
-        mission_control_root: mc::MissionControlStore::default_root(None),
+        lead_root: mc::LeadStore::default_root(None),
         store,
         coordination_events: tokio::sync::broadcast::channel(256).0,
         recurring_root: crate::recurring::default_root(),
@@ -1099,7 +1099,7 @@ pub async fn run_serve(
 
     let _ = LIVE_DAEMON.set(daemon.clone());
     // Register the built-in agents before anything can address them.
-    mission_control::register_builtin_agents(&daemon);
+    lead::register_builtin_agents(&daemon);
     ambient_routes::resume(daemon.clone());
     ambient_room::init(daemon.clone());
     call_track::recover(daemon.clone());
@@ -1125,7 +1125,7 @@ pub async fn run_serve(
             handle.spawn(async move {
                 agent_routes::record_agent_message(
                     &d,
-                    crate::mission_control::SESSION_ID,
+                    crate::lead::SESSION_ID,
                     "ambient mode",
                     &body,
                     false,
@@ -1162,7 +1162,7 @@ pub async fn run_serve(
     tokio::spawn(github_routes::pr_refresh_loop());
     {
         let d = daemon.clone();
-        tokio::spawn(async move { mission_control::dispatch_loop(d).await });
+        tokio::spawn(async move { lead::dispatch_loop(d).await });
     }
     {
         let d = daemon.clone();
@@ -1264,7 +1264,7 @@ pub async fn run_serve(
         .merge(memory_routes::router())
         .merge(artifact_routes::router())
         .merge(github_routes::router())
-        .merge(mission_control::router())
+        .merge(lead::router())
         .merge(goals::router())
         .route("/fs", get(browse_fs))
         .route("/fs/file", get(read_fs_file))

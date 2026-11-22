@@ -275,7 +275,7 @@ const SILENT_OK_INPUTS: &[&str] = &[
 ];
 
 /// Whether the latest input is an ambient line or a daemon envelope, where
-/// Mission Control ending its turn without text is often the right answer.
+/// Lead ending its turn without text is often the right answer.
 pub(super) fn last_input_allows_silence(events: &[HarnessEvent]) -> bool {
     let Some(text) = events.iter().rev().find_map(|e| match e {
         HarnessEvent::UserInput { text } | HarnessEvent::Steer { text } => Some(text.as_str()),
@@ -296,11 +296,11 @@ pub(super) fn last_input_allows_silence(events: &[HarnessEvent]) -> bool {
 /// Whether an empty final turn should be re-prompted for a reply. Mission
 /// Control may legitimately stay silent after speaking or on an ambient line or
 /// envelope; every other conversation still owes the user visible text.
-pub(super) fn empty_turn_needs_reply(events: &[HarnessEvent], mission_control: bool) -> bool {
+pub(super) fn empty_turn_needs_reply(events: &[HarnessEvent], lead: bool) -> bool {
     if replied_since_last_user(events) {
         return false;
     }
-    !(mission_control && (answered_since_last_user(events) || last_input_allows_silence(events)))
+    !(lead && (answered_since_last_user(events) || last_input_allows_silence(events)))
 }
 
 /// Record an assistant turn. Near-duplicate *narration* (text accompanying

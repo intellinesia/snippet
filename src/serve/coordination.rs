@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::coordination::types::CoordinationEvent;
 use crate::coordination::{Task, TaskFilter, TaskLink, TaskLinkKind, TaskStatus};
-use crate::mission_control;
+use crate::lead;
 use crate::serve::task_summary;
 
 use super::{LoopInput, Shared, direct};
@@ -254,7 +254,7 @@ pub(super) async fn task_verdict(
         .flatten()
         .unwrap_or_default();
     let workspace = crate::members::task_workspace(&d.store, &task)
-        .unwrap_or_else(|| d.mission_control_root.clone());
+        .unwrap_or_else(|| d.lead_root.clone());
     let ctx = crate::ToolContext::with_owner(workspace, "user")
         .unwrap_or_else(|_| crate::ToolContext::with_owner("/", "user").unwrap())
         .with_agent_id("user")
@@ -396,9 +396,9 @@ async fn create_task(State(d): State<Shared>, Json(req): Json<CoordinationTaskRe
         );
     };
     let session_id = crate::session::session_id_for_state_path(&target_path);
-    if mission_control::get_session(&d.mission_control_root, &session_id).is_err()
-        && let Err(error) = mission_control::create_session(
-            &d.mission_control_root,
+    if lead::get_session(&d.lead_root, &session_id).is_err()
+        && let Err(error) = lead::create_session(
+            &d.lead_root,
             &session_id,
             state.title.as_deref().unwrap_or("Managed session"),
             std::path::Path::new(&state.workspace),
@@ -827,7 +827,7 @@ pub(super) async fn post_message(
         };
         let roster = d.store.list_task_agents(&task.id).unwrap_or_default();
         if let Some(stranger) = to.iter().find(|a| {
-            **a != crate::mission_control::SESSION_ID
+            **a != crate::lead::SESSION_ID
                 && !roster
                     .iter()
                     .any(|m| m.agent_id == **a && m.removed_at.is_none())
@@ -841,7 +841,7 @@ pub(super) async fn post_message(
             crate::members::seat_holder(&d.store, &task);
             for agent in to
                 .iter()
-                .filter(|a| **a != crate::mission_control::SESSION_ID)
+                .filter(|a| **a != crate::lead::SESSION_ID)
             {
                 if let Err(error) = crate::members::seat(&d.store, &task, agent, &now) {
                     return api_error(StatusCode::CONFLICT, error);
@@ -966,8 +966,8 @@ pub fn board_message_envelope_with_task(
     }
 }
 
-pub(super) fn should_wake_mission_control(actor_id: &str) -> bool {
-    actor_id != crate::mission_control::SESSION_ID
+pub(super) fn should_wake_lead(actor_id: &str) -> bool {
+    actor_id != crate::lead::SESSION_ID
 }
 
 /// Consecutive agent-to-agent messages after which a room stops waking anyone
@@ -988,7 +988,7 @@ pub(super) fn room_over_budget(
     now: chrono::DateTime<chrono::Utc>,
     tokens: u64,
 ) -> Option<String> {
-    let mc = crate::mission_control::SESSION_ID;
+    let mc = crate::lead::SESSION_ID;
     let start = events
         .iter()
         .rposition(|e| {
@@ -1030,7 +1030,7 @@ pub(super) fn room_over_budget(
 /// Events that are recorded on the room but are not worth a turn for anyone.
 const QUIET_EVENTS: &[&str] = &["task.agent_assigned", "task.dispatched"];
 
-/// Events Mission Control already receives as a task notification; waking it
+/// Events Lead already receives as a task notification; waking it
 /// for the room post as well would deliver the same news twice.
 const NOTIFIED_EVENTS: &[&str] = &[
     "task.reported",
@@ -1061,7 +1061,7 @@ fn agent_chain_exhausted(
     let chatter = |e: &&CoordinationEvent| CHATTER_EVENTS.contains(&e.event_type.as_str());
     let kind = event.payload.get("kind").and_then(|v| v.as_str());
     if !chatter(&event)
-        || event.actor_id == crate::mission_control::SESSION_ID
+        || event.actor_id == crate::lead::SESSION_ID
         || urgency_of(&event.payload) == Urgency::Urgent
         || matches!(kind, Some("result" | "blocker" | "interrupt"))
     {
@@ -1079,7 +1079,7 @@ fn agent_chain_exhausted(
         .rev()
         .take_while(|e| {
             e.actor_kind != "human"
-                && e.actor_id != crate::mission_control::SESSION_ID
+                && e.actor_id != crate::lead::SESSION_ID
                 && chatter(e)
                 && after_human(e)
         })
@@ -1104,7 +1104,7 @@ pub(super) fn wake_targets(
     idle_agents: &[String],
     human_at: Option<&str>,
 ) -> Vec<WakeTarget> {
-    let mc = crate::mission_control::SESSION_ID;
+    let mc = crate::lead::SESSION_ID;
     let seats = roster.iter().any(|m| {
         m.removed_at.is_none() && m.work_session_id.as_deref().is_some_and(|s| !s.is_empty())
     });
@@ -1115,7 +1115,7 @@ pub(super) fn wake_targets(
     }
     let mut targets: Vec<WakeTarget> = Vec::new();
     if participants.is_empty() {
-        if should_wake_mission_control(&event.actor_id) {
+        if should_wake_lead(&event.actor_id) {
             targets.push(WakeTarget {
                 session: mc.to_string(),
                 inbox_agent: None,
@@ -1237,7 +1237,7 @@ pub(super) fn identity_overlay(d: &super::Daemon, agent_id: &str, session_id: &s
         return String::new();
     }
     let identity = crate::coordination::AgentHome::new(
-        crate::coordination::agents_root(&d.mission_control_root),
+        crate::coordination::agents_root(&d.lead_root),
         agent_id,
     )
     .and_then(|home| home.read_identity());

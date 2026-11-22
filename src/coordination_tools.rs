@@ -13,14 +13,14 @@ fn schema(properties: Value, required: &[&str]) -> Value {
     json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
 }
 
-/// Tools every coordination-aware session (Mission Control and workers) can use
+/// Tools every coordination-aware session (Lead and workers) can use
 /// to discover peers and post to the board.
 pub fn add_coordination_tools(registry: &mut ToolRegistry) {
     registry.insert(ListCoordinationAgents);
     registry.insert(PostCoordinationMessage);
     registry.insert(ReadCoordinationThread);
     // Direct peer conversation: the human and any agent can address one named
-    // agent, and every agent can always reach Mission Control.
+    // agent, and every agent can always reach Lead.
     registry.insert(SendAgentMessage);
     registry.insert(ReadAgentThread);
     registry.insert(ReadAgentInbox);
@@ -29,7 +29,7 @@ pub fn add_coordination_tools(registry: &mut ToolRegistry) {
     registry.insert(ReadCoordinationBoard);
     registry.insert(RecordCoordinationNote);
     // Task-based coordination and session lease handoff
-    registry.insert(MessageMissionControl);
+    registry.insert(MessageLead);
     registry.insert(PostTaskCoordination);
     registry.insert(PassTurn);
     registry.insert(InspectTask);
@@ -96,7 +96,7 @@ fn actor(ctx: &ToolContext) -> Result<(&'static str, String), ToolError> {
 
 /// Refuse a board thread this session has no place in. Allowed: the shared
 /// room, a room it is a member of, the room of a task dispatched to this
-/// session, and every room for Mission Control, which coordinates them all.
+/// session, and every room for Lead, which coordinates them all.
 /// On a direct thread the participant PAIR (kind and id) must match, so either
 /// end of the conversation — agent or human — reads it and nobody else does.
 fn require_thread_access(
@@ -113,7 +113,7 @@ fn require_thread_access(
     if !db.thread_exists(thread_id).map_err(lookup)? {
         return Err(ToolError::msg(format!("no thread `{thread_id}`")));
     }
-    if actor_id == crate::mission_control::SESSION_ID
+    if actor_id == crate::lead::SESSION_ID
         || db
             .list_thread_participants(thread_id)
             .map_err(lookup)?
@@ -155,7 +155,7 @@ pub(crate) fn session_task(ctx: &ToolContext, session_id: &str) -> Option<(Strin
 
 pub(crate) fn task_awareness(ctx: &ToolContext) -> String {
     use crate::coordination::TaskStatus;
-    if ctx.agent_id() == Some(crate::mission_control::SESSION_ID) {
+    if ctx.agent_id() == Some(crate::lead::SESSION_ID) {
         return String::new();
     }
     let path = ctx
@@ -343,8 +343,8 @@ impl Tool for ListCoordinationAgents {
             .list_agents()
             .map_err(|e| ToolError::msg(format!("list agents: {e}")))?;
         let root = crate::coordination::agents_root(
-            &ctx.mission_control_root()
-                .unwrap_or_else(|| crate::config::snippet_home().join("mission-control")),
+            &ctx.lead_root()
+                .unwrap_or_else(|| crate::config::snippet_home().join("lead")),
         );
         let profiles = db(ctx)?.agent_profiles().unwrap_or_default();
         let agents: Vec<Value> = agents
@@ -715,13 +715,13 @@ impl Tool for SendAgentMessage {
                 }
                 if task.session_id.is_empty() {
                     return Err(ToolError::msg(format!(
-                        "task `{}` has not been dispatched to a session yet. Ask mission-control about it.",
+                        "task `{}` has not been dispatched to a session yet. Ask lead about it.",
                         task.id
                     )));
                 }
                 if reaction.is_none()
                     && task.status == TaskStatus::InReview
-                    && ctx.agent_id() == Some(crate::mission_control::SESSION_ID)
+                    && ctx.agent_id() == Some(crate::lead::SESSION_ID)
                 {
                     let now = now_rfc3339();
                     let back = crate::members::working_session(&db, &task);
@@ -796,7 +796,7 @@ impl Tool for SendAgentMessage {
                     "unknown session `{to_id}`. Copy the `reply_to` value from the envelope as written, in full: it names the session the sender is reading."
                 )));
             }
-            if reaction.is_none() && ctx.agent_id() == Some(crate::mission_control::SESSION_ID) {
+            if reaction.is_none() && ctx.agent_id() == Some(crate::lead::SESSION_ID) {
                 let target_canon = crate::conversations::canonical_session_id(to_id);
                 if let Ok(in_review) = db.list_tasks(None, Some(&TaskStatus::InReview)) {
                     let now = now_rfc3339();
@@ -897,7 +897,7 @@ impl Tool for SendAgentMessage {
             extra.insert("channel".into(), json!("chat"));
             if sender_kind == "agent"
                 && reaction.is_none()
-                && sender_id != crate::mission_control::SESSION_ID
+                && sender_id != crate::lead::SESSION_ID
             {
                 crate::coordination::reach::apply_outbound_human(
                     &db, &sender_id, &body, &mut extra,
@@ -1297,29 +1297,29 @@ fn board_agent_id(ctx: &ToolContext) -> Result<String, ToolError> {
         })
 }
 #[derive(Deserialize)]
-struct MessageMissionControlArgs {
+struct MessageLeadArgs {
     task_id: String,
     message: String,
 }
 
-pub struct MessageMissionControl;
+pub struct MessageLead;
 #[async_trait]
-impl Tool for MessageMissionControl {
+impl Tool for MessageLead {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
-            name: "message_mission_control".into(),
-            description: "Message Mission Control using the active task board item you are working on. This posts to the task thread, notifies Mission Control, and records the update on the task board so your progress or question is linked to the task.".into(),
+            name: "message_lead".into(),
+            description: "Message Lead using the active task board item you are working on. This posts to the task thread, notifies Lead, and records the update on the task board so your progress or question is linked to the task.".into(),
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string", "description": "The task ID you are working on"},
-                    "message": {"type": "string", "description": "Message, question, or status update for Mission Control"}
+                    "message": {"type": "string", "description": "Message, question, or status update for Lead"}
                 }),
                 &["task_id", "message"],
             ),
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: MessageMissionControlArgs =
+        let args: MessageLeadArgs =
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let task_id = args.task_id.trim();
         let message = args.message.trim();
@@ -1348,7 +1348,7 @@ impl Tool for MessageMissionControl {
                 json!({
                     "body": message,
                     "task_id": task_id,
-                    "to": "mission_control",
+                    "to": "lead",
                 }),
             ),
             causation_id: None,
@@ -1361,7 +1361,7 @@ impl Tool for MessageMissionControl {
             .map_err(|e| ToolError::msg(format!("post message: {e}")))?;
         let _ = db.update_task_in(task_id, &now, |t| {
             t.notifications.push(NotificationMarker {
-                target: "mission_control".into(),
+                target: "lead".into(),
                 kind: "message".into(),
                 message: format!("{actor_id}: {message}"),
                 delivered: false,
@@ -1399,7 +1399,7 @@ impl Tool for PostTaskCoordination {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "post_task_coordination".into(),
-            description: "Post context, a plan proposal or status to the task thread of a task board item. Everyone on the task and Mission Control see it. The task room is the task's one channel, in task order. Optional `kind` types the post; `urgency: urgent` stops the other sessions' runs and wakes them now, while normal posts wait for their next turn.".into(),
+            description: "Post context, a plan proposal or status to the task thread of a task board item. Everyone on the task and Lead see it. The task room is the task's one channel, in task order. Optional `kind` types the post; `urgency: urgent` stops the other sessions' runs and wakes them now, while normal posts wait for their next turn.".into(),
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string", "description": "The task ID on the task board"},
@@ -1440,7 +1440,7 @@ impl Tool for PostTaskCoordination {
         if !to.is_empty() {
             let roster = db.list_task_agents(task_id).unwrap_or_default();
             if let Some(stranger) = to.iter().find(|a| {
-                a.as_str() != crate::mission_control::SESSION_ID
+                a.as_str() != crate::lead::SESSION_ID
                     && !roster
                         .iter()
                         .any(|m| m.agent_id == **a && m.removed_at.is_none())
@@ -1452,7 +1452,7 @@ impl Tool for PostTaskCoordination {
             crate::members::seat_holder(&db, &task);
             for agent in to
                 .iter()
-                .filter(|a| a.as_str() != crate::mission_control::SESSION_ID)
+                .filter(|a| a.as_str() != crate::lead::SESSION_ID)
             {
                 crate::members::seat(&db, &task, agent, &now_rfc3339()).map_err(ToolError::msg)?;
             }
@@ -1462,7 +1462,7 @@ impl Tool for PostTaskCoordination {
             payload[key] = value;
         }
         let now = now_rfc3339();
-        if task.status == TaskStatus::InReview && actor_id == crate::mission_control::SESSION_ID {
+        if task.status == TaskStatus::InReview && actor_id == crate::lead::SESSION_ID {
             let back = crate::members::working_session(&db, &task);
             let _ = db.update_task_in(&task.id, &now, |t| {
                 t.status = TaskStatus::InProgress;
@@ -1813,9 +1813,9 @@ impl Tool for ClaimAndDispatchTask {
                 "claiming a task needs an agent identity; this session has none",
             ));
         }
-        if actor_id == crate::mission_control::SESSION_ID {
+        if actor_id == crate::lead::SESSION_ID {
             return Err(ToolError::msg(
-                "Mission Control routes work and never takes a task's lease. To send a blocked or failed task to its session again, use tasks.retry (pass profile to switch the worker's model).",
+                "Lead routes work and never takes a task's lease. To send a blocked or failed task to its session again, use tasks.retry (pass profile to switch the worker's model).",
             ));
         }
         crate::mission_tools::require_working_agent(&db, &actor_id)?;
@@ -1904,7 +1904,7 @@ impl Tool for DeclineTask {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "decline_task".into(),
-            description: "Turn down a task you were offered, with a reason. You leave the roster, the task waits as blocked, and Mission Control is told the reason.".into(),
+            description: "Turn down a task you were offered, with a reason. You leave the roster, the task waits as blocked, and Lead is told the reason.".into(),
             input_schema: schema(
                 json!({
                     "task_id": {"type": "string", "description": "The full task id from the offer."},
@@ -1964,7 +1964,7 @@ impl Tool for DeclineTask {
             t.notifications.retain(|n| n.target != marker);
             t.notify_once("declined", &message);
         })
-        .map_err(|e| ToolError::msg(format!("notify Mission Control: {e}")))?;
+        .map_err(|e| ToolError::msg(format!("notify Lead: {e}")))?;
         let _ = db.record_board_entry(
             &actor_id,
             crate::coordination::BoardEntryKind::Noted,
@@ -1998,7 +1998,7 @@ impl Tool for DeclineTask {
         Ok(ToolResult::success(json!({
             "declined": true,
             "task_id": task_id,
-            "note": "Mission Control has been told why; the task waits as blocked until it is reassigned or reshaped.",
+            "note": "Lead has been told why; the task waits as blocked until it is reassigned or reshaped.",
         })))
     }
 }
@@ -2008,22 +2008,22 @@ impl Tool for DeclineTask {
 pub struct GroupThread;
 
 /// The board identity a group call speaks as. Group threads belong to agents
-/// and Mission Control; a plain session has no place in one.
+/// and Lead; a plain session has no place in one.
 fn group_agent(ctx: &ToolContext) -> Result<String, ToolError> {
-    if ctx.is_mission_control() {
-        return Ok(crate::mission_control::SESSION_ID.to_string());
+    if ctx.is_lead() {
+        return Ok(crate::lead::SESSION_ID.to_string());
     }
     match actor(ctx)? {
         ("agent", id) => Ok(id),
-        ("session", id) if id == crate::mission_control::SESSION_ID => Ok(id),
+        ("session", id) if id == crate::lead::SESSION_ID => Ok(id),
         _ => Err(ToolError::msg(
-            "group threads are for agents and Mission Control",
+            "group threads are for agents and Lead",
         )),
     }
 }
 
 fn known_group_agent(db: &Store, id: &str) -> bool {
-    id == crate::mission_control::SESSION_ID || db.get_agent(id).ok().flatten().is_some()
+    id == crate::lead::SESSION_ID || db.get_agent(id).ok().flatten().is_some()
 }
 
 fn require_group(
@@ -2039,7 +2039,7 @@ fn require_group_member(
     group: &crate::coordination::GroupSummary,
     agent_id: &str,
 ) -> Result<(), ToolError> {
-    if agent_id == crate::mission_control::SESSION_ID
+    if agent_id == crate::lead::SESSION_ID
         || group
             .members
             .iter()
@@ -2256,7 +2256,7 @@ impl Tool for GroupThread {
                 let groups = db
                     .list_groups()
                     .map_err(|e| ToolError::msg(format!("list groups: {e}")))?;
-                let groups: Vec<_> = if agent_id == crate::mission_control::SESSION_ID {
+                let groups: Vec<_> = if agent_id == crate::lead::SESSION_ID {
                     groups
                 } else {
                     groups
@@ -2681,7 +2681,7 @@ impl Tool for ShareArtifactTool {
             .map_err(ToolError::msg)?
         } else if target == "human" {
             extra.insert("channel".into(), json!("chat"));
-            if sender_kind == "agent" && sender_id != crate::mission_control::SESSION_ID {
+            if sender_kind == "agent" && sender_id != crate::lead::SESSION_ID {
                 crate::coordination::reach::apply_outbound_human(
                     &db, &sender_id, &body, &mut extra,
                 );
@@ -2805,7 +2805,7 @@ fn chat_preview(db: &Store, thread_id: &str) -> (u64, Option<String>, Option<Val
 
 /// Every chat thread the calling actor belongs to: direct conversations
 /// (the human's included), group threads it is a member of, and the rooms of
-/// open tasks it is seated on. Mission Control sees every group and open task.
+/// open tasks it is seated on. Lead sees every group and open task.
 pub struct Chats;
 #[async_trait]
 impl Tool for Chats {
@@ -2839,8 +2839,8 @@ impl Tool for Chats {
         };
         let (actor_kind, actor_id) = actor(ctx)?;
         let db = db(ctx)?;
-        let mission_control =
-            ctx.is_mission_control() || actor_id == crate::mission_control::SESSION_ID;
+        let lead =
+            ctx.is_lead() || actor_id == crate::lead::SESSION_ID;
         let mut rows: Vec<(String, Value)> = Vec::new();
 
         if only.is_none() || only == Some("direct") {
@@ -2876,7 +2876,7 @@ impl Tool for Chats {
                 .list_groups()
                 .map_err(|e| ToolError::msg(format!("list groups: {e}")))?
             {
-                if !mission_control
+                if !lead
                     && !group
                         .members
                         .iter()
@@ -2902,7 +2902,7 @@ impl Tool for Chats {
 
         if only.is_none() || only == Some("task") {
             let tasks = db
-                .list_open_tasks((!mission_control).then_some(actor_id.as_str()))
+                .list_open_tasks((!lead).then_some(actor_id.as_str()))
                 .map_err(|e| ToolError::msg(format!("list tasks: {e}")))?;
             for task in tasks {
                 let (sequence, at, last) = chat_preview(&db, &task.thread_id);
@@ -3270,13 +3270,13 @@ mod tests {
                 .is_err()
         );
 
-        // The task's own session and Mission Control are let in.
+        // The task's own session and Lead are let in.
         let worker = context(dir.path(), "work-1");
         PostCoordinationMessage
             .execute(&worker, json!({"thread_id": room, "body": "progress"}))
             .await
             .unwrap();
-        let mc = context(dir.path(), "mc").with_agent_id("mission-control");
+        let mc = context(dir.path(), "mc").with_agent_id("lead");
         ReadCoordinationThread
             .execute(&mc, json!({"thread_id": room}))
             .await
@@ -3404,7 +3404,7 @@ mod tests {
     async fn post_message_is_attributed_to_the_session_not_the_model() {
         let dir = tempfile::tempdir().unwrap();
         let db = migrate(dir.path());
-        let ctx = context(dir.path(), "mission-control");
+        let ctx = context(dir.path(), "lead");
 
         let result = PostCoordinationMessage
             .execute(&ctx, json!({"thread_id":"system","body":"starting"}))
@@ -3421,7 +3421,7 @@ mod tests {
         // Identity came from the session, not from caller arguments. This session
         // has no agent bound, so it posts as the session — not as an "agent",
         // which is exactly the conflation this split removes.
-        assert_eq!(events[0].actor_id, "mission-control");
+        assert_eq!(events[0].actor_id, "lead");
         assert_eq!(events[0].actor_kind, "session");
     }
 
@@ -3459,7 +3459,7 @@ mod tests {
     async fn post_message_is_idempotent_for_a_repeated_key() {
         let dir = tempfile::tempdir().unwrap();
         let db = migrate(dir.path());
-        let ctx = context(dir.path(), "mission-control");
+        let ctx = context(dir.path(), "lead");
         let args = json!({"thread_id":"system","body":"once","idempotency_key":"k1"});
 
         PostCoordinationMessage
@@ -3484,7 +3484,7 @@ mod tests {
             capabilities: vec!["web_search".into()],
         })
         .unwrap();
-        let ctx = context(dir.path(), "mission-control");
+        let ctx = context(dir.path(), "lead");
 
         let result = ListCoordinationAgents
             .execute(&ctx, json!({}))
@@ -3503,7 +3503,7 @@ mod tests {
     async fn read_thread_defaults_to_the_shared_room_most_recent_first() {
         let dir = tempfile::tempdir().unwrap();
         migrate(dir.path());
-        let ctx = context(dir.path(), "mission-control");
+        let ctx = context(dir.path(), "lead");
         for body in ["one", "two", "three"] {
             PostCoordinationMessage
                 .execute(
@@ -3537,7 +3537,7 @@ mod tests {
     async fn read_thread_pages_forward_and_back_by_cursor() {
         let dir = tempfile::tempdir().unwrap();
         migrate(dir.path());
-        let ctx = context(dir.path(), "mission-control");
+        let ctx = context(dir.path(), "lead");
         for body in ["m1", "m2", "m3", "m4"] {
             PostCoordinationMessage
                 .execute(&ctx, json!({"thread_id": "system", "body": body}))
@@ -3579,7 +3579,7 @@ mod tests {
     async fn read_thread_reports_an_empty_room_without_error() {
         let dir = tempfile::tempdir().unwrap();
         migrate(dir.path());
-        let ctx = context(dir.path(), "mission-control");
+        let ctx = context(dir.path(), "lead");
         let read = ReadCoordinationThread
             .execute(&ctx, json!({}))
             .await
@@ -3740,7 +3740,7 @@ mod tests {
             .with_durable_session_id("sess-1")
             .with_agent_id("agent-a");
 
-        let res = MessageMissionControl
+        let res = MessageLead
             .execute(
                 &ctx_a,
                 json!({"task_id": "t1", "message": "Need clarification on auth"}),
@@ -3751,7 +3751,7 @@ mod tests {
 
         let t = db.get_task("t1").unwrap().unwrap();
         assert_eq!(t.notifications.len(), 1);
-        assert_eq!(t.notifications[0].target, "mission_control");
+        assert_eq!(t.notifications[0].target, "lead");
         assert!(
             t.notifications[0]
                 .message
@@ -4545,7 +4545,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        let mc = context(dir.path(), "mc").with_agent_id("mission-control");
+        let mc = context(dir.path(), "mc").with_agent_id("lead");
         ReadChat
             .execute(&mc, json!({"thread_id": room}))
             .await

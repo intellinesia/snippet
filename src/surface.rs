@@ -9,7 +9,7 @@ pub enum SeatRole {
     Work,
     Desk,
     Lane,
-    MissionControl,
+    Lead,
 }
 
 pub struct Act {
@@ -251,7 +251,7 @@ const TASK: Surface = Surface {
         act(
             "report",
             "report_mission_task",
-            "report your Mission Control task done, blocked or failed.",
+            "report your Lead task done, blocked or failed.",
         ),
         act(
             "ledger",
@@ -344,7 +344,7 @@ const WAKE: Surface = Surface {
         op(
             "automation",
             "automated_wakes",
-            "Mission Control's own heartbeat interval and quiet hours.",
+            "Lead's own heartbeat interval and quiet hours.",
         ),
     ],
 };
@@ -496,7 +496,7 @@ fn keep_for(role: SeatRole) -> &'static [&'static str] {
             "submit_review",
             "custom_tool",
         ],
-        SeatRole::MissionControl => &[
+        SeatRole::Lead => &[
             "bash",
             "view_image",
             "ask_user",
@@ -514,7 +514,7 @@ fn surfaces_for(role: SeatRole) -> &'static [&'static Surface] {
         ],
         SeatRole::Desk => &[&WEB, &MESSAGE, &READ, &TASK, &WAKE, &PRESENT],
         SeatRole::Lane => &[&PROCESS, &WEB, &SKILL],
-        SeatRole::MissionControl => &[
+        SeatRole::Lead => &[
             &WEB, &PRESENT, &MESSAGE, &READ, &AMBIENT, &TASKS, &GOALS, &SESSIONS, &WAKE,
         ],
     }
@@ -923,7 +923,7 @@ mod tests {
                 }),
             },
         ];
-        let adv = advertise(SeatRole::MissionControl, defs);
+        let adv = advertise(SeatRole::Lead, defs);
         assert_eq!(adv.len(), 1);
         let amb = &adv[0];
         assert_eq!(amb.name, "ambient");
@@ -994,7 +994,7 @@ mod tests {
             lane_names
         );
 
-        let (mc_defs, _) = crate::lanes::role_tool_definitions("mission_control", None).unwrap();
+        let (mc_defs, _) = crate::lanes::role_tool_definitions("lead", None).unwrap();
         let (mc_names, mc_bytes) = sizes(&mc_defs);
         println!(
             "MC ({}): {mc_bytes} bytes -> {:?}",

@@ -1,11 +1,11 @@
-//! Durable markdown copies of tracked conversations, kept in the Mission Control workspace.
+//! Durable markdown copies of tracked conversations, kept in the Lead workspace.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
 pub fn dir() -> PathBuf {
-    crate::mission_control::workspace_path().join("recordings")
+    crate::lead::workspace_path().join("recordings")
 }
 
 fn iso(ms: i64) -> String {

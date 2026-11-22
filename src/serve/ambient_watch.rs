@@ -223,7 +223,7 @@ fn classifier_questions(with_pending: bool, expecting: bool) -> Value {
                     "Uses the assistant's name, or `name_in_utterance` is not 'no'",
                     "Matches a rule in `classifier_rules.address`",
                     "Asks whether the assistant can hear them or is there, whether or not the conversation is open",
-                    "Directly asks the assistant a question or gives it an instruction that a personal AI coding/work assistant would handle (work, tasks, code, reminders, advice, or continuing the active topic in `assistant.last_said` / `mission_control.recent_chat`), unless `user_voice_likelihood` is below 0.1",
+                    "Directly asks the assistant a question or gives it an instruction that a personal AI coding/work assistant would handle (work, tasks, code, reminders, advice, or continuing the active topic in `assistant.last_said` / `lead.recent_chat`), unless `user_voice_likelihood` is below 0.1",
                     "Answers, confirms, refuses, thanks or picks an option after `assistant.last_said`",
                     "Continues or corrects a line in `recent` that was handled as sent to the assistant"
                 ],
@@ -253,7 +253,7 @@ fn classifier_questions(with_pending: bool, expecting: bool) -> Value {
         },
         "out_of_context": {
             "type": "noul",
-            "instructions": "Is `utterance` unrelated to `assistant.last_said`, `mission_control.recent_chat`, `mission_control.recent_tools`, and `recent` turns sent to the assistant (for example played video/reel narration, fiction/storytelling, side chatter with someone else, or an unprompted remark that makes no sense in the ongoing conversation without a wake word)?"
+            "instructions": "Is `utterance` unrelated to `assistant.last_said`, `lead.recent_chat`, `lead.recent_tools`, and `recent` turns sent to the assistant (for example played video/reel narration, fiction/storytelling, side chatter with someone else, or an unprompted remark that makes no sense in the ongoing conversation without a wake word)?"
         },
         "played_audio": {
             "type": "noul",
@@ -539,7 +539,7 @@ pub(super) fn classifier_state(m: &Moment) -> Value {
         "name_in_utterance": name,
         "conversation": if m.open { "open: the user and the assistant are talking back and forth" } else { "closed" },
         "assistant": assistant,
-        "mission_control": {
+        "lead": {
             "recent_chat": m.mc_chat,
             "recent_tools": m.mc_tools,
         },
@@ -821,7 +821,7 @@ pub(crate) async fn classify(
         })
         .unwrap_or_default();
     let (pending, mc_chat, mc_tools) = if chat_context {
-        let mc = super::ambient_context::mission_control(d);
+        let mc = super::ambient_context::lead(d);
         (
             mc["pending_question"].as_str().map(str::to_string),
             mc["recent_chat"].as_array().cloned().unwrap_or_default(),
@@ -995,7 +995,7 @@ pub(crate) async fn classify_live(
         }
     }
     let (pending, mc_chat, mc_tools) = if chat_context {
-        let mc = super::ambient_context::mission_control(d);
+        let mc = super::ambient_context::lead(d);
         (
             mc["pending_question"].as_str().map(str::to_string),
             mc["recent_chat"].as_array().cloned().unwrap_or_default(),

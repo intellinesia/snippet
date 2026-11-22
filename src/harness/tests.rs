@@ -485,7 +485,7 @@ mod empty_reply_tests {
     }
 
     #[test]
-    fn silent_mission_control_ambient_turn_is_not_reprompted() {
+    fn silent_lead_ambient_turn_is_not_reprompted() {
         let events = [input(
             "<ambient_turn mode=\"active\" ids=\"x\" parts=\"1\">Okay.</ambient_turn>",
         )];

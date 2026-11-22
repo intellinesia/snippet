@@ -39,12 +39,12 @@ fn classify_turn(d: &Shared, device: &str, turn: &[Part], pending: &mut Option<P
         .join(" ");
     let vs = voices(turn);
     let (d2, dev2, ids2, text2) = (d.clone(), device.to_string(), ids.clone(), text.clone());
-    let sent = super::autonomy::mission_control_inputs();
+    let sent = super::autonomy::lead_inputs();
     let guard = super::attention::classify_begin(device);
     let h = tokio::spawn(async move {
         let _guard = guard;
         let v = ambient_watch::classify(&d2, &ids2, &text2, vs).await;
-        if (crate::tts_stream::busy_for(&dev2) || super::autonomy::mission_control_busy())
+        if (crate::tts_stream::busy_for(&dev2) || super::autonomy::lead_busy())
             && should_interrupt(&d2, &v, &text2)
         {
             super::attention::interrupt_since(
@@ -569,7 +569,7 @@ async fn flush(
             if !wake && !pinned && is_unrelated(&v) {
                 crate::ambient::end_conversation();
                 let _ = crate::speech::interrupt(&dev3);
-                super::autonomy::interrupt_mission_control(&d3).await;
+                super::autonomy::interrupt_lead(&d3).await;
             }
         });
         *last = Some(Flushed::new(
@@ -655,13 +655,13 @@ async fn handle_out_of_context(
         return;
     }
     let (streak, samples) = note_out_of_context(device, text, verdict);
-    if streak == 2 && !super::autonomy::mission_control_busy() {
+    if streak == 2 && !super::autonomy::lead_busy() {
         let msg = format!(
             "<ambient_context_alert device=\"{}\" streak=\"{streak}\">The voice classifier blocked {streak} consecutive spoken turns as out of context or directed at someone else:\n{}\nwake.once with in_seconds: 10 (unless_user_speaks: true) checks back without a sound; ambient.mode passive stops listening for you.</ambient_context_alert>",
             ambient_watch::escape(device),
             samples.join("\n")
         );
-        super::autonomy::deliver_to_mission_control(d, msg).await;
+        super::autonomy::deliver_to_lead(d, msg).await;
     } else if !pinned
         && (streak >= 3
             || verdict.other >= 0.75
@@ -925,7 +925,7 @@ async fn deliver(
             super::attention::interrupt(d, device, super::attention::Trigger::Delivery).await;
         }
         crate::tts::prewarm();
-        super::autonomy::deliver_to_mission_control(d, envelope).await;
+        super::autonomy::deliver_to_lead(d, envelope).await;
     }
     for id in &ids {
         d.store.write(|c| {

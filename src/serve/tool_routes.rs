@@ -17,7 +17,7 @@ use crate::tools::{ToolContext, ToolRegistry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Seat {
-    MissionControl,
+    Lead,
     Desk,
     Work,
 }
@@ -25,7 +25,7 @@ pub(crate) enum Seat {
 impl Seat {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::MissionControl => "mission_control",
+            Self::Lead => "lead",
             Self::Desk => "desk",
             Self::Work => "work",
         }
@@ -52,7 +52,7 @@ impl Seat {
                 "reach_policy",
                 "share_artifact",
             ],
-            Self::MissionControl => &[
+            Self::Lead => &[
                 "list_coordination_agents",
                 "list_profiles",
                 "keep_warm",
@@ -123,19 +123,19 @@ pub(crate) fn build_session_tools(
         .map(Path::to_path_buf)
         .unwrap_or_else(crate::store::default_db_path);
 
-    if crate::mission_control::is_session_id(&canonical_id)
+    if crate::lead::is_session_id(&canonical_id)
         || sidecar
             .as_ref()
-            .is_some_and(|s| s.role == SessionRole::MissionControl)
+            .is_some_and(|s| s.role == SessionRole::Lead)
     {
-        let context = ToolContext::mission_control(d.mission_control_root.clone())
+        let context = ToolContext::lead(d.lead_root.clone())
             .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
             .with_durable_session_id(canonical_id.clone())
             .with_store_path(store_path)
-            .with_agent_id(crate::mission_control::SESSION_ID);
-        let registry = crate::session::mission_control_tool_registry(exa_api_key);
+            .with_agent_id(crate::lead::SESSION_ID);
+        let registry = crate::session::lead_tool_registry(exa_api_key);
         return Ok(ResolvedSessionTools {
-            seat: Seat::MissionControl,
+            seat: Seat::Lead,
             session_id: canonical_id,
             context,
             registry,
@@ -163,13 +163,13 @@ pub(crate) fn build_session_tools(
             .filter(|p| !p.as_os_str().is_empty() && p.is_dir())
             .or_else(|| {
                 crate::coordination::AgentHome::new(
-                    crate::coordination::agents_root(&d.mission_control_root),
+                    crate::coordination::agents_root(&d.lead_root),
                     &agent_id,
                 )
                 .ok()
                 .map(|home| home.root().to_path_buf())
             })
-            .unwrap_or_else(|| d.mission_control_root.clone());
+            .unwrap_or_else(|| d.lead_root.clone());
         let context = ToolContext::new(workspace)
             .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
             .with_durable_session_id(canonical_id.clone())
@@ -332,7 +332,7 @@ mod tests {
             seen_nonces: std::sync::Mutex::new(HashMap::new()),
             queue_hidden: std::sync::Mutex::new(HashMap::new()),
             queue_revision: AtomicU64::new(0),
-            mission_control_root: mc_root,
+            lead_root: mc_root,
             store,
             coordination_events: tokio::sync::broadcast::channel(32).0,
             recurring_root,
@@ -437,7 +437,7 @@ mod tests {
         let mc_list = app
             .clone()
             .oneshot(
-                Request::get("/api/tools?token=secret-token&session_id=mission-control")
+                Request::get("/api/tools?token=secret-token&session_id=lead")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -445,7 +445,7 @@ mod tests {
             .unwrap();
         assert_eq!(mc_list.status(), StatusCode::OK);
         let mc_json = body_json(mc_list).await;
-        assert_eq!(mc_json["seat"], "mission_control");
+        assert_eq!(mc_json["seat"], "lead");
         let mc_names: Vec<&str> = mc_json["tools"]
             .as_array()
             .unwrap()

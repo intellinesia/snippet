@@ -383,13 +383,13 @@ pub fn post_state_event(
     }
 }
 
-fn is_mission_control(ctx: &ToolContext) -> bool {
-    ctx.agent_id() == Some(crate::mission_control::SESSION_ID)
+fn is_lead(ctx: &ToolContext) -> bool {
+    ctx.agent_id() == Some(crate::lead::SESSION_ID)
 }
 
 fn author_of(ctx: &ToolContext) -> String {
-    if is_mission_control(ctx) {
-        return crate::mission_control::SESSION_ID.to_string();
+    if is_lead(ctx) {
+        return crate::lead::SESSION_ID.to_string();
     }
     crate::coordination_tools::speaks_as(ctx)
         .map(|(_, id)| id)
@@ -397,7 +397,7 @@ fn author_of(ctx: &ToolContext) -> String {
 }
 
 /// The task a call is about: the one named, or the task in progress in this
-/// session. Mission Control may name any task; a worker only its own.
+/// session. Lead may name any task; a worker only its own.
 fn target_task(ctx: &ToolContext, store: &Store, named: Option<&str>) -> Result<Task, ToolError> {
     let session = ctx
         .durable_session_id()
@@ -415,7 +415,7 @@ fn target_task(ctx: &ToolContext, store: &Store, named: Option<&str>) -> Result<
         .get_task(&id)
         .map_err(|e| ToolError::msg(format!("load task: {e}")))?
         .ok_or_else(|| ToolError::msg(format!("no task `{id}`")))?;
-    if !is_mission_control(ctx) {
+    if !is_lead(ctx) {
         let seated = session.is_some_and(|s| {
             store
                 .member_by_session(s)
@@ -433,7 +433,7 @@ fn target_task(ctx: &ToolContext, store: &Store, named: Option<&str>) -> Result<
             });
         if !mine {
             return Err(ToolError::msg(
-                "that task is not yours; only the session doing it or Mission Control may use its ledger",
+                "that task is not yours; only the session doing it or Lead may use its ledger",
             ));
         }
     }

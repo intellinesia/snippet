@@ -36,7 +36,7 @@ impl Tool for HandOffSession {
     }
 
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        if ctx.is_mission_control() || ctx.lane_origin().is_some() {
+        if ctx.is_lead() || ctx.lane_origin().is_some() {
             return Err(ToolError::msg(
                 "task.hand_off is only available in standard sessions",
             ));
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn tool_is_registered_only_in_work_sessions() {
         let work = crate::session::work_tool_registry(None, None);
-        let mc = crate::session::mission_control_tool_registry(None);
+        let mc = crate::session::lead_tool_registry(None);
         let desk = crate::session::coordination_tool_registry(None);
         assert!(work.contains("hand_off_session"));
         assert!(!mc.contains("hand_off_session"));
@@ -175,10 +175,10 @@ mod tests {
             }) if from == "snippet" && to == "rook" && by == "snippet"
         ));
 
-        // Refuses Mission Control, desk, and lane contexts.
-        let mc_ctx = ToolContext::mission_control(dir.path())
+        // Refuses Lead, desk, and lane contexts.
+        let mc_ctx = ToolContext::lead(dir.path())
             .unwrap()
-            .with_durable_session_id(crate::mission_control::SESSION_ID)
+            .with_durable_session_id(crate::lead::SESSION_ID)
             .with_store_path(&db_path);
         assert!(
             HandOffSession

@@ -203,7 +203,7 @@ impl CodingHarness {
     /// lane shares its parent session's memory.
     pub(super) fn memory_scopes(&self) -> Vec<crate::memory::MemoryRepo> {
         let agent = self.context.agent_id().map(str::to_string).or_else(|| {
-            (self.context.owner() == "mission_control").then(|| "mission-control".to_string())
+            (self.context.owner() == "lead").then(|| "lead".to_string())
         });
         let workspace = self.context.workspace_root();
         let project = !workspace.starts_with(crate::config::snippet_home());
@@ -376,9 +376,9 @@ impl CodingHarness {
                 let ts = Utc::now().timestamp();
                 let _ = on_busy(|| store.set_session_last_active(&id, ts)).await;
             }
-            // Only Mission Control's session is a user thread; other agents' previews come from DMs.
+            // Only Lead's session is a user thread; other agents' previews come from DMs.
             if let Some(text) = turn_text
-                && id == crate::mission_control::SESSION_ID
+                && id == crate::lead::SESSION_ID
             {
                 let _ =
                     store.note_agent_last_message(&id, &text, &Utc::now().to_rfc3339(), "agent");

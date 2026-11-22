@@ -417,7 +417,7 @@ impl CodingHarness {
         if conversation_mode
             && empty_reply
             && vars.empty_reply_reprompts < 2
-            && empty_turn_needs_reply(&state.events, self.context.is_mission_control())
+            && empty_turn_needs_reply(&state.events, self.context.is_lead())
         {
             vars.empty_reply_reprompts += 1;
             vars.pending_signals.push(RuntimeSignal::EmptyResponse);

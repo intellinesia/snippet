@@ -132,11 +132,11 @@ fn quiet_voice_reply(before: &[crate::conversations::StoredMessage]) -> bool {
     false
 }
 
-pub(crate) fn mission_control(d: &Shared) -> Value {
+pub(crate) fn lead(d: &Shared) -> Value {
     let now = chrono::Utc::now();
     let rows = d
         .store
-        .load_recent_conversation(crate::mission_control::SESSION_ID, 64)
+        .load_recent_conversation(crate::lead::SESSION_ID, 64)
         .unwrap_or_default();
     let mut chat: Vec<Value> = Vec::new();
     let mut tools: Vec<Value> = Vec::new();
@@ -224,7 +224,7 @@ pub(crate) fn mission_control(d: &Shared) -> Value {
     }
     chat.reverse();
     tools.reverse();
-    let pending = crate::session::state_path_for_id(crate::mission_control::SESSION_ID)
+    let pending = crate::session::state_path_for_id(crate::lead::SESSION_ID)
         .and_then(|p| crate::session::read_session_meta(&p))
         .and_then(|s| s.pending_question)
         .map(|q| redact(&clip(&super::autonomy::question_text(&q), 300, false)));

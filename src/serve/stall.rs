@@ -428,7 +428,7 @@ mod tests {
         ask(
             &store,
             "w",
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             "question",
             "k1",
             &t0.to_rfc3339(),
@@ -436,7 +436,7 @@ mod tests {
         let fresh = ask(
             &store,
             "w",
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             "blocker",
             "k2",
             &Utc::now().to_rfc3339(),
@@ -448,7 +448,7 @@ mod tests {
                 && crate::envelope::attr(&first[0].1, "from").as_deref() == Some("w")
                 && crate::envelope::attr(&first[0].1, "waiting_minutes").as_deref() == Some("30")
         );
-        assert_eq!(first[0].0, crate::mission_control::SESSION_ID);
+        assert_eq!(first[0].0, crate::lead::SESSION_ID);
         assert!(
             owed_sweep(&store, Utc::now()).is_empty(),
             "not again within the spell"

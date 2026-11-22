@@ -43,7 +43,7 @@ fn slice_schema(what: &str) -> Value {
         "suggested_agent":{"type":"string","description":"specialist from snippet tool list_coordination_agents"},
         "session":{"type":"string","description":"session to run in; defaults to the plan's session"},
         "read_only":{"type":"boolean"},
-        "verify_mode":{"type":"string","enum":["self","reviewer","mission_control","user"],"description":"default: self if read_only, else a reviewer lane"},
+        "verify_mode":{"type":"string","enum":["self","reviewer","lead","user"],"description":"default: self if read_only, else a reviewer lane"},
         "owned_paths":{"type":"array","items":{"type":"string"}}
     },"required":["title","brief"],"additionalProperties":false}})
 }
@@ -88,8 +88,8 @@ fn is_git_repo(dir: &str) -> bool {
 }
 
 fn store_of(ctx: &ToolContext) -> Result<Store, ToolError> {
-    ctx.mission_control_root().ok_or_else(|| {
-        ToolError::msg("Goal tools are only available in the Mission Control session.")
+    ctx.lead_root().ok_or_else(|| {
+        ToolError::msg("Goal tools are only available in the Lead session.")
     })?;
     ctx.store()
         .map_err(|e| ToolError::msg(format!("open store: {e}")))
@@ -546,7 +546,7 @@ mod tests {
     #[tokio::test]
     async fn bad_slices_are_refused_before_anything_is_filed() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = ToolContext::mission_control(dir.path())
+        let ctx = ToolContext::lead(dir.path())
             .unwrap()
             .with_store_path(dir.path().join("snippet.db"));
         let store = ctx.store().unwrap();
@@ -600,7 +600,7 @@ mod tests {
     #[tokio::test]
     async fn replan_drops_cancel_reorder_rewires_and_done_work_is_kept() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = ToolContext::mission_control(dir.path())
+        let ctx = ToolContext::lead(dir.path())
             .unwrap()
             .with_store_path(dir.path().join("snippet.db"));
         let store = ctx.store().unwrap();
@@ -798,7 +798,7 @@ mod tests {
             crate::session::WorkspaceMode::Folder,
         )
         .unwrap();
-        let ctx = ToolContext::mission_control(dir.path().join("mc"))
+        let ctx = ToolContext::lead(dir.path().join("mc"))
             .unwrap()
             .with_store_path(dir.path().join("snippet.db"));
         let store = ctx.store().unwrap();
@@ -818,7 +818,7 @@ mod tests {
             {"title": "API", "brief": "build the api"},
             {"title": "UI", "brief": "build the ui"},
             {"title": "Docs", "brief": "write docs", "read_only": true},
-            {"title": "Integrate", "brief": "wire them", "verify_mode": "mission_control", "depends_on": [0, 1]}
+            {"title": "Integrate", "brief": "wire them", "verify_mode": "lead", "depends_on": [0, 1]}
         ]})).await.unwrap();
         let rows = out["slices"].as_array().unwrap();
         let sessions: Vec<&str> = rows
@@ -832,7 +832,7 @@ mod tests {
         );
         assert_ne!(sessions[2], sessions[0]);
         assert_ne!(sessions[2], sessions[1]);
-        assert_eq!(rows[3]["verify_mode"], "mission_control");
+        assert_eq!(rows[3]["verify_mode"], "lead");
         assert_eq!(rows[2]["verify_mode"], "self");
         let tasks = store.goal_tasks(&gid).unwrap();
         assert_eq!(tasks.len(), 4);

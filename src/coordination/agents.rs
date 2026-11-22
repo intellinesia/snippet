@@ -11,7 +11,7 @@ use super::{
 pub enum AgentRemoval {
     Removed,
     NotFound,
-    MissionControl,
+    Lead,
     OnOpenTasks(Vec<String>),
 }
 
@@ -64,7 +64,7 @@ impl Store {
 
     /// Create the agent, or refresh it if the id already exists.
     ///
-    /// The daemon registers its built-in agents (Mission Control) on every boot,
+    /// The daemon registers its built-in agents (Lead) on every boot,
     /// so this has to be idempotent — `create_agent` is a plain INSERT and would
     /// hit the primary key on the second start. The DESCRIPTIVE fields are
     /// refreshed so a changed display name lands; `created_at` is
@@ -111,7 +111,7 @@ impl Store {
         })
     }
 
-    /// Remove an agent for good. Mission Control cannot be removed, and an agent
+    /// Remove an agent for good. Lead cannot be removed, and an agent
     /// still on an unfinished task is refused so that work is not orphaned.
     /// Its finished task memberships, coordination notes and undelivered
     /// messages go with it.
@@ -131,8 +131,8 @@ impl Store {
             let Some(kind) = kind else {
                 return Ok(AgentRemoval::NotFound);
             };
-            if kind == enum_text(&AgentKind::MissionControl) {
-                return Ok(AgentRemoval::MissionControl);
+            if kind == enum_text(&AgentKind::Lead) {
+                return Ok(AgentRemoval::Lead);
             }
             let open: Vec<String> = {
                 let mut stmt = conn.prepare(
@@ -637,7 +637,7 @@ mod tests {
         // The daemon registers its built-in agents on EVERY boot, so a plain
         // INSERT would hit the primary key on the second start.
         let db = Store::open_in_memory().unwrap();
-        let first = agent("mission-control", "Mission Control");
+        let first = agent("lead", "Lead");
         db.upsert_agent(&first).unwrap();
         db.upsert_agent(&first).unwrap();
 
@@ -647,20 +647,20 @@ mod tests {
         // rewritten, so the row keeps its history.
         let renamed = Agent {
             display_name: "Coordinator".into(),
-            kind: AgentKind::MissionControl,
-            ..agent("mission-control", "Coordinator")
+            kind: AgentKind::Lead,
+            ..agent("lead", "Coordinator")
         };
         db.upsert_agent(&renamed).unwrap();
 
-        let stored = db.get_agent("mission-control").unwrap().unwrap();
+        let stored = db.get_agent("lead").unwrap().unwrap();
         assert_eq!(stored.display_name, "Coordinator");
 
         // A boot or rebuild must not resume a paused agent.
-        db.set_agent_status("mission-control", &AgentStatus::Paused)
+        db.set_agent_status("lead", &AgentStatus::Paused)
             .unwrap();
         db.upsert_agent(&renamed).unwrap();
-        assert!(!db.agent_takes_work("mission-control").unwrap());
-        assert_eq!(stored.kind, AgentKind::MissionControl);
+        assert!(!db.agent_takes_work("lead").unwrap());
+        assert_eq!(stored.kind, AgentKind::Lead);
         assert_eq!(db.list_agents().unwrap().len(), 1, "still one row");
     }
 

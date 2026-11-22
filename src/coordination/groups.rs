@@ -199,7 +199,7 @@ fn replying_agents(
          FROM message_deliveries d
          JOIN board_events e ON e.event_id = d.event_id
          JOIN sessions s ON s.id = CASE
-             WHEN d.recipient_id = 'mission-control' THEN 'mission-control'
+             WHEN d.recipient_id = 'lead' THEN 'lead'
              ELSE 'inbox-' || d.recipient_id END
          WHERE e.thread_id = ?1
            AND d.recipient_kind IN ('group', 'group_deferred', 'group_peer', 'group_unanswered')
