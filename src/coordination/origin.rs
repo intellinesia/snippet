@@ -291,6 +291,11 @@ pub fn result_mirrored(kind: &str) -> bool {
     RESULT_KINDS.contains(&kind)
 }
 
+/// Queueing behind another task's workspace is not an outcome, so it makes no card.
+pub fn is_queue_note(message: &str) -> bool {
+    message.starts_with("waiting on workspace owner(s)")
+}
+
 /// The desk an agent-managed session reports to when no task's origin chat
 /// already carries its cards.
 pub fn managing_desk(store: &Store, session: &str) -> Option<String> {
@@ -665,6 +670,7 @@ fn sweep_results(store: &Store) {
                 m.target == "mission_control"
                     && !m.origin_reported
                     && RESULT_KINDS.contains(&m.kind.as_str())
+                    && !is_queue_note(&m.message)
             })
             .cloned()
             .collect();

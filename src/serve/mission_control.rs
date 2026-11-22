@@ -1624,6 +1624,7 @@ fn report_text(
             .attr("title", &task.title)
             .attr("status", &marker.kind);
         if crate::coordination::origin::result_mirrored(&marker.kind)
+            && !crate::coordination::origin::is_queue_note(&marker.message)
             && let Some(chat) = crate::coordination::origin::origin_title(store, task)
         {
             envelope = envelope.attr("shown_in", chat);
