@@ -635,12 +635,16 @@ fn reply_session_for_agent(db: &Store, agent_id: &str, human_id: &str) -> Option
 /// daemon's delivery loop wakes the recipient — a tool call never delivers
 /// inline, or a message sent to a stopped session would be lost.
 pub struct SendAgentMessage;
+
+pub(crate) const REACTION_TARGET: &str = "event id a reaction acknowledges";
+pub(crate) const DESK_QUOTE: &str =
+    "event id a reaction acknowledges, or the user's message your reply to `human` quotes";
 #[async_trait]
 impl Tool for SendAgentMessage {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "send_agent_message".into(),
-            description: "Reply to a message or contact an agent. For a session-origin message the recipient is its exact `reply_to` value (`session:<id>`); `human` is the user, otherwise an agent id or `task:<id>`. This is conversation only: it cannot create work, transfer ownership or authorise workspace changes (`post_task_coordination` posts task updates). `urgent` interrupts the recipient. reply_to quotes the message answered; reaction acknowledges one without words (check: done or agreed, eyes: seen and on it, thumbs_up, question: unclear, thinking).".into(),
+            description: "Reply to a message or contact an agent. For a session-origin message the recipient is its exact `reply_to` value (`session:<id>`); `human` is the user, otherwise an agent id or `task:<id>`. This is conversation only: it cannot create work, transfer ownership or authorise workspace changes (`post_task_coordination` posts task updates). `urgent` interrupts the recipient. reaction acknowledges the message in reply_to without words (check: done or agreed, eyes: seen and on it, thumbs_up, question: unclear, thinking); only a desk's reply to `human` quotes it.".into(),
             input_schema: schema(
                 json!({
                     "recipient_agent_id":{"type":"string","description":"agent id, `task:<id>`, `session:<id>` or `human`"},
@@ -648,7 +652,7 @@ impl Tool for SendAgentMessage {
                     "idempotency_key":{"type":"string"},
                     "kind":{"type":"string","enum":["note","question","status","handoff_note","blocker","result","interrupt"]},
                     "urgency":{"type":"string","enum":["normal","urgent"],"description":"default normal; `interrupt` is always urgent"},
-                    "reply_to":{"type":"string"},
+                    "reply_to":{"type":"string","description":DESK_QUOTE},
                     "reaction":{"type":"string","enum":["check","eyes","thumbs_up","question","thinking"]},
                     "forward":{"type":"string","description":"event id of a chat message to quote under your body as context"}
                 }),
@@ -824,6 +828,11 @@ impl Tool for SendAgentMessage {
         };
         let mut extra =
             crate::coordination::typed::payload_fields(kind, urgency, about_task.as_deref());
+        let desk_to_user = to_kind == "human"
+            && ctx
+                .durable_session_id()
+                .is_some_and(crate::session::is_inbox_session_id);
+        let reply_to = reply_to.filter(|_| reaction.is_some() || desk_to_user);
         crate::coordination::typed::apply_reply_and_reaction(
             &mut extra,
             reply_to.as_deref(),
@@ -3833,7 +3842,7 @@ mod tests {
     async fn send_agent_message_schema_and_reply_reaction_behavior() {
         let def = SendAgentMessage.definition();
         assert!(def.description.contains(
-            "reply_to quotes the message answered; reaction acknowledges one without words (check: done or agreed, eyes: seen and on it, thumbs_up, question: unclear, thinking)."
+            "reaction acknowledges the message in reply_to without words (check: done or agreed, eyes: seen and on it, thumbs_up, question: unclear, thinking); only a desk's reply to `human` quotes it."
         ));
         let props = &def.input_schema["properties"];
         assert_eq!(props["reply_to"]["type"], "string");
@@ -3918,7 +3927,27 @@ mod tests {
         assert_eq!(events[1].payload["reaction"], "eyes");
         assert_eq!(events[1].payload["reply_to"], target_id);
         assert_eq!(events[2].payload["body"], "all set");
-        assert_eq!(events[2].payload["reply_to"], target_id);
+        assert!(events[2].payload.get("reply_to").is_none());
+
+        let human = crate::coordination::LOCAL_HUMAN_ID;
+        for (session, quoted) in [("s-sender", false), ("inbox-sender", true)] {
+            let ctx = context(dir.path(), session).with_agent_id("sender");
+            SendAgentMessage
+                .execute(
+                    &ctx,
+                    json!({"recipient_agent_id": "human", "reply_to": target_id, "body": "on it"}),
+                )
+                .await
+                .unwrap();
+            let thread =
+                crate::coordination::direct_thread_id(("agent", "sender"), ("human", human));
+            let last = db
+                .direct_thread_events(&thread, 0, 50)
+                .unwrap()
+                .pop()
+                .unwrap();
+            assert_eq!(last.payload.get("reply_to").is_some(), quoted, "{session}");
+        }
     }
 
     #[tokio::test]

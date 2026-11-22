@@ -622,7 +622,16 @@ pub fn resolve(name: &str, args: &Value) -> String {
     }
 }
 
-pub fn advertise(role: SeatRole, internal: Vec<NativeToolDefinition>) -> Vec<NativeToolDefinition> {
+pub fn advertise(
+    role: SeatRole,
+    mut internal: Vec<NativeToolDefinition>,
+) -> Vec<NativeToolDefinition> {
+    if role != SeatRole::Desk
+        && let Some(send) = internal.iter_mut().find(|d| d.name == "send_agent_message")
+        && let Some(reply_to) = send.input_schema.pointer_mut("/properties/reply_to")
+    {
+        reply_to["description"] = json!(crate::coordination_tools::REACTION_TARGET);
+    }
     let by_name: HashMap<&str, &NativeToolDefinition> =
         internal.iter().map(|d| (d.name.as_str(), d)).collect();
     let mut out = Vec::new();
