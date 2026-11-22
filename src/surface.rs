@@ -507,7 +507,7 @@ fn surfaces_for(role: SeatRole) -> &'static [&'static Surface] {
         SeatRole::Work => &[
             &PROCESS, &WEB, &PRESENT, &DELEGATE, &MESSAGE, &READ, &SKILL, &TASK, &WAKE,
         ],
-        SeatRole::Desk => &[&WEB, &MESSAGE, &READ, &TASK, &WAKE],
+        SeatRole::Desk => &[&WEB, &MESSAGE, &READ, &TASK, &WAKE, &PRESENT],
         SeatRole::Lane => &[&PROCESS, &WEB, &SKILL],
         SeatRole::MissionControl => &[
             &WEB, &PRESENT, &MESSAGE, &READ, &AMBIENT, &TASKS, &GOALS, &SESSIONS, &WAKE,
@@ -988,7 +988,7 @@ mod tests {
             mc_names
         );
 
-        assert_eq!(desk_names.len(), 7);
+        assert_eq!(desk_names.len(), 8);
         assert_eq!(mc_names.len(), 14);
         assert!(cli_names.iter().any(|n| n == "custom_tool"));
         assert!(cli_names.iter().any(|n| n == "complete_goal"));

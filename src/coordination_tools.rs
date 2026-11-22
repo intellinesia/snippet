@@ -2158,7 +2158,7 @@ fn check_group_post_chatter(body: &str) -> Result<(), &'static str> {
         .sum();
     if unquoted > 700 || trimmed.chars().count() > 3000 {
         return Err(
-            "Too long for one post. Send several short posts, one point each: only your first after the user's post reaches the room, later ones wake only whom they name. Long material goes in a file shared with present.share (or snippet tool share_artifact on a desk; path, to: the group).",
+            "Too long for one post. Send several short posts, one point each: only your first after the user's post reaches the room, later ones wake only whom they name. Long material goes in a file shared with present.share (path, to: the group).",
         );
     }
     let stripped = strip_leading_mentions(trimmed).trim_end();
@@ -2431,6 +2431,7 @@ pub(crate) fn mirror_origin_artifact(
             .is_some_and(|thread| !thread.trim().is_empty())
             && t.reporting_session.as_deref() == Some(session)
     }) else {
+        mirror_artifact_to_desk(&db, session, artifact);
         return;
     };
     let Some(card) = artifact_payload(session, artifact) else {
@@ -2445,6 +2446,24 @@ pub(crate) fn mirror_origin_artifact(
             task.id
         );
     }
+}
+
+/// An agent-managed session's artifact also lands in its desk's chat with the user.
+fn mirror_artifact_to_desk(db: &Store, session: &str, artifact: &crate::artifacts::Artifact) {
+    let Some(card) = artifact_payload(session, artifact) else {
+        return;
+    };
+    let version = artifact.latest().map(|v| v.n).unwrap_or_default();
+    let label = crate::coordination::origin::session_label(db, session);
+    let mut extra = serde_json::Map::new();
+    extra.insert("artifact".into(), card);
+    crate::coordination::origin::post_to_managing_desk(
+        db,
+        session,
+        &format!("desk-artifact:{session}:{}:{version}", artifact.id),
+        &format!("{label} shared {}", artifact.title),
+        extra,
+    );
 }
 
 /// Record the session an event was posted from, so the room's wake-up skips it.
@@ -2660,6 +2679,9 @@ impl Tool for ShareArtifactTool {
                 "kind": "coordination_event",
                 "event": ev.clone(),
             }));
+            if sender_kind == "session" {
+                mirror_artifact_to_desk(&db, session, &artifact);
+            }
             ev
         } else {
             match db

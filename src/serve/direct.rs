@@ -561,6 +561,36 @@ pub(crate) fn relay_question(
     );
 }
 
+/// The approval a session is paused on: its event index and summary.
+fn pending_approval(state: &crate::harness::HarnessState) -> Option<(usize, String)> {
+    use crate::harness::HarnessEvent as E;
+    if state.status != crate::harness::HarnessStatus::WaitingForInput {
+        return None;
+    }
+    let index = state
+        .events
+        .iter()
+        .rposition(|e| matches!(e, E::ApprovalRequest { .. }))?;
+    if state.events[index + 1..]
+        .iter()
+        .any(|e| matches!(e, E::Decision { request, .. } if request == "approval"))
+    {
+        return None;
+    }
+    let E::ApprovalRequest {
+        tool_name,
+        summary,
+        title,
+        ..
+    } = &state.events[index]
+    else {
+        return None;
+    };
+    let line = title.clone().unwrap_or_else(|| summary.clone());
+    let line: String = line.chars().take(200).collect();
+    Some((index, format!("{tool_name}: {line}")))
+}
+
 /// When an agent-managed session stops, tell the desk that manages it.
 pub(crate) fn relay_stop(
     store: &crate::store::Store,
@@ -615,6 +645,24 @@ pub(crate) fn relay_stop(
     }
     let mut note =
         format!("a session you manage stopped. message.send to session:{session_id} reaches it.");
+    if let Some((index, summary)) = pending_approval(state) {
+        envelope = envelope
+            .child("approval", &summary)
+            .attr("desk_may_answer", "no")
+            .child("held_for_user", "approvals stay with the user");
+        let mut extra = serde_json::Map::new();
+        extra.insert("kind".into(), json!("notice"));
+        extra.insert("system".into(), json!(true));
+        crate::coordination::origin::post_to_managing_desk(
+            store,
+            session_id,
+            &format!("desk-approval:{session_id}:{index}"),
+            &format!(
+                "{title} is waiting on your approval: {summary}. Only you can approve it, in the session."
+            ),
+            extra,
+        );
+    }
     if let Some(text) = question.as_deref() {
         envelope = envelope.child("question", text);
         match state
@@ -3512,6 +3560,48 @@ mod tests {
             );
         }
         assert!(super::desk_answer(&store, "snippet", "sess-missing", "  ").is_err());
+    }
+
+    #[test]
+    fn a_managed_sessions_approval_reaches_the_desk_chat_once_and_is_held_for_the_user() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let mut state = crate::harness::HarnessState::blank("/tmp", Some("Ship".into()));
+        state.status = crate::harness::HarnessStatus::WaitingForInput;
+        state.events.push(E::ApprovalRequest {
+            tool_name: "bash".into(),
+            summary: "uses vault secret(s) [BUFFER_API_KEY]".into(),
+            index: 1,
+            total: 1,
+            title: None,
+            reason: None,
+            rule: None,
+        });
+        for id in ["sess-agent", "sess-human"] {
+            store
+                .import_session(id, "wk", &state, &Default::default())
+                .unwrap();
+        }
+        store.set_session_managed_by("sess-agent", "agent").unwrap();
+        for id in ["sess-agent", "sess-agent", "sess-human"] {
+            super::relay_stop(&store, id, "waiting_for_input", &state);
+        }
+        let notices: Vec<_> = thread_events(&store, "snippet")
+            .into_iter()
+            .filter(|e| {
+                e.payload["body"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("waiting on your approval")
+            })
+            .collect();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].payload["session"], "sess-agent");
+        let thread =
+            crate::coordination::direct_thread_id(("agent", "snippet"), ("session", "sess-agent"));
+        let stopped = store.recent_direct_thread_events(&thread, 50).unwrap();
+        let body = stopped[0].payload["body"].as_str().unwrap();
+        assert!(body.contains("desk_may_answer=\"no\""));
+        assert!(body.contains("approvals stay with the user"));
     }
 
     #[test]
