@@ -968,45 +968,6 @@ pub(crate) async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) ->
     }
 }
 
-pub(crate) async fn stats(State(d): State<Shared>) -> Response {
-    let since = (chrono::Utc::now() - chrono::Duration::hours(24)).timestamp();
-    let rows = d.store.with_connection(|c| {
-        let mut stmt = c.prepare(
-            "SELECT status, COUNT(*), COALESCE(SUM(duration_ms), 0) FROM ambient_events
-             WHERE created_at >= ?1 GROUP BY status",
-        )?;
-        let rows = stmt
-            .query_map([since], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    });
-    match rows {
-        Ok(rows) => {
-            let mut by_status = serde_json::Map::new();
-            let mut total_ms = 0i64;
-            let mut total = 0i64;
-            for (status, count, ms) in rows {
-                by_status.insert(status, serde_json::json!(count));
-                total += count;
-                total_ms += ms;
-            }
-            Json(serde_json::json!({
-                "segments": total,
-                "audio_seconds": total_ms / 1000,
-                "by_status": by_status,
-            }))
-            .into_response()
-        }
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")),
-    }
-}
-
 fn has_key(k: &Option<String>) -> bool {
     k.as_deref().is_some_and(|k| !k.trim().is_empty())
 }

@@ -107,30 +107,6 @@ pub(crate) async fn put_profile(State(d): State<Shared>, Json(req): Json<Profile
 }
 
 #[derive(Deserialize)]
-pub(crate) struct ActiveReq {
-    name: String,
-}
-
-// POST /config/active — set the global active profile (default for new sessions).
-pub(crate) async fn set_active(State(d): State<Shared>, Json(req): Json<ActiveReq>) -> Response {
-    d.reload_config().await; // don't clobber TUI-side profile edits
-    let result = {
-        let mut c = d.config.lock().unwrap();
-        if !c.activate(&req.name) {
-            return api_error(StatusCode::NOT_FOUND, "no such profile");
-        }
-        save_config(&c, &d.config_path)
-    };
-    match result {
-        Ok(_) => {
-            notify_models(None);
-            Json(serde_json::json!({ "active": req.name })).into_response()
-        }
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
-    }
-}
-
-#[derive(Deserialize)]
 pub(crate) struct VaultSetReq {
     name: String,
     value: String,

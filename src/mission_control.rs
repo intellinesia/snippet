@@ -411,15 +411,3 @@ pub fn set_mission_control_session(
     save_settings(root, &settings)?;
     Ok(settings)
 }
-
-pub fn set_notification_policy(root: &Path, policy: &str) -> Result<ControlSettings, String> {
-    if !matches!(policy, "mission_control_only" | "all_sessions" | "none") {
-        return Err(
-            "notification policy must be mission_control_only, all_sessions, or none".to_string(),
-        );
-    }
-    let mut settings = load_settings(root);
-    settings.notification_policy = policy.to_string();
-    save_settings(root, &settings)?;
-    Ok(settings)
-}
