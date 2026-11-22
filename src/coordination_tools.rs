@@ -2458,22 +2458,58 @@ pub(crate) fn mirror_origin_artifact(
     }
 }
 
-/// An agent-managed session's artifact also lands in its desk's chat with the user.
+/// An agent-managed session's artifact is offered to its desk, which shares it
+/// with the user itself.
 fn mirror_artifact_to_desk(db: &Store, session: &str, artifact: &crate::artifacts::Artifact) {
     let Some(card) = artifact_payload(session, artifact) else {
         return;
     };
     let version = artifact.latest().map(|v| v.n).unwrap_or_default();
     let label = crate::coordination::origin::session_label(db, session);
+    let body = crate::envelope::Envelope::new("session_artifact")
+        .attr("session", session)
+        .attr("title", &label)
+        .attr("artifact_id", &artifact.id)
+        .attr("version", version.to_string())
+        .child("artifact_title", &artifact.title)
+        .child(
+            "note",
+            format!(
+                "a session you manage presented this. present.share with artifact_id `{}`, session `{session}` and to `human` shares it with the user as a card.",
+                artifact.id
+            ),
+        )
+        .render();
     let mut extra = serde_json::Map::new();
+    extra.insert("kind".into(), json!("status"));
+    extra.insert("auto".into(), json!("session_artifact"));
     extra.insert("artifact".into(), card);
-    crate::coordination::origin::post_to_managing_desk(
+    crate::coordination::origin::tell_managing_desk(
         db,
         session,
         &format!("desk-artifact:{session}:{}:{version}", artifact.id),
-        &format!("{label} shared {}", artifact.title),
+        &body,
         extra,
     );
+}
+
+/// The session an artifact is read from: the caller's own, or one it manages.
+fn artifact_source(
+    ctx: &ToolContext,
+    own: &str,
+    named: Option<&str>,
+) -> Result<String, ToolError> {
+    let Some(named) = named.map(str::trim).filter(|s| !s.is_empty() && *s != own) else {
+        return Ok(own.to_string());
+    };
+    let db = db(ctx)?;
+    let manager = crate::coordination::origin::managing_desk(&db, named);
+    match (manager, ctx.agent_id()) {
+        (Some(desk), Some(me)) if desk == me => Ok(named.to_string()),
+        _ => Err(ToolError::msg(format!(
+            "session `{named}` is not one you manage; share only your own artifacts or a managed session's"
+        ))),
+    }
 }
 
 /// Record the session an event was posted from, so the room's wake-up skips it.
@@ -2534,6 +2570,8 @@ struct ShareArtifactArgs {
     to: String,
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    session: Option<String>,
 }
 
 pub struct ShareArtifactTool;
@@ -2550,7 +2588,8 @@ impl Tool for ShareArtifactTool {
                     "path": {"type": "string"},
                     "title": {"type": "string"},
                     "to": {"type": "string", "description": "`human`, agent id, `group:<id>`, or `channel:<id>`"},
-                    "note": {"type": "string"}
+                    "note": {"type": "string"},
+                    "session": {"type": "string"}
                 }),
                 &["to"],
             ),
@@ -2583,6 +2622,7 @@ impl Tool for ShareArtifactTool {
             .durable_session_id()
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| ToolError::msg("present.share requires a durable session"))?;
+        let mut shared_from: Option<String> = None;
         let artifact = match (artifact_id, path) {
             (Some(_), Some(_)) => {
                 return Err(ToolError::msg(
@@ -2592,9 +2632,16 @@ impl Tool for ShareArtifactTool {
             (None, None) => {
                 return Err(ToolError::msg("provide `artifact_id` or `path`"));
             }
-            (Some(id), None) => crate::artifacts::get(session, id).ok_or_else(|| {
-                ToolError::msg(format!("unknown artifact `{id}` in session `{session}`"))
-            })?,
+            (Some(id), None) => {
+                let source = artifact_source(ctx, session, args.session.as_deref())?;
+                let artifact = crate::artifacts::get(&source, id).ok_or_else(|| {
+                    ToolError::msg(format!("unknown artifact `{id}` in session `{source}`"))
+                })?;
+                if source != session {
+                    shared_from = Some(source);
+                }
+                artifact
+            }
             (None, Some(raw_path)) => {
                 let resolved = if std::path::Path::new(raw_path).is_absolute() {
                     std::path::PathBuf::from(raw_path)
@@ -2609,7 +2656,7 @@ impl Tool for ShareArtifactTool {
                     .artifact
             }
         };
-        let artifact_payload = artifact_payload(session, &artifact)
+        let artifact_payload = artifact_payload(shared_from.as_deref().unwrap_or(session), &artifact)
             .ok_or_else(|| ToolError::msg(format!("artifact `{}` has no versions", artifact.id)))?;
         let body = args
             .note

@@ -17,6 +17,7 @@ pub mod handoffs;
 pub mod last_message;
 pub mod typed;
 pub use last_message::LastMessage;
+pub mod desk_fallbacks;
 pub mod followups;
 pub mod turns;
 pub mod watches;

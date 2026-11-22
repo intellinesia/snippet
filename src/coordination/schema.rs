@@ -384,6 +384,20 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
          );
          CREATE INDEX IF NOT EXISTS session_followups_due
              ON session_followups(delivered_at, due_at);
+         CREATE TABLE IF NOT EXISTS desk_fallbacks (
+             key TEXT PRIMARY KEY,
+             desk TEXT NOT NULL,
+             session_id TEXT NOT NULL,
+             what TEXT NOT NULL,
+             event_index INTEGER NOT NULL,
+             body TEXT NOT NULL,
+             extra_json TEXT NOT NULL,
+             created_at TEXT NOT NULL,
+             due_at TEXT NOT NULL,
+             done_at TEXT
+         );
+         CREATE INDEX IF NOT EXISTS desk_fallbacks_due
+             ON desk_fallbacks(done_at, due_at);
 "#,
     )
 }
