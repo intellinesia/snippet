@@ -1004,8 +1004,8 @@ fn error_result(code: &str, message: &str) -> Value {
     json!({"schema_version": 1, "status": "error", "error": {"code": code, "message": message}})
 }
 
-fn tool_result_from_block(block: &Value) -> Value {
-    let text = match block.get("content") {
+fn block_text(block: &Value) -> String {
+    match block.get("content") {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Array(parts)) => parts
             .iter()
@@ -1013,7 +1013,26 @@ fn tool_result_from_block(block: &Value) -> Value {
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
-    };
+    }
+}
+
+/// The structured value the bridge served for this block, matched by its
+/// rendered text so parallel calls of one tool never swap results.
+fn served_result_for_block(served: &ServedResults, name: &str, block: &Value) -> Option<Value> {
+    let text = block_text(block);
+    if text.is_empty() {
+        return None;
+    }
+    let mut served = served.lock().ok()?;
+    let queue = served.get_mut(name)?;
+    let pos = queue
+        .iter()
+        .position(|v| text.starts_with(&crate::llm::render_tool_result(v)))?;
+    queue.remove(pos)
+}
+
+fn tool_result_from_block(block: &Value) -> Value {
+    let text = block_text(block);
     if let Ok(value) = serde_json::from_str::<Value>(&text)
         && value.get("status").is_some()
     {
@@ -4335,9 +4354,11 @@ impl CodingHarness {
                     if QUIET_TOOLS.contains(&name.as_str()) {
                         continue;
                     }
+                    let result = served_result_for_block(&parse.served, &name, &block)
+                        .unwrap_or_else(|| tool_result_from_block(&block));
                     state.events.push(HarnessEvent::ToolResult {
                         tool_name: name,
-                        result: tool_result_from_block(&block),
+                        result,
                     });
                     changed = true;
                 }
@@ -4438,6 +4459,27 @@ mod goal_tests {
             }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_claude_tool_result_keeps_its_structured_value_even_out_of_order() {
+        let served: ServedResults = Default::default();
+        let first = json!({"schema_version": 1, "status": "success", "data": {"stdout": "one", "exit_code": 0}});
+        let second = json!({"schema_version": 1, "status": "success", "data": {"stdout": "two", "exit_code": 1}});
+        served
+            .lock()
+            .unwrap()
+            .entry("bash".into())
+            .or_default()
+            .extend([first.clone(), second.clone()]);
+        let block = |v: &Value| {
+            json!({"type": "tool_result", "content": [{"type": "text", "text": crate::llm::render_tool_result(v)}]})
+        };
+        assert_eq!(served_result_for_block(&served, "bash", &block(&second)), Some(second));
+        assert_eq!(served_result_for_block(&served, "bash", &block(&first)), Some(first));
+        let stray = json!({"type": "tool_result", "content": "plain text"});
+        assert_eq!(served_result_for_block(&served, "bash", &stray), None);
+        assert_eq!(tool_result_from_block(&stray)["data"]["output"], "plain text");
     }
 
     #[test]
