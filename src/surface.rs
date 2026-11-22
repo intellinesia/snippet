@@ -279,6 +279,11 @@ const TASK: Surface = Surface {
             "give your review verdict: approve or changes with findings.",
         ),
         act(
+            "answer",
+            "answer_session",
+            "answer a session's pending question for the user.",
+        ),
+        act(
             "follow_up",
             "file_follow_up_task",
             "file a small follow-up task that starts when yours is done.",

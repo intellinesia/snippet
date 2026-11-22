@@ -245,6 +245,38 @@ impl Tool for AnswerWorker {
     }
 }
 
+pub struct AnswerSession;
+#[async_trait]
+impl Tool for AnswerSession {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "answer_session".into(),
+            description: "Answer, for the user, a pending question in a session you manage or forwarded. Refused for confirm questions and secrets, vault, permissions or destructive actions.".into(),
+            input_schema: schema(json!({
+                "session_id": {"type": "string"},
+                "answer": {"type": "string"}
+            }), &["session_id", "answer"]),
+        }
+    }
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let args: AnswerWorkerArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let caller = ctx.durable_session_id().unwrap_or_default();
+        if !crate::session::is_inbox_session_id(caller) {
+            return Err(ToolError::msg("only a desk answers sessions this way"));
+        }
+        let desk = crate::session::owner_agent_id_for(caller, ctx.agent_id());
+        let session = args.session_id.trim().trim_start_matches("session:");
+        let store = ctx.store().map_err(|e| ToolError::msg(e.to_string()))?;
+        let question = crate::serve::desk_answer(&store, &desk, session, &args.answer)
+            .map_err(ToolError::msg)?;
+        Ok(ToolResult::success(json!({
+            "answered": question,
+            "note": "the session receives it within a few seconds; the user's chat shows it as answered by your desk."
+        })))
+    }
+}
+
 #[derive(Deserialize)]
 struct UpdateBriefArgs {
     #[serde(default)]

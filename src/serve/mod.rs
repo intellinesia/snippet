@@ -54,7 +54,8 @@ mod coordination;
 pub use coordination::{COORDINATION_THREAD, queue_coordination_wake};
 mod direct;
 pub(crate) use direct::{
-    human_dm_thread, post_to_human, relay_desk_reply, relay_question, relay_restart, relay_stop,
+    desk_answer, human_dm_thread, post_to_human, relay_desk_reply, relay_question, relay_restart,
+    relay_stop,
 };
 mod artifact_routes;
 pub(crate) mod attention;

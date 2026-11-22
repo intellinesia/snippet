@@ -488,11 +488,7 @@ pub(crate) fn relay_question(
     let Some(question) = state.pending_question.as_ref() else {
         return;
     };
-    let Some(agent_id) = turn_about_thread(&state.events)
-        .as_deref()
-        .and_then(agent_from_thread_id)
-        .or_else(|| relay_agent_id(store, session_id))
-    else {
+    let Some(agent_id) = question_desk(store, session_id, state) else {
         return;
     };
     let Some(index) = state
@@ -617,11 +613,26 @@ pub(crate) fn relay_stop(
     if let Some(text) = last_said {
         envelope = envelope.child("last_said", text);
     }
+    let mut note =
+        format!("a session you manage stopped. message.send to session:{session_id} reaches it.");
     if let Some(text) = question.as_deref() {
         envelope = envelope.child("question", text);
+        match state
+            .pending_question
+            .as_ref()
+            .and_then(desk_answer_refusal)
+        {
+            None => {
+                envelope = envelope.attr("desk_may_answer", "yes");
+                note.push_str(" task.answer answers its question for the user.");
+            }
+            Some(reason) => {
+                envelope = envelope
+                    .attr("desk_may_answer", "no")
+                    .child("held_for_user", reason);
+            }
+        }
     }
-    let note =
-        format!("a session you manage stopped. message.send to session:{session_id} reaches it.");
     let body = envelope.child("note", note).render();
     let key = format!("session-stopped:{session_id}:{}", state.events.len());
     let mut extra = serde_json::Map::new();
@@ -640,6 +651,159 @@ pub(crate) fn relay_stop(
     ) {
         eprintln!("relay stop for {session_id}: {error}");
     }
+}
+
+/// The desk a session's pending question is relayed to.
+fn question_desk(
+    store: &crate::store::Store,
+    session_id: &str,
+    state: &crate::harness::HarnessState,
+) -> Option<String> {
+    turn_about_thread(&state.events)
+        .as_deref()
+        .and_then(agent_from_thread_id)
+        .or_else(|| relay_agent_id(store, session_id))
+}
+
+const DESK_BLOCKED_TERMS: &[&str] = &[
+    "vault",
+    "secret",
+    "password",
+    "passphrase",
+    "credential",
+    "token",
+    "api key",
+    "private key",
+    "ssh key",
+    "permission",
+    "grant",
+    "approve",
+    "approval",
+    "authori",
+    "sudo",
+    "delete",
+    "remove",
+    "drop ",
+    "wipe",
+    "destroy",
+    "rm -rf",
+    "force push",
+    "force-push",
+    "--force",
+    "reset --hard",
+    "rewrite history",
+    "deploy",
+    "publish",
+    "release",
+    "merge",
+    "production",
+    "pay",
+    "purchase",
+    "irreversible",
+    "cannot be undone",
+];
+
+/// Why a desk may not answer this pending question for the user, if it may not.
+pub(crate) fn desk_answer_refusal(question: &serde_json::Value) -> Option<String> {
+    let items = question
+        .get("questions")
+        .and_then(|q| q.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if items.is_empty() {
+        return Some("the question has no readable items".into());
+    }
+    for q in &items {
+        let kind = q
+            .pointer("/answer_kind/kind")
+            .and_then(|k| k.as_str())
+            .unwrap_or("free_text");
+        if !matches!(
+            kind,
+            "free_text" | "single_choice" | "multi_choice" | "yes_no"
+        ) {
+            return Some(format!("{kind} questions stay with the user"));
+        }
+    }
+    let text = question.to_string().to_lowercase();
+    DESK_BLOCKED_TERMS
+        .iter()
+        .find(|term| text.contains(*term))
+        .map(|term| format!("it touches \"{}\", which stays with the user", term.trim()))
+}
+
+/// A desk answers a session's pending question on the user's behalf: only the
+/// desk the question reached, never a blocked kind, always with an audit line in
+/// the user's chat. Returns the session's question text.
+pub(crate) fn desk_answer(
+    store: &crate::store::Store,
+    desk: &str,
+    session_id: &str,
+    answer: &str,
+) -> Result<String, String> {
+    let answer = answer.trim();
+    if answer.is_empty() {
+        return Err("answer must not be empty".into());
+    }
+    if crate::mission_control::is_session_id(session_id)
+        || crate::session::is_inbox_session_id(session_id)
+    {
+        return Err("only work sessions can be answered this way".into());
+    }
+    let row = store
+        .get_session_row(session_id)
+        .ok()
+        .flatten()
+        .ok_or_else(|| format!("no session `{session_id}`"))?;
+    let state = crate::session::state_path_for_id(session_id)
+        .and_then(|path| crate::session::read_session_meta(&path))
+        .ok_or_else(|| format!("no state for session `{session_id}`"))?;
+    let question = state
+        .pending_question
+        .as_ref()
+        .filter(|_| state.status == crate::harness::HarnessStatus::WaitingForInput)
+        .ok_or_else(|| format!("session `{session_id}` isn't waiting on a question"))?;
+    let forwarded_by_desk = turn_about_thread(&state.events)
+        .as_deref()
+        .and_then(agent_from_thread_id)
+        .is_some_and(|a| a == desk);
+    let managed_by_desk = row.managed_by == "agent"
+        && crate::session::owner_agent_id_for(&row.id, row.agent_id.as_deref()) == desk;
+    if !forwarded_by_desk && !managed_by_desk {
+        return Err(format!(
+            "session `{session_id}` is not yours to answer: the user leads it or another desk manages it"
+        ));
+    }
+    if let Some(reason) = desk_answer_refusal(question) {
+        return Err(format!("refused: {reason}. Ask the user."));
+    }
+    crate::mission_autonomy::queue_answer_in(store, session_id, answer, desk)?;
+    let question_text = super::autonomy::question_text(question);
+    let name = relay_agent_name(store, desk, desk);
+    let index = state
+        .events
+        .iter()
+        .rposition(|e| matches!(e, crate::harness::HarnessEvent::UserQuestion { .. }))
+        .unwrap_or(state.events.len());
+    let mut extra = serde_json::Map::new();
+    extra.insert("system".into(), json!(true));
+    extra.insert("kind".into(), json!("notice"));
+    extra.insert("answered_by".into(), json!(desk));
+    if let Some(asked) = latest_question_event(store, session_id) {
+        extra.insert("answer_to".into(), json!(asked.event_id));
+    }
+    let task = store.open_task_of_session(session_id).ok().flatten();
+    post_to_human(
+        store,
+        desk,
+        session_id,
+        None,
+        task.as_ref().map(|t| t.id.as_str()),
+        &format!("desk-answer:{session_id}:{index}"),
+        &format!("Answered by desk {name} on your behalf: {answer}\nQuestion: {question_text}"),
+        extra,
+    );
+    Ok(question_text)
 }
 
 /// The newest relayed `ask_user` question for `session_id`, when its agent's
@@ -3305,6 +3469,49 @@ mod tests {
             );
             assert!(state.human_waiting.is_empty());
         }
+    }
+
+    #[test]
+    fn a_desk_may_answer_plain_questions_but_never_blocked_kinds() {
+        let q = |text: &str, kind: &str| json!({"questions": [{"id": "q0", "text": text, "answer_kind": {"kind": kind}}]});
+        for (text, kind) in [
+            ("Which colour for the header?", "single_choice"),
+            ("Use British spelling in the docs?", "yes_no"),
+            ("What should the lane be called?", "free_text"),
+        ] {
+            assert_eq!(super::desk_answer_refusal(&q(text, kind)), None, "{text}");
+        }
+        for (text, kind) in [
+            ("Ship it?", "confirm"),
+            ("Allow use of the vault secret GEMINI_API_KEY?", "yes_no"),
+            ("Paste the API key for Buffer", "free_text"),
+            ("Grant write permission to ~/.ssh?", "yes_no"),
+            ("Force push over main?", "yes_no"),
+            ("Delete the old worktrees?", "single_choice"),
+            ("Deploy to production now?", "yes_no"),
+        ] {
+            assert!(
+                super::desk_answer_refusal(&q(text, kind)).is_some(),
+                "{text}"
+            );
+        }
+        assert!(super::desk_answer_refusal(&json!({"questions": []})).is_some());
+    }
+
+    #[test]
+    fn a_desk_cannot_answer_mission_control_its_own_inbox_or_an_unknown_session() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        for session in [
+            crate::mission_control::SESSION_ID,
+            "inbox-snippet",
+            "sess-missing",
+        ] {
+            assert!(
+                super::desk_answer(&store, "snippet", session, "blue").is_err(),
+                "{session}"
+            );
+        }
+        assert!(super::desk_answer(&store, "snippet", "sess-missing", "  ").is_err());
     }
 
     #[test]
