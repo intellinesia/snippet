@@ -2666,6 +2666,17 @@ impl Tool for ShareArtifactTool {
 
         let db = db(ctx)?;
         let (sender_kind, sender_id) = actor(ctx)?;
+        if target == "human"
+            && sender_kind == "session"
+            && crate::coordination::origin::managing_desk(&db, session).is_some()
+        {
+            mirror_artifact_to_desk(&db, session, &artifact);
+            return Ok(ToolResult::success(json!({
+                "to": "desk",
+                "artifact": artifact_payload,
+                "note": "your desk shares it with the user in its chat",
+            })));
+        }
         let about_task = session_task(ctx, session).map(|(id, _)| id);
         let mut extra = crate::coordination::typed::payload_fields(
             Some("result"),

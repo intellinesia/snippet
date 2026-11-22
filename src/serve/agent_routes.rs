@@ -111,6 +111,11 @@ pub(crate) async fn list_agents(State(d): State<Shared>, Query(q): Query<AgentsQ
                             serde_json::to_value(presence).unwrap_or(serde_json::Value::Null),
                         );
                         object.insert("needs_you".into(), needs_you.into());
+                        object.insert(
+                            "open_ask".into(),
+                            super::agent_now::open_desk_ask(&d.store, &agent.id)
+                                .unwrap_or(serde_json::Value::Null),
+                        );
                     }
                     value
                 })

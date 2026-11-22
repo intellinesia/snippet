@@ -284,6 +284,11 @@ const TASK: Surface = Surface {
             "answer a session's pending question for the user.",
         ),
         act(
+            "session",
+            "steer_session",
+            "steer a managed session: model, hand-off.",
+        ),
+        act(
             "follow_up",
             "file_follow_up_task",
             "file a small follow-up task that starts when yours is done.",

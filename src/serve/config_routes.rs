@@ -472,7 +472,7 @@ pub(crate) async fn set_session_model(
     }
 }
 
-pub(super) fn notify_models(session: Option<&str>) {
+pub(crate) fn notify_models(session: Option<&str>) {
     crate::session::emit_device_event(match session {
         Some(id) => serde_json::json!({ "kind": "models", "session": id }),
         None => serde_json::json!({ "kind": "models" }),

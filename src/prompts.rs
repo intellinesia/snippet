@@ -90,7 +90,7 @@ pub fn coding_prompt(context: &PromptContext) -> String {
 
 const HUMAN_MANAGED_LINE: &str =
     "The user leads this session; your desk keeps track but does not drive it.";
-const AGENT_MANAGED_LINE: &str = "You run this session for your desk, toward its objective. The user may drop in: take their word as direction; the session stays yours.";
+const AGENT_MANAGED_LINE: &str = "This is work you took on at your desk, toward its objective. The user may drop in: take their word as direction; the work stays yours.";
 
 fn work_session_layer(context: &PromptContext) -> String {
     let line = if context.agent_managed {
@@ -157,7 +157,7 @@ pub struct SpecializedAgentPromptContext<'a> {
 /// cannot disagree about how the agent is introduced to itself.
 fn identity_overlay(agent_id: &str, identity: &str) -> String {
     format!(
-        "## Your identity: {agent_id}\n\nThe identity below sets your expertise, judgment and voice. Everything above still governs how you work, talk and finish.\n\n{identity}\n\n## Improving yourself\n\nAfter a task, judge the run against your playbook for that kind of work and update the playbook in your agent memory with what held up or failed. A lesson that changes how your role itself should work goes on your board: your desk weighs it when it reflects and may change your identity, and the user and Mission Control are told.\n",
+        "## Your identity: {agent_id}\n\nThis section is injected from your agent identity: it sets your expertise, judgment and voice. Everything above still governs how you work, talk and finish.\n\n{identity}\n\n## Improving yourself\n\nAfter a task, judge the run against your playbook for that kind of work and update the playbook in your agent memory with what held up or failed. A lesson that changes how your role itself should work goes on your board: your desk weighs it when it reflects and may change your identity, and the user and Mission Control are told.\n",
         identity = identity.trim(),
     )
 }
@@ -231,8 +231,8 @@ mod seat_layer_tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     const HARNESS_CORE_MAX_BYTES: usize = 4_500;
-    const DESK_LAYER_MAX_BYTES: usize = 3_200;
-    const WORK_SESSION_LAYER_MAX_BYTES: usize = 2_000;
+    const DESK_LAYER_MAX_BYTES: usize = 4_200;
+    const WORK_SESSION_LAYER_MAX_BYTES: usize = 2_500;
     const LANE_LAYER_MAX_BYTES: usize = 1_400;
 
     #[test]
