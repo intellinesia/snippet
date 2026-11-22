@@ -253,6 +253,44 @@ pub fn post_origin_event(
     Ok(Some(event))
 }
 
+/// The session a task's origin cards are mirrored from.
+fn mirrored_session(task: &Task) -> &str {
+    if task.session_id.trim().is_empty() {
+        task.reporting_session.as_deref().unwrap_or("")
+    } else {
+        task.session_id.as_str()
+    }
+}
+
+/// The chat that already shows `session`'s approvals, questions and results to
+/// the user, as `(thread_id, title)`, when an in-progress task mirrors it.
+pub fn origin_route(store: &Store, session: &str) -> Option<(String, String)> {
+    store
+        .tasks_worked_in(session, Some(&super::TaskStatus::InProgress))
+        .ok()?
+        .into_iter()
+        .filter(|t| mirrored_session(t) == session)
+        .find_map(|t| {
+            let thread = t.origin_thread.as_deref().map(str::trim)?;
+            (!thread.is_empty()).then(|| {
+                let title = thread_title(store, thread).unwrap_or_else(|| "the chat".to_string());
+                (thread.to_string(), title)
+            })
+        })
+}
+
+/// The title the user sees for a task's origin chat.
+pub fn origin_title(store: &Store, task: &Task) -> Option<String> {
+    let thread = task.origin_thread.as_deref().map(str::trim)?;
+    (!thread.is_empty())
+        .then(|| thread_title(store, thread).unwrap_or_else(|| "the chat".to_string()))
+}
+
+/// Whether a task result of this kind is posted to the task's origin chat.
+pub fn result_mirrored(kind: &str) -> bool {
+    RESULT_KINDS.contains(&kind)
+}
+
 /// The desk an agent-managed session reports to when no task's origin chat
 /// already carries its cards.
 pub fn managing_desk(store: &Store, session: &str) -> Option<String> {
@@ -265,16 +303,7 @@ pub fn managing_desk(store: &Store, session: &str) -> Option<String> {
     if row.managed_by != "agent" {
         return None;
     }
-    let routed_by_task = store
-        .tasks_worked_in(session, Some(&super::TaskStatus::InProgress))
-        .unwrap_or_default()
-        .iter()
-        .any(|t| {
-            t.origin_thread
-                .as_deref()
-                .is_some_and(|o| !o.trim().is_empty())
-        });
-    if routed_by_task {
+    if origin_route(store, session).is_some() {
         return None;
     }
     Some(crate::session::owner_agent_id_for(
@@ -348,11 +377,7 @@ fn sweep_attention(store: &Store) {
         if task.status != super::TaskStatus::InProgress {
             continue;
         }
-        let session = if task.session_id.trim().is_empty() {
-            task.reporting_session.as_deref().unwrap_or("")
-        } else {
-            task.session_id.as_str()
-        };
+        let session = mirrored_session(&task);
         if session.is_empty() {
             continue;
         }

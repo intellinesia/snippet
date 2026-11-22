@@ -2494,11 +2494,7 @@ fn mirror_artifact_to_desk(db: &Store, session: &str, artifact: &crate::artifact
 }
 
 /// The session an artifact is read from: the caller's own, or one it manages.
-fn artifact_source(
-    ctx: &ToolContext,
-    own: &str,
-    named: Option<&str>,
-) -> Result<String, ToolError> {
+fn artifact_source(ctx: &ToolContext, own: &str, named: Option<&str>) -> Result<String, ToolError> {
     let Some(named) = named.map(str::trim).filter(|s| !s.is_empty() && *s != own) else {
         return Ok(own.to_string());
     };
@@ -2656,8 +2652,10 @@ impl Tool for ShareArtifactTool {
                     .artifact
             }
         };
-        let artifact_payload = artifact_payload(shared_from.as_deref().unwrap_or(session), &artifact)
-            .ok_or_else(|| ToolError::msg(format!("artifact `{}` has no versions", artifact.id)))?;
+        let artifact_payload =
+            artifact_payload(shared_from.as_deref().unwrap_or(session), &artifact).ok_or_else(
+                || ToolError::msg(format!("artifact `{}` has no versions", artifact.id)),
+            )?;
         let body = args
             .note
             .as_deref()
@@ -2736,9 +2734,6 @@ impl Tool for ShareArtifactTool {
                 "kind": "coordination_event",
                 "event": ev.clone(),
             }));
-            if sender_kind == "session" {
-                mirror_artifact_to_desk(&db, session, &artifact);
-            }
             ev
         } else {
             match db

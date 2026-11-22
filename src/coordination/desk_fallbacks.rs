@@ -63,7 +63,11 @@ impl Store {
         })
     }
 
-    pub fn due_desk_fallbacks(&self, now: &str, limit: u32) -> Result<Vec<DeskFallback>, StoreError> {
+    pub fn due_desk_fallbacks(
+        &self,
+        now: &str,
+        limit: u32,
+    ) -> Result<Vec<DeskFallback>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(&format!(
                 "SELECT {COLUMNS} FROM desk_fallbacks

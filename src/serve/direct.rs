@@ -558,7 +558,9 @@ pub(crate) fn relay_question(
     }
     extra.insert("question".into(), question_obj);
     if !crate::session::is_inbox_session_id(session_id) {
-        tell_desk_of_question(store, &agent_id, session_id, index, question, &body, extra);
+        if question_reaches_desk(store, session_id, state) {
+            tell_desk_of_question(store, &agent_id, session_id, index, question, &body, extra);
+        }
         return;
     }
     crate::coordination::reach::reach_with_key(
@@ -576,6 +578,28 @@ pub(crate) fn relay_question(
 }
 
 const DESK_FALLBACK_SECS: i64 = 120;
+
+/// One place per question: a task's origin chat shows it, a session the user
+/// leads shows it, and only a managed or desk-forwarded one goes to the desk.
+fn question_reaches_desk(
+    store: &crate::store::Store,
+    session_id: &str,
+    state: &crate::harness::HarnessState,
+) -> bool {
+    if crate::coordination::origin::origin_route(store, session_id).is_some() {
+        return false;
+    }
+    let managed = store
+        .get_session_row(session_id)
+        .ok()
+        .flatten()
+        .is_some_and(|row| row.managed_by == "agent");
+    managed
+        || turn_about_thread(&state.events)
+            .as_deref()
+            .and_then(agent_from_thread_id)
+            .is_some()
+}
 
 #[allow(clippy::too_many_arguments)]
 fn schedule_desk_fallback(
@@ -836,15 +860,26 @@ pub(crate) fn relay_stop(
     }
     let mut note =
         format!("a session you manage stopped. message.send to session:{session_id} reaches it.");
+    let shown_in = crate::coordination::origin::origin_route(store, session_id);
+    if let Some((_, chat)) = shown_in.as_ref()
+        && (state.pending_question.is_some() || pending_approval(state).is_some())
+    {
+        envelope = envelope.attr("shown_in", chat);
+        note.push_str(&format!(
+            " Its card is already shown to the user in {chat}; do not pass it on."
+        ));
+    }
     if let Some((index, summary)) = pending_approval(state) {
         envelope = envelope
             .child("approval", &summary)
             .attr("desk_may_answer", "no")
             .child("held_for_user", "approvals stay with the user");
-        note.push_str(&format!(
-            " Tell the user about the approval in your own words; only they can approve it, in the session. If you post nothing in your chat with them within {} minutes, the daemon tells them itself.",
-            DESK_FALLBACK_SECS / 60
-        ));
+        if shown_in.is_none() {
+            note.push_str(&format!(
+                " Tell the user about the approval in your own words; only they can approve it, in the session. If you post nothing in your chat with them within {} minutes, the daemon tells them itself.",
+                DESK_FALLBACK_SECS / 60
+            ));
+        }
         if crate::coordination::origin::managing_desk(store, session_id).is_some() {
             let mut extra = serde_json::Map::new();
             extra.insert("kind".into(), json!("notice"));
@@ -865,10 +900,12 @@ pub(crate) fn relay_stop(
     }
     if let Some(text) = question.as_deref() {
         envelope = envelope.child("question", text);
-        note.push_str(&format!(
-            " Pass its question to the user in your own words unless you answer it; if you post nothing in your chat with them within {} minutes, the daemon posts the question card itself.",
-            DESK_FALLBACK_SECS / 60
-        ));
+        if shown_in.is_none() {
+            note.push_str(&format!(
+                " Pass its question to the user in your own words unless you answer it; if you post nothing in your chat with them within {} minutes, the daemon posts the question card itself.",
+                DESK_FALLBACK_SECS / 60
+            ));
+        }
         match state
             .pending_question
             .as_ref()
@@ -2962,7 +2999,11 @@ mod tests {
             .store
             .recent_direct_thread_events(&event.thread_id, 10)
             .unwrap();
-        assert_eq!(thread_events.len(), 1, "nothing is posted into the desk's chat");
+        assert_eq!(
+            thread_events.len(),
+            1,
+            "nothing is posted into the desk's chat"
+        );
         let to_desk = d
             .store
             .recent_direct_thread_events(
@@ -3624,17 +3665,13 @@ mod tests {
         store.create_agent(&agent("a")).unwrap();
         let state = waiting_question_state();
         import_waiting_session(&store, "sess-1", "a", &state);
+        store.set_session_managed_by("sess-1", "agent").unwrap();
         super::relay_question(&store, "sess-1", &state);
         super::relay_question(&store, "sess-1", &state);
-        assert!(thread_events(&store, "a").is_empty(), "the desk speaks first");
-        let told = store
-            .recent_direct_thread_events(
-                &crate::coordination::direct_thread_id(("session", "sess-1"), ("agent", "a")),
-                10,
-            )
-            .unwrap();
-        assert_eq!(told.len(), 1);
-        assert_eq!(told[0].payload["auto"], "session_question");
+        assert!(
+            thread_events(&store, "a").is_empty(),
+            "the desk speaks first"
+        );
         let later = "2999-01-01T00:00:00Z";
         super::run_desk_fallbacks(&store, later, |_| true);
         super::run_desk_fallbacks(&store, later, |_| true);
@@ -3661,6 +3698,89 @@ mod tests {
         );
         assert!(ask.payload["question"]["asked_at"].as_str().is_some());
         assert_eq!(ask.idempotency_key, "ask:sess-1:0");
+    }
+
+    #[test]
+    fn each_wait_reaches_the_user_in_one_place() {
+        use crate::coordination::TaskStatus;
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store.create_agent(&agent("a")).unwrap();
+        let human_led = waiting_question_state();
+        import_waiting_session(&store, "sess-human", "a", &human_led);
+        store.set_session_managed_by("sess-human", "human").unwrap();
+        super::relay_question(&store, "sess-human", &human_led);
+
+        let group = store
+            .create_group(
+                "g",
+                ("agent", "a"),
+                &["a".into()],
+                None,
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap()
+            .id;
+        let mut task = crate::coordination::Task::filed_by_human(
+            "t1".into(),
+            "Task t1".into(),
+            "do it".into(),
+            "s1".into(),
+            0,
+            "2026-01-01T00:00:00Z".into(),
+        );
+        task.origin_thread = Some(group.clone());
+        task.status = TaskStatus::InProgress;
+        task.session_id = "sess-task".into();
+        store.create_task(&task).unwrap();
+        store
+            .add_task_agent_full(
+                "t1",
+                "a",
+                "implementer",
+                None,
+                "",
+                "active",
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+        let mut approval = crate::harness::HarnessState::blank("/tmp", None);
+        approval.status = crate::harness::HarnessStatus::WaitingForInput;
+        approval.events.push(E::ApprovalRequest {
+            tool_name: "bash".into(),
+            summary: "run ls".into(),
+            index: 1,
+            total: 1,
+            title: None,
+            reason: None,
+            rule: None,
+        });
+        import_waiting_session(&store, "sess-task", "a", &approval);
+        store.set_session_managed_by("sess-task", "agent").unwrap();
+        super::relay_stop(&store, "sess-task", "waiting_for_input", &approval);
+        crate::coordination::origin::sweep(&store);
+        super::run_desk_fallbacks(&store, "2999-01-01T00:00:00Z", |_| true);
+
+        assert!(
+            thread_events(&store, "a").is_empty(),
+            "nothing in the desk chat"
+        );
+        let told = store
+            .recent_direct_thread_events(
+                &crate::coordination::direct_thread_id(("session", "sess-task"), ("agent", "a")),
+                10,
+            )
+            .unwrap();
+        let body = told[0].payload["body"].as_str().unwrap();
+        assert!(body.contains("do not pass it on"), "{body}");
+        assert!(!body.contains("Tell the user"), "{body}");
+        let cards = store
+            .recent_direct_thread_events(&group, 10)
+            .unwrap_or_default();
+        let cards: Vec<_> = cards
+            .iter()
+            .filter(|e| e.payload.get("approval").is_some())
+            .collect();
+        assert_eq!(cards.len(), 1, "one approval card in the origin group");
     }
 
     #[test]
@@ -3693,10 +3813,7 @@ mod tests {
         assert!(thread_events(&store, "a").is_empty());
         let told = store
             .recent_direct_thread_events(
-                &crate::coordination::direct_thread_id(
-                    ("session", "sess-unowned"),
-                    ("agent", "a"),
-                ),
+                &crate::coordination::direct_thread_id(("session", "sess-unowned"), ("agent", "a")),
                 10,
             )
             .unwrap();
@@ -3808,7 +3925,10 @@ mod tests {
         for id in ["sess-agent", "sess-agent", "sess-human"] {
             super::relay_stop(&store, id, "waiting_for_input", &state);
         }
-        assert!(thread_events(&store, "snippet").is_empty(), "the desk speaks first");
+        assert!(
+            thread_events(&store, "snippet").is_empty(),
+            "the desk speaks first"
+        );
         let later = "2999-01-01T00:00:00Z";
         super::run_desk_fallbacks(&store, later, |_| true);
         super::run_desk_fallbacks(&store, later, |_| true);
@@ -3841,7 +3961,13 @@ mod tests {
         assert!(thread_events(&store, "a").is_empty(), "answered already");
 
         let mut second = waiting_question_state();
-        second.events.insert(0, E::AssistantText { text: "x".into(), quiet: false });
+        second.events.insert(
+            0,
+            E::AssistantText {
+                text: "x".into(),
+                quiet: false,
+            },
+        );
         super::relay_question(&store, "sess-1", &second);
         store
             .send_direct_message_typed(
@@ -3906,6 +4032,7 @@ mod tests {
         store.create_agent(&agent("a")).unwrap();
         let state = waiting_question_state();
         import_waiting_session(&store, "sess-1", "a", &state);
+        store.set_session_managed_by("sess-1", "agent").unwrap();
         super::relay_question(&store, "sess-1", &state);
         super::run_desk_fallbacks(&store, "2999-01-01T00:00:00Z", |_| true);
         let ask = thread_events(&store, "a")
@@ -3955,6 +4082,7 @@ mod tests {
         store.create_agent(&agent("a")).unwrap();
         let state = waiting_question_state();
         import_waiting_session(&store, "sess-1", "a", &state);
+        store.set_session_managed_by("sess-1", "agent").unwrap();
         super::relay_question(&store, "sess-1", &state);
         super::run_desk_fallbacks(&store, "2999-01-01T00:00:00Z", |_| true);
         // What the ws `answer` frame does: find the relayed question, mirror it.
