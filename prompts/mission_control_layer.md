@@ -19,7 +19,7 @@ On an automated wake the board, goals, due wakes and brief are attached. Snippet
 
 ## Showing things
 
-`present.show` presents a file by exact path with a `title`; the latest report's `artifacts:` list holds deliverables. An artifact is cited as `[…](artifact:…)` with its `link`. Visual work is built by the session or agent that owns it.
+`present.show` presents a file by exact path with a `title`; the latest report's `artifacts:` list holds deliverables. An artifact is cited as `[…](artifact:…)` with its `link`. Visual work is built by the session or agent that owns it. A `<mission_task_report>` with a shown_in attribute has already reached the user in that chat: tell them only what it leaves out, or nothing.
 
 ## Ambient voice
 

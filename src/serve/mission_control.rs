@@ -1605,7 +1605,11 @@ fn task_artifacts_block(session_id: &str, created_at: &str) -> String {
     }
 }
 
-fn report_text(task: &Task, marker: &crate::coordination::NotificationMarker) -> String {
+fn report_text(
+    store: &crate::store::Store,
+    task: &Task,
+    marker: &crate::coordination::NotificationMarker,
+) -> String {
     if marker.kind == "plan" {
         crate::envelope::Envelope::new("task_plan")
             .attr("task_id", &task.id)
@@ -1615,10 +1619,16 @@ fn report_text(task: &Task, marker: &crate::coordination::NotificationMarker) ->
             .child("instructions", WORKFLOW_PLAN)
             .render()
     } else {
-        crate::envelope::Envelope::new("mission_task_report")
+        let mut envelope = crate::envelope::Envelope::new("mission_task_report")
             .attr("task_id", &task.id)
             .attr("title", &task.title)
-            .attr("status", &marker.kind)
+            .attr("status", &marker.kind);
+        if crate::coordination::origin::result_mirrored(&marker.kind)
+            && let Some(chat) = crate::coordination::origin::origin_title(store, task)
+        {
+            envelope = envelope.attr("shown_in", chat);
+        }
+        envelope
             .child("summary", &marker.message)
             .child(
                 "artifacts",
@@ -1658,7 +1668,7 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
             if awaiting && !is_outcome_report(&marker.kind) {
                 continue;
             }
-            let text = report_text(&task, marker);
+            let text = report_text(&daemon.store, &task, marker);
             if awaiting {
                 digest.push(text);
             } else {

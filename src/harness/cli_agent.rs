@@ -4472,14 +4472,21 @@ mod goal_tests {
             .entry("bash".into())
             .or_default()
             .extend([first.clone(), second.clone()]);
-        let block = |v: &Value| {
-            json!({"type": "tool_result", "content": [{"type": "text", "text": crate::llm::render_tool_result(v)}]})
-        };
-        assert_eq!(served_result_for_block(&served, "bash", &block(&second)), Some(second));
-        assert_eq!(served_result_for_block(&served, "bash", &block(&first)), Some(first));
+        let block = |v: &Value| json!({"type": "tool_result", "content": [{"type": "text", "text": crate::llm::render_tool_result(v)}]});
+        assert_eq!(
+            served_result_for_block(&served, "bash", &block(&second)),
+            Some(second)
+        );
+        assert_eq!(
+            served_result_for_block(&served, "bash", &block(&first)),
+            Some(first)
+        );
         let stray = json!({"type": "tool_result", "content": "plain text"});
         assert_eq!(served_result_for_block(&served, "bash", &stray), None);
-        assert_eq!(tool_result_from_block(&stray)["data"]["output"], "plain text");
+        assert_eq!(
+            tool_result_from_block(&stray)["data"]["output"],
+            "plain text"
+        );
     }
 
     #[test]
