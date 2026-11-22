@@ -1,4 +1,4 @@
-//! Standing rules for recording conversations. Mission Control edits them through tools; the call detector enforces them.
+//! Standing rules for recording conversations. Lead edits them through tools; the call detector enforces them.
 
 use chrono::{Datelike, NaiveDateTime, Timelike};
 use serde::{Deserialize, Serialize};
@@ -495,7 +495,7 @@ pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-/// Load the config, apply `f`, save it. Used by the Mission Control tools.
+/// Load the config, apply `f`, save it. Used by the Lead tools.
 pub async fn update<T>(
     f: impl FnOnce(&mut RecordingPolicy, i64) -> Result<T, String>,
 ) -> Result<(T, RecordingPolicy), String> {

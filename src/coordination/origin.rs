@@ -6,7 +6,7 @@ use super::types::CoordinationEvent;
 
 /// The desk an agent-managed session reports to.
 pub fn managing_desk(store: &Store, session: &str) -> Option<String> {
-    if crate::mission_control::is_session_id(session)
+    if crate::lead::is_session_id(session)
         || crate::session::is_inbox_session_id(session)
     {
         return None;

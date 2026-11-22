@@ -612,7 +612,7 @@ impl LaneManager {
             ));
         }
         context.push_str(
-            "\n\nYou aren't on your own. When you hit a question you can't settle, find something that changes the plan or touches another lane's piece, or are about to do something hard to undo, tell the agent that handed you this with `message_parent`. Anything for a peer, Mission Control or the user goes through it too. Keep it to what matters: most of the job is doing your piece well.",
+            "\n\nYou aren't on your own. When you hit a question you can't settle, find something that changes the plan or touches another lane's piece, or are about to do something hard to undo, tell the agent that handed you this with `message_parent`. Anything for a peer, Lead or the user goes through it too. Keep it to what matters: most of the job is doing your piece well.",
         );
         LaneLink {
             origin_session,
@@ -1341,7 +1341,7 @@ pub(crate) fn lane_tool_registry(
 }
 
 pub const WORK_TOOL_BUDGET_BYTES: usize = 21_300;
-pub const MISSION_CONTROL_TOOL_BUDGET_BYTES: usize = 31_500;
+pub const LEAD_TOOL_BUDGET_BYTES: usize = 31_500;
 pub const DESK_TOOL_BUDGET_BYTES: usize = 12_800;
 pub const LANE_TOOL_BUDGET_BYTES: usize = 7_500;
 
@@ -1369,15 +1369,15 @@ pub fn role_tool_definitions(
             ),
             WORK_TOOL_BUDGET_BYTES,
         )),
-        "mission_control" => Some((
+        "lead" => Some((
             crate::surface::advertise(
-                crate::surface::SeatRole::MissionControl,
+                crate::surface::SeatRole::Lead,
                 with_meta(
-                    crate::session::mission_control_tool_registry(key).definitions(),
+                    crate::session::lead_tool_registry(key).definitions(),
                     false,
                 ),
             ),
-            MISSION_CONTROL_TOOL_BUDGET_BYTES,
+            LEAD_TOOL_BUDGET_BYTES,
         )),
         "desk" => Some((
             crate::surface::advertise(
@@ -1613,7 +1613,7 @@ async fn run_lane_once(
     );
     let identity = agent.as_deref().map(|agent_name| {
         let body = crate::coordination::AgentHome::new(
-            crate::coordination::agents_root(&crate::config::snippet_home().join("mission-control")),
+            crate::coordination::agents_root(&crate::config::snippet_home().join("lead")),
             agent_name,
         )
         .ok()
@@ -2280,7 +2280,7 @@ mod tests {
     /// above today's sizes; lower them as descriptions get tighter.
     #[test]
     fn tool_definition_budget_per_role() {
-        for role in ["work", "mission_control", "desk", "lane"] {
+        for role in ["work", "lead", "desk", "lane"] {
             let (defs, cap) = role_tool_definitions(role, None).unwrap();
             let sizes = tool_bytes(&defs);
             let total: usize = sizes.iter().map(|s| s.1).sum();

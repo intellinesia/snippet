@@ -8,7 +8,7 @@ use crate::coordination::{
     HandoffMode, NotificationMarker, Task, TaskResult, TaskStatus, types::CoordinationEvent,
 };
 use crate::llm::NativeToolDefinition;
-use crate::mission_control;
+use crate::lead;
 use crate::session::{
     create_blank_session, list_routable_sessions, read_session_state, state_path_for_id,
 };
@@ -20,8 +20,8 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 }
 
 fn root(ctx: &ToolContext) -> Result<PathBuf, ToolError> {
-    ctx.mission_control_root().ok_or_else(|| {
-        ToolError::msg("Mission Control tools are only available in the Mission Control session.")
+    ctx.lead_root().ok_or_else(|| {
+        ToolError::msg("Lead tools are only available in the Lead session.")
     })
 }
 
@@ -52,7 +52,7 @@ fn task_view(task: &Task) -> Value {
     })
 }
 
-pub fn add_mission_control_tools(registry: &mut ToolRegistry) {
+pub fn add_lead_tools(registry: &mut ToolRegistry) {
     registry.insert(ListSessions);
     registry.insert(InspectSession);
     registry.insert(ListMissionTasks);
@@ -236,7 +236,7 @@ impl Tool for AnswerWorker {
         if args.answer.trim().is_empty() {
             return Err(ToolError::msg("answer must not be empty"));
         }
-        let by = ctx.agent_id().unwrap_or(crate::mission_control::SESSION_ID);
+        let by = ctx.agent_id().unwrap_or(crate::lead::SESSION_ID);
         crate::mission_autonomy::queue_answer(&session, args.answer.trim(), by)
             .map_err(ToolError::msg)?;
         Ok(ToolResult::success(
@@ -1195,7 +1195,7 @@ impl Tool for PingUser {
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
         let kind = args.kind.as_deref().unwrap_or("update");
         let agent_id = resolve_reach_agent(ctx);
-        if ctx.is_mission_control() || agent_id == crate::mission_control::SESSION_ID {
+        if ctx.is_lead() || agent_id == crate::lead::SESSION_ID {
             let outcome =
                 crate::mission_autonomy::ping(args.title.trim(), args.message.trim(), kind)
                     .map_err(ToolError::msg)?;
@@ -1259,8 +1259,8 @@ fn open_reach_store(ctx: &ToolContext) -> Result<crate::store::Store, ToolError>
 }
 
 fn resolve_reach_agent(ctx: &ToolContext) -> String {
-    if ctx.is_mission_control() {
-        return crate::mission_control::SESSION_ID.to_string();
+    if ctx.is_lead() {
+        return crate::lead::SESSION_ID.to_string();
     }
     if let Some(("agent", id)) = crate::coordination_tools::speaks_as(ctx) {
         return id;
@@ -1336,7 +1336,7 @@ pub fn add_worker_report_tool(registry: &mut ToolRegistry) {
 ///
 /// Read tools only: a coordination session needs to know which sessions exist,
 /// what a given one is doing and who is on which task so it can dispatch into
-/// the right place, but changing the task board stays Mission Control's.
+/// the right place, but changing the task board stays Lead's.
 pub fn add_coordination_session_tools(registry: &mut ToolRegistry) {
     registry.insert(ListSessions);
     registry.insert(InspectSession);
@@ -1373,7 +1373,7 @@ fn default_limit() -> usize {
 }
 
 /// Strip harness envelopes so another session's `<system-reminder>` (or older
-/// `<steering>`) text cannot be mistaken for instructions to Mission Control.
+/// `<steering>`) text cannot be mistaken for instructions to Lead.
 fn strip_harness_markup(text: &str) -> String {
     let mut text = text.to_string();
     for name in [
@@ -1532,7 +1532,7 @@ pub struct ListMissionTasks;
 #[async_trait]
 impl Tool for ListMissionTasks {
     fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition { name: "list_mission_tasks".into(), description: "Mission Control's board, one compact row per task: status, why it waits (reason), age, the worker's current plan step, blockers and the latest unread note. Open work plus work finished in the last day. Pass task_id for one task in full (description, result, notifications, roster, links).".into(), input_schema: schema(json!({"include_finished": {"type": "boolean", "description": "Also list tasks finished more than a day ago."}, "task_id": {"type": "string", "description": "Show this one task in full."}}), &[]) }
+        NativeToolDefinition { name: "list_mission_tasks".into(), description: "Lead's board, one compact row per task: status, why it waits (reason), age, the worker's current plan step, blockers and the latest unread note. Open work plus work finished in the last day. Pass task_id for one task in full (description, result, notifications, roster, links).".into(), input_schema: schema(json!({"include_finished": {"type": "boolean", "description": "Also list tasks finished more than a day ago."}, "task_id": {"type": "string", "description": "Show this one task in full."}}), &[]) }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let store = db(ctx)?;
@@ -1696,7 +1696,7 @@ impl Tool for ViewTaskBoard {
     }
 }
 
-fn session_folder_outside_mission_control(
+fn session_folder_outside_lead(
     raw: &str,
     title: &str,
 ) -> Result<(PathBuf, bool), String> {
@@ -1708,7 +1708,7 @@ fn session_folder_outside_mission_control(
         None => PathBuf::from(raw),
     };
     let canon = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let mc = canon(&mission_control::workspace_path());
+    let mc = canon(&lead::workspace_path());
     let target = canon(&expanded);
     if !target.starts_with(&mc) {
         return Ok((expanded, false));
@@ -1812,7 +1812,7 @@ async fn open_folder_session(
     profile: Option<String>,
 ) -> Result<(crate::session::SessionInfo, String), ToolError> {
     let (folder, moved) =
-        session_folder_outside_mission_control(folder, title).map_err(ToolError::msg)?;
+        session_folder_outside_lead(folder, title).map_err(ToolError::msg)?;
     if !moved && !force_new {
         let candidates = crate::session_resolve::routable_candidates();
         let recent = crate::session_resolve::recent_in_folder(
@@ -1840,7 +1840,7 @@ async fn open_folder_session(
     }
     let note = if moved {
         format!(
-            "Created idle in {} — sessions never run in Mission Control's own folder. Give it work with tasks.create(session, handoff_mode=fresh); the work itself happens in that session.",
+            "Created idle in {} — sessions never run in Lead's own folder. Give it work with tasks.create(session, handoff_mode=fresh); the work itself happens in that session.",
             folder.display()
         )
     } else {
@@ -1916,13 +1916,13 @@ pub struct CreateMissionTask;
 #[async_trait]
 impl Tool for CreateMissionTask {
     fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition { name: "create_mission_task".into(), description: "Create a task for project work requested by the user or an agent. Prerequisites link with `blocked_by`. The description is the worker's full brief and scope. `resume` continues the target session's context, `fresh` starts clean; `agent_id` names a specialist; `crew` seats reviewers or advisors before work starts.".into(), input_schema: schema(json!({"title":{"type":"string"}, "description":{"type":"string"}, "session":{"type":"string","description":"Session id, title fragment or workspace path; `latest` selects the most recent match."}, "supersedes":{"type":"string","description":"optional; id of the cancelled task this one replaces"}, "handoff_mode":{"type":"string","enum":["resume","fresh"]}, "owned_paths":{"type":"array","items":{"type":"string"}}, "agent_id":{"type":"string","description":"Specialist agent id from snippet tool list_coordination_agents."}, "crew":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"role":{"type":"string","description":"reviewer (default), advisor or tester"}},"required":["agent_id"]},"description":"Agents seated beside the worker; they wait until called."}, "profile":{"type":"string","description":"Profile from snippet tool list_profiles. Overrides the session model and restarts it, losing its prompt cache; use only to rescue a rate-limited session."}, "reply_to":{"type":"string","description":"Exact `reply_to` value from the request message, such as `session:<id>` or `agent:<id>`."}, "blocked_by":{"type":"array","items":{"type":"string"},"description":"Task ids that must finish first."}, "read_only":{"type":"boolean","description":"investigation that changes nothing"}, "verify_mode":{"type":"string","enum":["self","reviewer","mission_control","user"],"description":"Who confirms completion. `self` skips review; `reviewer` uses a read-only agent; `mission_control` or `user` leaves the verdict with you. Defaults to reviewer (self when read_only)."}, "reviewer":{"type":"string","description":"Agent id for the reviewer; defaults to the worker in a fresh lane."}, "revises_task_id":{"type":"string","description":"optional; the finished task this one revises"}, "audience":{"type":"string","description":"Intended audience for content work."}, "definition_of_good":{"type":"string","description":"Quality bar for content work."}, "goal":{"type":"string","description":"Open goal id this task serves."}, "expected_minutes":{"type":"integer","description":"Expected duration in minutes; flagged stalled after twice this (minimum 20). Defaults by verify_mode."}}), &["title","description","session"]) }
+        NativeToolDefinition { name: "create_mission_task".into(), description: "Create a task for project work requested by the user or an agent. Prerequisites link with `blocked_by`. The description is the worker's full brief and scope. `resume` continues the target session's context, `fresh` starts clean; `agent_id` names a specialist; `crew` seats reviewers or advisors before work starts.".into(), input_schema: schema(json!({"title":{"type":"string"}, "description":{"type":"string"}, "session":{"type":"string","description":"Session id, title fragment or workspace path; `latest` selects the most recent match."}, "supersedes":{"type":"string","description":"optional; id of the cancelled task this one replaces"}, "handoff_mode":{"type":"string","enum":["resume","fresh"]}, "owned_paths":{"type":"array","items":{"type":"string"}}, "agent_id":{"type":"string","description":"Specialist agent id from snippet tool list_coordination_agents."}, "crew":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"role":{"type":"string","description":"reviewer (default), advisor or tester"}},"required":["agent_id"]},"description":"Agents seated beside the worker; they wait until called."}, "profile":{"type":"string","description":"Profile from snippet tool list_profiles. Overrides the session model and restarts it, losing its prompt cache; use only to rescue a rate-limited session."}, "reply_to":{"type":"string","description":"Exact `reply_to` value from the request message, such as `session:<id>` or `agent:<id>`."}, "blocked_by":{"type":"array","items":{"type":"string"},"description":"Task ids that must finish first."}, "read_only":{"type":"boolean","description":"investigation that changes nothing"}, "verify_mode":{"type":"string","enum":["self","reviewer","lead","user"],"description":"Who confirms completion. `self` skips review; `reviewer` uses a read-only agent; `lead` or `user` leaves the verdict with you. Defaults to reviewer (self when read_only)."}, "reviewer":{"type":"string","description":"Agent id for the reviewer; defaults to the worker in a fresh lane."}, "revises_task_id":{"type":"string","description":"optional; the finished task this one revises"}, "audience":{"type":"string","description":"Intended audience for content work."}, "definition_of_good":{"type":"string","description":"Quality bar for content work."}, "goal":{"type":"string","description":"Open goal id this task serves."}, "expected_minutes":{"type":"integer","description":"Expected duration in minutes; flagged stalled after twice this (minimum 20). Defaults by verify_mode."}}), &["title","description","session"]) }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let mut args: CreateTaskArgs = serde_json::from_value(arguments)?;
         args.description
             .push_str(&crate::mission_autonomy::standing_rules_note());
-        create_task(ctx, args, ("agent", crate::mission_control::SESSION_ID)).await
+        create_task(ctx, args, ("agent", crate::lead::SESSION_ID)).await
     }
 }
 
@@ -1972,7 +1972,7 @@ impl Tool for StartTask {
                     "blocked_by": {"type": "array", "items": {"type": "string"}},
                     "read_only": {"type": "boolean"},
                     "expected_minutes": {"type": "integer"},
-                    "verify_mode": {"type": "string", "enum": ["self", "reviewer", "mission_control", "user"], "description": "default self"}
+                    "verify_mode": {"type": "string", "enum": ["self", "reviewer", "lead", "user"], "description": "default self"}
                 }),
                 &["title", "description"],
             ),
@@ -1986,9 +1986,9 @@ impl Tool for StartTask {
                 "task.start needs an agent identity; this session has none",
             ));
         };
-        if agent_id == crate::mission_control::SESSION_ID {
+        if agent_id == crate::lead::SESSION_ID {
             return Err(ToolError::msg(
-                "Mission Control routes work and never starts tasks itself; use tasks.create",
+                "Lead routes work and never starts tasks itself; use tasks.create",
             ));
         }
         let session_query = args
@@ -2047,7 +2047,7 @@ impl Tool for StartTask {
             .to_string();
         let waiting_on: Vec<String> =
             serde_json::from_value(data["waiting_on"].clone()).unwrap_or_default();
-        // One line to Mission Control: it did not file this, the desk did.
+        // One line to Lead: it did not file this, the desk did.
         let note = if waiting_on.is_empty() {
             format!("Started task {task_id} \"{title}\" in {session_id}")
         } else {
@@ -2058,7 +2058,7 @@ impl Tool for StartTask {
         };
         if let Ok(saved) = db.send_direct_message(
             ("agent", agent_id.as_str()),
-            ("agent", crate::mission_control::SESSION_ID),
+            ("agent", crate::lead::SESSION_ID),
             &note,
             &uuid::Uuid::new_v4().to_string(),
             &now_rfc3339(),
@@ -2103,7 +2103,7 @@ pub(crate) fn resolve_target_session(query: &str) -> Result<String, ToolError> {
 pub(crate) async fn create_task_value(ctx: &ToolContext, args: Value) -> Result<Value, ToolError> {
     let args: CreateTaskArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::msg(format!("slice arguments: {e}")))?;
-    let out = create_task(ctx, args, ("agent", crate::mission_control::SESSION_ID)).await?;
+    let out = create_task(ctx, args, ("agent", crate::lead::SESSION_ID)).await?;
     Ok(out.value["data"].clone())
 }
 
@@ -2161,8 +2161,8 @@ async fn create_task(
         }
         let store = db(ctx)?;
         let root = ctx
-            .mission_control_root()
-            .unwrap_or_else(mission_control::workspace_path);
+            .lead_root()
+            .unwrap_or_else(lead::workspace_path);
         // An agent's INBOX is a mailbox, not a workspace. It runs the
         // coordination runtime — no file or shell tools, and no
         // `report_mission_task` — so work routed there cannot be done and cannot
@@ -2212,8 +2212,8 @@ async fn create_task(
         if let Some(name) = profile.as_deref() {
             check_profile(name).await?;
         }
-        if mission_control::get_session(&root, &session_id).is_err() {
-            mission_control::create_session(
+        if lead::get_session(&root, &session_id).is_err() {
+            lead::create_session(
                 &root,
                 &session_id,
                 state.title.as_deref().unwrap_or("Managed session"),
@@ -2255,7 +2255,7 @@ async fn create_task(
         {
             Some(raw) => crate::coordination::VerifyMode::parse(raw).ok_or_else(|| {
                 ToolError::msg(format!(
-                    "verify_mode must be self, reviewer, mission_control or user, got `{raw}`"
+                    "verify_mode must be self, reviewer, lead or user, got `{raw}`"
                 ))
             })?,
             None if args.read_only && reviewer_seat.is_none() => {
@@ -2544,7 +2544,7 @@ async fn create_task(
         if !warnings.is_empty() {
             result["warnings"] = json!(warnings);
         }
-        if created_by.1 == crate::mission_control::SESSION_ID
+        if created_by.1 == crate::lead::SESSION_ID
             && agent_id == crate::coordination::SNIPPET_AGENT_ID
             && roster.len() == 1
         {
@@ -2581,7 +2581,7 @@ impl Tool for DeliverToSession {
                     "brief": {"type": "string", "description": "the self-contained ask"},
                     "task_id": {"type": "string"},
                     "title": {"type": "string", "description": "optional; board title for a new task"},
-                    "verify_mode": {"type": "string", "description": "self, reviewer, mission_control or user"},
+                    "verify_mode": {"type": "string", "description": "self, reviewer, lead or user"},
                     "reviewer": {"type": "string", "description": "any agent id to review this work, on its own profile; omitted, the agent doing the work reviews it in a fresh lane"}
                 }),
                 &["session", "brief"],
@@ -2608,7 +2608,7 @@ impl Tool for DeliverToSession {
         {
             Some(raw) => Some(crate::coordination::VerifyMode::parse(raw).ok_or_else(|| {
                 ToolError::msg(format!(
-                    "verify_mode must be self, reviewer, mission_control or user, got `{raw}`"
+                    "verify_mode must be self, reviewer, lead or user, got `{raw}`"
                 ))
             })?),
             None => reviewer
@@ -2624,10 +2624,10 @@ impl Tool for DeliverToSession {
         let session_id = resolve_target_session(&args.session)?;
         if crate::session::is_inbox_session_id(&session_id)
             || crate::session::is_lane_session_id(&session_id)
-            || mission_control::is_session_id(&session_id)
+            || lead::is_session_id(&session_id)
         {
             return Err(ToolError::msg(
-                "deliver to a project session, not an inbox, a lane or Mission Control itself",
+                "deliver to a project session, not an inbox, a lane or Lead itself",
             ));
         }
         let path = state_path_for_id(&session_id)
@@ -2641,12 +2641,12 @@ impl Tool for DeliverToSession {
         if let Some(id) = reviewer.as_deref() {
             require_working_agent(&store, id)?;
         }
-        let mc_root = ctx
-            .mission_control_root()
-            .unwrap_or_else(mission_control::workspace_path);
-        if mission_control::get_session(&mc_root, &session_id).is_err() {
-            let _ = mission_control::create_session(
-                &mc_root,
+        let lead_root = ctx
+            .lead_root()
+            .unwrap_or_else(lead::workspace_path);
+        if lead::get_session(&lead_root, &session_id).is_err() {
+            let _ = lead::create_session(
+                &lead_root,
                 &session_id,
                 state.title.as_deref().unwrap_or("Managed session"),
                 std::path::Path::new(&state.workspace),
@@ -2673,7 +2673,7 @@ impl Tool for DeliverToSession {
             ..Default::default()
         };
         store
-            .patch_task_state(&task.id, &check, None, mission_control::SESSION_ID, &now)
+            .patch_task_state(&task.id, &check, None, lead::SESSION_ID, &now)
             .map_err(|e| ToolError::msg(format!("record ledger: {e}")))?;
         let on_roster = |id: &str| {
             store
@@ -2697,7 +2697,7 @@ impl Tool for DeliverToSession {
         let envelope = direct_brief_envelope(&task, brief, &state.workspace, &ledger);
         store
             .send_task_notice(
-                ("agent", mission_control::SESSION_ID),
+                ("agent", lead::SESSION_ID),
                 &session_id,
                 &task.id,
                 "task_brief",
@@ -2800,7 +2800,7 @@ fn bind_direct_delivery(
                 Vec::new(),
                 HandoffMode::Fresh,
                 "agent",
-                mission_control::SESSION_ID,
+                lead::SESSION_ID,
                 now.to_string(),
             );
             task.status = TaskStatus::InProgress;
@@ -2838,10 +2838,10 @@ fn bind_direct_delivery(
 }
 
 fn direct_brief_envelope(task: &Task, brief: &str, workspace: &str, ledger: &str) -> String {
-    let envelope = crate::envelope::Envelope::new("mission_control_task")
+    let envelope = crate::envelope::Envelope::new("lead_task")
         .attr("task_id", &task.id)
         .attr("title", &task.title)
-        .attr("requested_by", "agent mission-control (delivered directly)")
+        .attr("requested_by", "agent lead (delivered directly)")
         .attr("workspace", workspace)
         .child("scope", brief)
         .child(
@@ -3069,7 +3069,7 @@ impl Tool for UpdateMissionTask {
                 &store,
                 task_id,
                 &revise.feedback,
-                crate::mission_control::SESSION_ID,
+                crate::lead::SESSION_ID,
                 &now,
             )?;
             return Ok(ToolResult::success(
@@ -3135,7 +3135,7 @@ impl Tool for UpdateMissionTask {
                     .filter(|s| !s.is_empty())
                     .map(str::to_string)
                     .or_else(|| updated_task.result.as_ref().map(|r| r.summary.clone()))
-                    .unwrap_or_else(|| "Completed by Mission Control.".to_string());
+                    .unwrap_or_else(|| "Completed by Lead.".to_string());
                 let artifacts = updated_task
                     .result
                     .as_ref()
@@ -3176,12 +3176,12 @@ impl Tool for UpdateMissionTask {
                 sequence: 0,
                 event_type: "task.updated".into(),
                 actor_kind: "agent".into(),
-                actor_id: crate::mission_control::SESSION_ID.into(),
+                actor_id: crate::lead::SESSION_ID.into(),
                 payload_version: 1,
                 payload: crate::coordination_tools::stamp_origin(
                     ctx,
                     json!({
-                        "body": format!("Task updated by Mission Control: {body}"),
+                        "body": format!("Task updated by Lead: {body}"),
                         "task_id": task_id,
                     }),
                 ),
@@ -3287,7 +3287,7 @@ impl Tool for AssignTaskAgent {
             sequence: 0,
             event_type: "task.agent_assigned".into(),
             actor_kind: "agent".into(),
-            actor_id: crate::mission_control::SESSION_ID.into(),
+            actor_id: crate::lead::SESSION_ID.into(),
             payload_version: 1,
             payload: crate::coordination_tools::stamp_origin(
                 ctx,
@@ -3357,9 +3357,9 @@ impl Tool for InviteTaskAgent {
                 "task_id, agent_id and ask must not be empty",
             ));
         }
-        if agent_id == crate::mission_control::SESSION_ID {
+        if agent_id == crate::lead::SESSION_ID {
             return Err(ToolError::msg(
-                "Mission Control is not a task collaborator; message.send to mission-control instead",
+                "Lead is not a task collaborator; message.send to lead instead",
             ));
         }
         let Some(caller) = ctx.durable_session_id() else {
@@ -3516,7 +3516,7 @@ impl Tool for TransferMissionTaskLease {
             task_id: task_id.to_string(),
             from_agent: current_active.to_string(),
             to_agent: to_agent.to_string(),
-            done: "Mission Control moved the turn.".to_string(),
+            done: "Lead moved the turn.".to_string(),
             next: args.next.trim().to_string(),
             risks: String::new(),
             files: Vec::new(),
@@ -3533,7 +3533,7 @@ impl Tool for TransferMissionTaskLease {
             sequence: 0,
             event_type: "task.lease_transferred".into(),
             actor_kind: "agent".into(),
-            actor_id: crate::mission_control::SESSION_ID.into(),
+            actor_id: crate::lead::SESSION_ID.into(),
             payload_version: 1,
             payload: crate::coordination_tools::stamp_origin(
                 ctx,
@@ -3577,7 +3577,7 @@ impl Tool for RetryMissionTask {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "retry_mission_task".into(),
-            description: "Re-queue a blocked, failed, or stuck in-progress Mission Control task (rate limit, dispatch error, a worker that stopped without reporting). The task is delivered to its session again. Does not create a new task. Refuses done/cancelled work. profile moves the worker onto another model.".into(),
+            description: "Re-queue a blocked, failed, or stuck in-progress Lead task (rate limit, dispatch error, a worker that stopped without reporting). The task is delivered to its session again. Does not create a new task. Refuses done/cancelled work. profile moves the worker onto another model.".into(),
             input_schema: schema(json!({"task_id":{"type":"string"}, "profile":{"type":"string","description":"optional; an inference profile named exactly as snippet tool list_profiles returns it. The worker session restarts on that model."}}), &["task_id"]),
         }
     }
@@ -3626,7 +3626,7 @@ impl Tool for CancelMissionTask {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "cancel_mission_task".into(),
-            description: "Cancel an open or failed Mission Control task with a reason. A session working it is stopped and told why; tasks waiting on it start, told it was cancelled. When refiling, pass the new task's id as superseded_by. Refuses done work.".into(),
+            description: "Cancel an open or failed Lead task with a reason. A session working it is stopped and told why; tasks waiting on it start, told it was cancelled. When refiling, pass the new task's id as superseded_by. Refuses done work.".into(),
             input_schema: schema(json!({"task_id":{"type":"string"}, "reason":{"type":"string","description":"why; stored as the task's result"}, "superseded_by":{"type":"string","description":"optional; id of the task that replaces this one"}}), &["task_id", "reason"]),
         }
     }
@@ -3677,7 +3677,7 @@ impl Tool for CancelMissionTask {
             let body = cancelled_envelope(&before, reason, superseded_by);
             store
                 .send_task_notice(
-                    ("agent", crate::mission_control::SESSION_ID),
+                    ("agent", crate::lead::SESSION_ID),
                     session,
                     task_id,
                     "task_cancelled",
@@ -3746,7 +3746,7 @@ fn cancelled_worker(task: &Task) -> Option<String> {
         (task.status == TaskStatus::InProgress && !task.session_id.is_empty())
             .then(|| task.session_id.clone())
     })?;
-    (!crate::mission_control::is_session_id(&session)).then_some(session)
+    (!crate::lead::is_session_id(&session)).then_some(session)
 }
 
 fn cancelled_envelope(task: &Task, reason: &str, superseded_by: Option<&str>) -> String {
@@ -3757,7 +3757,7 @@ fn cancelled_envelope(task: &Task, reason: &str, superseded_by: Option<&str>) ->
         .attr_opt("superseded_by", superseded_by)
         .child(
             "note",
-            "Mission Control cancelled this task. Stop work on it and don't report it; keep what's done. Ask Mission Control if anything is unclear.",
+            "Lead cancelled this task. Stop work on it and don't report it; keep what's done. Ask Lead if anything is unclear.",
         )
         .render()
 }
@@ -3798,7 +3798,7 @@ async fn interrupt_session(id: &str, reason: &str) -> Result<Value, ToolError> {
 }
 
 /// Sessions that have gone quiet: not running, idle for a while, and with no
-/// open task routed to them. Mission Control's own session, agents' inboxes
+/// open task routed to them. Lead's own session, agents' inboxes
 /// and lanes are never candidates.
 fn stale_sessions(store: &Store, idle_days: i64) -> Vec<crate::session::SessionInfo> {
     let now = chrono::Utc::now().timestamp();
@@ -3815,7 +3815,7 @@ fn stale_sessions(store: &Store, idle_days: i64) -> Vec<crate::session::SessionI
         .filter(|s| now - s.last_active > idle_days * 86_400)
         .filter(|s| !open.contains(&s.id))
         .filter(|s| {
-            !mission_control::is_session_id(&s.id) && !crate::session::is_inbox_session_id(&s.id)
+            !lead::is_session_id(&s.id) && !crate::session::is_inbox_session_id(&s.id)
         })
         .collect()
 }
@@ -3943,7 +3943,7 @@ impl Tool for StopSession {
         if id.is_empty() || reason.is_empty() {
             return Err(ToolError::msg("sessions.stop needs session_id and reason"));
         }
-        if id == crate::mission_control::SESSION_ID {
+        if id == crate::lead::SESSION_ID {
             return Err(ToolError::msg(
                 "that's your own session; end your turn instead",
             ));
@@ -4016,7 +4016,7 @@ impl Tool for SessionState {
         if id.is_empty() {
             return Err(ToolError::msg("sessions.state needs session_id"));
         }
-        if id == crate::mission_control::SESSION_ID {
+        if id == crate::lead::SESSION_ID {
             return Err(ToolError::msg("that's your own session"));
         }
         let settled = arguments.get("settled").and_then(Value::as_bool);
@@ -4103,7 +4103,7 @@ impl Tool for RegisterAgent {
             ));
         }
         if args.id == crate::coordination::SNIPPET_AGENT_ID
-            || args.id == mission_control::SESSION_ID
+            || args.id == lead::SESSION_ID
         {
             return Err(ToolError::msg(format!(
                 "`{}` is a built-in agent id",
@@ -4181,7 +4181,7 @@ pub(crate) fn announce_report(
     // The WORKER whose board this reports to. Taken from the task ROSTER, not
     // from this session's context: the target session is not always
     // agent-bound, so `ctx.agent_id()` is usually None here and the report
-    // would be silently skipped. The roster was written when Mission Control
+    // would be silently skipped. The roster was written when Lead
     // created the task, so it is the one record that knows who did the work.
     let roster = store.list_task_agents(&task.id).unwrap_or_default();
     let current = roster.iter().filter(|member| member.removed_at.is_none());
@@ -4223,7 +4223,7 @@ pub(crate) fn announce_report(
         };
         let body = format!("“{}” {verb}.\n\n{summary_for_board}", task.title);
         let _ = store.send_direct_message(
-            ("agent", crate::mission_control::SESSION_ID),
+            ("agent", crate::lead::SESSION_ID),
             (kind, id),
             &body,
             &format!("task-outcome:{}", task.id),
@@ -4279,7 +4279,7 @@ struct ReportArgs {
 }
 
 /// A done report is its three short parts; blocked and failed reports, and
-/// Mission Control's own, may be a plain summary.
+/// Lead's own, may be a plain summary.
 fn report_text(args: &ReportArgs, status: &TaskStatus, is_mc: bool) -> Result<String, ToolError> {
     let parts = [
         ("Scope", args.scope.trim()),
@@ -4311,7 +4311,7 @@ pub struct ReportMissionTask;
 #[async_trait]
 impl Tool for ReportMissionTask {
     fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition { name: "report_mission_task".into(), description: "Report a Mission Control task's completion, failure, or blocker. Use only for the <mission_control_task> envelope delivered to this session. A done report is three short parts: scope, done and how; a task with a reviewer goes to review before it completes.".into(), input_schema: schema(json!({"task_id":{"type":"string"}, "status":{"type":"string","enum":["done","blocked","failed"]}, "scope":{"type":"string","description":"done: what the scope was, and anything that changed and why"}, "done":{"type":"string","description":"done: how much got done, and anything left out and why"}, "how":{"type":"string","description":"done: how it was done and checked"}, "summary":{"type":"string","description":"blocked or failed: on what, and what would unblock it"}, "artifacts":{"type":"array","items":{"type":"string"}}}), &["task_id","status"]) }
+        NativeToolDefinition { name: "report_mission_task".into(), description: "Report a Lead task's completion, failure, or blocker. Use only for the <lead_task> envelope delivered to this session. A done report is three short parts: scope, done and how; a task with a reviewer goes to review before it completes.".into(), input_schema: schema(json!({"task_id":{"type":"string"}, "status":{"type":"string","enum":["done","blocked","failed"]}, "scope":{"type":"string","description":"done: what the scope was, and anything that changed and why"}, "done":{"type":"string","description":"done: how much got done, and anything left out and why"}, "how":{"type":"string","description":"done: how it was done and checked"}, "summary":{"type":"string","description":"blocked or failed: on what, and what would unblock it"}, "artifacts":{"type":"array","items":{"type":"string"}}}), &["task_id","status"]) }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: ReportArgs = serde_json::from_value(arguments)?;
@@ -4321,7 +4321,7 @@ impl Tool for ReportMissionTask {
         // binding. Any other session is rejected.
         let Some(caller) = ctx.durable_session_id() else {
             return Err(ToolError::msg(
-                "this session is not bound to a Mission Control task; task.report is only available to dispatched task sessions",
+                "this session is not bound to a Lead task; task.report is only available to dispatched task sessions",
             ));
         };
         let status = match args.status.as_str() {
@@ -4333,8 +4333,8 @@ impl Tool for ReportMissionTask {
         let store = db(ctx)?;
         let canonical = |id: &str| crate::conversations::canonical_session_id(id);
         let caller_canonical = canonical(caller);
-        let is_mc = caller_canonical == crate::mission_control::SESSION_ID
-            || ctx.agent_id() == Some(crate::mission_control::SESSION_ID);
+        let is_mc = caller_canonical == crate::lead::SESSION_ID
+            || ctx.agent_id() == Some(crate::lead::SESSION_ID);
         {
             let bound = store
                 .get_task(&args.task_id)
@@ -4426,7 +4426,7 @@ impl Tool for ReportMissionTask {
                 .update_task_in(&args.task_id, &now, |task| {
                     task.status = status;
                     task.notifications.push(NotificationMarker {
-                        target: "mission_control".into(),
+                        target: "lead".into(),
                         kind: "blocked".into(),
                         message: summary,
                         delivered: false,
@@ -4453,7 +4453,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn turn_changes_is_not_shown_to_mission_control() {
+    fn turn_changes_is_not_shown_to_lead() {
         let event = crate::harness::HarnessEvent::TurnChanges {
             files: vec![crate::harness::FileChange {
                 path: "a.rs".into(),
@@ -4485,7 +4485,7 @@ mod tests {
             .with_durable_session_id(crate::session::inbox_session_id(agent))
             .with_store_path(dir.join("snippet.db"))
             .with_agent_id(agent)
-            .with_mission_control_root(dir.join("mc"))
+            .with_lead_root(dir.join("mc"))
     }
 
     /// `start_task` files AND claims in one call: the roster seat is `active`
@@ -4530,9 +4530,9 @@ mod tests {
         assert_eq!(roster[0].agent_id, "desk-agent");
         assert_eq!(roster[0].status, "active", "claimed at filing, not offered");
 
-        // Mission Control got the one-line note.
+        // Lead got the one-line note.
         let thread = crate::coordination::direct_thread_id(
-            ("agent", "mission-control"),
+            ("agent", "lead"),
             ("agent", "desk-agent"),
         );
         let events = db.direct_thread_events(&thread, 0, 10).unwrap();
@@ -4605,7 +4605,7 @@ mod tests {
             vec![],
             HandoffMode::Resume,
             "agent",
-            "mission-control",
+            "lead",
             "2026-01-01T00:00:00Z".into(),
         );
         db.create_task(&blocker).unwrap();
@@ -4632,7 +4632,7 @@ mod tests {
         assert_eq!(db.list_task_agents(&task_id).unwrap()[0].status, "active");
 
         let thread = crate::coordination::direct_thread_id(
-            ("agent", "mission-control"),
+            ("agent", "lead"),
             ("agent", "desk-agent"),
         );
         let events = db.direct_thread_events(&thread, 0, 10).unwrap();
@@ -4682,7 +4682,7 @@ mod tests {
             vec![],
             HandoffMode::Resume,
             "agent",
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             "2026-01-01T00:00:00Z".into(),
         );
         db.create_task(&task).unwrap();
@@ -4693,7 +4693,7 @@ mod tests {
         .unwrap();
 
         // The session, binding its CANONICAL id.
-        let ctx = ToolContext::mission_control(dir.path())
+        let ctx = ToolContext::lead(dir.path())
             .unwrap()
             .with_durable_session_id("s1")
             .with_store_path(dir.path().join("snippet.db"));
@@ -4726,7 +4726,7 @@ mod tests {
             vec![],
             HandoffMode::Resume,
             "agent",
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             "2026-01-01T00:00:00Z".into(),
         );
         db.create_task(&task).unwrap();
@@ -4740,7 +4740,7 @@ mod tests {
         .unwrap();
 
         // A session with NO agent bound — the common case.
-        let ctx = ToolContext::mission_control(dir.path())
+        let ctx = ToolContext::lead(dir.path())
             .unwrap()
             .with_durable_session_id("s1")
             .with_store_path(dir.path().join("snippet.db"));
@@ -4785,7 +4785,7 @@ mod tests {
             vec![],
             HandoffMode::Resume,
             "agent",
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             "2026-01-01T00:00:00Z".into(),
         );
         db.create_task(&task).unwrap();
@@ -4798,7 +4798,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mission_control_task_lifecycle_tools() {
+    async fn lead_task_lifecycle_tools() {
         let dir = tempfile::tempdir().unwrap();
         let db = Store::open(dir.path().join("snippet.db")).unwrap();
         db.create_agent(&worker("snippet")).unwrap();
@@ -4812,12 +4812,12 @@ mod tests {
             vec![],
             HandoffMode::Resume,
             "agent",
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             "2026-01-01T00:00:00Z".into(),
         );
         db.create_task(&task).unwrap();
 
-        let ctx = ToolContext::mission_control(dir.path())
+        let ctx = ToolContext::lead(dir.path())
             .unwrap()
             .with_durable_session_id("mc")
             .with_store_path(dir.path().join("snippet.db"));
@@ -4979,7 +4979,7 @@ mod tests {
                 vec![],
                 HandoffMode::Resume,
                 "agent",
-                crate::mission_control::SESSION_ID,
+                crate::lead::SESSION_ID,
                 "2026-01-01T00:00:00Z".into(),
             )
         };
@@ -5010,7 +5010,7 @@ mod tests {
             t.reporting_session = Some("s-w".into());
         })
         .unwrap();
-        let ctx = ToolContext::mission_control(dir.path())
+        let ctx = ToolContext::lead(dir.path())
             .unwrap()
             .with_durable_session_id("mc")
             .with_store_path(dir.path().join("snippet.db"));
@@ -5064,7 +5064,7 @@ mod tests {
             vec![],
             HandoffMode::Resume,
             "agent",
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             "2026-01-01T00:00:00Z".into(),
         );
         db.create_task(&queued).unwrap();
@@ -5165,7 +5165,7 @@ mod tests {
                 vec![],
                 HandoffMode::Fresh,
                 "agent",
-                crate::mission_control::SESSION_ID,
+                crate::lead::SESSION_ID,
                 now_rfc3339(),
             );
             t.notify_once("blocked", &long);
@@ -5189,7 +5189,7 @@ mod tests {
             )
             .unwrap();
         }
-        let ctx = ToolContext::mission_control(dir.path())
+        let ctx = ToolContext::lead(dir.path())
             .unwrap()
             .with_durable_session_id("mc")
             .with_store_path(dir.path().join("snippet.db"));
@@ -5225,7 +5225,7 @@ mod surface_tests {
     #[test]
     fn session_and_recording_controls_are_three_tools() {
         let mut r = crate::tools::ToolRegistry::new();
-        super::add_mission_control_tools(&mut r);
+        super::add_lead_tools(&mut r);
         let names: Vec<String> = r.definitions().into_iter().map(|d| d.name).collect();
         for kept in ["session_state", "recordings", "recording_policy"] {
             assert!(names.iter().any(|n| n == kept), "{kept}");

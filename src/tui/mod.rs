@@ -71,7 +71,7 @@ const HIDDEN_TOOL_ROWS: [&str; 9] = [
 const ALL_COMMANDS: &[(&str, &str)] = &[
     ("/new", "Start a new session"),
     ("/resume", "Resume a saved session"),
-    ("/mission", "Open Mission Control"),
+    ("/lead", "Open Lead"),
     ("/go", "Open a session linked in the last reply"),
     ("/rewind", "Restore the workspace to a checkpoint"),
     ("/fork", "Branch a new session from a checkpoint or event"),

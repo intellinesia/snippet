@@ -5,7 +5,7 @@ use serde_json::json;
 fn notification_frame_matches_durable_feed_and_preserves_ui_event() {
     let dir = tempfile::tempdir().unwrap();
     let store = crate::store::Store::open(&dir.path().join("notifications.db")).unwrap();
-    let mut settings = crate::mission_control::ControlSettings::default();
+    let mut settings = crate::lead::ControlSettings::default();
     settings.notification_policy = "all_sessions".into();
     store.save_control_settings(&settings).unwrap();
     let (events, mut receiver) = broadcast::channel(8);
@@ -42,7 +42,7 @@ fn notification_frame_matches_durable_feed_and_preserves_ui_event() {
 fn call_events_reach_the_feed_whatever_the_policy() {
     let dir = tempfile::tempdir().unwrap();
     let store = crate::store::Store::open(&dir.path().join("notifications.db")).unwrap();
-    let mut settings = crate::mission_control::ControlSettings::default();
+    let mut settings = crate::lead::ControlSettings::default();
     settings.notification_policy = "none".into();
     store.save_control_settings(&settings).unwrap();
     let (events, mut receiver) = broadcast::channel(8);
@@ -58,7 +58,7 @@ fn call_events_reach_the_feed_whatever_the_policy() {
     assert_eq!(saved["kind"], "call_prompt");
     assert_eq!(
         saved["destination"],
-        json!({"type":"session","id":crate::mission_control::SESSION_ID})
+        json!({"type":"session","id":crate::lead::SESSION_ID})
     );
     assert_eq!(saved["payload"], prompt["payload"]);
     assert!(saved.get("ttl_secs").is_none());

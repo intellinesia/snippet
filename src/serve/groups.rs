@@ -79,9 +79,9 @@ fn store_error(status: StatusCode, error: crate::store::StoreError) -> Response 
     }
 }
 
-/// `id` names a real agent, or Mission Control's fixed session id.
+/// `id` names a real agent, or Lead's fixed session id.
 fn known_agent(d: &Shared, id: &str) -> bool {
-    id == crate::mission_control::SESSION_ID || d.store.get_agent(id).ok().flatten().is_some()
+    id == crate::lead::SESSION_ID || d.store.get_agent(id).ok().flatten().is_some()
 }
 
 /// GET /groups — every group thread with the human's unread count.
@@ -196,7 +196,7 @@ fn notify_added(d: &Shared, group: &crate::coordination::GroupSummary, agents: V
     let envelope = group_added_envelope(group);
     tokio::spawn(async move {
         for agent_id in agents {
-            if agent_id != crate::mission_control::SESSION_ID
+            if agent_id != crate::lead::SESSION_ID
                 && let Err(error) = super::direct::ensure_agent_inbox(&d, &agent_id).await
             {
                 eprintln!("[coordination] group notice for {agent_id} not delivered: {error}");
@@ -570,7 +570,7 @@ async fn deliver_group(
             .map(|at| (chrono::Utc::now() - at.with_timezone(&chrono::Utc)).num_minutes())
             .unwrap_or_default();
         let envelope = group_unanswered_envelope(event, waiting);
-        if agent_id != crate::mission_control::SESSION_ID {
+        if agent_id != crate::lead::SESSION_ID {
             super::direct::ensure_agent_inbox(d, agent_id).await?;
         }
         let session_id = super::direct::recipient_session_id(agent_id);
@@ -607,7 +607,7 @@ async fn deliver_group(
         .as_ref()
         .map(|group| group.title.clone())
         .unwrap_or_default();
-    let root = crate::coordination::agents_root(&d.mission_control_root);
+    let root = crate::coordination::agents_root(&d.lead_root);
     let members: Vec<(String, String)> = group
         .as_ref()
         .map(|group| {
@@ -644,7 +644,7 @@ async fn deliver_group(
     let lead = d.store.group_round_lead(&event.thread_id).ok().flatten();
     let lead = lead.as_deref().map(|lead| (lead, lead == agent_id));
     let envelope = group_message_envelope(event, &title, wake, &history, &members, &replies, lead);
-    if agent_id != crate::mission_control::SESSION_ID {
+    if agent_id != crate::lead::SESSION_ID {
         super::direct::ensure_agent_inbox(d, agent_id).await?;
     }
     let session_id = super::direct::recipient_session_id(agent_id);

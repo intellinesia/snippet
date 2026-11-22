@@ -98,7 +98,7 @@ pub struct Task {
     pub dispatch_failures: u32,
     /// Terminal outcome, when a worker reported one.
     pub result: Option<TaskResult>,
-    /// Pending / undelivered notification markers for Mission Control.
+    /// Pending / undelivered notification markers for Lead.
     pub notifications: Vec<NotificationMarker>,
     /// Workspace paths this task writes to. Held only while `InProgress`, so a
     /// blocked or retried task keeps its claim without locking anyone out.
@@ -193,7 +193,7 @@ pub struct TaskResult {
     pub authoritative: bool,
 }
 
-/// A notification marker attached to a task, for Mission Control to read.
+/// A notification marker attached to a task, for Lead to read.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct NotificationMarker {
     pub target: String,
@@ -346,7 +346,7 @@ pub fn offer_marker(agent_id: &str) -> String {
 /// Create a task's initial dispatch state in one value, so a caller cannot
 /// forget `handoff_mode` and leave delivery semantics unset.
 impl Task {
-    /// Queue a notice for Mission Control unless the same one is already on the
+    /// Queue a notice for Lead unless the same one is already on the
     /// task, so a condition that persists across ticks is reported once.
     pub fn notify_once(&mut self, kind: &str, message: &str) {
         if self
@@ -357,7 +357,7 @@ impl Task {
             return;
         }
         self.notifications.push(NotificationMarker {
-            target: "mission_control".into(),
+            target: "lead".into(),
             kind: kind.into(),
             message: message.into(),
             delivered: false,
@@ -424,7 +424,7 @@ impl Task {
         }
     }
 
-    /// A task routed to a session by Mission Control or an agent tool. Unlike a
+    /// A task routed to a session by Lead or an agent tool. Unlike a
     /// human filing, this carries the target session, owned paths, and delivery
     /// semantics from the moment it exists.
     #[allow(clippy::too_many_arguments)]
@@ -482,7 +482,7 @@ pub struct TaskLink {
 }
 
 /// One agent's membership on a task. `removed_at` is set instead of deleting the
-/// row: the roster changes as Mission Control learns more about the work, and
+/// row: the roster changes as Lead learns more about the work, and
 /// "who worked on this" has to outlive the assignment.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct TaskAgent {
@@ -911,7 +911,7 @@ impl Store {
             task.owned_paths.clear();
             task.reporting_session = None;
             task.notifications.push(NotificationMarker {
-                target: "mission_control".into(),
+                target: "lead".into(),
                 kind: kind.into(),
                 message: result.summary.clone(),
                 delivered: false,
@@ -1078,7 +1078,7 @@ impl Store {
     /// Record the working plan of the session doing a task. Written apart
     /// from `update_task_in` so it leaves `updated_at` alone: a plan update is
     /// progress, not a change on the board, and must not start a round. The
-    /// first plan for a task also leaves a notification for Mission Control.
+    /// first plan for a task also leaves a notification for Lead.
     /// Returns whether this was the first plan.
     pub fn set_task_work_plan(
         &self,
@@ -1108,7 +1108,7 @@ impl Store {
                     .collect::<Vec<_>>()
                     .join("\n");
                 markers.push(NotificationMarker {
-                    target: "mission_control".into(),
+                    target: "lead".into(),
                     kind: "plan".into(),
                     message: summary,
                     delivered: false,
@@ -1886,7 +1886,7 @@ impl Store {
     /// `report_mission_task` leaves its task looking active. This is the one
     /// place that notices, so the board does not quietly accumulate work that
     /// nothing is doing. The notification marker is deliberately left
-    /// undelivered: it is what surfaces the failure to Mission Control.
+    /// undelivered: it is what surfaces the failure to Lead.
     pub fn block_tasks_for_failed_session(
         &self,
         session_id: &str,
@@ -1918,7 +1918,7 @@ impl Store {
                     t.status = TaskStatus::Blocked;
                     t.reporting_session = None;
                     t.notifications.push(NotificationMarker {
-                        target: "mission_control".into(),
+                        target: "lead".into(),
                         kind: "blocked".into(),
                         message: message.clone(),
                         delivered: false,

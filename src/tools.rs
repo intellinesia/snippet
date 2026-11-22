@@ -73,14 +73,14 @@ pub struct ToolContext {
     /// external edits, another lane, or a concurrent process). Optimistic
     /// concurrency; replaces the former lock registry.
     seen: Arc<Mutex<HashMap<PathBuf, u64>>>,
-    mission_control: bool,
+    lead: bool,
     /// Durable session identity (state path relative to the workspaces root).
     /// Set for daemon-managed sessions; lets `report_mission_task` verify the
     /// caller actually owns the task it is reporting on.
     durable_session_id: Option<String>,
-    /// Same store the daemon dispatcher uses. Set for Mission Control so tools
+    /// Same store the daemon dispatcher uses. Set for Lead so tools
     /// do not recompute the root from HOME independently.
-    mission_control_root: Option<PathBuf>,
+    lead_root: Option<PathBuf>,
     /// Absolute path to the SQLite store (`~/.snippet/snippet.db`). Set for every
     /// daemon-managed session so coordination tools reach the same database the
     /// daemon writes.
@@ -105,11 +105,11 @@ impl ToolContext {
         Self::with_owner(workspace_root, "main")
     }
 
-    pub fn mission_control(workspace_root: impl Into<PathBuf>) -> Result<Self, ToolError> {
+    pub fn lead(workspace_root: impl Into<PathBuf>) -> Result<Self, ToolError> {
         let root = workspace_root.into();
-        let mut context = Self::with_owner(root.clone(), "mission_control")?;
-        context.mission_control = true;
-        context.mission_control_root = Some(root);
+        let mut context = Self::with_owner(root.clone(), "lead")?;
+        context.lead = true;
+        context.lead_root = Some(root);
         Ok(context)
     }
 
@@ -131,9 +131,9 @@ impl ToolContext {
             workspace_root: root,
             owner: owner.into(),
             seen: Arc::new(Mutex::new(HashMap::new())),
-            mission_control: false,
+            lead: false,
             durable_session_id: None,
-            mission_control_root: None,
+            lead_root: None,
             store_path: None,
             agent_id: None,
             lane_origin: None,
@@ -165,8 +165,8 @@ impl ToolContext {
         &self.owner
     }
 
-    pub fn is_mission_control(&self) -> bool {
-        self.mission_control
+    pub fn is_lead(&self) -> bool {
+        self.lead
     }
 
     /// Bind this context to a durable daemon-managed session id. Called by the
@@ -187,13 +187,13 @@ impl ToolContext {
         self.durable_session_id.as_deref()
     }
 
-    pub fn mission_control_root(&self) -> Option<PathBuf> {
-        self.mission_control_root.clone()
+    pub fn lead_root(&self) -> Option<PathBuf> {
+        self.lead_root.clone()
     }
 
-    /// Bind the Mission Control root used to locate agent homes.
-    pub fn with_mission_control_root(mut self, root: impl Into<PathBuf>) -> Self {
-        self.mission_control_root = Some(root.into());
+    /// Bind the Lead root used to locate agent homes.
+    pub fn with_lead_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.lead_root = Some(root.into());
         self
     }
 
@@ -514,7 +514,7 @@ impl ToolRegistry {
 fn note_session_activity(ctx: &ToolContext) {
     static LAST: std::sync::LazyLock<Mutex<HashMap<String, std::time::Instant>>> =
         std::sync::LazyLock::new(Default::default);
-    if ctx.is_mission_control() {
+    if ctx.is_lead() {
         return;
     }
     let Some(session) = ctx

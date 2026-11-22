@@ -25,10 +25,10 @@ pub fn idle_secs(now: i64, last_active: i64) -> i64 {
     (now - last_active).max(0)
 }
 
-/// Mission Control and agent desks are conversations the user keeps coming back
+/// Lead and agent desks are conversations the user keeps coming back
 /// to; they are never offered a cold resume.
 pub fn never_cold(id: &str) -> bool {
-    crate::mission_control::is_session_id(id) || crate::session::is_inbox_session_id(id)
+    crate::lead::is_session_id(id) || crate::session::is_inbox_session_id(id)
 }
 
 pub fn cache_state(idle: i64, ttl: i64) -> &'static str {
@@ -117,11 +117,11 @@ pub struct SettleFacts {
 /// Why a session must not be settled, or `None` when it may.
 pub fn refusal(f: &SettleFacts) -> Option<String> {
     let no = |why: &str| Some(format!("not settled: {why}"));
-    if crate::mission_control::is_session_id(&f.id)
-        || f.role == "mission_control"
-        || f.kind == "mission_control"
+    if crate::lead::is_session_id(&f.id)
+        || f.role == "lead"
+        || f.kind == "lead"
     {
-        return no("it is the Mission Control session");
+        return no("it is the Lead session");
     }
     if crate::session::is_inbox_session_id(&f.id) || f.kind == "inbox" {
         return no("it is an agent inbox");
@@ -273,8 +273,8 @@ mod tests {
     fn eligibility_rules() {
         assert!(refusal(&facts()).is_none());
         let cases: Vec<Box<dyn Fn(&mut SettleFacts)>> = vec![
-            Box::new(|f| f.id = crate::mission_control::SESSION_ID.into()),
-            Box::new(|f| f.role = "mission_control".into()),
+            Box::new(|f| f.id = crate::lead::SESSION_ID.into()),
+            Box::new(|f| f.role = "lead".into()),
             Box::new(|f| f.kind = "inbox".into()),
             Box::new(|f| f.id = "inbox-agent".into()),
             Box::new(|f| f.live_busy = true),
@@ -620,8 +620,8 @@ mod tests {
     }
 
     #[test]
-    fn mission_control_and_desks_are_never_cold() {
-        assert!(never_cold(crate::mission_control::SESSION_ID));
+    fn lead_and_desks_are_never_cold() {
+        assert!(never_cold(crate::lead::SESSION_ID));
         assert!(never_cold("inbox-snippet"));
         assert!(!never_cold("snippet-mobile-8f8d298804"));
     }

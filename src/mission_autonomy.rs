@@ -94,7 +94,7 @@ pub struct UserCall {
 }
 
 fn default_answer_by() -> String {
-    crate::mission_control::SESSION_ID.to_string()
+    crate::lead::SESSION_ID.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -231,7 +231,7 @@ pub fn standing_rules_note() -> String {
 
 pub fn brief_path() -> PathBuf {
     crate::config::snippet_home()
-        .join("mission-control")
+        .join("lead")
         .join("brief.md")
 }
 
@@ -265,7 +265,7 @@ pub fn user_now(settings: &AutonomySettings) -> chrono::DateTime<chrono::FixedOf
     chrono::Utc::now().with_timezone(&offset_or_local(settings.utc_offset_minutes))
 }
 
-/// The user's UTC offset as set in Mission Control's settings, if any.
+/// The user's UTC offset as set in Lead's settings, if any.
 pub fn user_offset_minutes() -> Option<i32> {
     load().settings.utc_offset_minutes
 }
@@ -324,7 +324,7 @@ pub fn quiet_ends_after(
 fn emit(title: &str, message: &str, kind: &str, urgent: bool, agent: &str) {
     crate::session::emit_device_event(json!({
         "kind": "ping",
-        "session": crate::mission_control::SESSION_ID,
+        "session": crate::lead::SESSION_ID,
         "agent": agent,
         "channel": "push",
         "title": title,
@@ -371,7 +371,7 @@ pub fn send_ping_in(
 pub fn ping(title: &str, message: &str, kind: &str) -> Result<&'static str, String> {
     let s = store()?;
     let now = chrono::Utc::now().timestamp();
-    let agent = crate::mission_control::SESSION_ID;
+    let agent = crate::lead::SESSION_ID;
     update_in(&s, |state| {
         let call = state.user_call.as_ref().is_some_and(|c| c.until > now);
         if kind != "urgent" && (call || in_quiet_hours(&state.settings)) {
@@ -407,7 +407,7 @@ pub fn release_held_pings() {
             let agent = held[0]
                 .agent
                 .as_deref()
-                .unwrap_or(crate::mission_control::SESSION_ID);
+                .unwrap_or(crate::lead::SESSION_ID);
             emit(
                 &held[0].title,
                 &held[0].message,
@@ -423,7 +423,7 @@ pub fn release_held_pings() {
                 &lines.join("\n"),
                 "update",
                 false,
-                crate::mission_control::SESSION_ID,
+                crate::lead::SESSION_ID,
             );
         }
     }

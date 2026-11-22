@@ -22,7 +22,7 @@ fn bounded_pages_advance_over_filtered_and_malformed_rows() {
             Ok(())
         })
         .unwrap();
-    let mut settings = crate::mission_control::ControlSettings::default();
+    let mut settings = crate::lead::ControlSettings::default();
     settings.notification_policy = "all_sessions".into();
     let first = notification_page_from_store(&store, &settings, 0, 1).unwrap();
     assert_eq!(first["next_cursor"], 500);
@@ -78,7 +78,7 @@ fn notification_tuple_pages_ties_filters_expiry_and_retention() {
             Ok(())
         })
         .unwrap();
-    let mut settings = crate::mission_control::ControlSettings::default();
+    let mut settings = crate::lead::ControlSettings::default();
     settings.notification_policy = "all_sessions".into();
     let first = notification_tuple_page(&store, &settings, now - 10800, 0, 1).unwrap();
     assert_eq!(

@@ -66,7 +66,7 @@ fn write_targets(ctx: &ToolContext, tool: &str, args: &Value) -> Option<Vec<Path
 }
 
 pub fn gate(ctx: &ToolContext, tool: &str, args: &Value) -> Gate {
-    if ctx.is_mission_control() || !matches!(tool, "change_files" | "bash") {
+    if ctx.is_lead() || !matches!(tool, "change_files" | "bash") {
         return Gate::Allow;
     }
     let Some(targets) = write_targets(ctx, tool, args) else {
@@ -159,7 +159,7 @@ fn task_gate(ctx: &ToolContext, targets: &[PathBuf]) -> Gate {
             .is_some_and(|o| o.session_id == task.session_id);
         if !same_session {
             return Gate::Refuse(format!(
-                "`{}` is owned by task `{owner}`; wait for it or ask Mission Control to re-scope.",
+                "`{}` is owned by task `{owner}`; wait for it or ask Lead to re-scope.",
                 owned.display()
             ));
         }
@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(
             gate(&ctx, "bash", &json!({"command": "echo hi > docs/x"})),
             Gate::Refuse(format!(
-                "`{}` is owned by task `theirs`; wait for it or ask Mission Control to re-scope.",
+                "`{}` is owned by task `theirs`; wait for it or ask Lead to re-scope.",
                 root.join("docs/x").display()
             ))
         );

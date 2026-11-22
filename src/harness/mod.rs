@@ -79,7 +79,7 @@ pub struct HarnessConfig {
     /// status only (tool names/paths, never prompts) and is not user-addressable.
     pub progress_tx: Option<mpsc::UnboundedSender<crate::lanes::LaneProgress>>,
     pub progress_id: Option<String>,
-    /// Mission Control coordinates durable sessions rather than spawning lanes.
+    /// Lead coordinates durable sessions rather than spawning lanes.
     pub allow_lane_control: bool,
     pub lane_approval: Option<crate::lanes::LaneApprovalRoute>,
     pub lane_mailbox: Option<std::sync::Arc<crate::lanes::LaneMailbox>>,
@@ -172,7 +172,7 @@ pub enum HarnessEvent {
     /// coordinator's transcript shows what was sent out on its behalf.
     ///
     /// A NOTICE, never a wake: the work is already routed to a worker, so waking
-    /// Mission Control would spend a turn on something that needs no decision.
+    /// Lead would spend a turn on something that needs no decision.
     TaskDispatched {
         task_id: String,
         title: String,
@@ -673,7 +673,7 @@ pub struct HarnessState {
 }
 
 impl HarnessState {
-    /// Idle persisted conversation with no turns — used when Mission Control
+    /// Idle persisted conversation with no turns — used when Lead
     /// opens a new chat so it can dispatch into it.
     pub fn blank(workspace: impl Into<String>, title: Option<String>) -> Self {
         let now = Utc::now().to_rfc3339();

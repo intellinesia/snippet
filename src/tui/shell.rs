@@ -633,7 +633,7 @@ pub(crate) const PALETTE_ACTIONS: [(&str, &str); 25] = [
     ("procs", "Background processes"),
     ("git", "Git changes"),
     ("files", "Browse files"),
-    ("mission", "Open Mission Control"),
+    ("lead", "Open Lead"),
     ("agents", "Agents"),
     ("tasks", "Task board"),
     ("jobs", "Scheduled jobs"),
@@ -650,7 +650,7 @@ fn palette_meta(id: &str) -> (&'static str, &'static str) {
     let section = match id {
         "new" | "sessions" | "model" | "mode" | "compact" | "steps" | "term" => "Session",
         "tools" | "plan" | "lanes" | "checkpoints" | "procs" | "git" | "files" => "This session",
-        "mission" | "agents" | "tasks" | "jobs" | "inbox" | "usage" | "vault" => "Workspace",
+        "lead" | "agents" | "tasks" | "jobs" | "inbox" | "usage" | "vault" => "Workspace",
         _ => "App",
     };
     let shortcut = match id {
@@ -663,7 +663,7 @@ fn palette_meta(id: &str) -> (&'static str, &'static str) {
         "model" => "/model",
         "new" => "/new",
         "compact" => "/compact",
-        "mission" => "/mission",
+        "lead" => "/lead",
         _ => "",
     };
     (section, shortcut)
@@ -862,7 +862,7 @@ impl App {
             "plan" => self.open_pane(PaneTab::Plan),
             "lanes" => self.open_pane(PaneTab::Lanes),
             "checkpoints" => self.open_pane(PaneTab::Checkpoints),
-            "mission" => self.open_mission_control(),
+            "lead" => self.open_lead(),
             "agents" => self.open_pane(PaneTab::Agents),
             "tasks" => self.open_pane(PaneTab::Tasks),
             "jobs" => self.open_pane(PaneTab::Jobs),

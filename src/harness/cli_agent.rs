@@ -2424,7 +2424,7 @@ impl CodingHarness {
                     }
                 }
                 if let Some(p) = process.as_mut() {
-                    if session_key == crate::mission_control::SESSION_ID {
+                    if session_key == crate::lead::SESSION_ID {
                         let mode = format!(
                             "{} {}",
                             crate::mission_autonomy::clock_line(),
@@ -3178,9 +3178,9 @@ impl CodingHarness {
                             let available: Vec<&str> =
                                 advertised_tools.iter().map(|d| d.name.as_str()).collect();
                             let hint = if self.context.workspace_root()
-                                == crate::mission_control::workspace_path()
+                                == crate::lead::workspace_path()
                             {
-                                " You are Mission Control: to check on, run or change anything in a project, ask the session that owns it (tasks action=create to that session, or read action=session)."
+                                " You are Lead: to check on, run or change anything in a project, ask the session that owns it (tasks action=create to that session, or read action=session)."
                             } else {
                                 ""
                             };
@@ -3541,9 +3541,9 @@ impl CodingHarness {
                     .map(|d| d.name)
                     .collect();
                 let hint = if self.context.workspace_root()
-                    == crate::mission_control::workspace_path()
+                    == crate::lead::workspace_path()
                 {
-                    " You are Mission Control: to check on, run or change anything in a project, ask the session that owns it (tasks.create to that session, or read.session)."
+                    " You are Lead: to check on, run or change anything in a project, ask the session that owns it (tasks.create to that session, or read.session)."
                 } else {
                     ""
                 };

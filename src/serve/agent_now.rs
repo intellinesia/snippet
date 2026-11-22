@@ -95,7 +95,7 @@ fn is_awaiting_human_review(store: &Store, task: &Task, state: Option<&TaskState
     };
     matches!(
         crate::review_tools::review_route(store, task, st),
-        VerifyMode::MissionControl | VerifyMode::User
+        VerifyMode::Lead | VerifyMode::User
     )
 }
 
@@ -168,8 +168,8 @@ pub fn agent_presence_and_needs(store: &Store, agent_id: &str) -> (Option<AgentP
     for (session_id, p) in &live {
         let belongs = p.agent.as_deref() == Some(agent_id)
             || session_id.strip_prefix("inbox-") == Some(agent_id)
-            || (agent_id == crate::mission_control::SESSION_ID
-                && session_id == crate::mission_control::SESSION_ID);
+            || (agent_id == crate::lead::SESSION_ID
+                && session_id == crate::lead::SESSION_ID);
         if !belongs {
             continue;
         }
@@ -204,7 +204,7 @@ pub fn agent_presence_and_needs(store: &Store, agent_id: &str) -> (Option<AgentP
                  WHERE s.settled_at IS NULL
                    AND (s.agent_id = ?1
                         OR s.id = ('inbox-' || ?1)
-                        OR (?1 = 'mission-control' AND s.id = 'mission-control')
+                        OR (?1 = 'lead' AND s.id = 'lead')
                         OR EXISTS (
                             SELECT 1 FROM task_agents ta
                             JOIN tasks t ON t.id = ta.task_id
@@ -685,7 +685,7 @@ mod tests {
             seen_nonces: std::sync::Mutex::new(std::collections::HashMap::new()),
             queue_hidden: std::sync::Mutex::new(std::collections::HashMap::new()),
             queue_revision: std::sync::atomic::AtomicU64::new(0),
-            mission_control_root: tempfile::tempdir().expect("tempdir").keep(),
+            lead_root: tempfile::tempdir().expect("tempdir").keep(),
             store: Store::open_in_memory().unwrap(),
             coordination_events: tokio::sync::broadcast::channel(16).0,
             recurring_root: tempfile::tempdir().expect("tempdir").keep(),
@@ -720,7 +720,7 @@ mod tests {
         make_agent(&d.store, "ag-busy");
 
         // ag-busy has an open question in session s-wait and a running tool in s-work;
-        // also an in-review task awaiting human (mission_control).
+        // also an in-review task awaiting human (lead).
         crate::harness::presence::record_session_presence(
             "s-work",
             Some("ag-busy".into()),
@@ -773,7 +773,7 @@ mod tests {
             .unwrap();
         d.store
             .modify_task_state("t-rev", "2026-11-12T18:30:00Z", |s| {
-                s.verify_mode = Some(VerifyMode::MissionControl);
+                s.verify_mode = Some(VerifyMode::Lead);
                 s.pending_report = Some(PendingReport {
                     summary: "v5 ready".into(),
                     artifacts: vec![],
@@ -848,7 +848,7 @@ mod tests {
             .unwrap();
         d.store
             .modify_task_state("eb1b9fce", "2026-11-11T12:31:00Z", |s| {
-                s.verify_mode = Some(VerifyMode::MissionControl);
+                s.verify_mode = Some(VerifyMode::Lead);
                 s.current_step = "v5 delivered".into();
                 s.review_started_at = "2026-11-11T12:31:00Z".into();
                 s.pending_report = Some(PendingReport {
@@ -903,7 +903,7 @@ mod tests {
         assert_eq!(body["current_task"]["id"], "eb1b9fce");
         assert_eq!(body["current_task"]["status"], "in_review");
         assert_eq!(body["current_task"]["step"], "v5 delivered");
-        assert_eq!(body["current_task"]["verify_mode"], "mission_control");
+        assert_eq!(body["current_task"]["verify_mode"], "lead");
 
         let sessions = body["sessions"].as_array().unwrap();
         assert_eq!(sessions.len(), 1);

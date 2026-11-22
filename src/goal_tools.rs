@@ -1,4 +1,4 @@
-//! Mission Control's goal tools: a goal is the user's whole outcome, held as
+//! Lead's goal tools: a goal is the user's whole outcome, held as
 //! data with its own acceptance criteria and the tasks that serve it.
 
 use async_trait::async_trait;
@@ -10,9 +10,9 @@ use crate::llm::NativeToolDefinition;
 use crate::store::Store;
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 
-fn mc_store(ctx: &ToolContext) -> Result<Store, ToolError> {
-    ctx.mission_control_root().ok_or_else(|| {
-        ToolError::msg("Goal tools are only available in the Mission Control session.")
+fn lead_store(ctx: &ToolContext) -> Result<Store, ToolError> {
+    ctx.lead_root().ok_or_else(|| {
+        ToolError::msg("Goal tools are only available in the Lead session.")
     })?;
     ctx.store()
         .map_err(|e| ToolError::msg(format!("open store: {e}")))
@@ -182,7 +182,7 @@ impl Tool for CreateGoal {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: CreateGoalArgs = serde_json::from_value(arguments)?;
-        let store = mc_store(ctx)?;
+        let store = lead_store(ctx)?;
         if args.title.trim().is_empty() || args.outcome.trim().is_empty() {
             return Err(ToolError::msg("title and outcome must be non-empty"));
         }
@@ -257,7 +257,7 @@ impl Tool for UpdateGoal {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: UpdateGoalArgs = serde_json::from_value(arguments)?;
-        let store = mc_store(ctx)?;
+        let store = lead_store(ctx)?;
         let mut goal = find(&store, &args.id)?;
         if let Some(t) = args
             .title
@@ -336,7 +336,7 @@ impl Tool for CloseGoal {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: CloseGoalArgs = serde_json::from_value(arguments)?;
-        let store = mc_store(ctx)?;
+        let store = lead_store(ctx)?;
         let mut goal = find(&store, &args.id)?;
         if goal.status != GoalStatus::Open {
             return Err(ToolError::msg(format!(
@@ -388,7 +388,7 @@ impl Tool for ListGoals {
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: ListGoalsArgs = serde_json::from_value(arguments)?;
-        let store = mc_store(ctx)?;
+        let store = lead_store(ctx)?;
         let status =
             match args.status.as_deref().map(str::trim) {
                 None | Some("") | Some("open") => Some(GoalStatus::Open),
@@ -414,7 +414,7 @@ mod tests {
     use crate::coordination::{Task, TaskStatus};
 
     fn mc(dir: &std::path::Path) -> ToolContext {
-        ToolContext::mission_control(dir)
+        ToolContext::lead(dir)
             .unwrap()
             .with_store_path(dir.join("snippet.db"))
     }
@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn goal_tools_refuse_outside_mission_control() {
+    async fn goal_tools_refuse_outside_lead() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ToolContext::new(dir.path())
             .unwrap()
@@ -561,7 +561,7 @@ mod tests {
             call(&ListGoals, &ctx, json!({}))
                 .await
                 .unwrap_err()
-                .contains("Mission Control")
+                .contains("Lead")
         );
     }
 

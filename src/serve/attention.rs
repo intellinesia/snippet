@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use super::Shared;
 use super::autonomy::{
-    deliver_to_mission_control, interrupt_mission_control, mission_control_busy,
-    mission_control_inputs,
+    deliver_to_lead, interrupt_lead, lead_busy,
+    lead_inputs,
 };
 
 const RESUME_CAP: Duration = Duration::from_secs(60);
@@ -34,7 +34,7 @@ impl Trigger {
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Interrupted {
     pub spoke: bool,
-    pub mission_control: bool,
+    pub lead: bool,
     pub already: bool,
 }
 
@@ -144,10 +144,10 @@ impl Drop for ClassifyGuard {
 }
 
 pub(super) async fn interrupt(d: &Shared, device: &str, trigger: Trigger) -> Interrupted {
-    interrupt_since(d, device, trigger, mission_control_inputs()).await
+    interrupt_since(d, device, trigger, lead_inputs()).await
 }
 
-/// `sent` is `mission_control_inputs()` from when the judged turn began, so a turn delivered meanwhile blocks the cut.
+/// `sent` is `lead_inputs()` from when the judged turn began, so a turn delivered meanwhile blocks the cut.
 pub(super) async fn interrupt_since(
     d: &Shared,
     device: &str,
@@ -161,18 +161,18 @@ pub(super) async fn interrupt_since(
         out.already = true;
         return out;
     }
-    // Delivery has already cut speech itself, and cuts a busy Mission Control without needing a conversation.
+    // Delivery has already cut speech itself, and cuts a busy Lead without needing a conversation.
     out.spoke = if delivery {
         false
     } else {
         crate::speech::interrupt(device)
     };
-    let busy = mission_control_busy() && (delivery || crate::ambient::conversation().is_some());
+    let busy = lead_busy() && (delivery || crate::ambient::conversation().is_some());
     if (out.spoke || busy)
-        && (delivery || mission_control_inputs() == sent)
+        && (delivery || lead_inputs() == sent)
         && !crate::ambient::waiting_for_user()
     {
-        out.mission_control = interrupt_mission_control(d).await;
+        out.lead = interrupt_lead(d).await;
         if !delivery {
             STATE
                 .lock()
@@ -186,19 +186,19 @@ pub(super) async fn interrupt_since(
         trigger.name(),
         generation,
         out.spoke,
-        out.mission_control
+        out.lead
     );
     out
 }
 
 pub(super) fn arm_resume(d: &Shared, generation: u64, needs_interruption: bool) {
-    let sent = mission_control_inputs();
+    let sent = lead_inputs();
     STATE.lock().unwrap().arm(generation, Instant::now());
     let daemon = d.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(POLL).await;
-            if mission_control_inputs() != sent {
+            if lead_inputs() != sent {
                 return;
             }
             let quiet = super::autonomy::heard_quiet();
@@ -212,7 +212,7 @@ pub(super) fn arm_resume(d: &Shared, generation: u64, needs_interruption: bool) 
                 Ready::Fire => break,
             }
         }
-        if mission_control_busy() || (needs_interruption && !crate::speech::interruption_pending())
+        if lead_busy() || (needs_interruption && !crate::speech::interruption_pending())
         {
             return;
         }
@@ -223,11 +223,11 @@ pub(super) fn arm_resume(d: &Shared, generation: u64, needs_interruption: bool) 
         if !STATE.lock().unwrap().claim(generation, Instant::now()) {
             return;
         }
-        eprintln!("[ambient-speech] no new turn followed the barge-in; resuming Mission Control");
+        eprintln!("[ambient-speech] no new turn followed the barge-in; resuming Lead");
         let heard = crate::speech::take_interruption()
             .map(|h| super::ambient_watch::interruption_attrs(&h))
             .unwrap_or_default();
-        deliver_to_mission_control(
+        deliver_to_lead(
             &daemon,
             format!("<ambient_resume{heard}>A sound cut your speech off but no new request followed. Carry on without mentioning it: if your last reply was cut short, restate the sentence that was cut and finish what `unsaid` still holds, in a sentence or two, as whole sentences and never starting mid-phrase (`interrupted_reply` is what they heard); otherwise answer Chief's latest turn or continue what you were doing.</ambient_resume>"),
         )
@@ -453,7 +453,7 @@ mod tests {
         let t0 = Instant::now();
         let c = Clock(t0);
         let mut inner = Inner::new(t0);
-        let mut mc_deliveries: Vec<&'static str> = Vec::new();
+        let mut lead_deliveries: Vec<&'static str> = Vec::new();
 
         // t = 0 ms: user barges in on gen 1; final classifier guard is acquired for this turn.
         assert!(inner.mark_interrupted(1, c.at(0)));
@@ -470,22 +470,22 @@ mod tests {
         for step in 1..=7 {
             let ms = step * 500;
             let quiet = ms >= 2500;
-            poll_resume(&mut inner, ms, quiet, &mut mc_deliveries);
+            poll_resume(&mut inner, ms, quiet, &mut lead_deliveries);
         }
-        assert!(mc_deliveries.is_empty());
+        assert!(lead_deliveries.is_empty());
 
         // t = 3500 ms: final verdict arrives; second interrupt check for gen 1 is a no-op,
-        // user turn advances to gen 2 and delivers to Mission Control, then classify guard drops.
+        // user turn advances to gen 2 and delivers to Lead, then classify guard drops.
         assert!(inner.already_interrupted(1));
-        mc_deliveries.push("<ambient_turn>");
+        lead_deliveries.push("<ambient_turn>");
         inner.delivered(2, c.at(3500));
         inner.classifying -= 1;
 
         // Polling past the 60 s cap produces no <ambient_resume>.
         for step in 8..=130 {
-            poll_resume(&mut inner, step * 500, true, &mut mc_deliveries);
+            poll_resume(&mut inner, step * 500, true, &mut lead_deliveries);
         }
-        assert_eq!(mc_deliveries, vec!["<ambient_turn>"]);
+        assert_eq!(lead_deliveries, vec!["<ambient_turn>"]);
     }
 
     #[tokio::test]
@@ -506,7 +506,7 @@ mod tests {
             seen_nonces: Mutex::new(HashMap::new()),
             queue_hidden: Mutex::new(HashMap::new()),
             queue_revision: AtomicU64::new(0),
-            mission_control_root: tempfile::tempdir().unwrap().keep(),
+            lead_root: tempfile::tempdir().unwrap().keep(),
             store: crate::store::Store::open_in_memory().unwrap(),
             coordination_events: tokio::sync::broadcast::channel(16).0,
             recurring_root: tempfile::tempdir().unwrap().keep(),
@@ -524,7 +524,7 @@ mod tests {
             stream: None,
         };
         daemon.sessions.lock().await.insert(
-            crate::mission_control::SESSION_ID.to_string(),
+            crate::lead::SESSION_ID.to_string(),
             super::super::live_from_handle(handle, None),
         );
 
@@ -536,7 +536,7 @@ mod tests {
         // Final verdict arrives at 3.5 s while the guard is still held.
         tokio::time::sleep(Duration::from_millis(3500)).await;
         crate::ambient::note_user_turn();
-        deliver_to_mission_control(
+        deliver_to_lead(
             &daemon,
             "<ambient_turn>what is on my calendar</ambient_turn>".into(),
         )

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 
-use crate::mission_control::{ControlSettings, ManagedSession, SessionStatus};
+use crate::lead::{ControlSettings, ManagedSession, SessionStatus};
 use crate::recurring::{Delivery, RecurringJob, RecurringRun, Schedule};
 use crate::store::{Store, StoreError};
 
@@ -120,12 +120,12 @@ impl Store {
     pub fn load_control_settings(&self) -> Result<ControlSettings, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT mission_control_session_id, notification_policy
+                "SELECT lead_session_id, notification_policy
                  FROM control_settings WHERE id = 1",
             )?;
             let mut rows = stmt.query_map([], |row| {
                 Ok(ControlSettings {
-                    mission_control_session_id: row.get(0)?,
+                    lead_session_id: row.get(0)?,
                     notification_policy: row.get(1)?,
                 })
             })?;
@@ -142,13 +142,13 @@ impl Store {
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT INTO control_settings
-                   (id, mission_control_session_id, notification_policy)
+                   (id, lead_session_id, notification_policy)
                  VALUES (1, ?1, ?2)
                  ON CONFLICT(id) DO UPDATE SET
-                   mission_control_session_id = excluded.mission_control_session_id,
+                   lead_session_id = excluded.lead_session_id,
                    notification_policy = excluded.notification_policy",
                 params![
-                    settings.mission_control_session_id,
+                    settings.lead_session_id,
                     settings.notification_policy
                 ],
             )?;

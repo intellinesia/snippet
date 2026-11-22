@@ -1060,8 +1060,8 @@ impl App {
                     self.open_term();
                 }
             }
-            "/mission" => {
-                self.open_mission_control();
+            "/lead" => {
+                self.open_lead();
             }
             "/go" => self.open_linked_session(),
             "/theme" => {
@@ -1078,12 +1078,12 @@ impl App {
     }
 
     pub(crate) fn current_session_id(&self) -> String {
-        if self.active_state_path == crate::mission_control::session_state_path()
-            || crate::mission_control::is_session_id(
+        if self.active_state_path == crate::lead::session_state_path()
+            || crate::lead::is_session_id(
                 &crate::serve::sidecar::state_path_to_session_id(&self.active_state_path),
             )
         {
-            return crate::mission_control::SESSION_ID.to_string();
+            return crate::lead::SESSION_ID.to_string();
         }
         crate::serve::sidecar::state_path_to_session_id(&self.active_state_path)
     }
@@ -1222,13 +1222,13 @@ impl App {
                     let rest: String = tokens.collect::<Vec<_>>().join(" ");
                     (self.current_session_id(), format!("{first} {spec}"), rest)
                 } else if first.eq_ignore_ascii_case("mc")
-                    || first.eq_ignore_ascii_case("mission-control")
+                    || first.eq_ignore_ascii_case("lead")
                 {
                     let kind = tokens.next().unwrap_or("");
                     let spec = tokens.next().unwrap_or("");
                     let rest: String = tokens.collect::<Vec<_>>().join(" ");
                     (
-                        crate::mission_control::SESSION_ID.to_string(),
+                        crate::lead::SESSION_ID.to_string(),
                         format!("{kind} {spec}"),
                         rest,
                     )

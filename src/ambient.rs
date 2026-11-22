@@ -451,7 +451,7 @@ pub fn emit_state(reason: &str) {
         changed
     };
     if changed
-        && !reason.starts_with("mission_control:")
+        && !reason.starts_with("lead:")
         && let Some(hook) = MODE_HOOK.get()
     {
         hook(mode, reason);
@@ -807,7 +807,7 @@ pub fn search(query: &str, limit: usize, include_hidden: bool) -> Result<Vec<Val
 }
 
 pub async fn set_mode(mode: &str, reason: &str) -> Result<Value, String> {
-    let reason = format!("mission_control: {}", reason.trim());
+    let reason = format!("lead: {}", reason.trim());
     match mode {
         "active" => {
             if lease_holder().is_none() {
@@ -817,7 +817,7 @@ pub async fn set_mode(mode: &str, reason: &str) -> Result<Value, String> {
                 .await
                 .map(|c| c.ambient.conversation_timeout_secs)
                 .unwrap_or(90);
-            open_conversation("mission-control", ttl);
+            open_conversation("lead", ttl);
             emit_state(&reason);
         }
         "passive" => {

@@ -142,7 +142,7 @@ fn credentials(d: &Shared) -> Option<Creds> {
     };
     let key = key.clone().filter(|k| !k.trim().is_empty())?;
     let mut terms = c.ambient.wake_phrases.clone();
-    for extra in ["Snippet", "Mission Control"] {
+    for extra in ["Snippet", "Lead"] {
         if !terms.iter().any(|t| t.eq_ignore_ascii_case(extra)) {
             terms.push(extra.to_string());
         }
@@ -670,14 +670,14 @@ impl Listener {
             live.caption_at = Some(Instant::now());
         }
         let busy =
-            crate::ambient::conversation().is_some() && super::autonomy::mission_control_busy();
+            crate::ambient::conversation().is_some() && super::autonomy::lead_busy();
         let instant_barge =
             !echo_all && (audible || busy) && !live.interrupted && has_barge_command(&words);
         if instant_barge {
             live.interrupted = true;
             let d = self.d.clone();
             let device = self.device.clone();
-            let sent = super::autonomy::mission_control_inputs();
+            let sent = super::autonomy::lead_inputs();
             tokio::spawn(async move {
                 super::attention::interrupt_since(
                     &d,
@@ -729,7 +729,7 @@ impl Listener {
             let me = get(&self.d, &self.device);
             let d = self.d.clone();
             let device = self.device.clone();
-            let sent = super::autonomy::mission_control_inputs();
+            let sent = super::autonomy::lead_inputs();
             let guard = super::attention::classify_begin(&self.device);
             let probe_seq = crate::tts_stream::probe_begin(&device);
             tokio::spawn(async move {

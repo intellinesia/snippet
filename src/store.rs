@@ -50,7 +50,7 @@ pub enum StoreError {
 ///
 /// Top-level on purpose: this is the general-purpose store for the whole device
 /// (coordination, sessions, conversations), not a file belonging to any one
-/// subsystem. It used to live under `mission-control/` only because the
+/// subsystem. It used to live under `lead/` only because the
 /// coordination plane grew out of that store.
 ///
 /// Under `cfg(test)` this resolves to a per-process temp path instead. `cargo

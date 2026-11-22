@@ -31,7 +31,7 @@ fn empty_schema() -> Value {
 
 pub fn tools_dir(agent_id: &str) -> Option<PathBuf> {
     crate::coordination::AgentHome::new(
-        crate::coordination::agents_root(&crate::config::snippet_home().join("mission-control")),
+        crate::coordination::agents_root(&crate::config::snippet_home().join("lead")),
         agent_id,
     )
     .ok()

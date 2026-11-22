@@ -17,7 +17,7 @@ use crate::coordination::{AgentHome, IdentityError};
 use crate::harness::{CodingHarness, HarnessConfig, HarnessState, LoopInput};
 use crate::lanes::ModelFactory;
 use crate::llm::StreamHandle;
-use crate::prompts::{conversation_prompt, mission_control_system_prompt};
+use crate::prompts::{conversation_prompt, lead_system_prompt};
 use crate::tools::{ToolContext, ToolError, ToolRegistry};
 
 pub struct SessionHandle {
@@ -104,13 +104,13 @@ pub fn start_inbox_session(
 pub(crate) fn minimal_inbox_identity(agent_id: &str) -> String {
     format!(
         "You are `{agent_id}`'s inbox. Answer messages and look things up (read-only shell, web) yourself; \
-         anything that changes files, has side effects or takes long goes to Mission Control as a task request. \
-         If the ask needs more than your desk budget, do not drop it: hand it to your work session, a lane or Mission Control in the same turn, and say so. \
+         anything that changes files, has side effects or takes long goes to Lead as a task request. \
+         If the ask needs more than your desk budget, do not drop it: hand it to your work session, a lane or Lead in the same turn, and say so. \
          Your channels and the kinds of message each carries are in snippet tool reach_policy; a reply goes back on the channel the message came from, and a question for the user that cannot wait goes through its question channels."
     )
 }
 
-pub fn start_mission_control_session(
+pub fn start_lead_session(
     config: &SnippetConfig,
     state_path: PathBuf,
     initial: Option<String>,
@@ -123,21 +123,21 @@ pub fn start_mission_control_session(
         initial,
         resume,
         stream,
-        SessionConfig::mission_control(),
+        SessionConfig::lead(),
     )
 }
 
 /// The two kinds of session. Not three.
 ///
 /// An AGENT is a separate entity — who is working — not a kind of session. A
-/// session is either Mission Control or it is not; a plain conversation and one
+/// session is either Lead or it is not; a plain conversation and one
 /// worked by a specialist are the SAME kind, differing only by their agent. The
 /// previous three-variant enum fused the two axes, so "which agent" could only
 /// be expressed by claiming a different kind of session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionRole {
-    MissionControl,
+    Lead,
     Standard,
     /// An agent's coordination session: it answers direct messages and dispatches
     /// work, and deliberately has no workspace tools.
@@ -172,9 +172,9 @@ impl SessionConfig {
         }
     }
 
-    fn mission_control() -> Self {
+    fn lead() -> Self {
         Self {
-            role: SessionRole::MissionControl,
+            role: SessionRole::Lead,
             agent: None,
         }
     }
@@ -243,11 +243,11 @@ pub(crate) fn write_session_sidecar_in(
 ///
 /// Store first: a migrated session has no `.role`, so reading only the file would
 /// report every session as a plain standard session — the routing agent would
-/// then treat Mission Control as ordinary work.
+/// then treat Lead as ordinary work.
 pub fn read_session_sidecar(state_path: &Path) -> Option<SessionSidecar> {
-    if crate::mission_control::is_session_id(&session_id_for_state_path(state_path)) {
+    if crate::lead::is_session_id(&session_id_for_state_path(state_path)) {
         return Some(SessionSidecar {
-            role: SessionRole::MissionControl,
+            role: SessionRole::Lead,
             agent_id: None,
         });
     }
@@ -260,15 +260,15 @@ pub(crate) fn read_session_sidecar_in(
     state_path: &Path,
 ) -> Option<SessionSidecar> {
     let id = session_id_for_state_path(state_path);
-    if crate::mission_control::is_session_id(&id) {
+    if crate::lead::is_session_id(&id) {
         return Some(SessionSidecar {
-            role: SessionRole::MissionControl,
+            role: SessionRole::Lead,
             agent_id: None,
         });
     }
     let row = store.get_session_row(&id).ok()??;
-    let role = if row.role == "mission_control" {
-        SessionRole::MissionControl
+    let role = if row.role == "lead" {
+        SessionRole::Lead
     } else if row.role == "coordination" {
         SessionRole::Coordination
     } else {
@@ -282,7 +282,7 @@ pub(crate) fn read_session_sidecar_in(
 
 /// Everything that distinguishes one kind of session from another, resolved once.
 ///
-/// Replaces a single `mission_control: bool` that drove five separate branches
+/// Replaces a single `lead: bool` that drove five separate branches
 /// in `start_session_with_role` — model factory, tool context, tool registry,
 /// system prompt, and lane control. Adding a kind meant finding all five, and
 /// nothing said when one was missed: the two places that read a role back off
@@ -297,7 +297,7 @@ struct AgentRuntime {
     context: ToolContext,
     tools: ToolRegistry,
     prompt: String,
-    /// Mission Control coordinates durable sessions; it does not spawn lanes.
+    /// Lead coordinates durable sessions; it does not spawn lanes.
     allow_lane_control: bool,
     hidden_meta: &'static [&'static str],
     seat_role: crate::surface::SeatRole,
@@ -324,33 +324,33 @@ struct RuntimeInputs {
 type AgentIdentity<'a> = (&'a str, &'a str);
 
 impl AgentRuntime {
-    /// Mission Control: routing and orchestration only.
+    /// Lead: routing and orchestration only.
     ///
     /// No model factory (the daemon drives it rather than delegating to it), a
     /// routing-only tool set, and the orchestrator prompt — which deliberately
     /// does NOT stack the coding-agent layer, because that identity ("own the
-    /// task end to end") made Mission Control advertise as a general engineer
+    /// task end to end") made Lead advertise as a general engineer
     /// and skip `list_sessions`.
-    fn mission_control(i: RuntimeInputs) -> Result<Self, ToolError> {
-        let context = ToolContext::mission_control(i.workspace)?
+    fn lead(i: RuntimeInputs) -> Result<Self, ToolError> {
+        let context = ToolContext::lead(i.workspace)?
             .with_durable_session_id_opt(i.durable_id)
             .with_store_path(crate::store::default_db_path())
-            // Mission Control is an ADDRESSABLE agent: it holds a directory row
+            // Lead is an ADDRESSABLE agent: it holds a directory row
             // and an agent id, so a peer can name it and a lease can attribute a
             // turn to it. Without this it could post to the board but nothing
             // could address it back.
-            .with_agent_id(crate::mission_control::SESSION_ID);
+            .with_agent_id(crate::lead::SESSION_ID);
 
-        let tools = mission_control_tool_registry(i.exa_api_key.clone());
+        let tools = lead_tool_registry(i.exa_api_key.clone());
 
         Ok(Self {
             factory: None,
             context,
             tools,
-            prompt: mission_control_system_prompt(),
+            prompt: lead_system_prompt(),
             allow_lane_control: false,
             hidden_meta: &["monitor", "update_plan"],
-            seat_role: crate::surface::SeatRole::MissionControl,
+            seat_role: crate::surface::SeatRole::Lead,
             memory: true,
         })
     }
@@ -442,7 +442,7 @@ impl AgentRuntime {
     /// so carrying them would be dead weight that invites misuse.
     ///
     /// It keeps read-only session awareness so it can dispatch into the right
-    /// place, but not Mission Control's task tools — the runtime owns task state,
+    /// place, but not Lead's task tools — the runtime owns task state,
     /// and a peer managing it would be a second owner.
     fn coordination(i: RuntimeInputs, identity: AgentIdentity<'_>) -> Result<Self, ToolError> {
         let (agent_id, body) = identity;
@@ -485,7 +485,7 @@ impl AgentRuntime {
     /// comment.
     fn resolve(config: SessionConfig, inputs: RuntimeInputs) -> Result<Self, ToolError> {
         match config.role {
-            SessionRole::MissionControl => Self::mission_control(inputs),
+            SessionRole::Lead => Self::lead(inputs),
             SessionRole::Standard => Self::snippet(
                 inputs,
                 config
@@ -508,22 +508,22 @@ impl AgentRuntime {
     }
 }
 
-/// Mission Control's tools: routing and coordination, no file editing.
-pub(crate) fn mission_control_tool_registry(exa_api_key: Option<String>) -> ToolRegistry {
+/// Lead's tools: routing and coordination, no file editing.
+pub(crate) fn lead_tool_registry(exa_api_key: Option<String>) -> ToolRegistry {
     let mut tools = ToolRegistry::new();
     tools.insert(crate::builtins::BashTool);
     tools.insert(crate::builtins::ViewImageTool);
-    // Mission Control may research current docs and issues while routing work.
+    // Lead may research current docs and issues while routing work.
     if let Some(key) = exa_api_key.filter(|k| !k.trim().is_empty()) {
         tools.insert(crate::builtins::WebSearchTool {
             api_key: key.clone(),
         });
         tools.insert(crate::builtins::WebReadTool { api_key: key });
     }
-    crate::mission_tools::add_mission_control_tools(&mut tools);
+    crate::mission_tools::add_lead_tools(&mut tools);
     crate::coordination_tools::add_coordination_tools(&mut tools);
     for name in [
-        "message_mission_control",
+        "message_lead",
         "claim_and_dispatch_task",
         "pass_turn",
         "post_coordination_message",
@@ -544,7 +544,7 @@ pub(crate) fn work_tool_registry(
     crate::mission_tools::add_worker_report_tool(&mut tools);
     crate::coordination_tools::add_coordination_tools(&mut tools);
     for name in [
-        "message_mission_control",
+        "message_lead",
         "read_agent_inbox",
         "claim_and_dispatch_task",
         "post_coordination_message",
@@ -579,7 +579,7 @@ pub(crate) fn coordination_tool_registry(exa_api_key: Option<String>) -> ToolReg
         tools.insert(crate::builtins::WebReadTool { api_key: key });
     }
     for name in [
-        "message_mission_control",
+        "message_lead",
         "pass_turn",
         "post_coordination_message",
     ] {
@@ -609,7 +609,7 @@ fn start_session_with_role(
     let context_limit = crate::agent_context::limit_for(
         crate::agent_context::agent_for_session(
             session.agent.as_ref().map(|a| a.agent_id.as_str()),
-            matches!(session.role, SessionRole::MissionControl),
+            matches!(session.role, SessionRole::Lead),
         )
         .as_deref(),
     );
@@ -800,7 +800,7 @@ pub struct SessionInfo {
     /// who needs the user without fetching every session's state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attention: Option<serde_json::Value>,
-    /// Parked by auto-settle or Mission Control: not routed to, deleted later.
+    /// Parked by auto-settle or Lead: not routed to, deleted later.
     pub settled: bool,
     pub settled_at: Option<i64>,
     /// Opted out of automatic settling.
@@ -846,7 +846,7 @@ pub struct SessionInfo {
     /// Cached GitHub PR summary for this session's branch, if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<SessionPr>,
-    /// The agent that owns this session (`"mission-control"`, inbox agent,
+    /// The agent that owns this session (`"lead"`, inbox agent,
     /// bound/seated agent, or `"snippet"` by default).
     pub owner_agent_id: String,
     /// Unix seconds when a turn last ended with a result.
@@ -940,8 +940,8 @@ pub fn compute_session_plan(
 
 /// Resolve the owning agent for a session row or id.
 pub fn owner_agent_id_for(session_id: &str, agent_id: Option<&str>) -> String {
-    if crate::mission_control::is_session_id(session_id) {
-        return crate::mission_control::SESSION_ID.to_string();
+    if crate::lead::is_session_id(session_id) {
+        return crate::lead::SESSION_ID.to_string();
     }
     if let Some(inbox_agent) = session_id
         .strip_prefix("inbox-")
@@ -967,7 +967,7 @@ pub fn compute_came_back(
     finished_at: Option<i64>,
     user_seen_at: Option<i64>,
 ) -> bool {
-    if crate::mission_control::is_session_id(id)
+    if crate::lead::is_session_id(id)
         || is_inbox_session_id(id)
         || is_lane_session_id(id)
     {
@@ -1028,8 +1028,8 @@ pub fn is_inbox_session_id(id: &str) -> bool {
 /// Traversal is rejected lexically for that reason — canonicalizing the parent
 /// returns `None` when the directory does not exist.
 pub fn state_path_for_id(id: &str) -> Option<PathBuf> {
-    if crate::mission_control::is_session_id(id) {
-        return Some(crate::mission_control::session_state_path());
+    if crate::lead::is_session_id(id) {
+        return Some(crate::lead::session_state_path());
     }
     resolve_session_path(&workspaces_root(), id)
 }
@@ -1224,7 +1224,7 @@ pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> V
     let mut plans = store.map(|s| s.session_plans()).unwrap_or_default();
     let mut lanes_map = store.map(|s| s.session_running_lanes()).unwrap_or_default();
     let mut wakes = store.map(|s| s.session_next_wakes()).unwrap_or_default();
-    let mc_wake = store
+    let lead_wake = store
         .map(crate::mission_autonomy::load_from)
         .and_then(|a| a.followups.iter().map(|f| f.due_at).min());
     let now = now_unix_secs();
@@ -1266,8 +1266,8 @@ pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> V
             let plan = plans.remove(&row.id);
             let lanes = lanes_map.remove(&row.id);
             let wake_db = wakes.remove(&row.id);
-            let next_wake_at = if crate::mission_control::is_session_id(&row.id) {
-                match (wake_db, mc_wake) {
+            let next_wake_at = if crate::lead::is_session_id(&row.id) {
+                match (wake_db, lead_wake) {
                     (Some(a), Some(b)) => Some(a.min(b)),
                     (a, b) => a.or(b),
                 }
@@ -1325,10 +1325,10 @@ pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> V
         .collect();
 
     out.sort_by(|a, b| b.last_active.cmp(&a.last_active));
-    // Mission Control is always the first entry.
+    // Lead is always the first entry.
     if let Some(idx) = out
         .iter()
-        .position(|s| crate::mission_control::is_session_id(&s.id))
+        .position(|s| crate::lead::is_session_id(&s.id))
     {
         let mc = out.remove(idx);
         out.insert(0, mc);
@@ -1363,7 +1363,7 @@ fn conversation_name_from_id(id: &str) -> &str {
 ///
 /// Two exclusions, both structural rather than stylistic:
 ///
-/// - Mission Control coordinates; routing work to itself is a loop.
+/// - Lead coordinates; routing work to itself is a loop.
 /// - An agent's INBOX is a mailbox. It runs the coordination runtime — no file
 ///   or shell tools, and no `report_mission_task` — so work sent there can be
 ///   neither done nor reported, and the task sits InProgress forever.
@@ -1371,10 +1371,10 @@ fn conversation_name_from_id(id: &str) -> &str {
 /// Named so the rule has one home and can be asserted directly; when this was
 /// an inline filter, the inbox case was simply missing.
 pub fn is_routable_target(id: &str) -> bool {
-    !crate::mission_control::is_session_id(id) && !is_inbox_session_id(id)
+    !crate::lead::is_session_id(id) && !is_inbox_session_id(id)
 }
 
-/// Same catalog as [`list_device_sessions`], without Mission Control itself and
+/// Same catalog as [`list_device_sessions`], without Lead itself and
 /// without agent inboxes — neither is a place work runs. Seated member conversations
 /// are also excluded so work is not dispatched into a collaborator seat.
 pub fn list_routable_sessions() -> Vec<SessionInfo> {
@@ -1458,12 +1458,12 @@ pub fn status_str(status: crate::harness::HarnessStatus) -> String {
 /// The persisted spelling of a session's role.
 ///
 /// Explicit rather than derived from serde: this string is stored in the
-/// `sessions.role` column and compared against literal `'mission_control'`, so a
-/// silent rename under it would strand every mission-control session as
+/// `sessions.role` column and compared against literal `'lead'`, so a
+/// silent rename under it would strand every lead session as
 /// "standard" — routing would then treat the coordinator as ordinary work.
 pub fn role_str(role: SessionRole) -> &'static str {
     match role {
-        SessionRole::MissionControl => "mission_control",
+        SessionRole::Lead => "lead",
         SessionRole::Standard => "standard",
         SessionRole::Coordination => "coordination",
     }
@@ -1534,8 +1534,8 @@ pub fn park_failed_session_work(id: &str, prev_status: &str, state: &HarnessStat
 }
 
 pub fn session_id_for_state_path(state_path: &Path) -> String {
-    if state_path == crate::mission_control::session_state_path() {
-        return crate::mission_control::SESSION_ID.to_string();
+    if state_path == crate::lead::session_state_path() {
+        return crate::lead::SESSION_ID.to_string();
     }
     let root = workspaces_root();
     let relative = state_path
@@ -1770,7 +1770,7 @@ fn emit_device_event_with_store(
         }
         if matches!(notification["kind"].as_str(), Some("idle" | "done"))
             && let Some(session_id) = notification["session"].as_str()
-            && !crate::mission_control::is_session_id(session_id)
+            && !crate::lead::is_session_id(session_id)
             && !is_inbox_session_id(session_id)
             && !is_lane_session_id(session_id)
         {
@@ -1797,7 +1797,7 @@ fn notification_candidate(event: &serde_json::Value) -> Option<serde_json::Value
     let kind = event.get("kind")?.as_str()?;
     let mut value = event.clone();
     if matches!(kind, "done" | "idle")
-        && event.get("session").and_then(|s| s.as_str()) == Some(crate::mission_control::SESSION_ID)
+        && event.get("session").and_then(|s| s.as_str()) == Some(crate::lead::SESSION_ID)
         && crate::mission_autonomy::is_on()
     {
         return None;
@@ -1818,7 +1818,7 @@ fn notification_candidate(event: &serde_json::Value) -> Option<serde_json::Value
         value["destination"] = serde_json::json!({"type": "session", "id": session});
     } else if matches!(kind, "call_prompt" | "call_state") {
         value["destination"] =
-            serde_json::json!({"type": "session", "id": crate::mission_control::SESSION_ID});
+            serde_json::json!({"type": "session", "id": crate::lead::SESSION_ID});
     } else if kind == "coordination_event" && event["event"]["event_type"] == "group_message" {
         let source = &event["event"];
         let payload = &source["payload"];
@@ -1852,7 +1852,7 @@ fn notification_candidate(event: &serde_json::Value) -> Option<serde_json::Value
             }
             "task.message" => {
                 let id = source.get("correlation_id")?.as_str()?;
-                serde_json::json!({"type": "task", "id": id, "session": crate::mission_control::SESSION_ID})
+                serde_json::json!({"type": "task", "id": id, "session": crate::lead::SESSION_ID})
             }
             _ => return None,
         };
@@ -1900,7 +1900,7 @@ fn notification_attention_current(store: &crate::store::Store, event: &serde_jso
 }
 
 fn notification_allowed(
-    settings: &crate::mission_control::ControlSettings,
+    settings: &crate::lead::ControlSettings,
     event: &serde_json::Value,
 ) -> bool {
     // A call prompt needs an answer whatever the policy; unanswered it just expires.
@@ -1918,9 +1918,9 @@ fn notification_allowed(
     };
     match settings.notification_policy.as_str() {
         "all_sessions" => true,
-        "mission_control_only" => session.is_some_and(|id| {
-            id == crate::mission_control::SESSION_ID
-                || settings.mission_control_session_id.as_deref() == Some(id)
+        "lead_only" => session.is_some_and(|id| {
+            id == crate::lead::SESSION_ID
+                || settings.lead_session_id.as_deref() == Some(id)
         }),
         _ => false,
     }
@@ -1975,7 +1975,7 @@ pub fn replay_notification_events_after_cursor(
 
 fn notification_tuple_page(
     store: &crate::store::Store,
-    settings: &crate::mission_control::ControlSettings,
+    settings: &crate::lead::ControlSettings,
     created_at: i64,
     event_id: u64,
     limit: usize,
@@ -2019,7 +2019,7 @@ pub fn replay_notification_events(since: u64, limit: usize) -> Result<serde_json
 
 fn notification_page_from_store(
     store: &crate::store::Store,
-    settings: &crate::mission_control::ControlSettings,
+    settings: &crate::lead::ControlSettings,
     since: u64,
     limit: usize,
 ) -> Result<serde_json::Value, String> {
@@ -2047,7 +2047,7 @@ fn notification_page_from_store(
 
 fn notification_page(
     rows: Vec<serde_json::Value>,
-    settings: &crate::mission_control::ControlSettings,
+    settings: &crate::lead::ControlSettings,
     since: u64,
     limit: usize,
 ) -> serde_json::Value {

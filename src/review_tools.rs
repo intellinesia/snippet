@@ -10,13 +10,13 @@ use crate::llm::NativeToolDefinition;
 use crate::store::Store;
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 
-/// Reviews that may send work back before every later report goes to Mission Control.
+/// Reviews that may send work back before every later report goes to Lead.
 pub const REVIEW_CHANGE_ROUNDS: u32 = 1;
 
-/// Rounds with a seated reviewer before the disagreement goes to Mission Control.
+/// Rounds with a seated reviewer before the disagreement goes to Lead.
 pub const SEATED_REVIEW_ROUNDS: u32 = 4;
 
-/// A reviewer silent for this long is replaced by Mission Control.
+/// A reviewer silent for this long is replaced by Lead.
 pub const REVIEW_TIMEOUT_SECS: i64 = 45 * 60;
 
 fn clip(text: &str, max: usize) -> String {
@@ -32,7 +32,7 @@ fn clip(text: &str, max: usize) -> String {
 pub fn route(state: &crate::coordination::TaskState) -> VerifyMode {
     match state.effective_mode() {
         VerifyMode::Reviewer if state.review_rounds >= REVIEW_CHANGE_ROUNDS => {
-            VerifyMode::MissionControl
+            VerifyMode::Lead
         }
         mode => mode,
     }
@@ -67,7 +67,7 @@ pub fn review_route(
         };
     }
     if state.review_rounds >= SEATED_REVIEW_ROUNDS {
-        VerifyMode::MissionControl
+        VerifyMode::Lead
     } else {
         VerifyMode::Reviewer
     }
@@ -95,14 +95,14 @@ pub fn submit_for_review(
     artifacts: &[String],
     now: &str,
 ) -> Result<Task, ToolError> {
-    let by_mc = matches!(mode, VerifyMode::MissionControl | VerifyMode::User);
+    let by_mc = matches!(mode, VerifyMode::Lead | VerifyMode::User);
     store
         .modify_task_state(&task.id, now, |s| {
             s.pending_report = Some(PendingReport {
                 summary: summary.to_string(),
                 artifacts: artifacts.to_vec(),
             });
-            // Mission Control and user reviews have no reviewer lane to start
+            // Lead and user reviews have no reviewer lane to start
             // the clock, so it starts here; the reviewer path stamps it when
             // the reviewer actually starts.
             s.review_started_at = if by_mc {
@@ -240,7 +240,7 @@ pub fn supersede_report(
     Ok(updated)
 }
 
-/// Hand a review the reviewer cannot give to Mission Control. The task stays in
+/// Hand a review the reviewer cannot give to Lead. The task stays in
 /// review with its report, because silence is not a verdict.
 pub fn escalate(store: &Store, task_id: &str, reason: &str, now: &str) {
     let state = store
@@ -317,7 +317,7 @@ pub fn revision_envelope(
     feedback: &str,
     by: &str,
 ) -> String {
-    let envelope = crate::envelope::Envelope::new("mission_control_task")
+    let envelope = crate::envelope::Envelope::new("lead_task")
         .attr("task_id", &task.id)
         .attr("title", &task.title)
         .attr("revision", state.revision.to_string())
@@ -451,7 +451,7 @@ impl Tool for SubmitReview {
         }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let tool_name = if ctx.is_mission_control() {
+        let tool_name = if ctx.is_lead() {
             "tasks.review"
         } else if ctx.lane_origin().is_some() {
             "submit_review"
@@ -482,10 +482,10 @@ impl Tool for SubmitReview {
             .store()
             .map_err(|e| ToolError::msg(format!("open store: {e}")))?;
         let canonical = |id: &str| crate::conversations::canonical_session_id(id);
-        let is_mc = ctx.agent_id() == Some(crate::mission_control::SESSION_ID)
+        let is_mc = ctx.agent_id() == Some(crate::lead::SESSION_ID)
             || ctx
                 .durable_session_id()
-                .is_some_and(|s| canonical(s) == crate::mission_control::SESSION_ID);
+                .is_some_and(|s| canonical(s) == crate::lead::SESSION_ID);
         let seat = ctx
             .durable_session_id()
             .filter(|_| ctx.lane_origin().is_none())
@@ -543,8 +543,8 @@ impl Tool for SubmitReview {
                     &store,
                     &task,
                     &state,
-                    crate::mission_control::SESSION_ID,
-                    &format!("approved by Mission Control.{note}"),
+                    crate::lead::SESSION_ID,
+                    &format!("approved by Lead.{note}"),
                     now,
                 )?;
                 return Ok(ToolResult::success(
@@ -560,11 +560,11 @@ impl Tool for SubmitReview {
             .as_ref()
             .filter(|m| m.task_id == task.id && m.status != "active");
         let reviewer = if is_mc {
-            crate::mission_control::SESSION_ID.to_string()
+            crate::lead::SESSION_ID.to_string()
         } else if let Some(member) = seated_here {
             if review_route(&store, &task, &state) != VerifyMode::Reviewer {
                 return Err(ToolError::msg(
-                    "this review has used its rounds and is with Mission Control now",
+                    "this review has used its rounds and is with Lead now",
                 ));
             }
             member.agent_id.clone()
@@ -574,7 +574,7 @@ impl Tool for SubmitReview {
                 .is_some_and(|(s, _)| canonical(s) == canonical(&task.session_id));
             if !lane_of_worker || review_route(&store, &task, &state) != VerifyMode::Reviewer {
                 return Err(ToolError::msg(
-                    "only the reviewer of this task, or Mission Control when it holds the verification, may give a verdict",
+                    "only the reviewer of this task, or Lead when it holds the verification, may give a verdict",
                 ));
             }
             ctx.agent_id().unwrap_or("reviewer").to_string()
@@ -609,7 +609,7 @@ pub fn apply_verdict(
     reviewer: &str,
     now: String,
 ) -> Result<Task, ToolError> {
-    if reviewer != crate::mission_control::SESSION_ID {
+    if reviewer != crate::lead::SESSION_ID {
         let verdict = if approve { "approved" } else { "sent back" };
         let summary = format!(
             "{} {verdict}: {} {}",
@@ -770,7 +770,7 @@ mod tests {
                 "rv1",
                 &patch,
                 None,
-                "mission-control",
+                "lead",
                 "2026-01-01T00:00:01Z",
             )
             .unwrap();
@@ -802,7 +802,7 @@ mod tests {
             })
             .unwrap();
         let state = store.task_state("rv1").unwrap().unwrap();
-        assert_eq!(route(&state), VerifyMode::MissionControl);
+        assert_eq!(route(&state), VerifyMode::Lead);
         let bare = crate::coordination::TaskState::default();
         assert_eq!(bare.effective_mode(), VerifyMode::SelfCheck);
     }
@@ -836,7 +836,7 @@ mod tests {
             .execute(&worker, report("re-ran everything"))
             .await
             .unwrap();
-        assert_eq!(again.value["data"]["in_review"], "mission_control");
+        assert_eq!(again.value["data"]["in_review"], "lead");
         assert_eq!(
             store.get_task("rv1").unwrap().unwrap().status,
             TaskStatus::InReview
@@ -868,7 +868,7 @@ How: re-ran everything"
                 &store,
                 "rv1",
                 "tighten it",
-                "mission-control",
+                "lead",
                 "2026-01-02T00:00:00Z"
             )
             .unwrap_err()
@@ -887,12 +887,12 @@ How: re-ran everything"
                 "2026-01-02T00:00:00Z",
             )
             .unwrap();
-        assert!(revise_task(&store, "rv1", " ", "mission-control", "t").is_err());
+        assert!(revise_task(&store, "rv1", " ", "lead", "t").is_err());
         let back = revise_task(
             &store,
             "rv1",
             "tighten the intro",
-            "mission-control",
+            "lead",
             "2026-01-03T00:00:00Z",
         )
         .unwrap();
@@ -918,7 +918,7 @@ How: re-ran everything"
                 .iter()
                 .any(|d| d.text.contains("revision 1 requested: tighten the intro"))
         );
-        let envelope = revision_envelope(&back, &state, "tighten the intro", "mission-control");
+        let envelope = revision_envelope(&back, &state, "tighten the intro", "lead");
         assert_eq!(
             crate::envelope::attr(&envelope, "revision").as_deref(),
             Some("1")
@@ -933,7 +933,7 @@ How: re-ran everything"
         );
         assert!(envelope.contains("task.report (task_id rv1)"), "{envelope}");
         let _ = task;
-        assert!(revise_task(&store, "rv1", "again", "mission-control", "t").is_err());
+        assert!(revise_task(&store, "rv1", "again", "lead", "t").is_err());
     }
 
     #[tokio::test]
@@ -1000,12 +1000,12 @@ How: re-ran everything"
             crate::envelope::child_attrs(&state.render(false), "review_findings"),
             [("round".to_string(), "1".to_string())]
         );
-        assert_eq!(route(&state), VerifyMode::MissionControl);
+        assert_eq!(route(&state), VerifyMode::Lead);
         submit_for_review(
             &worker,
             &store,
             &back,
-            VerifyMode::MissionControl,
+            VerifyMode::Lead,
             "fixed",
             &[],
             "2026-01-03T00:00:00Z",
@@ -1022,7 +1022,7 @@ How: re-ran everything"
         );
         let mc = ToolContext::new(dir.path())
             .unwrap()
-            .with_agent_id(crate::mission_control::SESSION_ID)
+            .with_agent_id(crate::lead::SESSION_ID)
             .with_store_path(dir.path().join("snippet.db"));
         SubmitReview
             .execute(&mc, json!({"task_id": "rv1", "verdict": "approve"}))

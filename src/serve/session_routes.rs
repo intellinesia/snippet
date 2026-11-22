@@ -467,8 +467,8 @@ pub(crate) async fn interrupt_session(
         d.deliver(
             &req.session,
             LoopInput::Notice(crate::harness::HarnessEvent::SystemDecision {
-                step: "stopped_by_mission_control".to_string(),
-                reasoning: format!("Stopped by Mission Control: {reason}"),
+                step: "stopped_by_lead".to_string(),
+                reasoning: format!("Stopped by Lead: {reason}"),
             }),
         )
         .await;

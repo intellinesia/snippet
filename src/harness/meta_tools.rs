@@ -8,7 +8,7 @@ impl CodingHarness {
         read_only: bool,
     ) -> Option<Value> {
         let agent = brief.agent.as_deref()?;
-        if agent == crate::mission_control::SESSION_ID || self.context.lane_origin().is_some() {
+        if agent == crate::lead::SESSION_ID || self.context.lane_origin().is_some() {
             return None;
         }
         let session_id = self.context.durable_session_id()?;
@@ -739,7 +739,7 @@ impl CodingHarness {
     }
 
     /// Copy this session's plan onto the task it is working, so the board and
-    /// Mission Control see how far along it is. Lanes keep their own plans.
+    /// Lead see how far along it is. Lanes keep their own plans.
     fn mirror_plan_to_task(&self, steps: &[PlanStep]) {
         if self.context.lane_origin().is_some() {
             return;

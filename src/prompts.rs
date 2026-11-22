@@ -7,7 +7,7 @@
 pub const HARNESS_CORE: &str = include_str!("../prompts/harness_core.md");
 pub const CODING_AGENT_LAYER: &str = include_str!("../prompts/coding_agent_layer.md");
 pub const WORK_SESSION_LAYER: &str = include_str!("../prompts/work_session_layer.md");
-pub const MISSION_CONTROL_LAYER: &str = include_str!("../prompts/mission_control_layer.md");
+pub const LEAD_LAYER: &str = include_str!("../prompts/lead_layer.md");
 pub const DESK_LAYER: &str = include_str!("../prompts/desk_layer.md");
 pub const LANE_LAYER: &str = include_str!("../prompts/lane_layer.md");
 pub const GIT_WORKTREE_LAYER: &str = include_str!("../prompts/git_worktree_layer.md");
@@ -125,18 +125,18 @@ pub fn coordination_prompt(_context: &PromptContext) -> String {
     [HARNESS_CORE.trim(), DESK_LAYER.trim()].join("\n\n")
 }
 
-pub fn mission_control_system_prompt() -> String {
+pub fn lead_system_prompt() -> String {
     // Orchestrator only. Do not stack CODING_AGENT_LAYER — its
     // identities ("full filesystem", "own the task end to end") made Mission
     // Control advertise as a general engineer and skip list_sessions.
     let brief = crate::mission_autonomy::read_brief();
     if brief.trim().is_empty() {
-        [HARNESS_CORE.trim(), MISSION_CONTROL_LAYER.trim()].join("\n\n")
+        [HARNESS_CORE.trim(), LEAD_LAYER.trim()].join("\n\n")
     } else {
         format!(
             "{}\n\n{}\n\n## Your brief (as of this session's start)\n\n{}",
             HARNESS_CORE.trim(),
-            MISSION_CONTROL_LAYER.trim(),
+            LEAD_LAYER.trim(),
             brief.trim()
         )
     }
@@ -157,7 +157,7 @@ pub struct SpecializedAgentPromptContext<'a> {
 /// cannot disagree about how the agent is introduced to itself.
 fn identity_overlay(agent_id: &str, identity: &str) -> String {
     format!(
-        "## Your identity: {agent_id}\n\nThis section is injected from your agent identity: it sets your expertise, judgment and voice. Everything above still governs how you work, talk and finish.\n\n{identity}\n\n## Improving yourself\n\nAfter a task, judge the run against your playbook for that kind of work and update the playbook in your agent memory with what held up or failed. A lesson that changes how your role itself should work goes on your board: your desk weighs it when it reflects and may change your identity, and the user and Mission Control are told.\n",
+        "## Your identity: {agent_id}\n\nThis section is injected from your agent identity: it sets your expertise, judgment and voice. Everything above still governs how you work, talk and finish.\n\n{identity}\n\n## Improving yourself\n\nAfter a task, judge the run against your playbook for that kind of work and update the playbook in your agent memory with what held up or failed. A lesson that changes how your role itself should work goes on your board: your desk weighs it when it reflects and may change your identity, and the user and Lead are told.\n",
         identity = identity.trim(),
     )
 }
@@ -215,7 +215,7 @@ mod self_improvement_tests {
             .expect("missing Improving yourself section")
             .trim();
         assert!(section.contains("playbook"));
-        assert!(section.contains("Mission Control"));
+        assert!(section.contains("Lead"));
         assert!(!section.contains("\n- ") && !section.contains("\n* "));
         let sentences = section.split('.').filter(|s| !s.trim().is_empty()).count();
         assert!(
@@ -244,8 +244,8 @@ mod seat_layer_tests {
             ("conversation_prompt", conversation_prompt(&ctx)),
             ("coordination_prompt", coordination_prompt(&ctx)),
             (
-                "mission_control_system_prompt",
-                mission_control_system_prompt(),
+                "lead_system_prompt",
+                lead_system_prompt(),
             ),
         ] {
             let count = prompt.matches(heading).count();
@@ -285,7 +285,7 @@ mod seat_layer_tests {
         let non_core_layers = [
             ("CODING_AGENT_LAYER", CODING_AGENT_LAYER),
             ("WORK_SESSION_LAYER", WORK_SESSION_LAYER),
-            ("MISSION_CONTROL_LAYER", MISSION_CONTROL_LAYER),
+            ("LEAD_LAYER", LEAD_LAYER),
             ("DESK_LAYER", DESK_LAYER),
             ("LANE_LAYER", LANE_LAYER),
             ("GIT_WORKTREE_LAYER", GIT_WORKTREE_LAYER),
@@ -312,7 +312,7 @@ mod seat_layer_tests {
     fn backticked_tool_names_in_prompts_are_known_or_allowlisted() {
         let mut role_tools: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
         let mut all_known: BTreeSet<String> = BTreeSet::new();
-        for role in ["work", "mission_control", "desk", "lane"] {
+        for role in ["work", "lead", "desk", "lane"] {
             let (defs, _) = crate::lanes::role_tool_definitions(role, None)
                 .unwrap_or_else(|| panic!("missing role_tool_definitions for {role}"));
             let mut names: BTreeSet<String> = BTreeSet::new();
@@ -351,7 +351,7 @@ mod seat_layer_tests {
             "interrupted_reply",
             "keep_awake",
             "lane_id",
-            "mission_control",
+            "lead",
             "next_step",
             "other_party",
             "played_audio",
@@ -435,9 +435,9 @@ mod seat_layer_tests {
                 coordination_prompt(&default_ctx),
             ),
             (
-                "mission_control",
-                "mission_control_system_prompt",
-                mission_control_system_prompt(),
+                "lead",
+                "lead_system_prompt",
+                lead_system_prompt(),
             ),
             ("lane", "lane_prompt", lane_prompt(&default_ctx, None)),
             (

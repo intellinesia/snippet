@@ -211,7 +211,7 @@ pub fn put(root: &Path, entry: &KeepWarm) -> Result<(), String> {
 }
 
 pub fn clear(root: &Path, owner: &str, setter: Setter) -> Result<bool, String> {
-    if setter == Setter::MissionControl
+    if setter == Setter::Lead
         && get(root, owner)?.is_some_and(|e| e.set_by == Setter::User)
     {
         return Err("the user set this keep-warm; ask them to change it".into());
@@ -231,7 +231,7 @@ pub fn set(
 ) -> Result<KeepWarm, String> {
     let owner = owner.trim();
     let current = get(root, owner)?;
-    if setter == Setter::MissionControl
+    if setter == Setter::Lead
         && current.as_ref().is_some_and(|e| e.set_by == Setter::User)
     {
         return Err("the user set this keep-warm; ask them to change it".into());
@@ -367,12 +367,12 @@ impl Tool for KeepWarmTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "keep_warm".into(),
-            description: "Show, set or clear prompt-cache keep-warm: while you are idle, a minimal request just under the hour keeps the provider cache alive, up to max_idle_hours, outside quiet hours. Only providers with a one-hour cache are warmed; show says why otherwise. Mission Control may pass agent_id.".into(),
+            description: "Show, set or clear prompt-cache keep-warm: while you are idle, a minimal request just under the hour keeps the provider cache alive, up to max_idle_hours, outside quiet hours. Only providers with a one-hour cache are warmed; show says why otherwise. Lead may pass agent_id.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["show", "set", "clear"]},
-                    "agent_id": {"type": "string", "description": "Mission Control only."},
+                    "agent_id": {"type": "string", "description": "Lead only."},
                     "enabled": {"type": "boolean"},
                     "interval_minutes": {"type": "integer", "minimum": MIN_INTERVAL_MINUTES, "maximum": MAX_INTERVAL_MINUTES},
                     "max_idle_hours": {"type": "integer", "minimum": 1, "maximum": MAX_IDLE_HOURS_CEILING}
@@ -391,15 +391,15 @@ impl Tool for KeepWarmTool {
             .as_deref()
             .map(str::trim)
             .filter(|a| !a.is_empty());
-        let (owner, setter) = match (ctx.is_mission_control(), named) {
-            (true, Some(other)) => (other.to_string(), Setter::MissionControl),
+        let (owner, setter) = match (ctx.is_lead(), named) {
+            (true, Some(other)) => (other.to_string(), Setter::Lead),
             (true, None) => (
-                crate::mission_control::SESSION_ID.to_string(),
+                crate::lead::SESSION_ID.to_string(),
                 Setter::Owner,
             ),
             (false, Some(_)) => {
                 return Err(ToolError::msg(
-                    "only Mission Control can manage another agent's keep-warm",
+                    "only Lead can manage another agent's keep-warm",
                 ));
             }
             (false, None) => (
@@ -609,12 +609,12 @@ mod tests {
                 "researcher",
                 OwnerKind::Agent,
                 KeepWarmSpec::default(),
-                Setter::MissionControl,
+                Setter::Lead,
                 NOW
             )
             .is_err()
         );
-        assert!(clear(root, "researcher", Setter::MissionControl).is_err());
+        assert!(clear(root, "researcher", Setter::Lead).is_err());
         assert!(clear(root, "researcher", Setter::User).unwrap());
         assert!(get(root, "researcher").unwrap().is_none());
     }

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::Shared;
 use crate::ambient_tuning::Profile;
 use crate::llm::{HarnessMessage, NativeToolDefinition};
-use crate::mission_control::SESSION_ID;
+use crate::lead::SESSION_ID;
 use crate::routing::Route;
 use crate::store::Store;
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
@@ -77,7 +77,7 @@ pub struct GateInput {
     pub alone: bool,
     pub room_busy: bool,
     pub call_active: bool,
-    pub mc_busy: bool,
+    pub lead_busy: bool,
     pub quiet_hours: bool,
     pub user_on_call: bool,
     pub user_voice_recent: bool,
@@ -97,8 +97,8 @@ pub fn clarify_allowed(g: GateInput) -> Result<(), &'static str> {
     if g.call_active {
         return Err("call pending or tracked");
     }
-    if g.mc_busy {
-        return Err("mission control is busy");
+    if g.lead_busy {
+        return Err("lead is busy");
     }
     if g.quiet_hours {
         return Err("quiet hours");
@@ -875,7 +875,7 @@ pub fn current_gate_input(store: &Store, device: &str, now_s: i64) -> GateInput 
     let alone = crate::ambient_tuning::current(device).profile == Profile::Alone;
     let room_busy = crate::ambient::room_busy();
     let call_active = super::call_track::has_active_call();
-    let mc_busy = super::autonomy::mission_control_busy();
+    let lead_busy = super::autonomy::lead_busy();
     let autonomy = crate::mission_autonomy::load();
     let quiet_hours = crate::mission_autonomy::in_quiet_hours(&autonomy.settings);
     let user_on_call = crate::mission_autonomy::user_call().is_some();
@@ -892,7 +892,7 @@ pub fn current_gate_input(store: &Store, device: &str, now_s: i64) -> GateInput 
         alone,
         room_busy,
         call_active,
-        mc_busy,
+        lead_busy,
         quiet_hours,
         user_on_call,
         user_voice_recent: uv_recent,
@@ -933,7 +933,7 @@ pub async fn maybe_clarify(d: &Shared, device: &str) -> Result<bool, String> {
         esc(device),
         esc(item.text.trim()),
     );
-    super::autonomy::deliver_to_mission_control(d, msg).await;
+    super::autonomy::deliver_to_lead(d, msg).await;
     Ok(true)
 }
 
@@ -968,9 +968,9 @@ impl Tool for AmbientRoom {
     }
 
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        if ctx.mission_control_root().is_none() {
+        if ctx.lead_root().is_none() {
             return Err(ToolError::msg(
-                "Mission Control tools are only available in the Mission Control session.",
+                "Lead tools are only available in the Lead session.",
             ));
         }
         let args: AmbientRoomArgs =
@@ -1032,7 +1032,7 @@ impl Tool for AmbientRoom {
                                 "alone": gate.alone,
                                 "room_not_busy": !gate.room_busy,
                                 "no_call_active": !gate.call_active,
-                                "mc_not_busy": !gate.mc_busy,
+                                "lead_not_busy": !gate.lead_busy,
                                 "not_quiet_hours": !gate.quiet_hours,
                                 "user_not_on_call": !gate.user_on_call,
                                 "user_voice_recent": gate.user_voice_recent,
@@ -1270,7 +1270,7 @@ mod tests {
             alone: true,
             room_busy: false,
             call_active: false,
-            mc_busy: false,
+            lead_busy: false,
             quiet_hours: false,
             user_on_call: false,
             user_voice_recent: true,
@@ -1310,7 +1310,7 @@ mod tests {
             (
                 "mc busy",
                 GateInput {
-                    mc_busy: true,
+                    lead_busy: true,
                     ..ok.clone()
                 },
             ),
@@ -1376,7 +1376,7 @@ mod tests {
                 )
             })
             .unwrap();
-        let ctx = ToolContext::mission_control(dir.path().to_path_buf())
+        let ctx = ToolContext::lead(dir.path().to_path_buf())
             .unwrap()
             .with_store_path(dir.path().join("room.db"));
         let tool = AmbientRoom;

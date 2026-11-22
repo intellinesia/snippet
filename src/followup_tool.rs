@@ -1,5 +1,5 @@
 //! `schedule_wake` for desks and work sessions: wake this same session once,
-//! later, with a note. Mission Control keeps its own `schedule_wake`.
+//! later, with a note. Lead keeps its own `schedule_wake`.
 
 use async_trait::async_trait;
 use serde::Deserialize;

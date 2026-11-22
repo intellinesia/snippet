@@ -1,8 +1,8 @@
-//! Durable Mission Control domain models and persistence store.
+//! Durable Lead domain models and persistence store.
 //!
 //! Manages *managed-session* metadata (active / archived) and *task* records
 //! with structured handoff/result/dependencies/notification markers.
-//! Persistence is JSON files atomically written beneath `~/.snippet/mission-control`.
+//! Persistence is JSON files atomically written beneath `~/.snippet/lead`.
 //!
 //! This module is self-contained — no daemon or API integration; designed for
 //! later wiring into the serve/TUI layers.
@@ -67,24 +67,24 @@ pub struct ManagedSession {
 // Store configuration
 // ---------------------------------------------------------------------------
 
-/// Stable daemon session id for the single Mission Control conversation.
-pub const SESSION_ID: &str = "mission-control";
+/// Stable daemon session id for the single Lead conversation.
+pub const SESSION_ID: &str = "lead";
 
-/// Resolve the root data directory for mission control.
+/// Resolve the root data directory for lead.
 ///
-/// `~/.snippet/mission-control` under the user's `HOME`, or an explicit override
+/// `~/.snippet/lead` under the user's `HOME`, or an explicit override
 /// (useful for tests).
 fn data_root(override_path: Option<&Path>) -> PathBuf {
     if let Some(p) = override_path {
         return p.to_path_buf();
     }
-    crate::config::snippet_home().join("mission-control")
+    crate::config::snippet_home().join("lead")
 }
 
-/// Workspace the Mission Control agent runs in — the dedicated home, never a
+/// Workspace the Lead agent runs in — the dedicated home, never a
 /// project folder.
 pub fn workspace_path() -> PathBuf {
-    MissionControlStore::default_root(None)
+    LeadStore::default_root(None)
 }
 
 /// The one conversation file. Open always resumes this; it is never minted
@@ -102,7 +102,7 @@ pub fn session_state_path() -> PathBuf {
 
 pub fn is_session_id(id: &str) -> bool {
     let id = id.trim();
-    id == SESSION_ID || id == "mission-control/session.json"
+    id == SESSION_ID || id == "lead/session.json"
 }
 
 // ManagedSession CRUD
@@ -195,11 +195,11 @@ pub fn archive_session(root: &Path, id: &str) -> Result<ManagedSession, String> 
 /// A thin wrapper providing interior-mutability-safe access to a store rooted
 /// at a specific path.  Only serialises writes; reads are plain filesystem ops.
 #[derive(Debug, Clone)]
-pub struct MissionControlStore {
+pub struct LeadStore {
     root: PathBuf,
 }
 
-impl MissionControlStore {
+impl LeadStore {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
@@ -214,10 +214,10 @@ impl MissionControlStore {
     }
 }
 
-/// Ensure the dedicated Mission Control home exists (workspace + store).
+/// Ensure the dedicated Lead home exists (workspace + store).
 pub fn ensure_home() -> Result<PathBuf, String> {
     let root = workspace_path();
-    std::fs::create_dir_all(&root).map_err(|e| format!("create mission-control home: {e}"))?;
+    std::fs::create_dir_all(&root).map_err(|e| format!("create lead home: {e}"))?;
     Ok(root)
 }
 
@@ -318,32 +318,32 @@ mod tests {
         assert_eq!(list_sessions(root.path(), false).unwrap()[0].id, id);
     }
 
-    // -- MissionControlStore ----------------------------------------------
+    // -- LeadStore ----------------------------------------------
 
     #[test]
     fn store_default_root_is_under_snippet_home() {
-        let path = MissionControlStore::default_root(None);
-        assert!(path.to_string_lossy().contains("mission-control"));
-        assert_eq!(path, crate::config::snippet_home().join("mission-control"));
+        let path = LeadStore::default_root(None);
+        assert!(path.to_string_lossy().contains("lead"));
+        assert_eq!(path, crate::config::snippet_home().join("lead"));
         assert!(!path.starts_with("/tmp/.snippet"));
     }
 
     #[test]
     fn dedicated_home_is_one_session() {
-        assert_eq!(SESSION_ID, "mission-control");
+        assert_eq!(SESSION_ID, "lead");
         assert!(is_session_id(SESSION_ID));
-        assert!(is_session_id("mission-control/session.json"));
+        assert!(is_session_id("lead/session.json"));
         assert!(!is_session_id("gmata-backend-abc/conversations/x.json"));
         assert!(!is_session_id("foo/custom.json"));
         let home = workspace_path();
         assert_eq!(session_state_path(), home.join("session.json"));
-        assert!(home.ends_with("mission-control"));
+        assert!(home.ends_with("lead"));
     }
 
     #[test]
     fn store_creates_and_reads_via_lock() {
         let root = tmp();
-        let store = MissionControlStore::new(root.path().to_path_buf());
+        let store = LeadStore::new(root.path().to_path_buf());
 
         create_session(store.root(), "s1", "Locked", Path::new("/")).unwrap();
 
@@ -371,19 +371,19 @@ mod tests {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlSettings {
     #[serde(default)]
-    pub mission_control_session_id: Option<String>,
+    pub lead_session_id: Option<String>,
     #[serde(default = "default_notification_policy")]
     pub notification_policy: String,
 }
 
 fn default_notification_policy() -> String {
-    "mission_control_only".to_string()
+    "lead_only".to_string()
 }
 
 impl Default for ControlSettings {
     fn default() -> Self {
         Self {
-            mission_control_session_id: None,
+            lead_session_id: None,
             notification_policy: default_notification_policy(),
         }
     }
@@ -402,12 +402,12 @@ pub fn save_settings(root: &Path, settings: &ControlSettings) -> Result<(), Stri
         .map_err(|e| e.to_string())
 }
 
-pub fn set_mission_control_session(
+pub fn set_lead_session(
     root: &Path,
     session_id: &str,
 ) -> Result<ControlSettings, String> {
     let mut settings = load_settings(root);
-    settings.mission_control_session_id = Some(session_id.to_string());
+    settings.lead_session_id = Some(session_id.to_string());
     save_settings(root, &settings)?;
     Ok(settings)
 }

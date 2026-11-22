@@ -24,10 +24,10 @@ pub fn effective_context_window(model_window: u64, limit: Option<u64>) -> u64 {
     }
 }
 
-/// The directory agent behind a session, or Mission Control.
-pub fn agent_for_session(agent_id: Option<&str>, mission_control: bool) -> Option<String> {
-    if mission_control {
-        return Some(crate::mission_control::SESSION_ID.to_string());
+/// The directory agent behind a session, or Lead.
+pub fn agent_for_session(agent_id: Option<&str>, lead: bool) -> Option<String> {
+    if lead {
+        return Some(crate::lead::SESSION_ID.to_string());
     }
     agent_id.map(str::to_string)
 }
@@ -64,12 +64,12 @@ impl Tool for ContextLimitTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "context_limit".into(),
-            description: "Show, set or clear your context ceiling: the tokens your sessions hold before compacting, never above the model's window. Applies from the next session start. Mission Control may pass agent_id.".into(),
+            description: "Show, set or clear your context ceiling: the tokens your sessions hold before compacting, never above the model's window. Applies from the next session start. Lead may pass agent_id.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["show", "set", "clear"]},
-                    "agent_id": {"type": "string", "description": "Mission Control only."},
+                    "agent_id": {"type": "string", "description": "Lead only."},
                     "max_context_tokens": {"type": "integer", "minimum": MIN_CONTEXT_TOKENS}
                 },
                 "required": ["action"],
@@ -86,12 +86,12 @@ impl Tool for ContextLimitTool {
             .as_deref()
             .map(str::trim)
             .filter(|a| !a.is_empty());
-        let agent = match (ctx.is_mission_control(), named) {
+        let agent = match (ctx.is_lead(), named) {
             (true, Some(other)) => other.to_string(),
-            (true, None) => crate::mission_control::SESSION_ID.to_string(),
+            (true, None) => crate::lead::SESSION_ID.to_string(),
             (false, Some(_)) => {
                 return Err(ToolError::msg(
-                    "only Mission Control can set another agent's limit",
+                    "only Lead can set another agent's limit",
                 ));
             }
             (false, None) => ctx
@@ -150,10 +150,10 @@ mod tests {
     }
 
     #[test]
-    fn mission_control_sessions_resolve_to_its_agent() {
+    fn lead_sessions_resolve_to_its_agent() {
         assert_eq!(
             agent_for_session(None, true).as_deref(),
-            Some("mission-control")
+            Some("lead")
         );
         assert_eq!(
             agent_for_session(Some("x-research"), false).as_deref(),

@@ -89,7 +89,7 @@ fn notification_second_device_skips_answered_question_and_keeps_new_generation()
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("notifications.db");
     let store = crate::store::Store::open(&path).unwrap();
-    let mut settings = crate::mission_control::ControlSettings::default();
+    let mut settings = crate::lead::ControlSettings::default();
     settings.notification_policy = "all_sessions".into();
     store.save_control_settings(&settings).unwrap();
     persist_wait(&store, true, "first");
@@ -113,7 +113,7 @@ fn notification_second_device_skips_answered_question_and_keeps_new_generation()
 fn notification_second_device_preserves_active_approval_and_skips_resolved_approval() {
     let dir = tempfile::tempdir().unwrap();
     let store = crate::store::Store::open(&dir.path().join("notifications.db")).unwrap();
-    let mut settings = crate::mission_control::ControlSettings::default();
+    let mut settings = crate::lead::ControlSettings::default();
     settings.notification_policy = "all_sessions".into();
     store.save_control_settings(&settings).unwrap();
     persist_wait(&store, false, "first");
@@ -133,7 +133,7 @@ fn notification_second_device_preserves_active_approval_and_skips_resolved_appro
 fn notification_resolved_attention_scan_is_bounded_and_advances_both_cursors() {
     let dir = tempfile::tempdir().unwrap();
     let store = crate::store::Store::open(&dir.path().join("notifications.db")).unwrap();
-    let mut settings = crate::mission_control::ControlSettings::default();
+    let mut settings = crate::lead::ControlSettings::default();
     settings.notification_policy = "all_sessions".into();
     store.save_control_settings(&settings).unwrap();
     persist_wait(&store, true, "old");
@@ -191,7 +191,7 @@ fn notification_resolved_attention_scan_is_bounded_and_advances_both_cursors() {
 fn notification_waiting_carries_question_text_and_choices() {
     let dir = tempfile::tempdir().unwrap();
     let store = crate::store::Store::open(&dir.path().join("n.db")).unwrap();
-    let mut settings = crate::mission_control::ControlSettings::default();
+    let mut settings = crate::lead::ControlSettings::default();
     settings.notification_policy = "all_sessions".into();
     store.save_control_settings(&settings).unwrap();
     let questions = json!({"questions":[{"id":"q0","text":"Ship it now?","answer_kind":{"kind":"single_choice",

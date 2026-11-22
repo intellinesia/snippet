@@ -136,8 +136,8 @@ async fn open_owner(daemon: &Shared, wake: &crate::agent_wakes::WakePolicy) -> R
         crate::agent_wakes::OwnerKind::Agent => {
             super::direct::ensure_agent_inbox(daemon, &wake.owner).await
         }
-        crate::agent_wakes::OwnerKind::MissionControl => {
-            super::mission_control::open_mission_control(daemon, None)
+        crate::agent_wakes::OwnerKind::Lead => {
+            super::lead::open_lead(daemon, None)
                 .await
                 .map(|_| ())
         }
@@ -146,7 +146,7 @@ async fn open_owner(daemon: &Shared, wake: &crate::agent_wakes::WakePolicy) -> R
 }
 
 /// Wait for a scheduled run to finish, record it, and report it: by the wake
-/// policy for a wake schedule, else to Mission Control while automated wakes are on.
+/// policy for a wake schedule, else to Lead while automated wakes are on.
 async fn watch_run(daemon: Shared, job: recurring::RecurringJob, run_id: Option<i64>, seen: usize) {
     let finish = |status: &str, summary: Option<&str>, reported_to: Option<&str>| {
         if let (Some(id), Ok(store)) = (run_id, recurring::store_at(&daemon.recurring_root)) {
@@ -202,7 +202,7 @@ async fn watch_run(daemon: Shared, job: recurring::RecurringJob, run_id: Option<
             Some(wake) => {
                 report_wake(&daemon, &job, wake, &status, &summary, previous.as_deref()).await
             }
-            None => report_run_to_mission_control(
+            None => report_run_to_lead(
                 &daemon,
                 &job.title,
                 &job.session_id,
@@ -249,7 +249,7 @@ async fn report_wake(
             Ok(sent) => format!("user: {sent}"),
             Err(error) => format!("user: failed: {error}"),
         },
-        ReportTo::MissionControl => {
+        ReportTo::Lead => {
             let text = crate::envelope::Envelope::new("agent_wake_report")
                 .attr("owner", &wake.owner)
                 .attr("schedule", job.schedule.display().to_string())
@@ -261,19 +261,19 @@ async fn report_wake(
                     "A scheduled wake finished. No reply is expected.",
                 )
                 .render();
-            if super::mission_control::open_mission_control(daemon, None)
+            if super::lead::open_lead(daemon, None)
                 .await
                 .is_ok()
             {
                 daemon
                     .deliver_wake(
-                        crate::mission_control::SESSION_ID,
+                        crate::lead::SESSION_ID,
                         LoopInput::UserMessage(text),
                     )
                     .await;
-                "mission_control".into()
+                "lead".into()
             } else {
-                "mission_control: unavailable".into()
+                "lead: unavailable".into()
             }
         }
         ReportTo::Group => {
@@ -322,7 +322,7 @@ fn post_to_task_room(
     let actor_kind = match wake.owner_kind {
         crate::agent_wakes::OwnerKind::Agent => "agent",
         crate::agent_wakes::OwnerKind::Session => "session",
-        crate::agent_wakes::OwnerKind::MissionControl => "system",
+        crate::agent_wakes::OwnerKind::Lead => "system",
     };
     let event = crate::coordination::types::CoordinationEvent {
         event_id: uuid::Uuid::new_v4().to_string(),
@@ -350,7 +350,7 @@ fn post_to_task_room(
     Ok(())
 }
 
-/// A plain recurring run's outcome for Mission Control. Completed runs are
+/// A plain recurring run's outcome for Lead. Completed runs are
 /// noted for the next wake; others open a turn. Only while automated wakes are on.
 /// Posts the run's outcome to the job's group, waking nobody: the run itself
 /// names whoever it hands work to.
@@ -395,7 +395,7 @@ fn post_run_card(daemon: &Shared, thread: &str, poster: &str, body: &str) -> Str
     }
 }
 
-async fn report_run_to_mission_control(
+async fn report_run_to_lead(
     daemon: &Shared,
     title: &str,
     session_id: &str,
@@ -419,7 +419,7 @@ async fn report_run_to_mission_control(
             let excess = s.run_notes.len().saturating_sub(20);
             s.run_notes.drain(..excess);
         });
-        return "mission_control: next wake";
+        return "lead: next wake";
     }
     let text = crate::envelope::Envelope::new("recurring_run_report")
         .attr("job", label)
@@ -431,17 +431,17 @@ async fn report_run_to_mission_control(
             "Recurring run report. The report is the run's outcome; no reply is expected.",
         )
         .render();
-    if super::mission_control::open_mission_control(daemon, None)
+    if super::lead::open_lead(daemon, None)
         .await
         .is_err()
     {
-        return "mission_control: unavailable";
+        return "lead: unavailable";
     }
     daemon
         .deliver_wake(
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             LoopInput::UserMessage(text),
         )
         .await;
-    "mission_control"
+    "lead"
 }

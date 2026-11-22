@@ -1,4 +1,4 @@
-//! Resolve the loose ways Mission Control names a session (an id in either
+//! Resolve the loose ways Lead names a session (an id in either
 //! form, a bare conversation uuid, a workspace path, a title fragment, plus
 //! `latest`) to one canonical id, or to the nearest candidates when it can't.
 

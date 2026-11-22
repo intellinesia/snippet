@@ -11,23 +11,23 @@ use serde::Deserialize;
 
 use super::{Daemon, LoopInput, Shared, apply_profile, live_from_handle, record_dispatch_notice};
 use crate::coordination::{HandoffMode, NotificationMarker, Task, TaskStatus};
-use crate::mission_control::{self, ManagedSession};
+use crate::lead::{self, ManagedSession};
 use crate::serve::task_summary;
 use crate::session::{
-    SessionRole, SessionSidecar, read_session_profile, start_mission_control_session,
+    SessionRole, SessionSidecar, read_session_profile, start_lead_session,
     write_session_sidecar,
 };
 
 pub fn router() -> Router<Shared> {
     Router::new()
         .route("/agents/build", post(build_agent_from_prompt))
-        .route("/mission-control/overview", get(overview))
+        .route("/lead/overview", get(overview))
         .route(
-            "/mission-control/autonomy",
+            "/lead/autonomy",
             get(autonomy).post(update_autonomy),
         )
-        .route("/mission-control/open", post(open))
-        .route("/mission-control/tasks", get(tasks).post(create_task))
+        .route("/lead/open", post(open))
+        .route("/lead/tasks", get(tasks).post(create_task))
 }
 
 #[derive(Deserialize)]
@@ -151,7 +151,7 @@ fn mission_session_view(session: &ManagedSession, task_count: usize) -> serde_js
         "created_at": session.created_at,
         "last_active_at": session.updated_at,
         "task_count": task_count,
-        "archived": matches!(session.status, mission_control::SessionStatus::Archived),
+        "archived": matches!(session.status, lead::SessionStatus::Archived),
         "metadata": session.tags,
     })
 }
@@ -186,15 +186,15 @@ async fn build_agent_from_prompt(
     };
     if !d
         .store
-        .has_conversation(mission_control::SESSION_ID)
+        .has_conversation(lead::SESSION_ID)
         .unwrap_or(false)
     {
         return api_error(
             StatusCode::CONFLICT,
-            "open Mission Control before building an agent",
+            "open Lead before building an agent",
         );
     }
-    let session_id = crate::mission_control::SESSION_ID;
+    let session_id = crate::lead::SESSION_ID;
     let task_id = uuid::Uuid::new_v4().to_string();
     let title = "Build specialized agent";
     let nickname_note = req
@@ -226,8 +226,8 @@ async fn build_agent_from_prompt(
         description,
         Vec::new(),
         HandoffMode::Resume,
-        "mission-control",
-        "mission-control",
+        "lead",
+        "lead",
         chrono::Utc::now().to_rfc3339(),
     );
     if let Err(error) = d.store.create_task(&task) {
@@ -248,12 +248,12 @@ async fn build_agent_from_prompt(
 }
 
 async fn overview(State(d): State<Shared>) -> Response {
-    let root = &d.mission_control_root;
+    let root = &d.lead_root;
     let Ok(tasks) = d.store.list_tasks(None, None) else {
-        return mission_error("could not read Mission Control tasks".to_string());
+        return mission_error("could not read Lead tasks".to_string());
     };
-    let Ok(sessions) = mission_control::list_sessions(root, false) else {
-        return mission_error("could not read Mission Control sessions".to_string());
+    let Ok(sessions) = lead::list_sessions(root, false) else {
+        return mission_error("could not read Lead sessions".to_string());
     };
     let active_tasks = tasks
         .iter()
@@ -265,7 +265,7 @@ async fn overview(State(d): State<Shared>) -> Response {
         .count();
     let active_sessions = sessions
         .iter()
-        .filter(|session| session.status == mission_control::SessionStatus::Active)
+        .filter(|session| session.status == lead::SessionStatus::Active)
         .count();
     let recent_tasks = tasks
         .iter()
@@ -286,7 +286,7 @@ async fn overview(State(d): State<Shared>) -> Response {
             mission_session_view(session, count)
         })
         .collect::<Vec<_>>();
-    let mc_session_id = Some(mission_control::SESSION_ID);
+    let lead_session_id = Some(lead::SESSION_ID);
     Json(serde_json::json!({
         "active_tasks": active_tasks,
         "completed_tasks": done_tasks,
@@ -295,7 +295,7 @@ async fn overview(State(d): State<Shared>) -> Response {
         "total_sessions": sessions.len(),
         "recent_tasks": recent_tasks,
         "recent_sessions": recent_sessions,
-        "mc_session_id": mc_session_id,
+        "lead_session_id": lead_session_id,
     }))
     .into_response()
 }
@@ -322,7 +322,7 @@ async fn tasks(State(d): State<Shared>, Query(q): Query<MissionListQuery>) -> Re
 }
 
 pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<Task, String> {
-    let root = &d.mission_control_root;
+    let root = &d.lead_root;
     let now = chrono::Utc::now().to_rfc3339();
     // Checked before the claim so a task waiting on someone else's paths stays
     // queued without being claimed and released every tick.
@@ -387,31 +387,31 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
             return Ok(blocked);
         }
     }
-    // Mission Control's own work (building an agent) runs in its home; it is
+    // Lead's own work (building an agent) runs in its home; it is
     // not a managed session, and listing it as one would show it to the human.
-    let (session_id, workspace) = if mission_control::is_session_id(&task.session_id) {
+    let (session_id, workspace) = if lead::is_session_id(&task.session_id) {
         if !d
             .store
-            .has_conversation(mission_control::SESSION_ID)
+            .has_conversation(lead::SESSION_ID)
             .unwrap_or(false)
         {
-            let error = "Mission Control has not been opened yet".to_string();
+            let error = "Lead has not been opened yet".to_string();
             release_failed_claim(d, &task, &error)?;
             return Err(error);
         }
         (
-            mission_control::SESSION_ID.to_string(),
-            mission_control::workspace_path(),
+            lead::SESSION_ID.to_string(),
+            lead::workspace_path(),
         )
     } else {
-        let managed = match mission_control::get_session(root, &task.session_id) {
+        let managed = match lead::get_session(root, &task.session_id) {
             Ok(managed) => managed,
             Err(error) => {
                 release_failed_claim(d, &task, &error)?;
                 return Err(error);
             }
         };
-        if managed.status != mission_control::SessionStatus::Active {
+        if managed.status != lead::SessionStatus::Active {
             let error = "target session is archived".to_string();
             release_failed_claim(d, &task, &error)?;
             return Err(error);
@@ -487,12 +487,12 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
         handoff
     };
     let ledger = crate::task_state_tools::dispatch_ledger(&d.store, &task, &workspace, scope, &now);
-    let report_tool = if crate::mission_control::is_session_id(&session_id) {
+    let report_tool = if crate::lead::is_session_id(&session_id) {
         "tasks.report"
     } else {
         "task.report"
     };
-    let rendered = crate::envelope::Envelope::new("mission_control_task")
+    let rendered = crate::envelope::Envelope::new("lead_task")
             .attr("task_id", &task.id)
             .attr("title", &task.title)
             .attr(
@@ -508,7 +508,7 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
             .child("collaborators", roster_line)
             .child_with("inputs", &[("note", "tasks this one waited on, with their reports")], inputs_line)
             .child("scope", scope)
-            .child("note", format!("This task is yours, in this session. message.send to mission-control reaches Mission Control. {report_tool} (task_id {}) reports it done, blocked or failed, with what was done, files changed, how it was verified and what is left open.", task.id))
+            .child("note", format!("This task is yours, in this session. message.send to lead reaches Lead. {report_tool} (task_id {}) reports it done, blocked or failed, with what was done, files changed, how it was verified and what is left open.", task.id))
             .render();
     let rendered = if ledger.trim().is_empty() {
         rendered
@@ -576,7 +576,7 @@ pub(super) fn input_line(blocker: &Task) -> String {
 }
 
 /// If other in-progress tasks own any of this task's paths, leave it queued
-/// behind them and tell Mission Control once. `claimed` hands a claim back.
+/// behind them and tell Lead once. `claimed` hands a claim back.
 ///
 /// The wait is not written as a `blocks` link: that edge would outlive the
 /// conflict, and a failed owner would then hold this task forever.
@@ -629,7 +629,7 @@ fn wait_for_path_owners(
 }
 
 /// If the agent holding the task's lease is paused, draining or disabled, leave
-/// the task queued until it is active again, and tell Mission Control once.
+/// the task queued until it is active again, and tell Lead once.
 /// A task starts only once its agent has claimed it. Until then the agent is on
 /// the roster as `offered` and its inbox gets the offer, once.
 fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, String> {
@@ -640,7 +640,7 @@ fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, Str
     else {
         return Err(format!("unknown task {task_id}"));
     };
-    if task.status != TaskStatus::Todo || mission_control::is_session_id(&task.session_id) {
+    if task.status != TaskStatus::Todo || lead::is_session_id(&task.session_id) {
         return Ok(None);
     }
     let roster = d
@@ -667,7 +667,7 @@ fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, Str
             agent
         }
     };
-    if agent == mission_control::SESSION_ID {
+    if agent == lead::SESSION_ID {
         return Ok(None);
     }
     let marker = crate::coordination::offer_marker(&agent);
@@ -718,7 +718,7 @@ fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, Str
         }
         d.store
             .send_direct_message(
-                ("agent", mission_control::SESSION_ID),
+                ("agent", lead::SESSION_ID),
                 ("agent", &agent),
                 &task_offer_body(&task),
                 &uuid::Uuid::new_v4().to_string(),
@@ -749,7 +749,7 @@ fn await_claim(d: &Daemon, task_id: &str, now: &str) -> Result<Option<Task>, Str
     }
     d.store
         .send_direct_message(
-            ("agent", mission_control::SESSION_ID),
+            ("agent", lead::SESSION_ID),
             ("agent", &agent),
             &task_offer_body(&task),
             &uuid::Uuid::new_v4().to_string(),
@@ -925,7 +925,7 @@ fn release_failed_claim(d: &Daemon, task: &Task, error: &str) -> Result<(), Stri
             if t.dispatch_failures >= MAX_DISPATCH_FAILURES {
                 t.status = TaskStatus::Blocked;
                 t.notifications.push(NotificationMarker {
-                    target: "mission_control".to_string(),
+                    target: "lead".to_string(),
                     kind: "blocked".to_string(),
                     message: format!("dispatch failed {} times: {error}", t.dispatch_failures),
                     delivered: false,
@@ -943,8 +943,8 @@ async fn create_task(State(d): State<Shared>, Json(req): Json<MissionTaskReq>) -
     if req.title.trim().is_empty() || req.session_id.trim().is_empty() {
         return mission_error("title and session_id are required".to_string());
     }
-    let root = &d.mission_control_root;
-    let managed = match mission_control::get_session(root, &req.session_id) {
+    let root = &d.lead_root;
+    let managed = match lead::get_session(root, &req.session_id) {
         Ok(session) => session,
         Err(error) => return mission_error(error),
     };
@@ -971,8 +971,8 @@ async fn create_task(State(d): State<Shared>, Json(req): Json<MissionTaskReq>) -
         req.description.trim().to_string(),
         owned_paths,
         handoff_mode,
-        "mission-control",
-        "mission-control",
+        "lead",
+        "lead",
         chrono::Utc::now().to_rfc3339(),
     );
     if let Err(error) = d.store.create_task(&task) {
@@ -985,7 +985,7 @@ async fn create_task(State(d): State<Shared>, Json(req): Json<MissionTaskReq>) -
         // retries it like any other, up to the failure ceiling.
         if let Err(error) = dispatch_mission_task(&d, &task.id).await {
             eprintln!(
-                "[mission-control] first dispatch of {} failed: {error}",
+                "[lead] first dispatch of {} failed: {error}",
                 task.id
             );
         }
@@ -1005,7 +1005,7 @@ struct MissionOpenReq {
 }
 
 async fn open(State(d): State<Shared>, Json(req): Json<MissionOpenReq>) -> Response {
-    match open_mission_control(&d, req.profile).await {
+    match open_lead(&d, req.profile).await {
         Ok((id, home)) => Json(serde_json::json!({ "id": id, "folder": home })).into_response(),
         Err(error) => mission_error(error),
     }
@@ -1015,13 +1015,13 @@ pub(super) const WORKFLOW_PLAN: &str = "First plan: the worker has laid out how 
 
 pub(super) const WORKFLOW_REPORT: &str = "Task report from a worker. tasks.update (revise) sends a task back; for in_review or review_escalated, tasks.review gives the verdict.";
 
-pub(super) async fn open_mission_control(
+pub(super) async fn open_lead(
     d: &Shared,
     requested_profile: Option<String>,
 ) -> Result<(String, std::path::PathBuf), String> {
-    let home = mission_control::ensure_home()?;
-    let state_path = mission_control::session_state_path();
-    let id = mission_control::SESSION_ID.to_string();
+    let home = lead::ensure_home()?;
+    let state_path = lead::session_state_path();
+    let id = lead::SESSION_ID.to_string();
     // The conversation lives in the store; its path is only a key.
     let resume = d.store.has_conversation(&id).unwrap_or(false);
     let profile = requested_profile
@@ -1030,7 +1030,7 @@ pub(super) async fn open_mission_control(
     write_session_sidecar(
         &state_path,
         &SessionSidecar {
-            role: SessionRole::MissionControl,
+            role: SessionRole::Lead,
             agent_id: None,
         },
     );
@@ -1043,33 +1043,33 @@ pub(super) async fn open_mission_control(
     let mut sessions = d.sessions.lock().await;
     let alive = sessions.get(&id).is_some_and(|s| !s.join.is_finished());
     if !alive {
-        let handle = start_mission_control_session(
+        let handle = start_lead_session(
             &cfg,
             state_path,
             None,
             resume,
-            Some(crate::speech::mission_control_stream()),
+            Some(crate::speech::lead_stream()),
         );
         sessions.insert(id.clone(), live_from_handle(handle, profile));
         if !resume && let Some(live) = sessions.get(&id) {
             let _ = live
                 .input_tx
-                .send(LoopInput::SetTitle("Mission Control".into()));
+                .send(LoopInput::SetTitle("Lead".into()));
         }
     }
     drop(sessions);
-    if let Err(error) = mission_control::set_mission_control_session(&d.mission_control_root, &id) {
-        eprintln!("[mission-control] failed to persist active MC session: {error}");
+    if let Err(error) = lead::set_lead_session(&d.lead_root, &id) {
+        eprintln!("[lead] failed to persist active MC session: {error}");
     }
     Ok((id, home))
 }
 
 pub fn register_builtin_agents(d: &Shared) {
     let coordinator = crate::coordination::types::Agent {
-        id: crate::mission_control::SESSION_ID.to_string(),
-        display_name: "Mission Control".into(),
-        handle: "mission-control".into(),
-        kind: crate::coordination::types::AgentKind::MissionControl,
+        id: crate::lead::SESSION_ID.to_string(),
+        display_name: "Lead".into(),
+        handle: "lead".into(),
+        kind: crate::coordination::types::AgentKind::Lead,
         status: crate::coordination::types::AgentStatus::Active,
         capabilities: vec![
             "orchestration".into(),
@@ -1093,7 +1093,7 @@ pub fn register_builtin_agents(d: &Shared) {
     for agent in [&coordinator, &default_worker] {
         if agent.id == crate::coordination::SNIPPET_AGENT_ID {
             let home = match crate::coordination::AgentHome::new(
-                crate::coordination::agents_root(&d.mission_control_root),
+                crate::coordination::agents_root(&d.lead_root),
                 &agent.id,
             ) {
                 Ok(home) => home,
@@ -1109,7 +1109,7 @@ pub fn register_builtin_agents(d: &Shared) {
                             end to end: read the relevant code before you change it, make the \
                             smallest change that achieves the goal, and verify it with the \
                             narrowest check that proves it.\n\nThis identity is the default. \
-                            Mission Control dispatches work here unless a user names a more \
+                            Lead dispatches work here unless a user names a more \
                             specialized agent.\n";
             if let Err(error) = home.ensure_layout(identity) {
                 eprintln!(
@@ -1165,7 +1165,7 @@ pub async fn dispatch_loop(daemon: Shared) {
                 .deliver(&session, crate::harness::LoopInput::UserMessage(notice))
                 .await;
         }
-        deliver_mission_control_reports(&daemon).await;
+        deliver_lead_reports(&daemon).await;
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
@@ -1202,9 +1202,9 @@ async fn drive_reflection(daemon: &Shared) {
         return;
     }
     REFLECTION_SWEEP_AT.store(now, std::sync::atomic::Ordering::Relaxed);
-    let root = crate::coordination::agents_root(&daemon.mission_control_root);
+    let root = crate::coordination::agents_root(&daemon.lead_root);
     for agent in daemon.store.list_agents().unwrap_or_default() {
-        if agent.id == mission_control::SESSION_ID
+        if agent.id == lead::SESSION_ID
             || agent.kind != crate::coordination::types::AgentKind::Worker
             || agent.status != crate::coordination::types::AgentStatus::Active
         {
@@ -1247,7 +1247,7 @@ async fn drive_reflection(daemon: &Shared) {
             let at = chrono::Utc::now().to_rfc3339();
             for recipient in [
                 ("human", crate::coordination::LOCAL_HUMAN_ID),
-                ("agent", mission_control::SESSION_ID),
+                ("agent", lead::SESSION_ID),
             ] {
                 let _ = daemon.store.send_direct_message(
                     ("agent", &agent.id),
@@ -1296,10 +1296,10 @@ async fn wake_for_stalled_goals(daemon: &Shared) {
     ) else {
         return;
     };
-    if super::autonomy::mission_control_busy() {
+    if super::autonomy::lead_busy() {
         return;
     }
-    super::autonomy::deliver_to_mission_control(daemon, text).await;
+    super::autonomy::deliver_to_lead(daemon, text).await;
 }
 
 fn task_artifacts_block(session_id: &str, created_at: &str) -> String {
@@ -1373,8 +1373,8 @@ fn is_outcome_report(kind: &str) -> bool {
     )
 }
 
-async fn deliver_mission_control_reports(daemon: &Daemon) {
-    let awaiting = mission_control::awaiting_user();
+async fn deliver_lead_reports(daemon: &Daemon) {
+    let awaiting = lead::awaiting_user();
     let Ok(tasks) = daemon.store.list_tasks(None, None) else {
         return;
     };
@@ -1382,7 +1382,7 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
     let mut digest: Vec<String> = Vec::new();
     for task in tasks {
         for marker in &task.notifications {
-            if marker.delivered || marker.target != "mission_control" {
+            if marker.delivered || marker.target != "lead" {
                 continue;
             }
             if awaiting && !is_outcome_report(&marker.kind) {
@@ -1393,7 +1393,7 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
                 digest.push(text);
             } else {
                 daemon
-                    .deliver_wake(mission_control::SESSION_ID, LoopInput::UserMessage(text))
+                    .deliver_wake(lead::SESSION_ID, LoopInput::UserMessage(text))
                     .await;
             }
             delivered_any = true;
@@ -1428,7 +1428,7 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
             text,
         };
         daemon
-            .deliver(mission_control::SESSION_ID, LoopInput::Queue(item))
+            .deliver(lead::SESSION_ID, LoopInput::Queue(item))
             .await;
     }
     if delivered_any && let Ok(tasks) = daemon.store.list_tasks(None, None) {
@@ -1437,7 +1437,7 @@ async fn deliver_mission_control_reports(daemon: &Daemon) {
 }
 
 fn tracing_log_dispatch_failure(task_id: &str, error: &str) {
-    eprintln!("[mission-control] dispatch {task_id} failed: {error}");
+    eprintln!("[lead] dispatch {task_id} failed: {error}");
 }
 
 fn autonomy_view() -> serde_json::Value {

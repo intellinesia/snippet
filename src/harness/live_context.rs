@@ -119,7 +119,7 @@ fn sections(
         None,
     ));
 
-    if workspace == crate::mission_control::workspace_path() {
+    if workspace == crate::lead::workspace_path() {
         out.push(("autonomy", crate::mission_autonomy::base_mode_line(), None));
         out.push((
             "ambient",

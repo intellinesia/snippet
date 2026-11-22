@@ -29,12 +29,12 @@ const DELIVER_BATCH: u32 = 50;
 
 /// The session that receives a message addressed to `agent_id`.
 ///
-/// Mission Control's own session IS its inbox — it is a singleton whose whole
+/// Lead's own session IS its inbox — it is a singleton whose whole
 /// job is being addressed. Every other agent gets a dedicated inbox session, so
 /// a message never lands in whichever task session happens to be running.
 pub(super) fn recipient_session_id(agent_id: &str) -> String {
-    if agent_id == crate::mission_control::SESSION_ID {
-        crate::mission_control::SESSION_ID.to_string()
+    if agent_id == crate::lead::SESSION_ID {
+        crate::lead::SESSION_ID.to_string()
     } else {
         crate::session::inbox_session_id(agent_id)
     }
@@ -492,7 +492,7 @@ pub(crate) fn relay_question(
     session_id: &str,
     state: &crate::harness::HarnessState,
 ) {
-    if session_id == crate::mission_control::SESSION_ID {
+    if session_id == crate::lead::SESSION_ID {
         return;
     }
     let Some(question) = state.pending_question.as_ref() else {
@@ -811,7 +811,7 @@ pub(crate) fn relay_stop(
     state: &crate::harness::HarnessState,
 ) {
     use crate::harness::HarnessEvent as E;
-    if crate::mission_control::is_session_id(session_id)
+    if crate::lead::is_session_id(session_id)
         || crate::session::is_inbox_session_id(session_id)
     {
         return;
@@ -1022,7 +1022,7 @@ pub(crate) fn desk_answer(
     if answer.is_empty() {
         return Err("answer must not be empty".into());
     }
-    if crate::mission_control::is_session_id(session_id)
+    if crate::lead::is_session_id(session_id)
         || crate::session::is_inbox_session_id(session_id)
     {
         return Err("only work sessions can be answered this way".into());
@@ -1199,7 +1199,7 @@ pub(super) async fn ensure_agent_inbox(d: &Shared, agent_id: &str) -> Result<(),
         .map_err(|error| format!("look up agent `{agent_id}`: {error}"))?
         .ok_or_else(|| format!("unknown agent `{agent_id}`"))?;
     let home = crate::coordination::AgentHome::new(
-        crate::coordination::agents_root(&d.mission_control_root),
+        crate::coordination::agents_root(&d.lead_root),
         agent_id,
     )
     .map_err(|error| error.to_string())?;
@@ -1209,7 +1209,7 @@ pub(super) async fn ensure_agent_inbox(d: &Shared, agent_id: &str) -> Result<(),
          inbox. Answer each one where it came from: the envelope's `reply_to` names that \n\
          session, and that is where the sender is reading — not this inbox. Your shell \n\
          is read-only: answer and look things up yourself, and send anything that changes \n\
-         files, has side effects or takes long to `mission-control` as a task request.\n",
+         files, has side effects or takes long to `lead` as a task request.\n",
         name = agent.display_name,
     );
     home.ensure_layout(&identity)
@@ -1593,7 +1593,7 @@ async fn deliver_direct(
     }
     let agent_id = pending.recipient_id.as_str();
     let session_id = recipient_session_id(agent_id);
-    if agent_id != crate::mission_control::SESSION_ID
+    if agent_id != crate::lead::SESSION_ID
         && !d
             .sessions
             .lock()
@@ -1669,7 +1669,7 @@ fn desk_open_tasks_envelope(
             .as_deref()
             .unwrap_or(crate::coordination::SNIPPET_AGENT_ID);
         if owner != agent_id
-            || matches!(row.kind.as_str(), "inbox" | "mission_control")
+            || matches!(row.kind.as_str(), "inbox" | "lead")
             || row.id.starts_with("inbox-")
             || task_sessions.contains(&row.id)
         {
@@ -2058,7 +2058,7 @@ pub(super) async fn direct_send_message(
     };
     if to.0 == "human" {
         extra.insert("channel".into(), json!("chat"));
-        if from.0 == "agent" && reaction.is_none() && from.1 != crate::mission_control::SESSION_ID {
+        if from.0 == "agent" && reaction.is_none() && from.1 != crate::lead::SESSION_ID {
             crate::coordination::reach::apply_outbound_human(
                 &d.store,
                 from.1,
@@ -2351,7 +2351,7 @@ mod tests {
         events.push(say("answer"));
         assert!(super::turn_end_relay(1, "Scout", &events).is_some());
         let mut events = vec![dm("human")];
-        events.extend(send("mission-control", true));
+        events.extend(send("lead", true));
         events.push(say("answer"));
         assert!(super::turn_end_relay(1, "Scout", &events).is_some());
     }
@@ -2458,10 +2458,10 @@ mod tests {
     }
 
     #[test]
-    fn mission_control_uses_its_own_session_not_an_inbox() {
+    fn lead_uses_its_own_session_not_an_inbox() {
         assert_eq!(
-            recipient_session_id(crate::mission_control::SESSION_ID),
-            crate::mission_control::SESSION_ID
+            recipient_session_id(crate::lead::SESSION_ID),
+            crate::lead::SESSION_ID
         );
     }
 
@@ -2629,7 +2629,7 @@ mod tests {
         assert_eq!(saved["payload"]["kind"], "reaction");
         assert_eq!(saved["payload"]["body"], "");
 
-        let mut mc_rx = fake_busy_session(&d, crate::mission_control::SESSION_ID).await;
+        let mut lead_rx = fake_busy_session(&d, crate::lead::SESSION_ID).await;
         let mut react_extra = serde_json::Map::new();
         crate::coordination::typed::apply_reply_and_reaction(
             &mut react_extra,
@@ -2640,7 +2640,7 @@ mod tests {
             .store
             .send_direct_message_typed(
                 ("human", "local"),
-                ("agent", crate::mission_control::SESSION_ID),
+                ("agent", crate::lead::SESSION_ID),
                 "",
                 "k-mc-react",
                 "2026-01-01T00:00:05Z",
@@ -2655,12 +2655,12 @@ mod tests {
             &crate::coordination::PendingDirectMessage {
                 event: react_event,
                 recipient_kind: "agent".into(),
-                recipient_id: crate::mission_control::SESSION_ID.into(),
+                recipient_id: crate::lead::SESSION_ID.into(),
             },
         )
         .await
         .unwrap();
-        match mc_rx.try_recv().expect("reaction queued on busy session") {
+        match lead_rx.try_recv().expect("reaction queued on busy session") {
             LoopInput::Queue(item) => {
                 assert_eq!(
                     item.text,
@@ -2723,7 +2723,7 @@ mod tests {
             seen_nonces: std::sync::Mutex::new(std::collections::HashMap::new()),
             queue_hidden: std::sync::Mutex::new(std::collections::HashMap::new()),
             queue_revision: std::sync::atomic::AtomicU64::new(0),
-            mission_control_root: tempfile::tempdir().expect("tempdir").keep(),
+            lead_root: tempfile::tempdir().expect("tempdir").keep(),
             store: crate::store::Store::open_in_memory().unwrap(),
             coordination_events: tokio::sync::broadcast::channel(16).0,
             recurring_root: tempfile::tempdir().expect("tempdir").keep(),
@@ -3792,10 +3792,10 @@ mod tests {
     }
 
     #[test]
-    fn a_desk_cannot_answer_mission_control_its_own_inbox_or_an_unknown_session() {
+    fn a_desk_cannot_answer_lead_its_own_inbox_or_an_unknown_session() {
         let store = crate::store::Store::open_in_memory().unwrap();
         for session in [
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             "inbox-snippet",
             "sess-missing",
         ] {
@@ -3894,11 +3894,11 @@ mod tests {
     }
 
     #[test]
-    fn relay_question_skips_mission_control_and_agentless_sessions() {
+    fn relay_question_skips_lead_and_agentless_sessions() {
         let store = crate::store::Store::open_in_memory().unwrap();
         store.create_agent(&agent("a")).unwrap();
         let state = waiting_question_state();
-        super::relay_question(&store, crate::mission_control::SESSION_ID, &state);
+        super::relay_question(&store, crate::lead::SESSION_ID, &state);
         super::relay_question(&store, "sess-unknown", &state);
         assert!(thread_events(&store, "a").is_empty());
         // The relay_identity fallback must not post as `snippet` either.

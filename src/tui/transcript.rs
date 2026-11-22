@@ -613,8 +613,8 @@ pub(super) fn event_lines(event: &HarnessEvent, width: usize) -> Vec<Line<'stati
         } => {
             let actor = if by == "human" || by.is_empty() {
                 "You"
-            } else if by == "mission-control" {
-                "Mission Control"
+            } else if by == "lead" {
+                "Lead"
             } else {
                 by.as_str()
             };

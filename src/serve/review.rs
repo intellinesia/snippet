@@ -76,10 +76,10 @@ pub(super) fn review_brief(
     )
 }
 
-/// review_due envelopes Mission Control gets before the task goes to the user.
+/// review_due envelopes Lead gets before the task goes to the user.
 const MAX_REVIEW_NUDGES: u32 = 3;
 
-/// What the review clock owes a Mission Control or user verdict: one
+/// What the review clock owes a Lead or user verdict: one
 /// `<review_due>` envelope per further timeout (at most three), then the user.
 /// `None` while the current window is still open or the task was escalated.
 pub(super) fn review_due_action(
@@ -111,9 +111,9 @@ pub(super) enum ReviewDue {
     Escalate,
 }
 
-/// Start a reviewer for every task waiting on one, drive the Mission Control
+/// Start a reviewer for every task waiting on one, drive the Lead
 /// and user verdicts on their clock, and hand tasks whose reviewer went quiet
-/// to Mission Control.
+/// to Lead.
 pub(super) async fn drive_reviews(d: &Shared) {
     let Ok(tasks) = d.store.list_tasks(None, Some(&TaskStatus::InReview)) else {
         return;
@@ -134,7 +134,7 @@ pub(super) async fn drive_reviews(d: &Shared) {
                     continue;
                 }
             }
-            VerifyMode::MissionControl | VerifyMode::User => {
+            VerifyMode::Lead | VerifyMode::User => {
                 review_due(d, &task, &state, now).await;
                 continue;
             }
@@ -163,7 +163,7 @@ pub(super) async fn drive_reviews(d: &Shared) {
     }
 }
 
-/// One step of the Mission Control / user review clock: nag Mission Control
+/// One step of the Lead / user review clock: nag Lead
 /// with the report, or after the last nudge put the question to the user.
 async fn review_due(
     d: &Shared,
@@ -196,19 +196,19 @@ async fn review_due(
                 .child("report", report)
                 .child("note", "No verdict has arrived. tasks.review takes verdict approve, or changes with findings.")
                 .render();
-            super::autonomy::deliver_to_mission_control(d, envelope).await;
+            super::autonomy::deliver_to_lead(d, envelope).await;
         }
         ReviewDue::Escalate => {
             let _ = d
                 .store
                 .modify_task_state(&task.id, &stamp, |s| s.review_escalated = true);
             let body = format!(
-                "\"{}\" has been in review for {age_minutes} minutes with no verdict from Mission Control.\n\nWorker's report:\n{report}\n\nApprove it or send it back?",
+                "\"{}\" has been in review for {age_minutes} minutes with no verdict from Lead.\n\nWorker's report:\n{report}\n\nApprove it or send it back?",
                 task.title
             );
             crate::coordination::reach::reach(
                 &d.store,
-                crate::mission_control::SESSION_ID,
+                crate::lead::SESSION_ID,
                 crate::coordination::reach::Kind::Question,
                 &task.title,
                 &body,

@@ -379,8 +379,8 @@ impl App {
             }
             "session" => {
                 let id = s(&dest, "id");
-                if id == crate::mission_control::SESSION_ID {
-                    self.open_mission_control();
+                if id == crate::lead::SESSION_ID {
+                    self.open_lead();
                     return;
                 }
                 if let Some(c) = self.list_conversations().into_iter().find(|c| c.id == id) {

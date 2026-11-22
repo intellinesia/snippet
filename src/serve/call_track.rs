@@ -576,14 +576,14 @@ pub(super) fn holds(device: &str) -> bool {
     book().holds(device) || crate::mission_autonomy::user_call().is_some()
 }
 
-/// Whether a line said during a pending or tracked call may go to Mission Control.
+/// Whether a line said during a pending or tracked call may go to Lead.
 pub(super) fn reaches_assistant(device: &str, v: &Verdict, wake: bool) -> bool {
     wake || (clearly_for_assistant(v, false) && !book().deaf_to_assistant(device, now_ms()))
 }
 
 static DAEMON: std::sync::OnceLock<Shared> = std::sync::OnceLock::new();
 
-/// Start recording the conversation on the listening device. Mission Control calls this when the user asks.
+/// Start recording the conversation on the listening device. Lead calls this when the user asks.
 pub(crate) async fn voice_start() -> Result<Value, String> {
     let d = DAEMON.get().ok_or("the daemon is still starting")?;
     let device = book()
@@ -860,7 +860,7 @@ async fn apply(d: &Shared, fx: Vec<Effect>) {
                 crate::session::emit_device_event(auto_event(&call_id, &label));
                 super::agent_routes::record_agent_message(
                     d,
-                    crate::mission_control::SESSION_ID,
+                    crate::lead::SESSION_ID,
                     "voice classifier",
                     &auto_note(&label),
                     false,
@@ -875,7 +875,7 @@ async fn apply(d: &Shared, fx: Vec<Effect>) {
             Effect::Note(text) => {
                 super::agent_routes::record_agent_message(
                     d,
-                    crate::mission_control::SESSION_ID,
+                    crate::lead::SESSION_ID,
                     "voice classifier",
                     &text,
                     false,
@@ -1034,7 +1034,7 @@ async fn summarise(d: &Shared, call: Call, ended_at: i64) {
         let body = format!("Said on a call ({who}): {}", line.text.trim());
         super::agent_routes::record_agent_message(
             d,
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             "voice classifier",
             &body,
             false,
@@ -1054,7 +1054,7 @@ async fn summarise(d: &Shared, call: Call, ended_at: i64) {
     let _ = super::ambient_room::deliver(d, &call.device).await;
 }
 
-/// Saves the recording, hands it to Mission Control and marks the call summarised.
+/// Saves the recording, hands it to Lead and marks the call summarised.
 async fn deliver_ended(
     d: &Shared,
     id: &str,
@@ -1080,7 +1080,7 @@ async fn deliver_ended(
         }
     };
     let msg = ended_message(id, device, started_at, ended_at, lines, path.as_deref());
-    super::autonomy::deliver_to_mission_control(d, msg).await;
+    super::autonomy::deliver_to_lead(d, msg).await;
     set_row_state(d, id, "summarised");
     crate::session::emit_device_event(state_event(id, "summarised"));
 }

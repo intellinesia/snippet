@@ -515,7 +515,7 @@ mod conversation_name_tests {
             "default"
         );
         assert_eq!(conversation_name_from_id("inbox-snippet"), "default");
-        assert_eq!(conversation_name_from_id("mission-control"), "default");
+        assert_eq!(conversation_name_from_id("lead"), "default");
     }
 }
 
@@ -538,11 +538,11 @@ mod routable_target_tests {
         assert!(!is_routable_target("inbox-rust-pr-reviewer"));
     }
 
-    /// Mission Control coordinates; routing work to itself is a loop.
+    /// Lead coordinates; routing work to itself is a loop.
     #[test]
-    fn mission_control_is_not_routable() {
-        assert!(!is_routable_target("mission-control"));
-        assert!(!is_routable_target("mission-control/session.json"));
+    fn lead_is_not_routable() {
+        assert!(!is_routable_target("lead"));
+        assert!(!is_routable_target("lead/session.json"));
     }
 
     /// The two exclusions must not swallow a workspace that merely starts with
@@ -550,7 +550,7 @@ mod routable_target_tests {
     #[test]
     fn a_folder_named_like_an_inbox_stays_routable() {
         assert!(is_routable_target("inboxing-app-1234abcd"));
-        assert!(is_routable_target("mission-control-ui-5678ef90"));
+        assert!(is_routable_target("lead-ui-5678ef90"));
     }
 }
 
@@ -581,7 +581,7 @@ mod working_agents_tests {
             vec![],
             HandoffMode::Resume,
             "agent",
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             now.into(),
         );
         task.profile = None;
@@ -669,7 +669,7 @@ mod working_agents_tests {
 
 #[cfg(test)]
 mod inbox_tool_tests {
-    /// An inbox files work through Mission Control; it never writes or delegates.
+    /// An inbox files work through Lead; it never writes or delegates.
     #[test]
     fn an_inbox_cannot_write_delegate_or_report() {
         let tools = crate::session::coordination_tool_registry(None);
@@ -917,8 +917,8 @@ mod owner_and_came_back_tests {
             updated_at: "2026-01-01T00:00:00Z".into(),
             last_active: Some(10),
             profile: None,
-            role: if id == crate::mission_control::SESSION_ID {
-                "mission_control".into()
+            role: if id == crate::lead::SESSION_ID {
+                "lead".into()
             } else {
                 "standard".into()
             },
@@ -951,12 +951,12 @@ mod owner_and_came_back_tests {
         db.set_session_role("spec", "standard", Some("rook"))
             .unwrap();
         db.create_conversation(
-            &session_row(crate::mission_control::SESSION_ID, "idle", None),
+            &session_row(crate::lead::SESSION_ID, "idle", None),
             &[],
             "[]",
         )
         .unwrap();
-        db.set_session_role(crate::mission_control::SESSION_ID, "mission_control", None)
+        db.set_session_role(crate::lead::SESSION_ID, "lead", None)
             .unwrap();
         db.create_conversation(&session_row("inbox-scout", "idle", None), &[], "[]")
             .unwrap();
@@ -997,8 +997,8 @@ mod owner_and_came_back_tests {
         assert_eq!(by_id["plain"].owner_agent_id, "snippet");
         assert_eq!(by_id["spec"].owner_agent_id, "rook");
         assert_eq!(
-            by_id[crate::mission_control::SESSION_ID].owner_agent_id,
-            "mission-control"
+            by_id[crate::lead::SESSION_ID].owner_agent_id,
+            "lead"
         );
         assert_eq!(by_id["inbox-scout"].owner_agent_id, "scout");
         assert_eq!(by_id["seat-1"].owner_agent_id, "auditor");
@@ -1041,7 +1041,7 @@ mod owner_and_came_back_tests {
         ));
         assert!(!compute_came_back("s1", "running", info.finished_at, None));
         assert!(!compute_came_back(
-            crate::mission_control::SESSION_ID,
+            crate::lead::SESSION_ID,
             "idle",
             info.finished_at,
             None

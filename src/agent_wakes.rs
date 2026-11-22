@@ -16,12 +16,12 @@ use crate::llm::NativeToolDefinition;
 use crate::recurring::{self, Delivery, RecurringJob, Schedule};
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 
-/// Shortest interval an agent or Mission Control may set.
+/// Shortest interval an agent or Lead may set.
 pub const MIN_AGENT_INTERVAL_SECS: u64 = 15 * 60;
 pub const DEFAULT_MAX_RUNS_PER_DAY: u32 = 48;
 pub const MAX_RUNS_PER_DAY_CEILING: u32 = 288;
-/// Schedules Mission Control may hold on other agents at once.
-pub const MAX_SET_BY_MISSION_CONTROL: usize = 12;
+/// Schedules Lead may hold on other agents at once.
+pub const MAX_SET_BY_LEAD: usize = 12;
 pub const NO_CHANGE: &str = "NO_CHANGE";
 /// Named wakes one owner may hold.
 pub const MAX_WAKES_PER_OWNER: usize = 8;
@@ -31,7 +31,7 @@ const BRIEF_MAX_CHARS: usize = 4000;
 #[serde(rename_all = "snake_case")]
 pub enum Setter {
     User,
-    MissionControl,
+    Lead,
     #[serde(rename = "self")]
     Owner,
 }
@@ -40,7 +40,7 @@ pub enum Setter {
 #[serde(rename_all = "snake_case")]
 pub enum ReportTo {
     #[default]
-    MissionControl,
+    Lead,
     User,
     TaskRoom,
     Group,
@@ -66,7 +66,7 @@ fn yes() -> bool {
 impl Default for ReportPolicy {
     fn default() -> Self {
         Self {
-            to: ReportTo::MissionControl,
+            to: ReportTo::Lead,
             task_id: None,
             group: None,
             only_on_change: true,
@@ -86,7 +86,7 @@ pub struct WakePolicy {
     pub quiet_start: Option<String>,
     #[serde(default)]
     pub quiet_end: Option<String>,
-    /// None follows the user's offset from Mission Control's settings.
+    /// None follows the user's offset from Lead's settings.
     #[serde(default)]
     pub utc_offset_minutes: Option<i32>,
     #[serde(default)]
@@ -104,10 +104,10 @@ fn default_cap() -> u32 {
 pub enum OwnerKind {
     Agent,
     Session,
-    MissionControl,
+    Lead,
 }
 
-/// What the user, an agent or Mission Control asks for. Absent fields keep
+/// What the user, an agent or Lead asks for. Absent fields keep
 /// the current value on an update; an empty quiet clock clears quiet hours.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct WakeSpec {
@@ -136,19 +136,19 @@ pub struct WakeSpec {
 pub fn session_for(owner: &str, kind: OwnerKind) -> String {
     match kind {
         OwnerKind::Agent => crate::session::inbox_session_id(owner),
-        OwnerKind::MissionControl => crate::mission_control::SESSION_ID.to_string(),
+        OwnerKind::Lead => crate::lead::SESSION_ID.to_string(),
         OwnerKind::Session => owner.to_string(),
     }
 }
 
-/// An agent id, Mission Control, or an existing session id.
+/// An agent id, Lead, or an existing session id.
 pub fn resolve_owner(store: &crate::store::Store, owner: &str) -> Result<OwnerKind, String> {
     let owner = owner.trim();
     if owner.is_empty() {
         return Err("owner is required".into());
     }
-    if owner == crate::mission_control::SESSION_ID {
-        return Ok(OwnerKind::MissionControl);
+    if owner == crate::lead::SESSION_ID {
+        return Ok(OwnerKind::Lead);
     }
     if store.get_agent(owner).map_err(|e| e.to_string())?.is_some() {
         return Ok(OwnerKind::Agent);
@@ -222,7 +222,7 @@ pub fn group_poster(root: &Path, owner: &str, kind: OwnerKind) -> Result<String,
     match kind {
         OwnerKind::Agent => Ok(owner.to_string()),
         OwnerKind::Session => Ok(recurring::group_poster(&recurring::store_at(root)?, owner)),
-        OwnerKind::MissionControl => Err("Mission Control's wakes can't report to a group".into()),
+        OwnerKind::Lead => Err("Lead's wakes can't report to a group".into()),
     }
 }
 
@@ -264,23 +264,23 @@ pub fn set(
             "`{owner}` already holds {MAX_WAKES_PER_OWNER} wakes; clear one first"
         ));
     }
-    if let (Some(job), Setter::MissionControl) = (&existing, setter)
+    if let (Some(job), Setter::Lead) = (&existing, setter)
         && job.wake.as_ref().is_some_and(|w| w.set_by == Setter::User)
     {
         return Err("the user set this schedule; ask them to change it".into());
     }
-    if setter == Setter::MissionControl && existing.is_none() {
+    if setter == Setter::Lead && existing.is_none() {
         let held = list(root)?
             .iter()
             .filter(|j| {
                 j.wake
                     .as_ref()
-                    .is_some_and(|w| w.set_by == Setter::MissionControl)
+                    .is_some_and(|w| w.set_by == Setter::Lead)
             })
             .count();
-        if held >= MAX_SET_BY_MISSION_CONTROL {
+        if held >= MAX_SET_BY_LEAD {
             return Err(format!(
-                "Mission Control already holds {held} wake schedules; clear one first"
+                "Lead already holds {held} wake schedules; clear one first"
             ));
         }
     }
@@ -520,7 +520,7 @@ pub fn goal_addendum(
     last_run_at: Option<u64>,
 ) -> String {
     let dest = match policy.report.to {
-        ReportTo::MissionControl => "Mission Control".to_string(),
+        ReportTo::Lead => "Lead".to_string(),
         ReportTo::User => "the user as a notification".to_string(),
         ReportTo::TaskRoom => format!(
             "task room {}",
@@ -608,7 +608,7 @@ pub fn limits() -> Value {
         "min_interval_secs": {"user": recurring::MIN_INTERVAL_SECS, "agent": MIN_AGENT_INTERVAL_SECS},
         "default_max_runs_per_day": DEFAULT_MAX_RUNS_PER_DAY,
         "max_runs_per_day": {"user": MAX_RUNS_PER_DAY_CEILING, "agent": DEFAULT_MAX_RUNS_PER_DAY},
-        "max_set_by_mission_control": MAX_SET_BY_MISSION_CONTROL,
+        "max_set_by_lead": MAX_SET_BY_LEAD,
     })
 }
 
@@ -667,7 +667,7 @@ fn own_minutes(schedule: &str) -> Option<u32> {
     }
 }
 
-/// Mission Control's own automated wakes: the heartbeat the user also sets in the app.
+/// Lead's own automated wakes: the heartbeat the user also sets in the app.
 fn own_wakes(args: &WakeToolArgs) -> Result<ToolResult, ToolError> {
     use crate::mission_autonomy as auto;
     match args.action.as_str() {
@@ -734,7 +734,7 @@ impl Tool for AutomatedWakesTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "automated_wakes".into(),
-            description: "Show, set or clear Mission Control's own automated wakes, the heartbeat the app's Wakes settings also show. schedule `every 60m` or `hourly` sets the interval (10m minimum); quiet_start and quiet_end (HH:MM, empty clears) set quiet hours; enabled turns them on or off; clear turns them off.".into(),
+            description: "Show, set or clear Lead's own automated wakes, the heartbeat the app's Wakes settings also show. schedule `every 60m` or `hourly` sets the interval (10m minimum); quiet_start and quiet_end (HH:MM, empty clears) set quiet hours; enabled turns them on or off; clear turns them off.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -751,8 +751,8 @@ impl Tool for AutomatedWakesTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        if !ctx.is_mission_control() {
-            return Err(ToolError::msg("only Mission Control has automated wakes"));
+        if !ctx.is_lead() {
+            return Err(ToolError::msg("only Lead has automated wakes"));
         }
         let args: WakeToolArgs =
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
@@ -807,13 +807,13 @@ impl Tool for WakeScheduleTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "wake_schedule".into(),
-            description: "Show, set or clear a recurring wake: each run gives the owner the brief as a goal, and its complete_goal summary is reported (to Mission Control by default, only on change). Schedule: `every 30m` (15m minimum), `daily 09:00`, `weekdays 09:00`, `mon,thu 18:00`, or one-off `at 14:00` / `in 30m`, in the user's local time, not UTC. Mission Control passes agent_id (an agent or a session id) to manage another's; its show without agent_id lists every schedule, and clear takes an id from that list.".into(),
+            description: "Show, set or clear a recurring wake: each run gives the owner the brief as a goal, and its complete_goal summary is reported (to Lead by default, only on change). Schedule: `every 30m` (15m minimum), `daily 09:00`, `weekdays 09:00`, `mon,thu 18:00`, or one-off `at 14:00` / `in 30m`, in the user's local time, not UTC. Lead passes agent_id (an agent or a session id) to manage another's; its show without agent_id lists every schedule, and clear takes an id from that list.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["show", "set", "clear"]},
-                    "agent_id": {"type": "string", "description": "Mission Control: an agent or session id."},
-                    "id": {"type": "string", "description": "Mission Control: a job_id to clear."},
+                    "agent_id": {"type": "string", "description": "Lead: an agent or session id."},
+                    "id": {"type": "string", "description": "Lead: a job_id to clear."},
                     "plan_path": {"type": "string", "description": "File appended to the brief each run."},
                     "name": {"type": "string", "description": "Which of your wakes, e.g. `linkedin-sync`. show without it lists them all."},
                     "schedule": {"type": "string"},
@@ -821,7 +821,7 @@ impl Tool for WakeScheduleTool {
                     "enabled": {"type": "boolean"},
                     "quiet_start": {"type": "string", "description": "HH:MM; empty clears."},
                     "quiet_end": {"type": "string", "description": "HH:MM; empty clears."},
-                    "report_to": {"type": "string", "enum": ["mission_control", "user", "task_room", "group", "none"]},
+                    "report_to": {"type": "string", "enum": ["lead", "user", "task_room", "group", "none"]},
                     "task_id": {"type": "string", "description": "For report_to task_room."},
                     "group": {"type": "string", "description": "For report_to group: its thread id."},
                     "only_on_change": {"type": "boolean", "description": "Default true."}
@@ -840,13 +840,13 @@ impl Tool for WakeScheduleTool {
             .as_deref()
             .map(str::trim)
             .filter(|a| !a.is_empty());
-        let (owner, setter) = match (ctx.is_mission_control(), named) {
-            (true, Some(other)) if crate::mission_control::is_session_id(other) => {
+        let (owner, setter) = match (ctx.is_lead(), named) {
+            (true, Some(other)) if crate::lead::is_session_id(other) => {
                 return Err(ToolError::msg(
                     "your own heartbeat is set with automated_wakes; a recurring wake targets an agent or a worker session",
                 ));
             }
-            (true, Some(other)) => (other.to_string(), Setter::MissionControl),
+            (true, Some(other)) => (other.to_string(), Setter::Lead),
             (true, None) => {
                 let root = recurring::default_root();
                 let now = chrono::Utc::now().timestamp() as u64;
@@ -860,7 +860,7 @@ impl Tool for WakeScheduleTool {
             }
             (false, Some(_)) => {
                 return Err(ToolError::msg(
-                    "only Mission Control can set another agent's wake",
+                    "only Lead can set another agent's wake",
                 ));
             }
             (false, None) => {
@@ -896,7 +896,7 @@ impl Tool for WakeScheduleTool {
                 Ok(ToolResult::success(json!({"owner": owner, "wakes": wakes})))
             }
             "clear" => {
-                if setter == Setter::MissionControl
+                if setter == Setter::Lead
                     && get_named(&root, &owner, args.name.as_deref())
                         .map_err(ToolError::msg)?
                         .and_then(|j| j.wake)
@@ -1209,7 +1209,7 @@ mod tests {
             "jev",
             OwnerKind::Agent,
             spec("every 10m"),
-            Setter::MissionControl,
+            Setter::Lead,
             T0,
         )
         .unwrap_err();
@@ -1228,15 +1228,15 @@ mod tests {
     }
 
     #[test]
-    fn mission_control_is_capped_and_cannot_override_the_user() {
+    fn lead_is_capped_and_cannot_override_the_user() {
         let r = root();
-        for i in 0..MAX_SET_BY_MISSION_CONTROL {
+        for i in 0..MAX_SET_BY_LEAD {
             set(
                 r.path(),
                 &format!("a{i}"),
                 OwnerKind::Agent,
                 spec("every 1h"),
-                Setter::MissionControl,
+                Setter::Lead,
                 T0,
             )
             .unwrap();
@@ -1246,7 +1246,7 @@ mod tests {
             "one-more",
             OwnerKind::Agent,
             spec("every 1h"),
-            Setter::MissionControl,
+            Setter::Lead,
             T0,
         )
         .unwrap_err();
@@ -1257,7 +1257,7 @@ mod tests {
                 "a0",
                 OwnerKind::Agent,
                 spec("every 2h"),
-                Setter::MissionControl,
+                Setter::Lead,
                 T0
             )
             .is_ok()
@@ -1277,7 +1277,7 @@ mod tests {
             "mine",
             OwnerKind::Agent,
             spec("every 2h"),
-            Setter::MissionControl,
+            Setter::Lead,
             T0,
         )
         .unwrap_err();
@@ -1424,7 +1424,7 @@ mod tests {
         let p = ReportPolicy::default();
         assert_eq!(
             route(&p, "completed", "Two new mentions", Some("One mention")),
-            Some(ReportTo::MissionControl)
+            Some(ReportTo::Lead)
         );
         assert_eq!(route(&p, "completed", "NO_CHANGE: still quiet", None), None);
         assert_eq!(
@@ -1433,7 +1433,7 @@ mod tests {
         );
         assert_eq!(
             route(&p, "paused", "NO_CHANGE", None),
-            Some(ReportTo::MissionControl)
+            Some(ReportTo::Lead)
         );
         let always = ReportPolicy {
             only_on_change: false,
@@ -1441,7 +1441,7 @@ mod tests {
         };
         assert_eq!(
             route(&always, "completed", "NO_CHANGE", None),
-            Some(ReportTo::MissionControl)
+            Some(ReportTo::Lead)
         );
         let silent = ReportPolicy {
             to: ReportTo::None,
@@ -1466,7 +1466,7 @@ mod tests {
         job.last_run_at = Some(T0);
         let goal = job.render_goal(None).unwrap();
         assert!(goal.contains("Check the X mentions"));
-        assert!(goal.contains("goes to Mission Control"));
+        assert!(goal.contains("goes to Lead"));
         assert!(goal.contains(NO_CHANGE));
         assert!(
             goal.contains("Last run (2026-10-31 18:30): Three mentions"),
@@ -1519,7 +1519,7 @@ mod tests {
         assert_eq!(v["quiet_hours"], json!({"start": "22:00", "end": "08:00"}));
         assert_eq!(
             v["report"],
-            json!({"to": "mission_control", "task_id": null, "group": null, "only_on_change": true})
+            json!({"to": "lead", "task_id": null, "group": null, "only_on_change": true})
         );
         assert_eq!(v["runs_last_day"], 2);
         assert_eq!(limits()["min_interval_secs"]["agent"], 900);
@@ -1549,7 +1549,7 @@ mod tests {
                 a,
                 "completed",
                 Some("ok"),
-                Some("mission_control"),
+                Some("lead"),
                 T0 as i64 - 89_000,
             )
             .unwrap();
@@ -1567,7 +1567,7 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].id, b);
         assert_eq!(runs[0].status, "interrupted");
-        assert_eq!(runs[1].reported_to.as_deref(), Some("mission_control"));
+        assert_eq!(runs[1].reported_to.as_deref(), Some("lead"));
         let v = view_with_runs(r.path(), &job, T0);
         assert_eq!(v["last_status"], "interrupted");
     }
@@ -1578,7 +1578,7 @@ mod own_wake_tests {
     use super::own_minutes;
 
     #[test]
-    fn reads_the_intervals_mission_control_may_ask_for() {
+    fn reads_the_intervals_lead_may_ask_for() {
         assert_eq!(own_minutes("every 30m"), Some(30));
         assert_eq!(own_minutes("every 2h"), Some(120));
         assert_eq!(own_minutes("Hourly"), Some(60));

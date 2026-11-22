@@ -356,19 +356,19 @@ pub(crate) async fn record_agent_message(
     .await;
 }
 
-/// Note on Mission Control's transcript that work was dispatched on its behalf.
+/// Note on Lead's transcript that work was dispatched on its behalf.
 ///
-/// The user can file a task directly, which bypasses Mission Control entirely —
+/// The user can file a task directly, which bypasses Lead entirely —
 /// so without this the coordinator's record would show the task appearing from
 /// nowhere. It is a NOTICE, never a wake: the work is already routed to a worker
-/// and will report back on its own, so waking Mission Control would spend a turn
+/// and will report back on its own, so waking Lead would spend a turn
 /// on something that needs no decision.
 pub(crate) async fn record_dispatch_notice(d: &Daemon, task: &crate::coordination::Task) {
-    // Mission Control dispatching through its own tool already has the tool call
+    // Lead dispatching through its own tool already has the tool call
     // and result in its transcript. Recording a notice too would tell it twice,
     // so this is for dispatches made AROUND it — the case where its record would
     // otherwise show work appearing from nowhere.
-    if task.created_by_id == crate::mission_control::SESSION_ID {
+    if task.created_by_id == crate::lead::SESSION_ID {
         return;
     }
     let target = crate::session::state_path_for_id(&task.session_id)
@@ -381,7 +381,7 @@ pub(crate) async fn record_dispatch_notice(d: &Daemon, task: &crate::coordinatio
     };
     record_notice(
         d,
-        crate::mission_control::SESSION_ID,
+        crate::lead::SESSION_ID,
         HarnessEvent::TaskDispatched {
             task_id: task.id.clone(),
             title: task.title.clone(),
@@ -446,7 +446,7 @@ pub(crate) async fn create_agent(State(d): State<Shared>, Json(req): Json<AgentR
         capabilities: req.capabilities,
     };
     let home = match crate::coordination::AgentHome::new(
-        crate::coordination::agents_root(&d.mission_control_root),
+        crate::coordination::agents_root(&d.lead_root),
         &agent.id,
     ) {
         Ok(home) => home,
@@ -620,7 +620,7 @@ pub(crate) fn normalize_agent_character(raw: Option<&str>) -> Result<Option<Stri
 
 pub(crate) fn default_agent_character(agent_id: &str) -> String {
     match agent_id {
-        "mission-control" => "14".to_string(),
+        "lead" => "14".to_string(),
         "snippet" => "01".to_string(),
         _ => {
             // Stable FNV-1a hash so defaults do not drift across Rust versions or restarts.
@@ -630,7 +630,7 @@ pub(crate) fn default_agent_character(agent_id: &str) -> String {
                 h = h.wrapping_mul(0x100000001b3);
             }
             // 01 and 14 stay reserved so no agent defaults to Snippet's or
-            // Mission Control's look.
+            // Lead's look.
             let pool: Vec<u64> = (1..=36).filter(|n| *n != 1 && *n != 14).collect();
             format!("{:02}", pool[(h % pool.len() as u64) as usize])
         }
@@ -900,7 +900,7 @@ pub(crate) async fn release_agent_session(
     }
 }
 
-/// DELETE /agents/{id} — remove an agent and its home. Mission Control stays,
+/// DELETE /agents/{id} — remove an agent and its home. Lead stays,
 /// and an agent still on an unfinished task is refused with those tasks named.
 pub(crate) async fn delete_agent(
     State(d): State<Shared>,
@@ -910,7 +910,7 @@ pub(crate) async fn delete_agent(
     match d.store.delete_agent(&agent_id) {
         Ok(AgentRemoval::Removed) => {
             if let Ok(home) = crate::coordination::AgentHome::new(
-                crate::coordination::agents_root(&d.mission_control_root),
+                crate::coordination::agents_root(&d.lead_root),
                 &agent_id,
             ) {
                 let _ = std::fs::remove_dir_all(home.root());
@@ -918,8 +918,8 @@ pub(crate) async fn delete_agent(
             Json(serde_json::json!({ "deleted": true })).into_response()
         }
         Ok(AgentRemoval::NotFound) => api_error(StatusCode::NOT_FOUND, "no such agent"),
-        Ok(AgentRemoval::MissionControl) => {
-            api_error(StatusCode::BAD_REQUEST, "Mission Control can't be deleted")
+        Ok(AgentRemoval::Lead) => {
+            api_error(StatusCode::BAD_REQUEST, "Lead can't be deleted")
         }
         Ok(AgentRemoval::OnOpenTasks(titles)) => {
             let shown: Vec<String> = titles.iter().take(3).cloned().collect();
@@ -995,7 +995,7 @@ mod default_character_tests {
     #[test]
     fn snippet_is_rook_and_reserved_looks_are_not_handed_out() {
         assert_eq!(default_agent_character("snippet"), "01");
-        assert_eq!(default_agent_character("mission-control"), "14");
+        assert_eq!(default_agent_character("lead"), "14");
         for i in 0..500 {
             let c = default_agent_character(&format!("agent-{i}"));
             assert!(c != "01" && c != "14", "agent-{i} got {c}");

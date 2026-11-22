@@ -257,7 +257,7 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
          -- Which agents are on a task, and what they own. Kept as a membership
          -- row with a removal timestamp rather than a hard delete: the record of
          -- who worked on a task outlives the assignment, and the roster is
-         -- expected to change as Mission Control learns more about the work.
+         -- expected to change as Lead learns more about the work.
          CREATE TABLE IF NOT EXISTS task_agents (
              task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
              agent_id TEXT NOT NULL REFERENCES agents(id),

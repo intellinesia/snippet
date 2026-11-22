@@ -22,7 +22,7 @@ A code-first agent for your terminal, with a phone and desktop app to steer it f
 - A small tool set: a stateful shell, one all-or-nothing file-change tool, image viewing and web search.
 - Several model profiles, chosen globally or per conversation: Anthropic, OpenAI, Gemini, OpenRouter, any OpenAI-compatible endpoint, local models, or a ChatGPT subscription.
 - Delegated background lanes with live progress, and detached processes for servers and watchers.
-- Mission Control, a coordinating session that hands work to specialised agents, with optional voice.
+- Lead, a coordinating session that hands work to specialised agents, with optional voice.
 - Remote control from Android, macOS, Linux and Windows.
 
 ## Install

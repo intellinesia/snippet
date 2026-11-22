@@ -149,7 +149,7 @@ impl Reach {
         channels.insert(
             Channel::Voice,
             ChannelState {
-                enabled: agent_id == crate::mission_control::SESSION_ID,
+                enabled: agent_id == crate::lead::SESSION_ID,
                 quiet_hours: true,
             },
         );
@@ -821,12 +821,12 @@ mod tests {
         assert_eq!(load(&store, "scout"), Reach::default_for("scout"));
         assert!(!Reach::default_for("scout").channels[&Channel::Voice].enabled);
         assert!(
-            Reach::default_for(crate::mission_control::SESSION_ID).channels[&Channel::Voice]
+            Reach::default_for(crate::lead::SESSION_ID).channels[&Channel::Voice]
                 .enabled
         );
         assert_eq!(
-            load(&store, crate::mission_control::SESSION_ID),
-            Reach::default_for(crate::mission_control::SESSION_ID)
+            load(&store, crate::lead::SESSION_ID),
+            Reach::default_for(crate::lead::SESSION_ID)
         );
 
         let mut custom = Reach::default_for("scout");

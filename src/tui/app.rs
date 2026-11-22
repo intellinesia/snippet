@@ -100,8 +100,8 @@ pub(crate) struct App {
     pub(crate) update_notice: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// Daemon-backed side-pane panels (agents, tasks, jobs, usage, vault).
     pub(crate) boards: super::boards::Boards,
-    /// Mission Control was asked for; opened on the next tick.
-    pub(crate) pending_mission_control: bool,
+    /// Lead was asked for; opened on the next tick.
+    pub(crate) pending_lead: bool,
     /// A panel action waiting for y (delete a job or a secret).
     pub(crate) board_confirm: Option<super::boards::Confirm>,
     /// The vault panel's add prompt, while open.
@@ -368,7 +368,7 @@ impl App {
             models_fetch_status: String::new(),
             update_notice: std::sync::Arc::new(std::sync::Mutex::new(None)),
             boards: Default::default(),
-            pending_mission_control: false,
+            pending_lead: false,
             board_confirm: None,
             vault_input: None,
             usage_range: 0,
@@ -744,7 +744,7 @@ impl App {
         self.refresh_daemon_sessions(false).await;
         // Then apply any picker mutation queued by a key handler.
         self.apply_pending_session_op().await;
-        self.apply_pending_mission_control().await;
+        self.apply_pending_lead().await;
         self.poll_boards();
         // A new question set is prepared as soon as it arrives (cursor on the
         // recommended option, recommended multi-choice options ticked), not on

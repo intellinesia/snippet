@@ -54,8 +54,8 @@ fn every_view(d: &Shared, job: &RecurringJob) -> Value {
     view["plan_path"] = json!(job.plan_path);
     if job.wake.is_none() {
         view["owner"] = json!(job.session_id);
-        view["owner_kind"] = json!(if job.session_id == crate::mission_control::SESSION_ID {
-            OwnerKind::MissionControl
+        view["owner_kind"] = json!(if job.session_id == crate::lead::SESSION_ID {
+            OwnerKind::Lead
         } else {
             OwnerKind::Session
         });
@@ -66,8 +66,8 @@ fn every_view(d: &Shared, job: &RecurringJob) -> Value {
 fn once_view(f: &Followup) -> Value {
     let owner_kind = if f.owner.is_some() {
         OwnerKind::Agent
-    } else if f.session_id == crate::mission_control::SESSION_ID {
-        OwnerKind::MissionControl
+    } else if f.session_id == crate::lead::SESSION_ID {
+        OwnerKind::Lead
     } else {
         OwnerKind::Session
     };
@@ -359,7 +359,7 @@ async fn delete_wake(State(d): State<Shared>, AxumPath(id): AxumPath<String>) ->
         Found::Watch(w) => {
             let removed = d.store.delete_watch(&w.id).map_err(|e| e.to_string());
             if matches!(removed, Ok(true)) {
-                cw::remove_watch_files(&d.mission_control_root, &w.owner, &w.name);
+                cw::remove_watch_files(&d.lead_root, &w.owner, &w.name);
             }
             removed
         }

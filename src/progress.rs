@@ -72,7 +72,7 @@ pub fn call_label(arguments: &Value) -> String {
 static CLOCKS: LazyLock<Mutex<HashMap<String, Clock>>> = LazyLock::new(Default::default);
 
 fn reporting_session(ctx: &ToolContext) -> Option<&str> {
-    if ctx.lane_origin().is_some() || ctx.is_mission_control() {
+    if ctx.lane_origin().is_some() || ctx.is_lead() {
         return None;
     }
     ctx.durable_session_id()
