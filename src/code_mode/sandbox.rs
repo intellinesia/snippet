@@ -58,6 +58,10 @@ globalThis.agent = {
   },
   look: async (path, question) => globalThis.agent.ask(question === undefined ? 'What do you see?' : String(question), { __look: String(path) }),
 };
+globalThis.view_image = async (args = {}) => {
+  const answer = await globalThis.agent.look(args.path, args.question);
+  return { status: "success", data: { path: String(args.path), answer } };
+};
 "#;
 
 struct LogBuf {

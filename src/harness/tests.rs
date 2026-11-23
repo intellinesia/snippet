@@ -1425,7 +1425,7 @@ mod code_mode_tests {
                 ModelOutput {
                     calls: vec![GeneratedToolCall {
                         tool_name: "code".into(),
-                        arguments: json!({"action": "run", "code": "return await agent.look('shot.png', 'Which colour?');"}),
+                        arguments: json!({"action": "run", "code": "const v = await view_image({path: 'shot.png'}); return v.data.path;"}),
                         id: Some("c1".into()),
                         origin_model: None,
                         signature: None,
