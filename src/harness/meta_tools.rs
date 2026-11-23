@@ -676,6 +676,19 @@ impl CodingHarness {
         }
     }
 
+    /// The tool mode in force now: switches apply from the next turn.
+    pub(super) fn tool_mode(&self) -> crate::config::ToolMode {
+        if let Some(mode) = self.config.tool_mode {
+            return mode;
+        }
+        let agent = if self.context.is_lead() {
+            Some(crate::lead::SESSION_ID)
+        } else {
+            self.context.agent_id()
+        };
+        crate::code_mode::mode::resolve(self.session_id().as_deref(), agent).0
+    }
+
     pub(super) fn internal_tool_schema(&self, name: &str) -> Option<Value> {
         self.tools
             .definition_for(name)
@@ -716,7 +729,7 @@ impl CodingHarness {
         let (mut shown, mut all) = crate::code_mode::runner::seat_tools(
             self.seat_role(conversation_mode),
             definitions,
-            self.config.tool_mode,
+            self.tool_mode(),
         );
         for custom in self.tools.custom_definitions() {
             if !all.iter().any(|d| d.name == custom.name) {

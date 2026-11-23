@@ -611,13 +611,7 @@ fn start_session_with_role(
     );
     let context_window_tokens =
         crate::agent_context::effective_context_window(model_config.context_window, context_limit);
-    let tool_mode = crate::code_mode::mode::mode_for(
-        crate::agent_context::agent_for_session(
-            session.agent.as_ref().map(|a| a.agent_id.as_str()),
-            matches!(session.role, SessionRole::Lead),
-        )
-        .as_deref(),
-    );
+
     let compact_at_pct = model_config.compact_at_pct;
     let memory_enabled = config.memory_enabled;
     let memory_reflect = config.memory_reflect;
@@ -671,7 +665,6 @@ fn start_session_with_role(
                 profile,
                 hidden_meta: runtime.hidden_meta,
                 seat_role: runtime.seat_role,
-                tool_mode,
                 ..HarnessConfig::default()
             },
             runtime.tools,

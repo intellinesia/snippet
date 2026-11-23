@@ -16,6 +16,7 @@ const DENIED: &[&str] = &[
     "terminate_loop",
     "complete_goal",
     "speak",
+    "view_image",
 ];
 const RESULT_CHARS: usize = 20_000;
 
@@ -57,7 +58,7 @@ fn code_definitions() -> Vec<NativeToolDefinition> {
         def(
             "code_run",
             "Run JavaScript that calls your tools.",
-            json!({"code": {"type": "string", "description": "Body of an async function. Every other tool is a function: `await task.update({...})` for a grouped tool's action, `await bash({command})` for a plain tool. `return` the value you want back; console.log lines come back too. `await agent.ask(question, data)` pauses the run and hands you the question and data to decide; code.resume continues it."}}),
+            json!({"code": {"type": "string", "description": "Body of an async function. Every other tool is a function: `await task.update({...})` for a grouped tool's action, `await bash({command})` for a plain tool. `return` the value you want back; console.log lines come back too. `await agent.ask(question, data)` pauses the run and hands you the question and data to decide; `await view_image({path})` or `await agent.look(path, question)` pauses and shows you the image (a screenshot the script took, say). code.resume continues the script; your answer, if any, is what the call returns."}}),
             &["code"],
         ),
         def(
@@ -241,10 +242,11 @@ pub async fn execute(
             {
                 record.code = code.to_string();
             }
-            if let Some(answer) = args.get("answer") {
-                if record.status == "paused" {
-                    record.answers.push(answer.clone());
-                } else if args.get("code").is_none() {
+            let answer = args.get("answer");
+            if record.status == "paused" {
+                record.answers.push(answer.cloned().unwrap_or(Value::Null));
+            } else if answer.is_some() {
+                if args.get("code").is_none() {
                     return failure(
                         "not_paused",
                         format!(
@@ -326,6 +328,23 @@ async fn drive(
             success(
                 json!({"status": "completed", "run_id": record.run_id, "result": capped(value), "logs": logs, "calls": calls, "replayed": replayed}),
             )
+        }
+        Outcome::Paused {
+            question,
+            data,
+            logs,
+        } if data.get("__look").is_some_and(Value::is_string) => {
+            record.status = "paused".into();
+            success(json!({
+                "status": "paused",
+                "run_id": record.run_id,
+                "question": question,
+                "path": data["__look"],
+                "logs": logs,
+                "calls": calls,
+                "replayed": replayed,
+                "next": "Look at the image, then code.resume with this run_id and your answer."
+            }))
         }
         Outcome::Paused {
             question,
@@ -508,6 +527,7 @@ pub fn seat_tools(
 const CODE_MODE_DIRECT: &[&str] = &[
     "code",
     "calls",
+    "view_image",
     "ask_user",
     "complete_goal",
     "update_plan",
@@ -708,6 +728,21 @@ mod tests {
         assert_eq!(done["data"]["result"], "two");
         assert_eq!(done["data"]["replayed"], 1);
         assert_eq!(exec.0.len(), 2);
+        let _ = std::fs::remove_dir_all(runs_dir(&session));
+    }
+
+    #[tokio::test]
+    async fn view_image_in_a_script_pauses_and_resumes_without_an_answer() {
+        let session = format!("test-{}", uuid::Uuid::new_v4().simple());
+        let code = "const v = await view_image({path: 'a.png'}); return [v.data.path, v.data.answer];";
+        let mut exec = Fake(Vec::new());
+        let paused = execute("code_run", &json!({"code": code}), &session, &defs(), &mut exec).await;
+        assert_eq!(paused["data"]["status"], "paused");
+        assert_eq!(paused["data"]["path"], "a.png");
+        let run_id = paused["data"]["run_id"].as_str().unwrap().to_string();
+        let done = execute("code_resume", &json!({"run_id": run_id}), &session, &defs(), &mut exec).await;
+        assert_eq!(done["data"]["result"], json!(["a.png", null]));
+        assert!(exec.0.is_empty());
         let _ = std::fs::remove_dir_all(runs_dir(&session));
     }
 

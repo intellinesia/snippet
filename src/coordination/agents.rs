@@ -178,7 +178,7 @@ impl Store {
                 params![id],
             )?;
             tx.execute(
-                "DELETE FROM agent_tool_modes WHERE agent_id = ?1",
+                "DELETE FROM tool_modes WHERE scope = 'agent' AND id = ?1",
                 params![id],
             )?;
             tx.execute(
@@ -407,37 +407,39 @@ impl Store {
         })
     }
 
-    /// How the agent prefers to call tools: `direct` or `code`.
-    pub fn agent_tool_mode(&self, id: &str) -> Result<Option<String>, StoreError> {
+    /// Stored tool modes for a session, its agent and everyone (`all`), as (scope, mode).
+    pub fn tool_modes_for(
+        &self,
+        session: Option<&str>,
+        agent: Option<&str>,
+    ) -> Result<Vec<(String, String)>, StoreError> {
         self.with_connection(|conn| {
-            match conn.query_row(
-                "SELECT mode FROM agent_tool_modes WHERE agent_id = ?1",
-                params![id],
-                |row| row.get::<_, String>(0),
-            ) {
-                Ok(mode) => Ok(Some(mode)),
-                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                Err(error) => Err(error),
-            }
+            let mut stmt = conn.prepare(
+                "SELECT scope, mode FROM tool_modes
+                 WHERE (scope = 'session' AND id = ?1) OR (scope = 'agent' AND id = ?2) OR scope = 'all'",
+            )?;
+            let rows = stmt.query_map(params![session.unwrap_or(""), agent.unwrap_or("")], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<_, _>>()
         })
     }
 
-    /// Returns whether the agent exists.
-    pub fn set_agent_tool_mode(&self, id: &str, mode: &str) -> Result<bool, StoreError> {
+    /// Set or clear (`None`) one scope's tool mode.
+    pub fn set_tool_mode(&self, scope: &str, id: &str, mode: Option<&str>) -> Result<(), StoreError> {
         self.with_connection(|conn| {
-            let exists: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM agents WHERE id = ?1)",
-                params![id],
-                |row| row.get(0),
-            )?;
-            if exists {
-                conn.execute(
-                    "INSERT INTO agent_tool_modes (agent_id, mode) VALUES (?1, ?2)
-                     ON CONFLICT(agent_id) DO UPDATE SET mode = excluded.mode",
-                    params![id, mode],
-                )?;
-            }
-            Ok(exists)
+            match mode {
+                Some(mode) => conn.execute(
+                    "INSERT INTO tool_modes (scope, id, mode) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(scope, id) DO UPDATE SET mode = excluded.mode",
+                    params![scope, id, mode],
+                )?,
+                None => conn.execute(
+                    "DELETE FROM tool_modes WHERE scope = ?1 AND id = ?2",
+                    params![scope, id],
+                )?,
+            };
+            Ok(())
         })
     }
 

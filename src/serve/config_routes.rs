@@ -544,3 +544,53 @@ pub(crate) async fn set_web_search(
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
+
+#[derive(Deserialize)]
+pub(crate) struct ToolModeReq {
+    #[serde(default)]
+    session: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+// POST /config/tool_mode {mode}: everyone's default. POST /session/tool_mode {session, mode}: one session.
+// `mode` is direct, code, or inherit/omitted to clear. Applies from each session's next turn.
+pub(crate) async fn set_universal_tool_mode(Json(req): Json<ToolModeReq>) -> Response {
+    match crate::code_mode::mode::set("all", "", req.mode.as_deref()) {
+        Ok(()) => Json(serde_json::json!({"tool_mode": crate::code_mode::mode::universal()})).into_response(),
+        Err(e) => api_error(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+pub(crate) async fn set_session_tool_mode(Json(req): Json<ToolModeReq>) -> Response {
+    let Some(session) = req.session.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return api_error(StatusCode::BAD_REQUEST, "session is required");
+    };
+    let row = crate::session::store_for_sessions().and_then(|s| s.get_session_row(session).ok().flatten());
+    let Some(row) = row else {
+        return api_error(StatusCode::NOT_FOUND, "no such session");
+    };
+    if let Err(e) = crate::code_mode::mode::set("session", &row.id, req.mode.as_deref()) {
+        return api_error(StatusCode::BAD_REQUEST, e);
+    }
+    let agent = row.agent_id.clone();
+    let (mode, from) = crate::code_mode::mode::resolve(Some(&row.id), agent.as_deref());
+    Json(serde_json::json!({"session": row.id, "tool_mode": crate::code_mode::mode::label(mode), "set_by": from})).into_response()
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ToolModeQuery {
+    session: String,
+}
+
+// GET /session/tool_mode?session=: the mode in force and which switch set it.
+pub(crate) async fn get_session_tool_mode(
+    axum::extract::Query(q): axum::extract::Query<ToolModeQuery>,
+) -> Response {
+    let row = crate::session::store_for_sessions().and_then(|s| s.get_session_row(&q.session).ok().flatten());
+    let Some(row) = row else {
+        return api_error(StatusCode::NOT_FOUND, "no such session");
+    };
+    let (mode, from) = crate::code_mode::mode::resolve(Some(&row.id), row.agent_id.as_deref());
+    Json(serde_json::json!({"session": row.id, "tool_mode": crate::code_mode::mode::label(mode), "set_by": from})).into_response()
+}

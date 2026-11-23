@@ -1314,6 +1314,10 @@ mod code_mode_tests {
             self.1.push(messages.to_vec());
             Ok(self.0.pop_front().expect("scripted model ran out"))
         }
+
+        fn supports_images(&self) -> bool {
+            true
+        }
     }
 
     #[tokio::test]
@@ -1323,7 +1327,7 @@ mod code_mode_tests {
             HarnessConfig {
                 state_path: Some(dir.path().join("state.json")),
                 memory_enabled: false,
-                tool_mode: crate::config::ToolMode::Code,
+                tool_mode: Some(crate::config::ToolMode::Code),
                 ..HarnessConfig::default()
             },
             crate::session::work_tool_registry(None, None),
@@ -1396,5 +1400,69 @@ mod code_mode_tests {
             })
             .collect();
         assert_eq!(calls, ["code", "bash", "bash"]);
+    }
+
+    #[tokio::test]
+    async fn a_script_can_pause_on_an_image_the_model_then_sees() {
+        let dir = tempfile::tempdir().unwrap();
+        image::RgbImage::from_pixel(8, 8, image::Rgb([200, 30, 30]))
+            .save(dir.path().join("shot.png"))
+            .unwrap();
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                state_path: Some(dir.path().join("state.json")),
+                memory_enabled: false,
+                tool_mode: Some(crate::config::ToolMode::Code),
+                ..HarnessConfig::default()
+            },
+            crate::session::work_tool_registry(None, None),
+            ToolContext::new(dir.path())
+                .unwrap()
+                .with_store_path(dir.path().join("store.db")),
+        );
+        let mut model = Scripted(
+            [
+                ModelOutput {
+                    calls: vec![GeneratedToolCall {
+                        tool_name: "code".into(),
+                        arguments: json!({"action": "run", "code": "const v = await view_image({path: 'shot.png'}); return v.data.path;"}),
+                        id: Some("c1".into()),
+                        origin_model: None,
+                        signature: None,
+                    }],
+                    ..Default::default()
+                },
+                ModelOutput {
+                    content_text: Some("red".into()),
+                    ..Default::default()
+                },
+            ]
+            .into(),
+            Vec::new(),
+        );
+        let id = harness.session_id().unwrap();
+        let mut presence = crate::session::subscribe_device_events();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let watch = async {
+            while let Ok(event) = presence.recv().await {
+                if event["session"] == id
+                    && event["kind"] == "agent_presence"
+                    && event["state"] == "idle"
+                {
+                    break;
+                }
+            }
+            drop(tx);
+        };
+        let run = harness.run_interactive(&mut model, Some("look".into()), rx, None, None);
+        let (ran, _) =
+            tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(run, watch) })
+                .await
+                .expect("run finished");
+        ran.unwrap();
+        let seen = model.1.last().unwrap();
+        let shown = seen.iter().any(|m| matches!(m, HarnessMessage::ToolResult { tool_name, content, .. }
+            if tool_name == "code" && content["data"]["status"] == "paused" && content.pointer("/data/image_base64").is_some()));
+        assert!(shown, "{seen:?}");
     }
 }
