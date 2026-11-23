@@ -7,8 +7,8 @@ use serde_json::Value;
 use super::Shared;
 use crate::coordination::TaskStatus;
 use crate::harness::{HarnessStatus, LoopInput};
-use crate::mission_autonomy;
 use crate::lead::SESSION_ID;
+use crate::mission_autonomy;
 
 const TICK: Duration = Duration::from_secs(1);
 const ROUND_EVERY: Duration = Duration::from_secs(5);
@@ -215,10 +215,7 @@ pub(super) fn last_resume_matches_inputs() -> bool {
 }
 
 pub(super) fn mark_resume_delivered() {
-    LAST_RESUME.store(
-        lead_inputs(),
-        std::sync::atomic::Ordering::SeqCst,
-    );
+    LAST_RESUME.store(lead_inputs(), std::sync::atomic::Ordering::SeqCst);
 }
 
 /// From the speech interrupt hook: resumes only while the cut reply is still unconsumed.
@@ -247,14 +244,12 @@ pub(super) async fn interrupt_lead(daemon: &Shared) -> bool {
 }
 
 pub(super) fn lead_busy() -> bool {
-    crate::session::read_session_meta(&crate::lead::session_state_path()).is_some_and(
-        |s| {
-            matches!(
-                s.status,
-                HarnessStatus::Running | HarnessStatus::WaitingForInput
-            )
-        },
-    )
+    crate::session::read_session_meta(&crate::lead::session_state_path()).is_some_and(|s| {
+        matches!(
+            s.status,
+            HarnessStatus::Running | HarnessStatus::WaitingForInput
+        )
+    })
 }
 
 fn board_digest(tasks: &[crate::coordination::Task]) -> String {
@@ -754,7 +749,10 @@ fn round_envelope(
             },
         )
         .child("body", out)
-        .child("instructions", "Lead wake. No reply is expected. Running and waiting tasks report on their own.")
+        .child(
+            "instructions",
+            "Lead wake. No reply is expected. Running and waiting tasks report on their own.",
+        )
         .render()
 }
 

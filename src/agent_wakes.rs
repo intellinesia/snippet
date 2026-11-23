@@ -272,11 +272,7 @@ pub fn set(
     if setter == Setter::Lead && existing.is_none() {
         let held = list(root)?
             .iter()
-            .filter(|j| {
-                j.wake
-                    .as_ref()
-                    .is_some_and(|w| w.set_by == Setter::Lead)
-            })
+            .filter(|j| j.wake.as_ref().is_some_and(|w| w.set_by == Setter::Lead))
             .count();
         if held >= MAX_SET_BY_LEAD {
             return Err(format!(
@@ -859,9 +855,7 @@ impl Tool for WakeScheduleTool {
                 };
             }
             (false, Some(_)) => {
-                return Err(ToolError::msg(
-                    "only Lead can set another agent's wake",
-                ));
+                return Err(ToolError::msg("only Lead can set another agent's wake"));
             }
             (false, None) => {
                 let at_desk = ctx.agent_id().filter(|a| {
@@ -1431,10 +1425,7 @@ mod tests {
             route(&p, "completed", "one  mention", Some("One mention")),
             None
         );
-        assert_eq!(
-            route(&p, "paused", "NO_CHANGE", None),
-            Some(ReportTo::Lead)
-        );
+        assert_eq!(route(&p, "paused", "NO_CHANGE", None), Some(ReportTo::Lead));
         let always = ReportPolicy {
             only_on_change: false,
             ..ReportPolicy::default()
@@ -1545,13 +1536,7 @@ mod tests {
             .insert_recurring_run(&job.id, Some("jev"), &job.session_id, T0 as i64 - 60)
             .unwrap();
         store
-            .finish_recurring_run(
-                a,
-                "completed",
-                Some("ok"),
-                Some("lead"),
-                T0 as i64 - 89_000,
-            )
+            .finish_recurring_run(a, "completed", Some("ok"), Some("lead"), T0 as i64 - 89_000)
             .unwrap();
         assert_eq!(
             store

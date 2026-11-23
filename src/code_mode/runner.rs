@@ -58,7 +58,7 @@ fn code_definitions() -> Vec<NativeToolDefinition> {
         def(
             "code_run",
             "Run JavaScript that calls your tools.",
-            json!({"code": {"type": "string", "description": "Body of an async function. Every other tool is a function: `await task.update({...})` for a grouped tool's action, `await bash({command})` for a plain tool. `return` the value you want back; console.log lines come back too. `await agent.ask(question, data)` pauses the run and hands you the question and data to decide; `await view_image({path})` or `await agent.look(path, question)` pauses and shows you the image (a screenshot the script took, say). code.resume continues the script; your answer, if any, is what the call returns."}}),
+            json!({"code": {"type": "string", "description": "Body of an async function. Every other tool is a function: `await task.update({...})` for a grouped tool's action, `await bash({command})` for a plain tool. `return` the value you want back; console.log lines come back too. Each call returns the same JSON it does when called directly, and a failed call returns its error rather than throwing, so check `status`. Tools that end your turn are called directly, not from a script. `await agent.ask(question, data)` pauses the run and hands you the question and data to decide; `await view_image({path})` or `await agent.look(path, question)` pauses and shows you the image (a screenshot the script took, say). code.resume continues the script; your answer, if any, is what the call returns."}}),
             &["code"],
         ),
         def(
@@ -734,13 +734,28 @@ mod tests {
     #[tokio::test]
     async fn view_image_in_a_script_pauses_and_resumes_without_an_answer() {
         let session = format!("test-{}", uuid::Uuid::new_v4().simple());
-        let code = "const v = await view_image({path: 'a.png'}); return [v.data.path, v.data.answer];";
+        let code =
+            "const v = await view_image({path: 'a.png'}); return [v.data.path, v.data.answer];";
         let mut exec = Fake(Vec::new());
-        let paused = execute("code_run", &json!({"code": code}), &session, &defs(), &mut exec).await;
+        let paused = execute(
+            "code_run",
+            &json!({"code": code}),
+            &session,
+            &defs(),
+            &mut exec,
+        )
+        .await;
         assert_eq!(paused["data"]["status"], "paused");
         assert_eq!(paused["data"]["path"], "a.png");
         let run_id = paused["data"]["run_id"].as_str().unwrap().to_string();
-        let done = execute("code_resume", &json!({"run_id": run_id}), &session, &defs(), &mut exec).await;
+        let done = execute(
+            "code_resume",
+            &json!({"run_id": run_id}),
+            &session,
+            &defs(),
+            &mut exec,
+        )
+        .await;
         assert_eq!(done["data"]["result"], json!(["a.png", null]));
         assert!(exec.0.is_empty());
         let _ = std::fs::remove_dir_all(runs_dir(&session));

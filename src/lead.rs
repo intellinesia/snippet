@@ -402,10 +402,7 @@ pub fn save_settings(root: &Path, settings: &ControlSettings) -> Result<(), Stri
         .map_err(|e| e.to_string())
 }
 
-pub fn set_lead_session(
-    root: &Path,
-    session_id: &str,
-) -> Result<ControlSettings, String> {
+pub fn set_lead_session(root: &Path, session_id: &str) -> Result<ControlSettings, String> {
     let mut settings = load_settings(root);
     settings.lead_session_id = Some(session_id.to_string());
     save_settings(root, &settings)?;

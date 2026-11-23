@@ -820,10 +820,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         assert_eq!(load(&store, "scout"), Reach::default_for("scout"));
         assert!(!Reach::default_for("scout").channels[&Channel::Voice].enabled);
-        assert!(
-            Reach::default_for(crate::lead::SESSION_ID).channels[&Channel::Voice]
-                .enabled
-        );
+        assert!(Reach::default_for(crate::lead::SESSION_ID).channels[&Channel::Voice].enabled);
         assert_eq!(
             load(&store, crate::lead::SESSION_ID),
             Reach::default_for(crate::lead::SESSION_ID)

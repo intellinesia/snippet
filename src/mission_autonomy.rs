@@ -230,9 +230,7 @@ pub fn standing_rules_note() -> String {
 }
 
 pub fn brief_path() -> PathBuf {
-    crate::config::snippet_home()
-        .join("lead")
-        .join("brief.md")
+    crate::config::snippet_home().join("lead").join("brief.md")
 }
 
 pub fn read_brief() -> String {
@@ -404,10 +402,7 @@ pub fn release_held_pings() {
     match held.len() {
         0 => {}
         1 => {
-            let agent = held[0]
-                .agent
-                .as_deref()
-                .unwrap_or(crate::lead::SESSION_ID);
+            let agent = held[0].agent.as_deref().unwrap_or(crate::lead::SESSION_ID);
             emit(
                 &held[0].title,
                 &held[0].message,

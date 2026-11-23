@@ -996,10 +996,7 @@ mod owner_and_came_back_tests {
             .collect();
         assert_eq!(by_id["plain"].owner_agent_id, "snippet");
         assert_eq!(by_id["spec"].owner_agent_id, "rook");
-        assert_eq!(
-            by_id[crate::lead::SESSION_ID].owner_agent_id,
-            "lead"
-        );
+        assert_eq!(by_id[crate::lead::SESSION_ID].owner_agent_id, "lead");
         assert_eq!(by_id["inbox-scout"].owner_agent_id, "scout");
         assert_eq!(by_id["seat-1"].owner_agent_id, "auditor");
     }

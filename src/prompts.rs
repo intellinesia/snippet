@@ -243,10 +243,7 @@ mod seat_layer_tests {
             ("coding_system_prompt", coding_system_prompt()),
             ("conversation_prompt", conversation_prompt(&ctx)),
             ("coordination_prompt", coordination_prompt(&ctx)),
-            (
-                "lead_system_prompt",
-                lead_system_prompt(),
-            ),
+            ("lead_system_prompt", lead_system_prompt()),
         ] {
             let count = prompt.matches(heading).count();
             assert_eq!(
@@ -434,11 +431,7 @@ mod seat_layer_tests {
                 "coordination_prompt",
                 coordination_prompt(&default_ctx),
             ),
-            (
-                "lead",
-                "lead_system_prompt",
-                lead_system_prompt(),
-            ),
+            ("lead", "lead_system_prompt", lead_system_prompt()),
             ("lane", "lane_prompt", lane_prompt(&default_ctx, None)),
             (
                 "lane",

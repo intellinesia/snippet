@@ -669,8 +669,7 @@ impl Listener {
             live.caption = text;
             live.caption_at = Some(Instant::now());
         }
-        let busy =
-            crate::ambient::conversation().is_some() && super::autonomy::lead_busy();
+        let busy = crate::ambient::conversation().is_some() && super::autonomy::lead_busy();
         let instant_barge =
             !echo_all && (audible || busy) && !live.interrupted && has_barge_command(&words);
         if instant_barge {

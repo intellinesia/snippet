@@ -341,7 +341,7 @@ const CODE: Surface = Surface {
 
 const CALLS: Surface = Surface {
     name: "calls",
-    intro: "Your tool calls: list them, run one again with changes, or choose how you call tools.",
+    intro: "Your tool calls: list them, run one again with changes, or choose how you call tools. Direct mode, the default: one call per step, and you see each result. Code mode: a script makes many calls in one round trip and returns only what you need, which saves context and quota on chains, loops and large output; it pauses to show you images and to ask you decisions. Switch when the work changes shape; a session setting overrides your agent-wide one.",
     acts: &[
         act("list", "calls_list", "recent calls with ids, newest first."),
         act(

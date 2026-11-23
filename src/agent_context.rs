@@ -90,9 +90,7 @@ impl Tool for ContextLimitTool {
             (true, Some(other)) => other.to_string(),
             (true, None) => crate::lead::SESSION_ID.to_string(),
             (false, Some(_)) => {
-                return Err(ToolError::msg(
-                    "only Lead can set another agent's limit",
-                ));
+                return Err(ToolError::msg("only Lead can set another agent's limit"));
             }
             (false, None) => ctx
                 .agent_id()
@@ -151,10 +149,7 @@ mod tests {
 
     #[test]
     fn lead_sessions_resolve_to_its_agent() {
-        assert_eq!(
-            agent_for_session(None, true).as_deref(),
-            Some("lead")
-        );
+        assert_eq!(agent_for_session(None, true).as_deref(), Some("lead"));
         assert_eq!(
             agent_for_session(Some("x-research"), false).as_deref(),
             Some("x-research")

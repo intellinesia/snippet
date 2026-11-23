@@ -1079,9 +1079,9 @@ impl App {
 
     pub(crate) fn current_session_id(&self) -> String {
         if self.active_state_path == crate::lead::session_state_path()
-            || crate::lead::is_session_id(
-                &crate::serve::sidecar::state_path_to_session_id(&self.active_state_path),
-            )
+            || crate::lead::is_session_id(&crate::serve::sidecar::state_path_to_session_id(
+                &self.active_state_path,
+            ))
         {
             return crate::lead::SESSION_ID.to_string();
         }
@@ -1221,9 +1221,7 @@ impl App {
                     let spec = tokens.next().unwrap_or("");
                     let rest: String = tokens.collect::<Vec<_>>().join(" ");
                     (self.current_session_id(), format!("{first} {spec}"), rest)
-                } else if first.eq_ignore_ascii_case("mc")
-                    || first.eq_ignore_ascii_case("lead")
-                {
+                } else if first.eq_ignore_ascii_case("mc") || first.eq_ignore_ascii_case("lead") {
                     let kind = tokens.next().unwrap_or("");
                     let spec = tokens.next().unwrap_or("");
                     let rest: String = tokens.collect::<Vec<_>>().join(" ");

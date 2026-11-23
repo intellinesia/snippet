@@ -147,10 +147,7 @@ impl Store {
                  ON CONFLICT(id) DO UPDATE SET
                    lead_session_id = excluded.lead_session_id,
                    notification_policy = excluded.notification_policy",
-                params![
-                    settings.lead_session_id,
-                    settings.notification_policy
-                ],
+                params![settings.lead_session_id, settings.notification_policy],
             )?;
             Ok(())
         })

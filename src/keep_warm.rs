@@ -211,9 +211,7 @@ pub fn put(root: &Path, entry: &KeepWarm) -> Result<(), String> {
 }
 
 pub fn clear(root: &Path, owner: &str, setter: Setter) -> Result<bool, String> {
-    if setter == Setter::Lead
-        && get(root, owner)?.is_some_and(|e| e.set_by == Setter::User)
-    {
+    if setter == Setter::Lead && get(root, owner)?.is_some_and(|e| e.set_by == Setter::User) {
         return Err("the user set this keep-warm; ask them to change it".into());
     }
     crate::recurring::store_at(root)?
@@ -231,9 +229,7 @@ pub fn set(
 ) -> Result<KeepWarm, String> {
     let owner = owner.trim();
     let current = get(root, owner)?;
-    if setter == Setter::Lead
-        && current.as_ref().is_some_and(|e| e.set_by == Setter::User)
-    {
+    if setter == Setter::Lead && current.as_ref().is_some_and(|e| e.set_by == Setter::User) {
         return Err("the user set this keep-warm; ask them to change it".into());
     }
     let interval = spec
@@ -393,10 +389,7 @@ impl Tool for KeepWarmTool {
             .filter(|a| !a.is_empty());
         let (owner, setter) = match (ctx.is_lead(), named) {
             (true, Some(other)) => (other.to_string(), Setter::Lead),
-            (true, None) => (
-                crate::lead::SESSION_ID.to_string(),
-                Setter::Owner,
-            ),
+            (true, None) => (crate::lead::SESSION_ID.to_string(), Setter::Owner),
             (false, Some(_)) => {
                 return Err(ToolError::msg(
                     "only Lead can manage another agent's keep-warm",

@@ -31,9 +31,7 @@ fn clip(text: &str, max: usize) -> String {
 /// Who verifies the next report on this task.
 pub fn route(state: &crate::coordination::TaskState) -> VerifyMode {
     match state.effective_mode() {
-        VerifyMode::Reviewer if state.review_rounds >= REVIEW_CHANGE_ROUNDS => {
-            VerifyMode::Lead
-        }
+        VerifyMode::Reviewer if state.review_rounds >= REVIEW_CHANGE_ROUNDS => VerifyMode::Lead,
         mode => mode,
     }
 }
@@ -766,13 +764,7 @@ mod tests {
             ..Default::default()
         };
         store
-            .patch_task_state(
-                "rv1",
-                &patch,
-                None,
-                "lead",
-                "2026-01-01T00:00:01Z",
-            )
+            .patch_task_state("rv1", &patch, None, "lead", "2026-01-01T00:00:01Z")
             .unwrap();
         (store, task)
     }
@@ -864,16 +856,10 @@ How: re-ran everything"
         let dir = tempfile::tempdir().unwrap();
         let (store, task) = seed(dir.path(), "s1");
         assert!(
-            revise_task(
-                &store,
-                "rv1",
-                "tighten it",
-                "lead",
-                "2026-01-02T00:00:00Z"
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("only a done task")
+            revise_task(&store, "rv1", "tighten it", "lead", "2026-01-02T00:00:00Z")
+                .unwrap_err()
+                .to_string()
+                .contains("only a done task")
         );
         store
             .complete_task(

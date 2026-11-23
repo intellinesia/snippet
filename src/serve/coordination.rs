@@ -253,8 +253,8 @@ pub(super) async fn task_verdict(
         .ok()
         .flatten()
         .unwrap_or_default();
-    let workspace = crate::members::task_workspace(&d.store, &task)
-        .unwrap_or_else(|| d.lead_root.clone());
+    let workspace =
+        crate::members::task_workspace(&d.store, &task).unwrap_or_else(|| d.lead_root.clone());
     let ctx = crate::ToolContext::with_owner(workspace, "user")
         .unwrap_or_else(|_| crate::ToolContext::with_owner("/", "user").unwrap())
         .with_agent_id("user")
@@ -839,10 +839,7 @@ pub(super) async fn post_message(
         }
         if crate::members::task_workspace(&d.store, &task).is_some() {
             crate::members::seat_holder(&d.store, &task);
-            for agent in to
-                .iter()
-                .filter(|a| **a != crate::lead::SESSION_ID)
-            {
+            for agent in to.iter().filter(|a| **a != crate::lead::SESSION_ID) {
                 if let Err(error) = crate::members::seat(&d.store, &task, agent, &now) {
                     return api_error(StatusCode::CONFLICT, error);
                 }

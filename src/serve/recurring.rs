@@ -137,9 +137,7 @@ async fn open_owner(daemon: &Shared, wake: &crate::agent_wakes::WakePolicy) -> R
             super::direct::ensure_agent_inbox(daemon, &wake.owner).await
         }
         crate::agent_wakes::OwnerKind::Lead => {
-            super::lead::open_lead(daemon, None)
-                .await
-                .map(|_| ())
+            super::lead::open_lead(daemon, None).await.map(|_| ())
         }
         crate::agent_wakes::OwnerKind::Session => Ok(()),
     }
@@ -202,15 +200,9 @@ async fn watch_run(daemon: Shared, job: recurring::RecurringJob, run_id: Option<
             Some(wake) => {
                 report_wake(&daemon, &job, wake, &status, &summary, previous.as_deref()).await
             }
-            None => report_run_to_lead(
-                &daemon,
-                &job.title,
-                &job.session_id,
-                &status,
-                &summary,
-            )
-            .await
-            .to_string(),
+            None => report_run_to_lead(&daemon, &job.title, &job.session_id, &status, &summary)
+                .await
+                .to_string(),
         };
         let reported = match report_run_to_group(&daemon, &job, &status, &summary) {
             Some(group) => format!("{reported}; {group}"),
@@ -261,15 +253,9 @@ async fn report_wake(
                     "A scheduled wake finished. No reply is expected.",
                 )
                 .render();
-            if super::lead::open_lead(daemon, None)
-                .await
-                .is_ok()
-            {
+            if super::lead::open_lead(daemon, None).await.is_ok() {
                 daemon
-                    .deliver_wake(
-                        crate::lead::SESSION_ID,
-                        LoopInput::UserMessage(text),
-                    )
+                    .deliver_wake(crate::lead::SESSION_ID, LoopInput::UserMessage(text))
                     .await;
                 "lead".into()
             } else {
@@ -431,17 +417,11 @@ async fn report_run_to_lead(
             "Recurring run report. The report is the run's outcome; no reply is expected.",
         )
         .render();
-    if super::lead::open_lead(daemon, None)
-        .await
-        .is_err()
-    {
+    if super::lead::open_lead(daemon, None).await.is_err() {
         return "lead: unavailable";
     }
     daemon
-        .deliver_wake(
-            crate::lead::SESSION_ID,
-            LoopInput::UserMessage(text),
-        )
+        .deliver_wake(crate::lead::SESSION_ID, LoopInput::UserMessage(text))
         .await;
     "lead"
 }

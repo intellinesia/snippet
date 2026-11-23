@@ -426,7 +426,12 @@ impl Store {
     }
 
     /// Set or clear (`None`) one scope's tool mode.
-    pub fn set_tool_mode(&self, scope: &str, id: &str, mode: Option<&str>) -> Result<(), StoreError> {
+    pub fn set_tool_mode(
+        &self,
+        scope: &str,
+        id: &str,
+        mode: Option<&str>,
+    ) -> Result<(), StoreError> {
         self.with_connection(|conn| {
             match mode {
                 Some(mode) => conn.execute(
@@ -696,8 +701,7 @@ mod tests {
         assert_eq!(stored.display_name, "Coordinator");
 
         // A boot or rebuild must not resume a paused agent.
-        db.set_agent_status("lead", &AgentStatus::Paused)
-            .unwrap();
+        db.set_agent_status("lead", &AgentStatus::Paused).unwrap();
         db.upsert_agent(&renamed).unwrap();
         assert!(!db.agent_takes_work("lead").unwrap());
         assert_eq!(stored.kind, AgentKind::Lead);

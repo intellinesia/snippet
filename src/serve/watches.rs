@@ -1242,10 +1242,7 @@ mod tests {
     #[test]
     fn scope_prefix_is_stable_and_root_specific() {
         let a = scope_prefix(Path::new("/home/x/.snippet/lead"));
-        assert_eq!(
-            a,
-            scope_prefix(Path::new("/home/x/.snippet/lead"))
-        );
+        assert_eq!(a, scope_prefix(Path::new("/home/x/.snippet/lead")));
         assert_ne!(a, scope_prefix(Path::new("/tmp/test-root")));
         assert!(a.starts_with("snippet-watch-") && a.ends_with('-'));
     }
