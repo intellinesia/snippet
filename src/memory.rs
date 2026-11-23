@@ -130,11 +130,9 @@ impl MemoryRepo {
             kind: ScopeKind::Agent,
             key: format!("agent:{agent_id}"),
             label: agent_id.to_string(),
-            root: crate::coordination::agents_root(
-                &crate::config::snippet_home().join("lead"),
-            )
-            .join(agent_id)
-            .join("memory"),
+            root: crate::coordination::agents_root(&crate::config::snippet_home().join("lead"))
+                .join(agent_id)
+                .join("memory"),
         })
     }
 

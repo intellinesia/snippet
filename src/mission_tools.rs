@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use crate::coordination::{
     HandoffMode, NotificationMarker, Task, TaskResult, TaskStatus, types::CoordinationEvent,
 };
-use crate::llm::NativeToolDefinition;
 use crate::lead;
+use crate::llm::NativeToolDefinition;
 use crate::session::{
     create_blank_session, list_routable_sessions, read_session_state, state_path_for_id,
 };
@@ -20,9 +20,8 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 }
 
 fn root(ctx: &ToolContext) -> Result<PathBuf, ToolError> {
-    ctx.lead_root().ok_or_else(|| {
-        ToolError::msg("Lead tools are only available in the Lead session.")
-    })
+    ctx.lead_root()
+        .ok_or_else(|| ToolError::msg("Lead tools are only available in the Lead session."))
 }
 
 /// The task store. Tasks live in SQLite alongside the rest of coordination —
@@ -1696,10 +1695,7 @@ impl Tool for ViewTaskBoard {
     }
 }
 
-fn session_folder_outside_lead(
-    raw: &str,
-    title: &str,
-) -> Result<(PathBuf, bool), String> {
+fn session_folder_outside_lead(raw: &str, title: &str) -> Result<(PathBuf, bool), String> {
     let expanded = match raw.strip_prefix("~/") {
         Some(rest) => std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -1811,8 +1807,7 @@ async fn open_folder_session(
     workspace: crate::session::WorkspaceMode,
     profile: Option<String>,
 ) -> Result<(crate::session::SessionInfo, String), ToolError> {
-    let (folder, moved) =
-        session_folder_outside_lead(folder, title).map_err(ToolError::msg)?;
+    let (folder, moved) = session_folder_outside_lead(folder, title).map_err(ToolError::msg)?;
     if !moved && !force_new {
         let candidates = crate::session_resolve::routable_candidates();
         let recent = crate::session_resolve::recent_in_folder(
@@ -2160,9 +2155,7 @@ async fn create_task(
             return Err(ToolError::msg("title and description must be non-empty"));
         }
         let store = db(ctx)?;
-        let root = ctx
-            .lead_root()
-            .unwrap_or_else(lead::workspace_path);
+        let root = ctx.lead_root().unwrap_or_else(lead::workspace_path);
         // An agent's INBOX is a mailbox, not a workspace. It runs the
         // coordination runtime — no file or shell tools, and no
         // `report_mission_task` — so work routed there cannot be done and cannot
@@ -2641,9 +2634,7 @@ impl Tool for DeliverToSession {
         if let Some(id) = reviewer.as_deref() {
             require_working_agent(&store, id)?;
         }
-        let lead_root = ctx
-            .lead_root()
-            .unwrap_or_else(lead::workspace_path);
+        let lead_root = ctx.lead_root().unwrap_or_else(lead::workspace_path);
         if lead::get_session(&lead_root, &session_id).is_err() {
             let _ = lead::create_session(
                 &lead_root,
@@ -3814,9 +3805,7 @@ fn stale_sessions(store: &Store, idle_days: i64) -> Vec<crate::session::SessionI
         .filter(|s| !matches!(s.status.as_str(), "running" | "waiting_for_input"))
         .filter(|s| now - s.last_active > idle_days * 86_400)
         .filter(|s| !open.contains(&s.id))
-        .filter(|s| {
-            !lead::is_session_id(&s.id) && !crate::session::is_inbox_session_id(&s.id)
-        })
+        .filter(|s| !lead::is_session_id(&s.id) && !crate::session::is_inbox_session_id(&s.id))
         .collect()
 }
 
@@ -4102,9 +4091,7 @@ impl Tool for RegisterAgent {
                 "identity is too thin: write the agent's mandate, how it works and how it reports",
             ));
         }
-        if args.id == crate::coordination::SNIPPET_AGENT_ID
-            || args.id == lead::SESSION_ID
-        {
+        if args.id == crate::coordination::SNIPPET_AGENT_ID || args.id == lead::SESSION_ID {
             return Err(ToolError::msg(format!(
                 "`{}` is a built-in agent id",
                 args.id
@@ -4531,10 +4518,8 @@ mod tests {
         assert_eq!(roster[0].status, "active", "claimed at filing, not offered");
 
         // Lead got the one-line note.
-        let thread = crate::coordination::direct_thread_id(
-            ("agent", "lead"),
-            ("agent", "desk-agent"),
-        );
+        let thread =
+            crate::coordination::direct_thread_id(("agent", "lead"), ("agent", "desk-agent"));
         let events = db.direct_thread_events(&thread, 0, 10).unwrap();
         assert!(events.iter().any(|e| {
             e.payload["body"]
@@ -4631,10 +4616,8 @@ mod tests {
         assert_eq!(task.status, TaskStatus::Blocked);
         assert_eq!(db.list_task_agents(&task_id).unwrap()[0].status, "active");
 
-        let thread = crate::coordination::direct_thread_id(
-            ("agent", "lead"),
-            ("agent", "desk-agent"),
-        );
+        let thread =
+            crate::coordination::direct_thread_id(("agent", "lead"), ("agent", "desk-agent"));
         let events = db.direct_thread_events(&thread, 0, 10).unwrap();
         assert!(events.iter().any(|e| {
             e.payload["body"]

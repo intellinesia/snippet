@@ -117,10 +117,7 @@ pub struct SettleFacts {
 /// Why a session must not be settled, or `None` when it may.
 pub fn refusal(f: &SettleFacts) -> Option<String> {
     let no = |why: &str| Some(format!("not settled: {why}"));
-    if crate::lead::is_session_id(&f.id)
-        || f.role == "lead"
-        || f.kind == "lead"
-    {
+    if crate::lead::is_session_id(&f.id) || f.role == "lead" || f.kind == "lead" {
         return no("it is the Lead session");
     }
     if crate::session::is_inbox_session_id(&f.id) || f.kind == "inbox" {

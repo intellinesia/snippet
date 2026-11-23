@@ -202,9 +202,11 @@ impl CodingHarness {
     /// The memory repos this session reads and writes, most general first. A
     /// lane shares its parent session's memory.
     pub(super) fn memory_scopes(&self) -> Vec<crate::memory::MemoryRepo> {
-        let agent = self.context.agent_id().map(str::to_string).or_else(|| {
-            (self.context.owner() == "lead").then(|| "lead".to_string())
-        });
+        let agent = self
+            .context
+            .agent_id()
+            .map(str::to_string)
+            .or_else(|| (self.context.owner() == "lead").then(|| "lead".to_string()));
         let workspace = self.context.workspace_root();
         let project = !workspace.starts_with(crate::config::snippet_home());
         let mut repos = crate::memory::scopes_for(project.then_some(workspace), agent.as_deref());

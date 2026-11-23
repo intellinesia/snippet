@@ -918,9 +918,7 @@ pub(crate) async fn delete_agent(
             Json(serde_json::json!({ "deleted": true })).into_response()
         }
         Ok(AgentRemoval::NotFound) => api_error(StatusCode::NOT_FOUND, "no such agent"),
-        Ok(AgentRemoval::Lead) => {
-            api_error(StatusCode::BAD_REQUEST, "Lead can't be deleted")
-        }
+        Ok(AgentRemoval::Lead) => api_error(StatusCode::BAD_REQUEST, "Lead can't be deleted"),
         Ok(AgentRemoval::OnOpenTasks(titles)) => {
             let shown: Vec<String> = titles.iter().take(3).cloned().collect();
             let more = titles.len().saturating_sub(shown.len());

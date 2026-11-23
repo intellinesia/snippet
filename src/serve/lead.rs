@@ -14,18 +14,14 @@ use crate::coordination::{HandoffMode, NotificationMarker, Task, TaskStatus};
 use crate::lead::{self, ManagedSession};
 use crate::serve::task_summary;
 use crate::session::{
-    SessionRole, SessionSidecar, read_session_profile, start_lead_session,
-    write_session_sidecar,
+    SessionRole, SessionSidecar, read_session_profile, start_lead_session, write_session_sidecar,
 };
 
 pub fn router() -> Router<Shared> {
     Router::new()
         .route("/agents/build", post(build_agent_from_prompt))
         .route("/lead/overview", get(overview))
-        .route(
-            "/lead/autonomy",
-            get(autonomy).post(update_autonomy),
-        )
+        .route("/lead/autonomy", get(autonomy).post(update_autonomy))
         .route("/lead/open", post(open))
         .route("/lead/tasks", get(tasks).post(create_task))
 }
@@ -184,15 +180,8 @@ async fn build_agent_from_prompt(
         Ok(character) => character,
         Err(msg) => return api_error(StatusCode::BAD_REQUEST, msg),
     };
-    if !d
-        .store
-        .has_conversation(lead::SESSION_ID)
-        .unwrap_or(false)
-    {
-        return api_error(
-            StatusCode::CONFLICT,
-            "open Lead before building an agent",
-        );
+    if !d.store.has_conversation(lead::SESSION_ID).unwrap_or(false) {
+        return api_error(StatusCode::CONFLICT, "open Lead before building an agent");
     }
     let session_id = crate::lead::SESSION_ID;
     let task_id = uuid::Uuid::new_v4().to_string();
@@ -390,19 +379,12 @@ pub(super) async fn dispatch_mission_task(d: &Daemon, task_id: &str) -> Result<T
     // Lead's own work (building an agent) runs in its home; it is
     // not a managed session, and listing it as one would show it to the human.
     let (session_id, workspace) = if lead::is_session_id(&task.session_id) {
-        if !d
-            .store
-            .has_conversation(lead::SESSION_ID)
-            .unwrap_or(false)
-        {
+        if !d.store.has_conversation(lead::SESSION_ID).unwrap_or(false) {
             let error = "Lead has not been opened yet".to_string();
             release_failed_claim(d, &task, &error)?;
             return Err(error);
         }
-        (
-            lead::SESSION_ID.to_string(),
-            lead::workspace_path(),
-        )
+        (lead::SESSION_ID.to_string(), lead::workspace_path())
     } else {
         let managed = match lead::get_session(root, &task.session_id) {
             Ok(managed) => managed,
@@ -984,10 +966,7 @@ async fn create_task(State(d): State<Shared>, Json(req): Json<MissionTaskReq>) -
         // A failed first attempt is already counted and re-queued; the loop
         // retries it like any other, up to the failure ceiling.
         if let Err(error) = dispatch_mission_task(&d, &task.id).await {
-            eprintln!(
-                "[lead] first dispatch of {} failed: {error}",
-                task.id
-            );
+            eprintln!("[lead] first dispatch of {} failed: {error}", task.id);
         }
         match d.store.get_task(&task.id) {
             Ok(Some(task)) => task,
@@ -1052,9 +1031,7 @@ pub(super) async fn open_lead(
         );
         sessions.insert(id.clone(), live_from_handle(handle, profile));
         if !resume && let Some(live) = sessions.get(&id) {
-            let _ = live
-                .input_tx
-                .send(LoopInput::SetTitle("Lead".into()));
+            let _ = live.input_tx.send(LoopInput::SetTitle("Lead".into()));
         }
     }
     drop(sessions);

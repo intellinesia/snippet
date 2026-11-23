@@ -88,9 +88,8 @@ fn is_git_repo(dir: &str) -> bool {
 }
 
 fn store_of(ctx: &ToolContext) -> Result<Store, ToolError> {
-    ctx.lead_root().ok_or_else(|| {
-        ToolError::msg("Goal tools are only available in the Lead session.")
-    })?;
+    ctx.lead_root()
+        .ok_or_else(|| ToolError::msg("Goal tools are only available in the Lead session."))?;
     ctx.store()
         .map_err(|e| ToolError::msg(format!("open store: {e}")))
 }

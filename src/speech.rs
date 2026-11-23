@@ -120,8 +120,7 @@ async fn prepare() -> Result<(String, crate::ambient::Conversation), String> {
             .unwrap_or(90);
         TTL.store(ttl.max(1), Ordering::Relaxed);
     }
-    let conversation =
-        crate::ambient::open_conversation("lead", TTL.load(Ordering::Relaxed));
+    let conversation = crate::ambient::open_conversation("lead", TTL.load(Ordering::Relaxed));
     Ok((device, conversation))
 }
 

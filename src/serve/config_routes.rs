@@ -557,16 +557,23 @@ pub(crate) struct ToolModeReq {
 // `mode` is direct, code, or inherit/omitted to clear. Applies from each session's next turn.
 pub(crate) async fn set_universal_tool_mode(Json(req): Json<ToolModeReq>) -> Response {
     match crate::code_mode::mode::set("all", "", req.mode.as_deref()) {
-        Ok(()) => Json(serde_json::json!({"tool_mode": crate::code_mode::mode::universal()})).into_response(),
+        Ok(()) => Json(serde_json::json!({"tool_mode": crate::code_mode::mode::universal()}))
+            .into_response(),
         Err(e) => api_error(StatusCode::BAD_REQUEST, e),
     }
 }
 
 pub(crate) async fn set_session_tool_mode(Json(req): Json<ToolModeReq>) -> Response {
-    let Some(session) = req.session.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+    let Some(session) = req
+        .session
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
         return api_error(StatusCode::BAD_REQUEST, "session is required");
     };
-    let row = crate::session::store_for_sessions().and_then(|s| s.get_session_row(session).ok().flatten());
+    let row = crate::session::store_for_sessions()
+        .and_then(|s| s.get_session_row(session).ok().flatten());
     let Some(row) = row else {
         return api_error(StatusCode::NOT_FOUND, "no such session");
     };
@@ -587,7 +594,8 @@ pub(crate) struct ToolModeQuery {
 pub(crate) async fn get_session_tool_mode(
     axum::extract::Query(q): axum::extract::Query<ToolModeQuery>,
 ) -> Response {
-    let row = crate::session::store_for_sessions().and_then(|s| s.get_session_row(&q.session).ok().flatten());
+    let row = crate::session::store_for_sessions()
+        .and_then(|s| s.get_session_row(&q.session).ok().flatten());
     let Some(row) = row else {
         return api_error(StatusCode::NOT_FOUND, "no such session");
     };

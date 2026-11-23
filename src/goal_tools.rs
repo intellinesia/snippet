@@ -11,9 +11,8 @@ use crate::store::Store;
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 
 fn lead_store(ctx: &ToolContext) -> Result<Store, ToolError> {
-    ctx.lead_root().ok_or_else(|| {
-        ToolError::msg("Goal tools are only available in the Lead session.")
-    })?;
+    ctx.lead_root()
+        .ok_or_else(|| ToolError::msg("Goal tools are only available in the Lead session."))?;
     ctx.store()
         .map_err(|e| ToolError::msg(format!("open store: {e}")))
 }

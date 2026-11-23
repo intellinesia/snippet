@@ -916,9 +916,7 @@ impl Tool for SendAgentMessage {
         }
         if to_kind == "human" {
             extra.insert("channel".into(), json!("chat"));
-            if sender_kind == "agent"
-                && reaction.is_none()
-                && sender_id != crate::lead::SESSION_ID
+            if sender_kind == "agent" && reaction.is_none() && sender_id != crate::lead::SESSION_ID
             {
                 crate::coordination::reach::apply_outbound_human(
                     &db, &sender_id, &body, &mut extra,
@@ -1471,10 +1469,7 @@ impl Tool for PostTaskCoordination {
                 )));
             }
             crate::members::seat_holder(&db, &task);
-            for agent in to
-                .iter()
-                .filter(|a| a.as_str() != crate::lead::SESSION_ID)
-            {
+            for agent in to.iter().filter(|a| a.as_str() != crate::lead::SESSION_ID) {
                 crate::members::seat(&db, &task, agent, &now_rfc3339()).map_err(ToolError::msg)?;
             }
             payload["to"] = json!(to);
@@ -2037,9 +2032,7 @@ fn group_agent(ctx: &ToolContext) -> Result<String, ToolError> {
     match actor(ctx)? {
         ("agent", id) => Ok(id),
         ("session", id) if id == crate::lead::SESSION_ID => Ok(id),
-        _ => Err(ToolError::msg(
-            "group threads are for agents and Lead",
-        )),
+        _ => Err(ToolError::msg("group threads are for agents and Lead")),
     }
 }
 
@@ -2858,8 +2851,7 @@ impl Tool for Chats {
         };
         let (actor_kind, actor_id) = actor(ctx)?;
         let db = db(ctx)?;
-        let lead =
-            ctx.is_lead() || actor_id == crate::lead::SESSION_ID;
+        let lead = ctx.is_lead() || actor_id == crate::lead::SESSION_ID;
         let mut rows: Vec<(String, Value)> = Vec::new();
 
         if only.is_none() || only == Some("direct") {

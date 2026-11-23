@@ -168,12 +168,8 @@ async fn message_route_requires_a_body() {
 #[test]
 fn board_posts_wake_lead_except_its_own() {
     assert!(coordination::should_wake_lead("human"));
-    assert!(coordination::should_wake_lead(
-        "rust-pr-reviewer"
-    ));
-    assert!(!coordination::should_wake_lead(
-        crate::lead::SESSION_ID
-    ));
+    assert!(coordination::should_wake_lead("rust-pr-reviewer"));
+    assert!(!coordination::should_wake_lead(crate::lead::SESSION_ID));
 }
 
 #[test]
@@ -309,13 +305,7 @@ fn the_task_api_exposes_ledger_acceptance_verify_mode_review_and_revision_additi
     let patch: crate::coordination::StatePatch =
         serde_json::from_value(serde_json::json!({"verify_mode": "reviewer"})).unwrap();
     store
-        .patch_task_state(
-            "api1",
-            &patch,
-            None,
-            "lead",
-            "2020-01-02T00:00:00Z",
-        )
+        .patch_task_state("api1", &patch, None, "lead", "2020-01-02T00:00:00Z")
         .unwrap();
     task = store
         .update_task_in("api1", "2020-01-03T00:00:00Z", |t| {
@@ -766,9 +756,7 @@ async fn a_path_conflict_waits_in_the_queue_without_a_dependency() {
         .unwrap();
 
     for _ in 0..3 {
-        let task = lead::dispatch_mission_task(&d, "waiter")
-            .await
-            .unwrap();
+        let task = lead::dispatch_mission_task(&d, "waiter").await.unwrap();
         assert_eq!(task.status, crate::coordination::TaskStatus::Todo);
     }
     let waiter = d.store.get_task("waiter").unwrap().unwrap();
@@ -808,9 +796,7 @@ async fn a_failed_dependency_parks_its_dependent_once() {
         )
         .unwrap();
 
-    let parked = lead::dispatch_mission_task(&d, "second")
-        .await
-        .unwrap();
+    let parked = lead::dispatch_mission_task(&d, "second").await.unwrap();
     assert_eq!(parked.status, crate::coordination::TaskStatus::Blocked);
     assert!(parked.notifications[0].message.contains("first is failed"));
     assert!(
@@ -960,10 +946,7 @@ async fn a_self_started_task_is_never_offered_back() {
 
     let _ = lead::dispatch_mission_task(&d, &task_id).await;
 
-    let thread = crate::coordination::direct_thread_id(
-        ("agent", "lead"),
-        ("agent", "desk-agent"),
-    );
+    let thread = crate::coordination::direct_thread_id(("agent", "lead"), ("agent", "desk-agent"));
     let offers = |events: &[crate::coordination::types::CoordinationEvent]| {
         events
             .iter()
@@ -1083,10 +1066,7 @@ async fn a_blocked_self_started_task_starts_without_an_offer() {
 
     let _ = lead::dispatch_mission_task(&d, &task_id).await;
 
-    let thread = crate::coordination::direct_thread_id(
-        ("agent", "lead"),
-        ("agent", "desk-agent"),
-    );
+    let thread = crate::coordination::direct_thread_id(("agent", "lead"), ("agent", "desk-agent"));
     let events = d.store.direct_thread_events(&thread, 0, 50).unwrap();
     assert!(
         events.iter().all(|e| {
@@ -1131,9 +1111,7 @@ async fn a_paused_worker_holds_its_task_in_the_queue() {
         )
         .unwrap();
     for _ in 0..2 {
-        let task = lead::dispatch_mission_task(&d, "t1")
-            .await
-            .unwrap();
+        let task = lead::dispatch_mission_task(&d, "t1").await.unwrap();
         assert_eq!(task.status, crate::coordination::TaskStatus::Todo);
     }
     let task = d.store.get_task("t1").unwrap().unwrap();
@@ -1830,15 +1808,9 @@ async fn handoff_refuses_invalid_targets_and_oversized_notes() {
             .is_err()
     );
     assert!(
-        handoff::hand_off_session(
-            &d,
-            "s-ref",
-            crate::lead::SESSION_ID,
-            "hi",
-            "human"
-        )
-        .await
-        .is_err()
+        handoff::hand_off_session(&d, "s-ref", crate::lead::SESSION_ID, "hi", "human")
+            .await
+            .is_err()
     );
     assert!(
         handoff::hand_off_session(&d, "s-ref", "snippet", "hi", "human")

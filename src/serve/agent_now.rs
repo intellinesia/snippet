@@ -168,8 +168,7 @@ pub fn agent_presence_and_needs(store: &Store, agent_id: &str) -> (Option<AgentP
     for (session_id, p) in &live {
         let belongs = p.agent.as_deref() == Some(agent_id)
             || session_id.strip_prefix("inbox-") == Some(agent_id)
-            || (agent_id == crate::lead::SESSION_ID
-                && session_id == crate::lead::SESSION_ID);
+            || (agent_id == crate::lead::SESSION_ID && session_id == crate::lead::SESSION_ID);
         if !belongs {
             continue;
         }

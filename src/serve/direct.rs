@@ -231,19 +231,19 @@ fn sent_to_human_ok(
             None => (tool_name.as_str(), arguments),
         };
         if resolved_name == "send_agent_message"
-                && resolved_args
-                    .get("reaction")
-                    .and_then(|v| v.as_str())
-                    .is_none_or(|r| r.trim().is_empty())
-                && resolved_args
-                    .get("recipient_agent_id")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .is_some_and(|to| {
-                        matches!(to, "human" | "local" | "human:local")
-                            || forwarder
-                                .is_some_and(|f| to == f || to.strip_prefix("agent:") == Some(f))
-                    })
+            && resolved_args
+                .get("reaction")
+                .and_then(|v| v.as_str())
+                .is_none_or(|r| r.trim().is_empty())
+            && resolved_args
+                .get("recipient_agent_id")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .is_some_and(|to| {
+                    matches!(to, "human" | "local" | "human:local")
+                        || forwarder
+                            .is_some_and(|f| to == f || to.strip_prefix("agent:") == Some(f))
+                })
         {
             let failed = turn[i + 1..].iter().find_map(|e| match e {
                 E::ToolResult {
@@ -804,9 +804,7 @@ pub(crate) fn relay_stop(
     state: &crate::harness::HarnessState,
 ) {
     use crate::harness::HarnessEvent as E;
-    if crate::lead::is_session_id(session_id)
-        || crate::session::is_inbox_session_id(session_id)
-    {
+    if crate::lead::is_session_id(session_id) || crate::session::is_inbox_session_id(session_id) {
         return;
     }
     let Some(row) = store.get_session_row(session_id).ok().flatten() else {
@@ -1015,9 +1013,7 @@ pub(crate) fn desk_answer(
     if answer.is_empty() {
         return Err("answer must not be empty".into());
     }
-    if crate::lead::is_session_id(session_id)
-        || crate::session::is_inbox_session_id(session_id)
-    {
+    if crate::lead::is_session_id(session_id) || crate::session::is_inbox_session_id(session_id) {
         return Err("only work sessions can be answered this way".into());
     }
     let row = store
@@ -3787,11 +3783,7 @@ mod tests {
     #[test]
     fn a_desk_cannot_answer_lead_its_own_inbox_or_an_unknown_session() {
         let store = crate::store::Store::open_in_memory().unwrap();
-        for session in [
-            crate::lead::SESSION_ID,
-            "inbox-snippet",
-            "sess-missing",
-        ] {
+        for session in [crate::lead::SESSION_ID, "inbox-snippet", "sess-missing"] {
             assert!(
                 super::desk_answer(&store, "snippet", session, "blue").is_err(),
                 "{session}"

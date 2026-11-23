@@ -1340,9 +1340,9 @@ pub(crate) fn lane_tool_registry(
     tools
 }
 
-pub const WORK_TOOL_BUDGET_BYTES: usize = 22_200;
-pub const LEAD_TOOL_BUDGET_BYTES: usize = 31_500;
-pub const DESK_TOOL_BUDGET_BYTES: usize = 13_500;
+pub const WORK_TOOL_BUDGET_BYTES: usize = 22_600;
+pub const LEAD_TOOL_BUDGET_BYTES: usize = 31_900;
+pub const DESK_TOOL_BUDGET_BYTES: usize = 13_900;
 pub const LANE_TOOL_BUDGET_BYTES: usize = 7_500;
 
 pub fn definition_byte_size(d: &NativeToolDefinition) -> usize {
@@ -1374,10 +1374,7 @@ pub fn role_tool_definitions(
         "lead" => Some((
             crate::code_mode::runner::seat_tools(
                 crate::surface::SeatRole::Lead,
-                with_meta(
-                    crate::session::lead_tool_registry(key).definitions(),
-                    false,
-                ),
+                with_meta(crate::session::lead_tool_registry(key).definitions(), false),
                 crate::config::ToolMode::Direct,
             )
             .0,

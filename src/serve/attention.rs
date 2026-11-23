@@ -4,10 +4,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use super::Shared;
-use super::autonomy::{
-    deliver_to_lead, interrupt_lead, lead_busy,
-    lead_inputs,
-};
+use super::autonomy::{deliver_to_lead, interrupt_lead, lead_busy, lead_inputs};
 
 const RESUME_CAP: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(500);
@@ -212,8 +209,7 @@ pub(super) fn arm_resume(d: &Shared, generation: u64, needs_interruption: bool) 
                 Ready::Fire => break,
             }
         }
-        if lead_busy() || (needs_interruption && !crate::speech::interruption_pending())
-        {
+        if lead_busy() || (needs_interruption && !crate::speech::interruption_pending()) {
             return;
         }
         if super::autonomy::last_resume_matches_inputs() {
