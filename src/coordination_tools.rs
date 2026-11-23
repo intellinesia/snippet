@@ -2646,7 +2646,8 @@ impl Tool for ShareArtifactTool {
 
         let db = db(ctx)?;
         let (sender_kind, sender_id) = actor(ctx)?;
-        if target == "human" && crate::coordination::origin::managing_desk(&db, session).is_some() {
+        let to_user = target == "human" || matches!(target, "channel:chat" | "channel:push");
+        if to_user && crate::coordination::origin::managing_desk(&db, session).is_some() {
             mirror_artifact_to_desk(&db, session, &artifact);
             return Ok(ToolResult::success(json!({
                 "to": "desk",

@@ -639,17 +639,20 @@ fn tell_desk_of_question(
 ) {
     let name = relay_agent_name(store, desk, desk);
     let label = crate::coordination::origin::session_label(store, session_id);
-    card.insert("fallback".into(), json!(true));
-    schedule_desk_fallback(
-        store,
-        desk,
-        session_id,
-        "question",
-        format!("ask:{session_id}:{index}"),
-        index,
-        format!("Automatic fallback: {name} has not passed this on. {label} asks:\n{body}"),
-        card,
-    );
+    let refusal = desk_answer_refusal(question);
+    if refusal.is_some() {
+        card.insert("fallback".into(), json!(true));
+        schedule_desk_fallback(
+            store,
+            desk,
+            session_id,
+            "question",
+            format!("ask:{session_id}:{index}"),
+            index,
+            format!("Automatic fallback: {name} has not passed this on. {label} asks:\n{body}"),
+            card,
+        );
+    }
     let managed = store
         .get_session_row(session_id)
         .ok()
@@ -662,21 +665,21 @@ fn tell_desk_of_question(
         .attr("session", session_id)
         .attr("title", &label)
         .child("question", body);
-    let mut note = format!(
-        "pass it to the user in your own words; if you post nothing in your chat with them within {} minutes, the daemon posts the question card itself.",
-        DESK_FALLBACK_SECS / 60
-    );
-    match desk_answer_refusal(question) {
+    let note = match refusal {
         None => {
             envelope = envelope.attr("desk_may_answer", "yes");
-            note.push_str(" task.answer answers it for the user.");
+            "answer it with task.answer when you can, or ask whoever the work is for; the session waits on you.".to_string()
         }
         Some(reason) => {
             envelope = envelope
                 .attr("desk_may_answer", "no")
                 .child("held_for_user", reason);
+            format!(
+                "only the user can answer this: pass it on in your own words; if you post nothing in your chat with them within {} minutes, the daemon posts the question card itself.",
+                DESK_FALLBACK_SECS / 60
+            )
         }
-    }
+    };
     let mut extra = serde_json::Map::new();
     extra.insert("kind".into(), json!("question"));
     extra.insert("auto".into(), json!("session_question"));
