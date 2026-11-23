@@ -374,7 +374,7 @@ impl CodingHarness {
         // Safety cap across the inlined set so one batch can't balloon a request.
         const MAX_TOTAL_IMAGE_BYTES: usize = 24 * 1024 * 1024;
 
-        let is_vision_result = |tool_name: &str| tool_name == "view_image";
+        let is_vision_result = |tool_name: &str| matches!(tool_name, "view_image" | "code");
 
         let mut assistant_turns = 0usize;
         let mut cutoff = 0usize;

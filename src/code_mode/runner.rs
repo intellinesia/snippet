@@ -16,6 +16,7 @@ const DENIED: &[&str] = &[
     "terminate_loop",
     "complete_goal",
     "speak",
+    "view_image",
 ];
 const RESULT_CHARS: usize = 20_000;
 
@@ -57,7 +58,7 @@ fn code_definitions() -> Vec<NativeToolDefinition> {
         def(
             "code_run",
             "Run JavaScript that calls your tools.",
-            json!({"code": {"type": "string", "description": "Body of an async function. Every other tool is a function: `await task.update({...})` for a grouped tool's action, `await bash({command})` for a plain tool. `return` the value you want back; console.log lines come back too. `await agent.ask(question, data)` pauses the run and hands you the question and data to decide; code.resume continues it."}}),
+            json!({"code": {"type": "string", "description": "Body of an async function. Every other tool is a function: `await task.update({...})` for a grouped tool's action, `await bash({command})` for a plain tool. `return` the value you want back; console.log lines come back too. `await agent.ask(question, data)` pauses the run and hands you the question and data to decide; `await agent.look(path, question)` pauses and shows you the image at path (a screenshot the script took, say). code.resume continues either with your answer as the return value."}}),
             &["code"],
         ),
         def(
@@ -331,6 +332,23 @@ async fn drive(
             question,
             data,
             logs,
+        } if data.get("__look").is_some_and(Value::is_string) => {
+            record.status = "paused".into();
+            success(json!({
+                "status": "paused",
+                "run_id": record.run_id,
+                "question": question,
+                "path": data["__look"],
+                "logs": logs,
+                "calls": calls,
+                "replayed": replayed,
+                "next": "Look at the image, then code.resume with this run_id and your answer."
+            }))
+        }
+        Outcome::Paused {
+            question,
+            data,
+            logs,
         } => {
             record.status = "paused".into();
             success(json!({
@@ -508,6 +526,7 @@ pub fn seat_tools(
 const CODE_MODE_DIRECT: &[&str] = &[
     "code",
     "calls",
+    "view_image",
     "ask_user",
     "complete_goal",
     "update_plan",

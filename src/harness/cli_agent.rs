@@ -3406,7 +3406,11 @@ impl CodingHarness {
                             let tools = script_tools.clone();
                             let mut exec = CliExec { calls: mcp_tx.clone(), log: inner_log.clone() };
                             running.push(Box::pin(async move {
-                                let value = crate::code_mode::runner::execute(&tool, &call.arguments, &session, &tools, &mut exec).await;
+                                let mut value = crate::code_mode::runner::execute(&tool, &call.arguments, &session, &tools, &mut exec).await;
+                                let look = value.pointer("/data/path").and_then(Value::as_str).and_then(|p| self.context.resolve_workspace_path(p).ok());
+                                if let (Some(path), Some(object)) = (look, value.as_object_mut()) {
+                                    object.insert(IMAGE_PATH_KEY.to_string(), json!(path.display().to_string()));
+                                }
                                 let _ = call.reply.send(value);
                             }));
                         }
