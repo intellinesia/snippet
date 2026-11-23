@@ -747,6 +747,27 @@ impl Tool for SendAgentMessage {
         // to the human's own thread. Decided here rather than left to the
         // argument: a wrong address loses the answer in a thread nobody watches,
         // which is exactly what the guidance in the description failed to prevent.
+        if requested_kind == "human"
+            && reaction.is_none()
+            && let Some(session) = ctx.durable_session_id()
+            && crate::coordination::origin::managing_desk(&db, session).is_some()
+        {
+            let mut extra = serde_json::Map::new();
+            extra.insert("kind".into(), json!(args.kind.as_deref().unwrap_or("note")));
+            extra.insert("for_user".into(), json!(true));
+            crate::coordination::origin::tell_managing_desk(
+                &db,
+                session,
+                &Uuid::new_v4().to_string(),
+                &body,
+                extra,
+            )
+            .ok_or_else(|| ToolError::msg("could not reach your desk"))?;
+            return Ok(ToolResult::success(json!({
+                "to": "desk",
+                "note": "your desk decides what reaches the user",
+            })));
+        }
         let redirect = if requested_kind == "human" {
             ctx.agent_id()
                 .and_then(|agent_id| reply_session_for_agent(&db, agent_id, requested_id))
@@ -2625,10 +2646,7 @@ impl Tool for ShareArtifactTool {
 
         let db = db(ctx)?;
         let (sender_kind, sender_id) = actor(ctx)?;
-        if target == "human"
-            && sender_kind == "session"
-            && crate::coordination::origin::managing_desk(&db, session).is_some()
-        {
+        if target == "human" && crate::coordination::origin::managing_desk(&db, session).is_some() {
             mirror_artifact_to_desk(&db, session, &artifact);
             return Ok(ToolResult::success(json!({
                 "to": "desk",
