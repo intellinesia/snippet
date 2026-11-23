@@ -1323,7 +1323,7 @@ mod code_mode_tests {
             HarnessConfig {
                 state_path: Some(dir.path().join("state.json")),
                 memory_enabled: false,
-                tool_mode: crate::config::ToolMode::Code,
+                tool_mode: Some(crate::config::ToolMode::Code),
                 ..HarnessConfig::default()
             },
             crate::session::work_tool_registry(None, None),

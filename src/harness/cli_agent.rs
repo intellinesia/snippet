@@ -1610,7 +1610,7 @@ impl CodingHarness {
             let mut names: Vec<String> = crate::code_mode::runner::seat_tools(
                 self.seat_role(true),
                 internal.clone(),
-                self.config.tool_mode,
+                self.tool_mode(),
             )
             .0
             .into_iter()
@@ -2219,18 +2219,19 @@ impl CodingHarness {
             internal_tools.push(custom_tool_definition());
         }
         internal_tools.extend(meta_defs);
-        let (bridge_tools, script_tools) = crate::code_mode::runner::seat_tools(
+        let mut bridge_mode = self.tool_mode();
+        let (bridge_tools, mut script_tools) = crate::code_mode::runner::seat_tools(
             self.seat_role(!once),
-            internal_tools,
-            self.config.tool_mode,
+            internal_tools.clone(),
+            bridge_mode,
         );
-        let advertised_tools = script_tools.clone();
+        let mut advertised_tools = script_tools.clone();
         let inner_log: InnerLog = Default::default();
         let kind = CliKind::of(&profile.provider);
         let guide = tool_guide(kind, &bridge_tools);
         let steers: SteerQueue = Default::default();
         let served: ServedResults = Default::default();
-        let (mcp_url, mut mcp_rx, mcp_tx) =
+        let (mut mcp_url, mut mcp_rx, mut mcp_tx) =
             start_mcp_server(bridge_tools, steers.clone(), served.clone(), true)
                 .await
                 .map_err(ToolError::msg)?;
@@ -2437,6 +2438,39 @@ impl CodingHarness {
                             },
                         });
                         self.persist(&mut state, &lanes).await?;
+                    }
+                }
+                let wanted = self.tool_mode();
+                if wanted != bridge_mode && running.is_empty() && pending_approval.is_none() {
+                    let (bridge, scripts) = crate::code_mode::runner::seat_tools(
+                        self.seat_role(!once),
+                        internal_tools.clone(),
+                        wanted,
+                    );
+                    let guide = tool_guide(kind, &bridge);
+                    if let Ok((url, rx, tx)) =
+                        start_mcp_server(bridge, steers.clone(), parse.served.clone(), true).await
+                    {
+                        if matches!(kind, CliKind::Antigravity | CliKind::Devin) {
+                            session.tool_guide = guide;
+                        }
+                        mcp_url = url;
+                        mcp_rx = rx;
+                        mcp_tx = tx;
+                        parse.envelope_marker = crate::antigravity::envelope_marker(&mcp_url);
+                        advertised_tools = scripts.clone();
+                        script_tools = scripts;
+                        bridge_mode = wanted;
+                        if let Some(mut p) = process.take() {
+                            let _ = p.child.start_kill();
+                        }
+                        state.events.push(HarnessEvent::SystemDecision {
+                            step: "tool_mode".to_string(),
+                            reasoning: format!(
+                                "Tools switched to {} mode.",
+                                crate::code_mode::mode::label(wanted)
+                            ),
+                        });
                     }
                 }
                 if let (Some(prov), Some(p)) = (kind.pooled_provider(), process.as_mut())

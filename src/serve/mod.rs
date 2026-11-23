@@ -1284,6 +1284,10 @@ pub async fn run_serve(
         .route("/config", get(get_config))
         .route("/config/profile", put(put_profile).delete(delete_profile))
         .route("/config/keep_task_profile", post(set_keep_task_profile))
+        .route(
+            "/config/tool_mode",
+            post(config_routes::set_universal_tool_mode),
+        )
         .route("/config/manual_approval", post(set_manual_approval))
         .route("/config/voice", post(config_routes::set_voice))
         .route("/config/web_search", post(config_routes::set_web_search))
@@ -1340,6 +1344,10 @@ pub async fn run_serve(
         .route("/session/delete", post(delete_session))
         .route("/session/settle", post(settle_routes::settle_route))
         .route("/session/keep_awake", post(settle_routes::keep_awake_route))
+        .route(
+            "/session/tool_mode",
+            get(config_routes::get_session_tool_mode).post(config_routes::set_session_tool_mode),
+        )
         .route(
             "/session/resume_mode",
             post(settle_routes::resume_mode_route),
@@ -1823,6 +1831,7 @@ struct ConfigView {
     theme: Option<String>,
     manual_approval: bool,
     keep_task_profile: bool,
+    tool_mode: Option<&'static str>,
     routing: std::collections::BTreeMap<&'static str, Vec<String>>,
     limited: std::collections::HashMap<String, i64>,
     hostname: String,
@@ -1860,6 +1869,7 @@ async fn get_config(State(d): State<Shared>) -> Response {
         theme: c.theme.clone(),
         manual_approval: c.manual_approval,
         keep_task_profile: c.keep_task_profile,
+        tool_mode: crate::code_mode::mode::universal(),
         routing: crate::routing::Route::ALL
             .into_iter()
             .map(|r| (r.key(), crate::routing::configured(&c, r)))

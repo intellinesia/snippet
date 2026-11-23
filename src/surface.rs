@@ -352,7 +352,7 @@ const CALLS: Surface = Surface {
         act(
             "mode",
             "tool_mode",
-            "show or choose direct calls or code scripts, from your next session.",
+            "show or choose direct calls or code scripts, for this session or all yours, from the next turn.",
         ),
     ],
 };

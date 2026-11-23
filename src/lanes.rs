@@ -1340,9 +1340,9 @@ pub(crate) fn lane_tool_registry(
     tools
 }
 
-pub const WORK_TOOL_BUDGET_BYTES: usize = 22_000;
+pub const WORK_TOOL_BUDGET_BYTES: usize = 22_200;
 pub const LEAD_TOOL_BUDGET_BYTES: usize = 31_500;
-pub const DESK_TOOL_BUDGET_BYTES: usize = 13_400;
+pub const DESK_TOOL_BUDGET_BYTES: usize = 13_500;
 pub const LANE_TOOL_BUDGET_BYTES: usize = 7_500;
 
 pub fn definition_byte_size(d: &NativeToolDefinition) -> usize {

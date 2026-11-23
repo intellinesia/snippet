@@ -27,10 +27,13 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              max_context_tokens INTEGER NOT NULL
          );
 
-         CREATE TABLE IF NOT EXISTS agent_tool_modes (
-             agent_id TEXT PRIMARY KEY NOT NULL,
-             mode TEXT NOT NULL
+         CREATE TABLE IF NOT EXISTS tool_modes (
+             scope TEXT NOT NULL,
+             id TEXT NOT NULL,
+             mode TEXT NOT NULL,
+             PRIMARY KEY (scope, id)
          );
+         DROP TABLE IF EXISTS agent_tool_modes;
 
          CREATE TABLE IF NOT EXISTS agent_nicknames (
              agent_id TEXT PRIMARY KEY NOT NULL,
