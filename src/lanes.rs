@@ -1340,9 +1340,9 @@ pub(crate) fn lane_tool_registry(
     tools
 }
 
-pub const WORK_TOOL_BUDGET_BYTES: usize = 21_300;
+pub const WORK_TOOL_BUDGET_BYTES: usize = 22_000;
 pub const LEAD_TOOL_BUDGET_BYTES: usize = 31_500;
-pub const DESK_TOOL_BUDGET_BYTES: usize = 12_800;
+pub const DESK_TOOL_BUDGET_BYTES: usize = 13_400;
 pub const LANE_TOOL_BUDGET_BYTES: usize = 7_500;
 
 pub fn definition_byte_size(d: &NativeToolDefinition) -> usize {
@@ -1360,30 +1360,36 @@ pub fn role_tool_definitions(
     };
     match role {
         "work" => Some((
-            crate::surface::advertise(
+            crate::code_mode::runner::seat_tools(
                 crate::surface::SeatRole::Work,
                 with_meta(
                     crate::session::work_tool_registry(key, custom_dir).definitions(),
                     true,
                 ),
-            ),
+                crate::config::ToolMode::Direct,
+            )
+            .0,
             WORK_TOOL_BUDGET_BYTES,
         )),
         "lead" => Some((
-            crate::surface::advertise(
+            crate::code_mode::runner::seat_tools(
                 crate::surface::SeatRole::Lead,
                 with_meta(
                     crate::session::lead_tool_registry(key).definitions(),
                     false,
                 ),
-            ),
+                crate::config::ToolMode::Direct,
+            )
+            .0,
             LEAD_TOOL_BUDGET_BYTES,
         )),
         "desk" => Some((
-            crate::surface::advertise(
+            crate::code_mode::runner::seat_tools(
                 crate::surface::SeatRole::Desk,
                 crate::session::coordination_tool_registry(key).definitions(),
-            ),
+                crate::config::ToolMode::Direct,
+            )
+            .0,
             DESK_TOOL_BUDGET_BYTES,
         )),
         "lane" => {
