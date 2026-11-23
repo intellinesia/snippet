@@ -184,11 +184,6 @@ const MESSAGE: Surface = Surface {
             "direct message to an agent, the user (human), session:<id> or task:<id>; reaction alone acknowledges.",
         ),
         act(
-            "post",
-            "post_chat",
-            "post to any chat thread by thread_id (direct, group or task room).",
-        ),
-        act(
             "task",
             "post_task_coordination",
             "post to a task room; to names who must act, urgency urgent interrupts.",
@@ -211,7 +206,11 @@ const READ: Surface = Surface {
             "chats",
             "your chat threads, most recent first, with unread counts.",
         ),
-        act("thread", "read_chat", "read one chat by thread_id or peer."),
+        act(
+            "thread",
+            "read_chat",
+            "read one thread (group, room or direct) by thread_id; read.agent reads a direct thread by peer.",
+        ),
         act(
             "agent",
             "read_agent_thread",
@@ -304,7 +303,7 @@ const TASK: Surface = Surface {
             "a task's brief, steps, agents, blockers and result.",
         ),
         act(
-            "board",
+            "list",
             "view_task_board",
             "every open task and those finished in the last day.",
         ),
@@ -319,6 +318,37 @@ const TASK: Surface = Surface {
             "decline an offered task with a reason.",
         ),
         act("start", "start_task", "start a task that is ready."),
+    ],
+};
+
+const CODE: Surface = Surface {
+    name: "code",
+    intro: "Run a script that calls your tools: many steps in one round trip, and only what it returns comes back. Use it for chains of three or more calls, loops over items, or large output you only need part of; call directly for one step, or when you want to see each result before the next.",
+    acts: &[
+        act("run", "code_run", "run JavaScript that calls your tools."),
+        act(
+            "resume",
+            "code_resume",
+            "continue a paused run with your answer, or rerun it with edited code.",
+        ),
+        act(
+            "describe",
+            "code_describe",
+            "one tool's signature as a TypeScript declaration.",
+        ),
+    ],
+};
+
+const CALLS: Surface = Surface {
+    name: "calls",
+    intro: "Your past tool calls: list them, or run one again with changes.",
+    acts: &[
+        act("list", "calls_list", "recent calls with ids, newest first."),
+        act(
+            "retry",
+            "calls_retry",
+            "run a past call again with some arguments changed.",
+        ),
     ],
 };
 
@@ -472,7 +502,7 @@ const AMBIENT: Surface = Surface {
 
 pub const SURFACES: &[&Surface] = &[
     &WEB, &PROCESS, &PRESENT, &DELEGATE, &SKILL, &MESSAGE, &READ, &TASK, &WAKE, &TASKS, &GOALS,
-    &SESSIONS, &AMBIENT,
+    &SESSIONS, &AMBIENT, &CODE, &CALLS,
 ];
 
 fn keep_for(role: SeatRole) -> &'static [&'static str] {
@@ -510,12 +540,14 @@ fn keep_for(role: SeatRole) -> &'static [&'static str] {
 fn surfaces_for(role: SeatRole) -> &'static [&'static Surface] {
     match role {
         SeatRole::Work => &[
-            &PROCESS, &WEB, &PRESENT, &DELEGATE, &MESSAGE, &READ, &SKILL, &TASK, &WAKE,
+            &PROCESS, &WEB, &PRESENT, &DELEGATE, &MESSAGE, &READ, &SKILL, &TASK, &WAKE, &CODE,
+            &CALLS,
         ],
-        SeatRole::Desk => &[&WEB, &MESSAGE, &READ, &TASK, &WAKE, &PRESENT],
+        SeatRole::Desk => &[&WEB, &MESSAGE, &READ, &TASK, &WAKE, &PRESENT, &CODE, &CALLS],
         SeatRole::Lane => &[&PROCESS, &WEB, &SKILL],
         SeatRole::Lead => &[
-            &WEB, &PRESENT, &MESSAGE, &READ, &AMBIENT, &TASKS, &GOALS, &SESSIONS, &WAKE,
+            &WEB, &PRESENT, &MESSAGE, &READ, &AMBIENT, &TASKS, &GOALS, &SESSIONS, &WAKE, &CODE,
+            &CALLS,
         ],
     }
 }
@@ -526,6 +558,15 @@ fn find_surface(name: &str) -> Option<&'static Surface> {
 
 pub fn is_surface(name: &str) -> bool {
     find_surface(name).is_some()
+}
+
+/// The action whose description line lists `action`'s fields (acts sharing a
+/// tool list them once), and whether `action` takes `op`.
+pub fn fields_listed_under(name: &str, action: &str) -> Option<(&'static str, bool)> {
+    let surface = find_surface(name)?;
+    let act = surface.acts.iter().find(|a| a.action == action)?;
+    let first = surface.acts.iter().find(|a| a.tool == act.tool)?;
+    Some((first.action, act.op))
 }
 
 pub fn uses_op(name: &str, args: &Value) -> bool {
@@ -689,7 +730,7 @@ fn build_surface_definition(
                 if k == "action" || k == "op" {
                     continue;
                 }
-                let mut prop_def = trim_prop_description(v, 120);
+                let mut prop_def = v.clone();
                 match props.get_mut(k) {
                     None => {
                         props.insert(k.clone(), prop_def);
@@ -779,18 +820,6 @@ fn op_values(
         .unwrap_or_default()
 }
 
-fn trim_prop_description(prop: &Value, max_chars: usize) -> Value {
-    let mut cloned = prop.clone();
-    if let Some(obj) = cloned.as_object_mut()
-        && let Some(desc) = obj.get("description").and_then(Value::as_str)
-        && desc.chars().count() > max_chars
-    {
-        let cut: String = desc.chars().take(max_chars.saturating_sub(1)).collect();
-        obj.insert("description".to_string(), Value::String(format!("{cut}…")));
-    }
-    cloned
-}
-
 fn merge_property_collision(existing: &mut Value, incoming: &mut Value) {
     let (Some(ex), Some(inc)) = (existing.as_object_mut(), incoming.as_object()) else {
         return;
@@ -844,20 +873,58 @@ pub fn format_argument_error(
     let Some(schema) = internal_schema else {
         return error_text.to_string();
     };
-    if surface_name != internal_name {
-        let op_hint = if uses_op_field {
-            " (pass internal `action` as `op`)"
-        } else {
-            ""
-        };
-        format!(
-            "{error_text}\nCall `{surface_name}` again using the `{internal_name}` schema{op_hint}: {schema}"
-        )
-    } else {
-        format!(
-            "{error_text}\nCall `{surface_name}` again with arguments matching this schema: {schema}"
-        )
+    let act = find_surface(surface_name)
+        .filter(|_| surface_name != internal_name)
+        .and_then(|s| s.acts.iter().find(|a| a.tool == internal_name));
+    let call = match act {
+        Some(act) => format!("Call `{surface_name}` again with action `{}`", act.action),
+        None => format!("Call `{surface_name}` again"),
+    };
+    let fixed = act.is_some_and(|a| a.fixed.is_some());
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|r| r.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let mut lines = Vec::new();
+    if let Some(props) = schema.get("properties").and_then(Value::as_object) {
+        for (name, prop) in props {
+            let shown = match name.as_str() {
+                "action" if fixed => continue,
+                "action" if uses_op_field => "op",
+                other => other,
+            };
+            let kind = prop
+                .get("enum")
+                .and_then(Value::as_array)
+                .map(|e| {
+                    e.iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("|")
+                })
+                .or_else(|| prop.get("type").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_else(|| "any".to_string());
+            let need = if required.contains(&name.as_str()) {
+                ", required"
+            } else {
+                ""
+            };
+            let about = prop
+                .get("description")
+                .and_then(Value::as_str)
+                .map(|d| format!(": {d}"))
+                .unwrap_or_default();
+            lines.push(format!("- `{shown}` ({kind}{need}){about}"));
+        }
     }
+    if lines.is_empty() {
+        return format!("{error_text}\n{call}; it takes no fields.");
+    }
+    format!(
+        "{error_text}\n{call} and these fields:\n{}",
+        lines.join("\n")
+    )
 }
 
 #[cfg(test)]
@@ -895,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn advertise_handles_property_collisions_and_truncation() {
+    fn advertise_handles_property_collisions_and_keeps_descriptions() {
         let long_desc = "a".repeat(200);
         let defs = vec![
             NativeToolDefinition {
@@ -933,7 +1000,7 @@ mod tests {
             id_prop["anyOf"],
             json!([{"type": "integer"}, {"type": "string"}])
         );
-        assert!(id_prop["description"].as_str().unwrap().chars().count() <= 120);
+        assert_eq!(id_prop["description"].as_str().unwrap(), long_desc);
         assert!(amb.description.contains("(op: get|drop)"));
         assert!(amb.description.contains("(op: list|delete)"));
     }
@@ -1016,7 +1083,13 @@ mod tests {
             "set_session_title",
             "report_progress",
         ] {
-            for names in [&work_names, &cli_names, &desk_names, &lane_names, &lead_names] {
+            for names in [
+                &work_names,
+                &cli_names,
+                &desk_names,
+                &lane_names,
+                &lead_names,
+            ] {
                 assert!(
                     !names.iter().any(|n| n == hidden),
                     "{hidden} leaked into {names:?}"

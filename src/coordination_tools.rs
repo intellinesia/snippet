@@ -44,7 +44,6 @@ pub fn add_coordination_tools(registry: &mut ToolRegistry) {
     // One chat surface over every thread kind: list them, read any, post to any.
     registry.insert(Chats);
     registry.insert(ReadChat);
-    registry.insert(PostChat);
 }
 
 /// Open the store the daemon owns: the path bound to this session when present,
@@ -2831,7 +2830,7 @@ impl Tool for Chats {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "chats".into(),
-            description: "List your chat threads, most recent first: direct conversations (the human included), your groups, and the rooms of open tasks you sit on. Rows carry thread_id, kind, title, last_sequence, last_at and a `last` preview; direct rows add `peer` and `unread`. Open one with read_chat or post_chat.".into(),
+            description: "List your chat threads, most recent first: direct conversations (the human included), your groups, and the rooms of open tasks you sit on. Rows carry thread_id, kind, title, last_sequence, last_at and a `last` preview; direct rows add `peer` and `unread`. Open one with read_chat.".into(),
             input_schema: schema(
                 json!({"kind": {"type": "string", "enum": ["direct", "group", "task"]}}),
                 &[],
@@ -2950,10 +2949,7 @@ impl Tool for Chats {
 
 #[derive(Deserialize)]
 struct ReadChatArgs {
-    #[serde(default)]
-    thread_id: Option<String>,
-    #[serde(default)]
-    peer: Option<String>,
+    thread_id: String,
     #[serde(default)]
     after_sequence: Option<u64>,
     #[serde(default)]
@@ -2968,117 +2964,12 @@ impl Tool for ReadChat {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "read_chat".into(),
-            description: "Read one chat thread, oldest first, by `thread_id` or by `peer` (an agent id, or `human` for your conversation with the user). Omit after_sequence for the most recent messages; pass it to page forward.".into(),
+            description: "Read one chat thread (group, task room or direct), oldest first, by `thread_id`; read_agent_thread reads a direct thread by peer. Omit after_sequence for the most recent messages; pass it to page forward.".into(),
             input_schema: schema(
                 json!({
                     "thread_id": {"type": "string"},
-                    "peer": {"type": "string", "description": "agent id, `human` or `local`"},
                     "after_sequence": {"type": "integer", "minimum": 0},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100}
-                }),
-                &[],
-            ),
-        }
-    }
-
-    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: ReadChatArgs =
-            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let thread_id = args
-            .thread_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty());
-        let peer = args
-            .peer
-            .as_deref()
-            .map(str::trim)
-            .filter(|p| !p.is_empty());
-        if thread_id.is_some() == peer.is_some() {
-            return Err(ToolError::msg("pass exactly one of `thread_id` or `peer`"));
-        }
-        let (actor_kind, actor_id) = actor(ctx)?;
-        let db = db(ctx)?;
-        let (thread_id, peer_resolved) = match (thread_id, peer) {
-            (Some(thread_id), None) => (thread_id.to_string(), false),
-            (None, Some(peer)) => {
-                let (peer_kind, peer_id) = match peer {
-                    "human" | "local" => ("human", crate::coordination::LOCAL_HUMAN_ID),
-                    agent => ("agent", agent),
-                };
-                (
-                    crate::coordination::direct_thread_id(
-                        (actor_kind, actor_id.as_str()),
-                        (peer_kind, peer_id),
-                    ),
-                    true,
-                )
-            }
-            _ => unreachable!(),
-        };
-        let limit = args.limit.unwrap_or(20).clamp(1, 100);
-        // A peer-named thread that does not exist yet is simply empty; any
-        // other missing thread is an access error, as in read_coordination_thread.
-        let exists = db
-            .thread_exists(&thread_id)
-            .map_err(|e| ToolError::msg(format!("look up thread: {e}")))?;
-        if exists || !peer_resolved {
-            require_thread_access(&db, ctx, (actor_kind, actor_id.as_str()), &thread_id)?;
-        }
-        let mut page = thread_page(&db, &thread_id, args.after_sequence, limit, true)?;
-        page["thread_kind"] = json!(chat_thread_kind(&db, &thread_id).unwrap_or("room"));
-        Ok(ToolResult::success(page))
-    }
-}
-
-#[derive(Deserialize)]
-struct PostChatArgs {
-    thread_id: String,
-    #[serde(default)]
-    body: String,
-    #[serde(default)]
-    mentions: Vec<String>,
-    #[serde(default)]
-    in_reply_to: Option<String>,
-    #[serde(default)]
-    kind: Option<String>,
-    #[serde(default)]
-    urgency: Option<String>,
-    #[serde(default)]
-    reaction: Option<String>,
-}
-
-/// Add `thread_id`/`thread_kind` to what the underlying post path returned.
-fn tagged_post(mut result: ToolResult, thread_id: &str, kind: &str) -> ToolResult {
-    if let Some(data) = result.value.get_mut("data").and_then(Value::as_object_mut) {
-        if !data.contains_key("thread_id") {
-            data.insert("thread_id".to_string(), json!(thread_id));
-        }
-        data.insert("thread_kind".to_string(), json!(kind));
-    }
-    result
-}
-
-/// Post to any chat thread by id. Dispatches to the path that owns the kind —
-/// `send_agent_message` for direct threads, `group_thread post` for groups and
-/// `post_task_coordination` for task rooms — so the delivery rules are never
-/// copied here.
-pub struct PostChat;
-#[async_trait]
-impl Tool for PostChat {
-    fn definition(&self) -> NativeToolDefinition {
-        NativeToolDefinition {
-            name: "post_chat".into(),
-            description: "Post to any chat thread by thread_id. Direct threads take send_agent_message's fields (a reaction with no body is a reaction); groups take mentions, in_reply_to and reaction; task rooms take mentions as the addressed agents plus kind and urgency.".into(),
-            input_schema: schema(
-                json!({
-                    "thread_id": {"type": "string"},
-                    "body": {"type": "string"},
-                    "mentions": {"type": "array", "items": {"type": "string"}},
-                    "in_reply_to": {"type": "string"},
-                    "kind": {"type": "string", "enum": ["note","question","status","handoff_note","blocker","result","interrupt"]},
-                    "urgency": {"type": "string", "enum": ["normal","urgent"]},
-                    "reaction": {"type": "string"}
                 }),
                 &["thread_id"],
             ),
@@ -3086,135 +2977,19 @@ impl Tool for PostChat {
     }
 
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let args: PostChatArgs =
+        let args: ReadChatArgs =
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let thread_id = args.thread_id.trim();
+        let thread_id = args.thread_id.trim().to_string();
         if thread_id.is_empty() {
             return Err(ToolError::msg("thread_id must not be empty"));
         }
+        let (actor_kind, actor_id) = actor(ctx)?;
         let db = db(ctx)?;
-        let kind = chat_thread_kind(&db, thread_id).ok_or_else(|| {
-            ToolError::msg(format!(
-                "`{thread_id}` is not a chat thread; expected a direct, group or task thread"
-            ))
-        })?;
-        let mentions: Vec<String> = args
-            .mentions
-            .iter()
-            .map(|m| bare_address(m).to_string())
-            .filter(|m| !m.is_empty())
-            .collect();
-        let in_reply_to = args
-            .in_reply_to
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(str::to_string);
-        match kind {
-            "direct" => {
-                if !mentions.is_empty() {
-                    return Err(ToolError::msg(
-                        "mentions are not supported for direct threads",
-                    ));
-                }
-                let (actor_kind, actor_id) = actor(ctx)?;
-                require_thread_access(&db, ctx, (actor_kind, actor_id.as_str()), thread_id)?;
-                let participants = db
-                    .list_thread_participants(thread_id)
-                    .map_err(|e| ToolError::msg(format!("look up thread: {e}")))?;
-                if participants.is_empty() {
-                    return Err(ToolError::msg(format!("no thread `{thread_id}`")));
-                }
-                let mut peers = participants
-                    .iter()
-                    .filter(|p| !(p.0 == actor_id && p.1 == actor_kind));
-                let (peer_id, peer_kind) = match (peers.next(), peers.next()) {
-                    (Some(peer), None) => (peer.0.clone(), peer.1.clone()),
-                    _ => {
-                        return Err(ToolError::msg(format!(
-                            "`{thread_id}` does not resolve to one peer for this actor"
-                        )));
-                    }
-                };
-                let recipient = match peer_kind.as_str() {
-                    "agent" => peer_id,
-                    "human" => "human".to_string(),
-                    "session" => format!("session:{peer_id}"),
-                    other => {
-                        return Err(ToolError::msg(format!(
-                            "unsupported peer kind `{other}` in `{thread_id}`"
-                        )));
-                    }
-                };
-                let mut call = json!({
-                    "recipient_agent_id": recipient,
-                    "body": args.body,
-                });
-                for (key, value) in [
-                    ("kind", args.kind.as_ref()),
-                    ("urgency", args.urgency.as_ref()),
-                ] {
-                    if let Some(value) = value {
-                        call[key] = json!(value);
-                    }
-                }
-                if let Some(reply_to) = in_reply_to {
-                    call["reply_to"] = json!(reply_to);
-                }
-                if let Some(reaction) = args.reaction {
-                    call["reaction"] = json!(reaction);
-                }
-                let result = SendAgentMessage.execute(ctx, call).await?;
-                Ok(tagged_post(result, thread_id, "direct"))
-            }
-            "group" => {
-                if args.kind.is_some() || args.urgency.is_some() {
-                    return Err(ToolError::msg(
-                        "kind and urgency are not supported for group threads",
-                    ));
-                }
-                let mut call = json!({
-                    "action": "post",
-                    "thread_id": thread_id,
-                    "body": args.body,
-                    "mentions": mentions,
-                });
-                if let Some(post_id) = in_reply_to {
-                    call["in_reply_to"] = json!(post_id);
-                }
-                if let Some(reaction) = args.reaction {
-                    call["reaction"] = json!(reaction);
-                }
-                let result = GroupThread.execute(ctx, call).await?;
-                Ok(tagged_post(result, thread_id, "group"))
-            }
-            _ => {
-                if in_reply_to.is_some() || args.reaction.is_some() {
-                    return Err(ToolError::msg(
-                        "in_reply_to and reaction are not supported for task rooms",
-                    ));
-                }
-                let task = db
-                    .get_task_by_thread(thread_id)
-                    .map_err(|e| ToolError::msg(format!("look up task: {e}")))?
-                    .ok_or_else(|| ToolError::msg(format!("no task for `{thread_id}`")))?;
-                let mut call = json!({
-                    "task_id": task.id,
-                    "body": args.body,
-                    "to": mentions,
-                });
-                for (key, value) in [
-                    ("kind", args.kind.as_ref()),
-                    ("urgency", args.urgency.as_ref()),
-                ] {
-                    if let Some(value) = value {
-                        call[key] = json!(value);
-                    }
-                }
-                let result = PostTaskCoordination.execute(ctx, call).await?;
-                Ok(tagged_post(result, thread_id, "task"))
-            }
-        }
+        let limit = args.limit.unwrap_or(20).clamp(1, 100);
+        require_thread_access(&db, ctx, (actor_kind, actor_id.as_str()), &thread_id)?;
+        let mut page = thread_page(&db, &thread_id, args.after_sequence, limit, true)?;
+        page["thread_kind"] = json!(chat_thread_kind(&db, &thread_id).unwrap_or("room"));
+        Ok(ToolResult::success(page))
     }
 }
 
@@ -4459,7 +4234,7 @@ mod tests {
     /// `read_chat` resolves `peer: "human"` to the actor's own human thread,
     /// reads a group by id, and refuses a task room the actor is not on.
     #[tokio::test]
-    async fn read_chat_resolves_peer_and_thread_with_access_checks() {
+    async fn read_chat_reads_threads_by_id_with_access_checks() {
         let dir = tempfile::tempdir().unwrap();
         let db = migrate(dir.path());
         for id in ["w", "other"] {
@@ -4513,15 +4288,14 @@ mod tests {
             .unwrap();
 
         let ctx = context(dir.path(), "s-w").with_agent_id("w");
-        let human = ReadChat
-            .execute(&ctx, json!({"peer": "human"}))
-            .await
-            .unwrap();
         let human_thread = crate::coordination::direct_thread_id(
             ("agent", "w"),
             ("human", crate::coordination::LOCAL_HUMAN_ID),
         );
-        assert_eq!(human.value["data"]["thread_id"], human_thread);
+        let human = ReadChat
+            .execute(&ctx, json!({"thread_id": human_thread}))
+            .await
+            .unwrap();
         assert_eq!(human.value["data"]["thread_kind"], "direct");
         let bodies: Vec<&str> = human.value["data"]["messages"]
             .as_array()
@@ -4530,19 +4304,6 @@ mod tests {
             .map(|m| m["body"].as_str().unwrap())
             .collect();
         assert_eq!(bodies, ["hello human", "yo agent"]);
-
-        // `local` resolves the same way, and an empty peer thread is empty.
-        let local = ReadChat
-            .execute(&ctx, json!({"peer": "local"}))
-            .await
-            .unwrap();
-        assert_eq!(local.value["data"]["thread_id"], human_thread);
-        let empty = ReadChat
-            .execute(&ctx, json!({"peer": "other"}))
-            .await
-            .unwrap();
-        assert_eq!(empty.value["data"]["messages"].as_array().unwrap().len(), 0);
-        assert_eq!(empty.value["data"]["thread_kind"], "direct");
 
         let group_page = ReadChat
             .execute(&ctx, json!({"thread_id": group.id}))
@@ -4644,7 +4405,7 @@ mod tests {
         })
         .unwrap();
         let after_auto = ReadChat
-            .execute(&ctx, json!({"peer": "human"}))
+            .execute(&ctx, json!({"thread_id": human_thread}))
             .await
             .unwrap();
         let bodies_after: Vec<&str> = after_auto.value["data"]["messages"]
@@ -4654,210 +4415,6 @@ mod tests {
             .map(|m| m["body"].as_str().unwrap())
             .collect();
         assert_eq!(bodies_after, ["hello human", "yo agent"]);
-    }
-
-    /// `post_chat` produces the same event `post_task_coordination` and
-    /// `group_thread post` would for the same thread.
-    #[tokio::test]
-    async fn post_chat_uses_the_same_paths_as_the_kind_tools() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = migrate(dir.path());
-        for id in ["w", "other", "b"] {
-            db.create_agent(&chat_agent(id)).unwrap();
-        }
-        db.create_task(&crate::coordination::Task::filed_by_human(
-            "t1".into(),
-            "Shared".into(),
-            "work".into(),
-            "work-1".into(),
-            0,
-            "2026-01-01T00:00:00Z".into(),
-        ))
-        .unwrap();
-        for agent in ["w", "other"] {
-            db.add_task_agent_full("t1", agent, "implementer", None, "", "active", CHAT_T0)
-                .unwrap();
-        }
-        let group = db
-            .create_group(
-                "build",
-                ("agent", "w"),
-                &["w".into(), "b".into()],
-                None,
-                "2026-01-01T00:00:01Z",
-            )
-            .unwrap();
-        let ctx = context(dir.path(), "s-w").with_agent_id("w");
-
-        let via_chat = PostChat
-            .execute(
-                &ctx,
-                json!({
-                    "thread_id": "task:t1",
-                    "body": "status update",
-                    "mentions": ["other"],
-                    "kind": "status",
-                }),
-            )
-            .await
-            .unwrap();
-        let via_task = PostTaskCoordination
-            .execute(
-                &ctx,
-                json!({
-                    "task_id": "t1",
-                    "body": "status update",
-                    "to": ["other"],
-                    "kind": "status",
-                }),
-            )
-            .await
-            .unwrap();
-        let chat_event = &via_chat.value["data"]["event"];
-        let task_event = &via_task.value["data"]["event"];
-        assert_eq!(chat_event["thread_id"], task_event["thread_id"]);
-        assert_eq!(chat_event["actor_id"], task_event["actor_id"]);
-        assert_eq!(chat_event["payload"]["body"], task_event["payload"]["body"]);
-        assert_eq!(chat_event["payload"]["kind"], task_event["payload"]["kind"]);
-        assert_eq!(chat_event["payload"]["to"], task_event["payload"]["to"]);
-        assert_eq!(via_chat.value["data"]["thread_kind"], "task");
-        assert_eq!(via_chat.value["data"]["thread_id"], "task:t1");
-
-        let via_chat = PostChat
-            .execute(
-                &ctx,
-                json!({
-                    "thread_id": group.id,
-                    "body": "group reply",
-                    "mentions": ["b"],
-                }),
-            )
-            .await
-            .unwrap();
-        let via_group = GroupThread
-            .execute(
-                &ctx,
-                json!({
-                    "action": "post",
-                    "thread_id": group.id,
-                    "body": "group reply",
-                    "mentions": ["b"],
-                }),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            via_chat.value["data"]["payload"]["body"],
-            via_group.value["data"]["payload"]["body"]
-        );
-        assert_eq!(
-            via_chat.value["data"]["payload"]["mentions"],
-            via_group.value["data"]["payload"]["mentions"]
-        );
-        assert_eq!(
-            via_chat.value["data"]["actor_id"],
-            via_group.value["data"]["actor_id"]
-        );
-        assert_eq!(via_chat.value["data"]["thread_kind"], "group");
-
-        // A direct thread resolves its one peer and posts through send_agent_message.
-        db.send_direct_message(
-            ("agent", "w"),
-            ("human", crate::coordination::LOCAL_HUMAN_ID),
-            "earlier",
-            "k9",
-            CHAT_T0,
-        )
-        .unwrap();
-        let human_thread = crate::coordination::direct_thread_id(
-            ("agent", "w"),
-            ("human", crate::coordination::LOCAL_HUMAN_ID),
-        );
-        let direct = PostChat
-            .execute(
-                &ctx,
-                json!({"thread_id": human_thread, "body": "back to you"}),
-            )
-            .await
-            .unwrap();
-        assert_eq!(direct.value["data"]["thread_kind"], "direct");
-        assert_eq!(direct.value["data"]["to"], "human:local");
-        let events = db.direct_thread_events(&human_thread, 0, 10).unwrap();
-        assert_eq!(events.last().unwrap().payload["body"], "back to you");
-
-        // `post_chat` refuses a non-member on direct, group and task threads.
-        let outsider = context(dir.path(), "s-b").with_agent_id("b");
-        assert!(
-            PostChat
-                .execute(
-                    &outsider,
-                    json!({"thread_id": human_thread, "body": "intrude dm"})
-                )
-                .await
-                .is_err()
-        );
-        assert!(
-            PostChat
-                .execute(
-                    &outsider,
-                    json!({"thread_id": "task:t1", "body": "intrude task"})
-                )
-                .await
-                .is_err()
-        );
-        let foreign_group = db
-            .create_group(
-                "only-other",
-                ("agent", "other"),
-                &["other".into()],
-                None,
-                "2026-01-01T00:00:02Z",
-            )
-            .unwrap();
-        assert!(
-            PostChat
-                .execute(
-                    &ctx,
-                    json!({"thread_id": foreign_group.id, "body": "intrude group"})
-                )
-                .await
-                .is_err()
-        );
-    }
-
-    /// `read_agent_thread` with `peer_agent_id: "human"` reads the same thread
-    /// `read_chat` with `peer: "human"` does.
-    #[tokio::test]
-    async fn read_agent_thread_and_read_chat_agree_on_the_human_thread() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = migrate(dir.path());
-        db.create_agent(&chat_agent("w")).unwrap();
-        db.send_direct_message(
-            ("human", crate::coordination::LOCAL_HUMAN_ID),
-            ("agent", "w"),
-            "a question for you",
-            "k1",
-            CHAT_T0,
-        )
-        .unwrap();
-        let ctx = context(dir.path(), "s-w").with_agent_id("w");
-        let via_agent = ReadAgentThread
-            .execute(&ctx, json!({"peer_agent_id": "human"}))
-            .await
-            .unwrap();
-        let via_chat = ReadChat
-            .execute(&ctx, json!({"peer": "human"}))
-            .await
-            .unwrap();
-        assert_eq!(
-            via_agent.value["data"]["thread_id"],
-            via_chat.value["data"]["thread_id"]
-        );
-        assert_eq!(
-            via_agent.value["data"]["messages"],
-            via_chat.value["data"]["messages"]
-        );
-        assert_eq!(via_agent.value["data"]["peer"], "human");
     }
 
     #[tokio::test]

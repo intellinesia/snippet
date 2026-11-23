@@ -230,17 +230,7 @@ fn sent_to_human_ok(
             Some((n, a)) => (n.as_str(), a),
             None => (tool_name.as_str(), arguments),
         };
-        let posted_to_human = resolved_name == "post_chat"
-            && resolved_args
-                .get("thread_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|t| t.starts_with("direct:") && t.contains("human:"))
-            && resolved_args
-                .get("reaction")
-                .and_then(|v| v.as_str())
-                .is_none_or(|r| r.trim().is_empty());
-        if posted_to_human
-            || resolved_name == "send_agent_message"
+        if resolved_name == "send_agent_message"
                 && resolved_args
                     .get("reaction")
                     .and_then(|v| v.as_str())

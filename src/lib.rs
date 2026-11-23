@@ -23,6 +23,7 @@ pub mod checkpoint;
 pub mod claude_usage;
 pub mod config;
 pub mod conversations;
+pub mod code_mode;
 pub mod coordination;
 pub mod coordination_tools;
 pub mod devin;

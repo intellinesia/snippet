@@ -304,6 +304,12 @@ fn answer_call(state: &mut HarnessState, tool_name: &str, call_id: &str, result:
     });
 }
 
+pub(super) enum Executed {
+    Answer(Value),
+    Invalid { result: Value, error: String },
+    EndTurn { result: Value, step: StepResult },
+}
+
 impl CodingHarness {
     /// Execute one turn's tool calls. `Err` ends the turn immediately
     /// (`terminate_loop`, `ask_user`); `Ok` carries the turn's productivity.
@@ -590,6 +596,67 @@ impl CodingHarness {
             return None;
         }
 
+        match self
+            .execute_call(
+                state,
+                lanes,
+                watches,
+                vars,
+                conversation_mode,
+                approval_rx,
+                &surface_name,
+                &surface_args,
+                definitions,
+                stats,
+                total_mutating,
+                approval_index,
+                false,
+            )
+            .await
+        {
+            Executed::Answer(result) => answer_call(state, &surface_name, &call_id, result),
+            Executed::Invalid { result, error } => {
+                state.events.push(HarnessEvent::InvalidToolCall {
+                    tool_name: surface_name.clone(),
+                    error,
+                });
+                state.messages.push(HarnessMessage::ToolResult {
+                    tool_call_id: call_id,
+                    tool_name: surface_name,
+                    content: result,
+                });
+            }
+            Executed::EndTurn { result, step } => {
+                answer_call(state, &surface_name, &call_id, result);
+                let _ = self.persist(state, lanes).await;
+                return Some(step);
+            }
+        }
+        // Flush after every tool result so a mid-batch kill still keeps completed
+        // calls on disk.
+        let _ = self.persist(state, lanes).await;
+        None
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn execute_call(
+        &self,
+        state: &mut HarnessState,
+        lanes: &mut LaneManager,
+        watches: &mut WatchManager,
+        vars: &mut LoopVars,
+        conversation_mode: bool,
+        approval_rx: &mut mpsc::UnboundedReceiver<(ApprovalDecision, Option<DecisionSource>)>,
+        surface_name: &str,
+        surface_args: &Value,
+        definitions: &[NativeToolDefinition],
+        stats: &mut TurnStats,
+        total_mutating: usize,
+        approval_index: &mut usize,
+        in_code: bool,
+    ) -> Executed {
+        let surface_name = surface_name.to_string();
+        let surface_args = surface_args.clone();
         let Some(advertised) = definitions.iter().find(|d| d.name == surface_name) else {
             stats.only_delegations = false;
             let available = definitions
@@ -607,17 +674,7 @@ impl CodingHarness {
                 "status": "error",
                 "error": {"code": "unknown_tool", "message": error},
             });
-            state.events.push(HarnessEvent::InvalidToolCall {
-                tool_name: surface_name.clone(),
-                error,
-            });
-            state.messages.push(HarnessMessage::ToolResult {
-                tool_call_id: call_id,
-                tool_name: surface_name,
-                content: result,
-            });
-            let _ = self.persist(state, lanes).await;
-            return None;
+            return Executed::Invalid { result, error };
         };
 
         let uses_op = crate::surface::uses_op(&surface_name, &surface_args);
@@ -628,14 +685,39 @@ impl CodingHarness {
                 Err(message) => {
                     stats.only_delegations = false;
                     stats.failed += 1;
-                    answer_call(state, &surface_name, &call_id, tool_error(message));
-                    let _ = self.persist(state, lanes).await;
-                    return None;
+                    return Executed::Answer(tool_error(message));
                 }
             };
 
         if tool_name != "delegate_task" {
             stats.only_delegations = false;
+        }
+
+        if crate::code_mode::runner::is_code_tool(&tool_name) {
+            if in_code {
+                return Executed::Answer(tool_error(format!(
+                    "`{surface_name}` cannot run inside code."
+                )));
+            }
+            let result = self
+                .run_code_tool(
+                    state,
+                    lanes,
+                    watches,
+                    vars,
+                    conversation_mode,
+                    approval_rx,
+                    &tool_name,
+                    &args,
+                    stats,
+                    total_mutating,
+                    approval_index,
+                )
+                .await;
+            if is_error_result(&result) {
+                stats.failed += 1;
+            }
+            return Executed::Answer(result);
         }
 
         let is_meta = conversation_mode
@@ -671,16 +753,22 @@ impl CodingHarness {
                     stats.only_delegations = false;
                 }
             }
-            answer_call(state, &surface_name, &call_id, result);
-            let _ = self.persist(state, lanes).await;
             if let MetaControl::EndTurn { kind, final_text } = control {
-                return Some(StepResult::TurnEnded {
-                    kind,
-                    final_text,
-                    closing: None,
-                });
+                if in_code {
+                    return Executed::Answer(tool_error(format!(
+                        "`{surface_name}` ends the turn, so it cannot run inside code; call it directly."
+                    )));
+                }
+                return Executed::EndTurn {
+                    result,
+                    step: StepResult::TurnEnded {
+                        kind,
+                        final_text,
+                        closing: None,
+                    },
+                };
             }
-            return None;
+            return Executed::Answer(result);
         }
 
         if !self.tools.contains(&tool_name) {
@@ -699,17 +787,7 @@ impl CodingHarness {
                 "status": "error",
                 "error": {"code": "unknown_tool", "message": error},
             });
-            state.events.push(HarnessEvent::InvalidToolCall {
-                tool_name: surface_name.clone(),
-                error,
-            });
-            state.messages.push(HarnessMessage::ToolResult {
-                tool_call_id: call_id,
-                tool_name: surface_name,
-                content: result,
-            });
-            let _ = self.persist(state, lanes).await;
-            return None;
+            return Executed::Invalid { result, error };
         }
 
         stats.real_work += 1;
@@ -760,9 +838,7 @@ impl CodingHarness {
                         "message": "The user denied this action. Retrying it as-is would just meet the same answer, so adjust your approach, or report what you needed."
                     }
                 });
-                answer_call(state, &surface_name, &call_id, result);
-                let _ = self.persist(state, lanes).await;
-                return None;
+                return Executed::Answer(result);
             }
             if let (Some(custom), Some(dir)) = (custom.as_ref(), self.tools.custom_dir())
                 && custom.needs_first_approval
@@ -780,9 +856,7 @@ impl CodingHarness {
                     "message": format!("The custom tool `{tool_name}` is new and needs the user's approval before its first run, which isn't available in a delegated/headless run. Report that it needs approving, so it's run once on the main thread.")
                 }
             });
-            answer_call(state, &surface_name, &call_id, result);
-            let _ = self.persist(state, lanes).await;
-            return None;
+            return Executed::Answer(result);
         }
         if !vault_secrets_used.is_empty() && !conversation_mode && !lane_approved {
             let result = json!({
@@ -796,9 +870,7 @@ impl CodingHarness {
                     )
                 }
             });
-            answer_call(state, &surface_name, &call_id, result);
-            let _ = self.persist(state, lanes).await;
-            return None;
+            return Executed::Answer(result);
         }
         let force_vault_approval = !vault_secrets_used.is_empty() || first_run;
         let manual_gated = state.approval_mode == ApprovalMode::Manual
@@ -890,9 +962,7 @@ impl CodingHarness {
                         "message": "The user denied this action. Retrying it as-is would just meet the same answer, so adjust your approach or ask what they'd prefer."
                     }
                 });
-                answer_call(state, &surface_name, &call_id, result);
-                let _ = self.persist(state, lanes).await;
-                return None;
+                return Executed::Answer(result);
             }
         }
 
@@ -965,10 +1035,109 @@ impl CodingHarness {
             note_bash_command(vars, &command, &cwd_before);
             collapse_repeated_output(vars, command, &mut result);
         }
-        answer_call(state, &surface_name, &call_id, result);
-        // Flush after every tool result so a mid-batch kill still keeps completed
-        // calls on disk.
-        let _ = self.persist(state, lanes).await;
-        None
+        Executed::Answer(result)
+    }
+}
+
+struct NativeExec<'a> {
+    harness: &'a CodingHarness,
+    state: &'a mut HarnessState,
+    lanes: &'a mut LaneManager,
+    watches: &'a mut WatchManager,
+    vars: &'a mut LoopVars,
+    conversation_mode: bool,
+    approval_rx: &'a mut mpsc::UnboundedReceiver<(ApprovalDecision, Option<DecisionSource>)>,
+    definitions: &'a [NativeToolDefinition],
+    stats: &'a mut TurnStats,
+    total_mutating: usize,
+    approval_index: &'a mut usize,
+}
+
+#[async_trait::async_trait]
+impl crate::code_mode::runner::InnerCalls for NativeExec<'_> {
+    async fn call(&mut self, name: &str, args: Value) -> Value {
+        self.state.events.push(HarnessEvent::ToolCall {
+            tool_name: name.to_string(),
+            arguments: args.clone(),
+        });
+        self.harness
+            .lane_progress("tool_call", tool_activity_text(name, &args));
+        let executed = Box::pin(self.harness.execute_call(
+            self.state,
+            self.lanes,
+            self.watches,
+            self.vars,
+            self.conversation_mode,
+            self.approval_rx,
+            name,
+            &args,
+            self.definitions,
+            self.stats,
+            self.total_mutating,
+            self.approval_index,
+            true,
+        ))
+        .await;
+        let result = match executed {
+            Executed::Answer(result)
+            | Executed::Invalid { result, .. }
+            | Executed::EndTurn { result, .. } => result,
+        };
+        self.state.events.push(HarnessEvent::ToolResult {
+            tool_name: name.to_string(),
+            result: result.clone(),
+        });
+        result
+    }
+}
+
+impl CodingHarness {
+    #[allow(clippy::too_many_arguments)]
+    async fn run_code_tool(
+        &self,
+        state: &mut HarnessState,
+        lanes: &mut LaneManager,
+        watches: &mut WatchManager,
+        vars: &mut LoopVars,
+        conversation_mode: bool,
+        approval_rx: &mut mpsc::UnboundedReceiver<(ApprovalDecision, Option<DecisionSource>)>,
+        tool: &str,
+        args: &Value,
+        stats: &mut TurnStats,
+        total_mutating: usize,
+        approval_index: &mut usize,
+    ) -> Value {
+        use crate::code_mode::runner;
+        if tool == "calls_list" {
+            return runner::list_calls(args, &state.events);
+        }
+        let retry = (tool == "calls_retry").then(|| runner::retry_target(args, &state.events));
+        let goal_active = state
+            .goal
+            .as_ref()
+            .is_some_and(|g| g.status == GoalStatus::Active);
+        let (_, all) = self.seat_definitions(conversation_mode, goal_active);
+        let session = self.session_id().unwrap_or_else(|| "main".to_string());
+        let mut exec = NativeExec {
+            harness: self,
+            state,
+            lanes,
+            watches,
+            vars,
+            conversation_mode,
+            approval_rx,
+            definitions: &all,
+            stats,
+            total_mutating,
+            approval_index,
+        };
+        match retry {
+            Some(Ok((name, retried))) => {
+                use runner::InnerCalls;
+                exec.call(&name, retried).await
+            }
+            Some(Err(error)) => error,
+            None => runner::execute(tool, args, &session, &all, &mut exec).await,
+        }
     }
 }

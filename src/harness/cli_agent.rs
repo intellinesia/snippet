@@ -573,7 +573,43 @@ struct McpCall {
     arguments: Value,
     surface_name: Option<String>,
     uses_op: bool,
+    inner: bool,
     reply: oneshot::Sender<Value>,
+}
+
+type InnerLog = std::sync::Arc<std::sync::Mutex<Vec<HarnessEvent>>>;
+
+struct CliExec {
+    calls: mpsc::UnboundedSender<McpCall>,
+    log: InnerLog,
+}
+
+#[async_trait::async_trait]
+impl crate::code_mode::runner::InnerCalls for CliExec {
+    async fn call(&mut self, name: &str, args: Value) -> Value {
+        let (reply, rx) = oneshot::channel();
+        let sent = self.calls.send(McpCall {
+            name: name.to_string(),
+            arguments: args,
+            surface_name: None,
+            uses_op: false,
+            inner: true,
+            reply,
+        });
+        let result = match sent {
+            Ok(()) => rx
+                .await
+                .unwrap_or_else(|_| error_result("interrupted", "The call was interrupted.")),
+            Err(_) => error_result("interrupted", "The session ended."),
+        };
+        if let Ok(mut log) = self.log.lock() {
+            log.push(HarnessEvent::ToolResult {
+                tool_name: name.to_string(),
+                result: result.clone(),
+            });
+        }
+        result
+    }
 }
 
 type SteerQueue = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
@@ -1283,6 +1319,7 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
                     arguments,
                     surface_name: None,
                     uses_op: false,
+                    inner: false,
                     reply,
                 })
                 .is_err()
@@ -1509,8 +1546,16 @@ async fn start_mcp_server(
     steers: SteerQueue,
     served: ServedResults,
     images: bool,
-) -> Result<(String, mpsc::UnboundedReceiver<McpCall>), String> {
+) -> Result<
+    (
+        String,
+        mpsc::UnboundedReceiver<McpCall>,
+        mpsc::UnboundedSender<McpCall>,
+    ),
+    String,
+> {
     let (calls, rx) = mpsc::unbounded_channel();
+    let own = calls.clone();
     let token = uuid::Uuid::new_v4().simple().to_string();
     let state = McpState {
         token: token.clone(),
@@ -1534,7 +1579,7 @@ async fn start_mcp_server(
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    Ok((format!("http://{addr}/mcp/{token}"), rx))
+    Ok((format!("http://{addr}/mcp/{token}"), rx, own))
 }
 
 impl CodingHarness {
@@ -1562,11 +1607,15 @@ impl CodingHarness {
             if self.tools.custom_dir().is_some() {
                 internal.push(custom_tool_definition());
             }
-            let mut names: Vec<String> =
-                crate::surface::advertise(self.seat_role(true), internal.clone())
-                    .into_iter()
-                    .map(|d| d.name)
-                    .collect();
+            let mut names: Vec<String> = crate::code_mode::runner::seat_tools(
+                self.seat_role(true),
+                internal.clone(),
+                self.config.tool_mode,
+            )
+            .0
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
             for def in internal {
                 if !names.iter().any(|n| n == &def.name) {
                     names.push(def.name);
@@ -2170,13 +2219,18 @@ impl CodingHarness {
             internal_tools.push(custom_tool_definition());
         }
         internal_tools.extend(meta_defs);
-        let bridge_tools = crate::surface::advertise(self.seat_role(!once), internal_tools);
-        let advertised_tools = bridge_tools.clone();
+        let (bridge_tools, script_tools) = crate::code_mode::runner::seat_tools(
+            self.seat_role(!once),
+            internal_tools,
+            self.config.tool_mode,
+        );
+        let advertised_tools = script_tools.clone();
+        let inner_log: InnerLog = Default::default();
         let kind = CliKind::of(&profile.provider);
         let guide = tool_guide(kind, &bridge_tools);
         let steers: SteerQueue = Default::default();
         let served: ServedResults = Default::default();
-        let (mcp_url, mut mcp_rx) =
+        let (mcp_url, mut mcp_rx, mcp_tx) =
             start_mcp_server(bridge_tools, steers.clone(), served.clone(), true)
                 .await
                 .map_err(ToolError::msg)?;
@@ -3158,6 +3212,19 @@ impl CodingHarness {
                 call = mcp_rx.recv() => {
                     let Some(mut call) = call else { continue };
                     last_heard = tokio::time::Instant::now();
+                    if let Ok(mut log) = inner_log.lock() {
+                        state.events.append(&mut log);
+                    }
+                    if call.inner {
+                        self.lane_progress(
+                            "tool_call",
+                            super::dispatch::tool_activity_text(&call.name, &call.arguments),
+                        );
+                        state.events.push(HarnessEvent::ToolCall {
+                            tool_name: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                        });
+                    }
                     if call.name == "custom_tool" {
                         if !advertised_tools.iter().any(|d| d.name == "custom_tool") {
                             let available: Vec<&str> =
@@ -3278,6 +3345,37 @@ impl CodingHarness {
                         continue;
                     }
                     match call.name.as_str() {
+                        "calls_list" => {
+                            let _ = call.reply.send(crate::code_mode::runner::list_calls(&call.arguments, &state.events));
+                        }
+                        "calls_retry" if !call.inner => {
+                            match crate::code_mode::runner::retry_target(&call.arguments, &state.events) {
+                                Ok((name, arguments)) => {
+                                    call.name = name;
+                                    call.arguments = arguments;
+                                    call.surface_name = None;
+                                    call.uses_op = false;
+                                    let _ = mcp_tx.send(call);
+                                }
+                                Err(error) => {
+                                    let _ = call.reply.send(error);
+                                }
+                            }
+                        }
+                        name if crate::code_mode::runner::is_code_tool(name) => {
+                            if call.inner {
+                                let _ = call.reply.send(error_result("not_in_code", &format!("`{name}` cannot run inside code.")));
+                                continue;
+                            }
+                            let tool = call.name.clone();
+                            let session = self.session_id().unwrap_or_else(|| "main".to_string());
+                            let tools = script_tools.clone();
+                            let mut exec = CliExec { calls: mcp_tx.clone(), log: inner_log.clone() };
+                            running.push(Box::pin(async move {
+                                let value = crate::code_mode::runner::execute(&tool, &call.arguments, &session, &tools, &mut exec).await;
+                                let _ = call.reply.send(value);
+                            }));
+                        }
                         "ask_user" => match parse_ask_user(&call.arguments) {
                             Ok(questions) => {
                                 self.record_outdated_question(&mut state, "human", "app");
@@ -3424,6 +3522,9 @@ impl CodingHarness {
                 }
                 Some(()) = running.next(), if !running.is_empty() => {
                     last_heard = tokio::time::Instant::now();
+                    if let Ok(mut log) = inner_log.lock() {
+                        state.events.append(&mut log);
+                    }
                     let tripped = streak.lock().ok().and_then(|mut s| s.tripped.take());
                     if let Some((tool, count)) = tripped {
                         if let Some(mut p) = process.take() {
@@ -3540,9 +3641,7 @@ impl CodingHarness {
                     .into_iter()
                     .map(|d| d.name)
                     .collect();
-                let hint = if self.context.workspace_root()
-                    == crate::lead::workspace_path()
-                {
+                let hint = if self.context.workspace_root() == crate::lead::workspace_path() {
                     " You are Lead: to check on, run or change anything in a project, ask the session that owns it (tasks.create to that session, or read.session)."
                 } else {
                     ""

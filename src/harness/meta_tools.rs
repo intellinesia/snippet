@@ -688,6 +688,18 @@ impl CodingHarness {
         conversation_mode: bool,
         goal_active: bool,
     ) -> Vec<crate::llm::NativeToolDefinition> {
+        self.seat_definitions(conversation_mode, goal_active).0
+    }
+
+    /// What the model is shown, and everything its scripts can call.
+    pub(super) fn seat_definitions(
+        &self,
+        conversation_mode: bool,
+        goal_active: bool,
+    ) -> (
+        Vec<crate::llm::NativeToolDefinition>,
+        Vec<crate::llm::NativeToolDefinition>,
+    ) {
         let mut definitions = self.tools.definitions();
         if conversation_mode {
             definitions.extend(
@@ -701,14 +713,20 @@ impl CodingHarness {
         } else {
             definitions.push(meta::terminate_loop_tool());
         }
-        let mut advertised =
-            crate::surface::advertise(self.seat_role(conversation_mode), definitions);
+        let (mut shown, mut all) = crate::code_mode::runner::seat_tools(
+            self.seat_role(conversation_mode),
+            definitions,
+            self.config.tool_mode,
+        );
         for custom in self.tools.custom_definitions() {
-            if !advertised.iter().any(|d| d.name == custom.name) {
-                advertised.push(custom);
+            if !all.iter().any(|d| d.name == custom.name) {
+                all.push(custom.clone());
+            }
+            if !shown.iter().any(|d| d.name == custom.name) {
+                shown.push(custom);
             }
         }
-        advertised
+        (shown, all)
     }
 
     fn record_done_plan_steps(

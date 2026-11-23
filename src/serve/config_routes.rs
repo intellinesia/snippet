@@ -23,6 +23,8 @@ pub(crate) struct ProfileReq {
     #[serde(default)]
     pub(crate) x_search: Option<bool>,
     #[serde(default)]
+    pub(crate) tool_mode: Option<crate::config::ToolMode>,
+    #[serde(default)]
     pub(crate) set_active: bool,
 }
 
@@ -90,6 +92,9 @@ pub(crate) async fn put_profile(State(d): State<Shared>, Json(req): Json<Profile
         }
         if let Some(x_search) = req.x_search {
             mc.x_search = x_search;
+        }
+        if let Some(mode) = req.tool_mode {
+            mc.tool_mode = mode;
         }
         c.upsert_profile(&name, mc);
         if req.set_active {

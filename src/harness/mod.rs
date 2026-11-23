@@ -88,6 +88,7 @@ pub struct HarnessConfig {
     pub profile: Option<String>,
     pub hidden_meta: &'static [&'static str],
     pub seat_role: crate::surface::SeatRole,
+    pub tool_mode: crate::config::ToolMode,
 }
 
 impl Default for HarnessConfig {
@@ -115,6 +116,7 @@ impl Default for HarnessConfig {
             profile: None,
             hidden_meta: &[],
             seat_role: crate::surface::SeatRole::Work,
+            tool_mode: crate::config::ToolMode::default(),
         }
     }
 }
