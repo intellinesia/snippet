@@ -1291,3 +1291,109 @@ mod allow_rule_flow_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod code_mode_tests {
+    use super::*;
+    use crate::llm::ModelOutput;
+
+    struct Scripted(
+        std::collections::VecDeque<ModelOutput>,
+        Vec<Vec<HarnessMessage>>,
+    );
+
+    #[async_trait::async_trait]
+    impl AgentModel for Scripted {
+        async fn generate(
+            &mut self,
+            messages: &[HarnessMessage],
+            _tools: &[NativeToolDefinition],
+            _force_tool: bool,
+            _sink: Option<StreamHandle>,
+        ) -> Result<ModelOutput, ToolError> {
+            self.1.push(messages.to_vec());
+            Ok(self.0.pop_front().expect("scripted model ran out"))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_script_runs_tools_through_dispatch_and_returns_only_its_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                state_path: Some(dir.path().join("state.json")),
+                memory_enabled: false,
+                ..HarnessConfig::default()
+            },
+            crate::session::work_tool_registry(None, None),
+            ToolContext::new(dir.path())
+                .unwrap()
+                .with_store_path(dir.path().join("store.db")),
+        );
+        let code = "const a = await bash({command: 'echo one'}); const b = await bash({command: 'echo two'}); return [a.data.stdout.trim(), b.data.stdout.trim()];";
+        let mut model = Scripted(
+            [
+                ModelOutput {
+                    calls: vec![GeneratedToolCall {
+                        tool_name: "code".into(),
+                        arguments: json!({"action": "run", "code": code}),
+                        id: Some("c1".into()),
+                        origin_model: None,
+                        signature: None,
+                    }],
+                    ..Default::default()
+                },
+                ModelOutput {
+                    content_text: Some("done".into()),
+                    ..Default::default()
+                },
+            ]
+            .into(),
+            Vec::new(),
+        );
+        let id = harness.session_id().unwrap();
+        let mut presence = crate::session::subscribe_device_events();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let watch = async {
+            while let Ok(event) = presence.recv().await {
+                if event["session"] == id
+                    && event["kind"] == "agent_presence"
+                    && event["state"] == "idle"
+                {
+                    break;
+                }
+            }
+            drop(tx);
+        };
+        let run = harness.run_interactive(&mut model, Some("run it".into()), rx, None, None);
+        let (ran, _) =
+            tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(run, watch) })
+                .await
+                .expect("run finished");
+        ran.unwrap();
+        let seen = model.1.last().unwrap();
+        let results: Vec<&Value> = seen
+            .iter()
+            .filter_map(|m| match m {
+                HarnessMessage::ToolResult { content, .. } => Some(content),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0]["data"]["status"], "completed", "{}", results[0]);
+        assert_eq!(results[0]["data"]["result"], json!(["one", "two"]));
+        let events = harness
+            .store()
+            .unwrap()
+            .load_conversation_events(&id)
+            .unwrap();
+        let calls: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                HarnessEvent::ToolCall { tool_name, .. } => Some(tool_name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls, ["code", "bash", "bash"]);
+    }
+}

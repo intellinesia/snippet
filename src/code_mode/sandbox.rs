@@ -31,9 +31,19 @@ pub enum HostRequest {
 }
 
 pub enum Outcome {
-    Completed { value: Value, logs: Vec<String> },
-    Paused { question: String, data: Value, logs: Vec<String> },
-    Failed { message: String, logs: Vec<String> },
+    Completed {
+        value: Value,
+        logs: Vec<String>,
+    },
+    Paused {
+        question: String,
+        data: Value,
+        logs: Vec<String>,
+    },
+    Failed {
+        message: String,
+        logs: Vec<String>,
+    },
 }
 
 const PRELUDE_BASE: &str = r#"
@@ -114,7 +124,10 @@ pub fn spawn(
     code: String,
     globals: Globals,
     limits: Limits,
-) -> (UnboundedReceiver<HostRequest>, tokio::task::JoinHandle<Outcome>) {
+) -> (
+    UnboundedReceiver<HostRequest>,
+    tokio::task::JoinHandle<Outcome>,
+) {
     let (tx, rx) = unbounded_channel();
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     let logs = Arc::new(Mutex::new(LogBuf {
@@ -204,24 +217,32 @@ fn run(
         let call_fn = {
             let tx = tx.clone();
             let timed_out = timed_out.clone();
-            Function::new(ctx.clone(), move |ctx: Ctx<'_>, name: String, args: String| {
-                let args: Value = serde_json::from_str(&args)
-                    .map_err(|e| Exception::throw_message(&ctx, &format!("invalid args: {e}")))?;
-                let (rtx, rrx) = mpsc::channel();
-                tx.send(HostRequest::Call { name, args, reply: rtx })
+            Function::new(
+                ctx.clone(),
+                move |ctx: Ctx<'_>, name: String, args: String| {
+                    let args: Value = serde_json::from_str(&args).map_err(|e| {
+                        Exception::throw_message(&ctx, &format!("invalid args: {e}"))
+                    })?;
+                    let (rtx, rrx) = mpsc::channel();
+                    tx.send(HostRequest::Call {
+                        name,
+                        args,
+                        reply: rtx,
+                    })
                     .map_err(|_| Exception::throw_message(&ctx, "host is unavailable"))?;
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                match rrx.recv_timeout(remaining) {
-                    Ok(v) => Ok(v.to_string()),
-                    Err(RecvTimeoutError::Timeout) => {
-                        timed_out.store(true, Ordering::SeqCst);
-                        Err(Exception::throw_message(&ctx, "timed out"))
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    match rrx.recv_timeout(remaining) {
+                        Ok(v) => Ok(v.to_string()),
+                        Err(RecvTimeoutError::Timeout) => {
+                            timed_out.store(true, Ordering::SeqCst);
+                            Err(Exception::throw_message(&ctx, "timed out"))
+                        }
+                        Err(RecvTimeoutError::Disconnected) => {
+                            Err(Exception::throw_message(&ctx, "host dropped the call"))
+                        }
                     }
-                    Err(RecvTimeoutError::Disconnected) => {
-                        Err(Exception::throw_message(&ctx, "host dropped the call"))
-                    }
-                }
-            })
+                },
+            )
         }
         .map_err(|e| e.to_string())?;
         let ask_fn = {
@@ -230,7 +251,10 @@ fn run(
             let timed_out = timed_out.clone();
             Function::new(
                 ctx.clone(),
-                move |ctx: Ctx<'_>, question: String, data: String| -> rquickjs::Result<Option<String>> {
+                move |ctx: Ctx<'_>,
+                      question: String,
+                      data: String|
+                      -> rquickjs::Result<Option<String>> {
                     let data: Value = serde_json::from_str(&data).unwrap_or(Value::Null);
                     let (rtx, rrx) = mpsc::channel();
                     tx.send(HostRequest::Ask {
@@ -264,7 +288,8 @@ fn run(
 
         let g = ctx.globals();
         g.set("__snippet_log", log_fn).map_err(|e| e.to_string())?;
-        g.set("__snippet_call", call_fn).map_err(|e| e.to_string())?;
+        g.set("__snippet_call", call_fn)
+            .map_err(|e| e.to_string())?;
         g.set("__snippet_ask", ask_fn).map_err(|e| e.to_string())?;
 
         let describe = |ctx: &Ctx<'_>, e: rquickjs::Error| -> String {
@@ -285,7 +310,8 @@ fn run(
             }
         };
 
-        ctx.eval::<(), _>(prelude.as_str()).map_err(|e| describe(&ctx, e))?;
+        ctx.eval::<(), _>(prelude.as_str())
+            .map_err(|e| describe(&ctx, e))?;
         let promise: Promise = ctx.eval(wrapped).map_err(|e| describe(&ctx, e))?;
         promise.finish::<String>().map_err(|e| describe(&ctx, e))
     });
@@ -387,7 +413,12 @@ mod tests {
             globals(),
             limits(5000),
         );
-        if let Some(HostRequest::Ask { question, data, reply }) = rx.recv().await {
+        if let Some(HostRequest::Ask {
+            question,
+            data,
+            reply,
+        }) = rx.recv().await
+        {
             assert_eq!(question, "ok?");
             assert_eq!(data, json!({"a": 1}));
             reply.send(Some(json!("yes"))).unwrap();
@@ -406,7 +437,11 @@ mod tests {
             reply.send(None).unwrap();
         }
         match h.await.unwrap() {
-            Outcome::Paused { question, data, logs } => {
+            Outcome::Paused {
+                question,
+                data,
+                logs,
+            } => {
                 assert_eq!(question, "q");
                 assert_eq!(data, json!([1]));
                 assert_eq!(logs, vec!["before"]);
@@ -428,7 +463,9 @@ mod tests {
     async fn infinite_loop_times_out() {
         let (_rx, h) = spawn("while (true) {}".into(), globals(), limits(300));
         match h.await.unwrap() {
-            Outcome::Failed { message, .. } => assert!(message.starts_with("timed out after"), "{message}"),
+            Outcome::Failed { message, .. } => {
+                assert!(message.starts_with("timed out after"), "{message}")
+            }
             _ => panic!("expected failed"),
         }
     }
@@ -442,7 +479,10 @@ mod tests {
         );
         match h.await.unwrap() {
             Outcome::Completed { logs, .. } => {
-                assert_eq!(logs, vec!["a {\"b\":1}".to_string(), "... logs truncated".to_string()]);
+                assert_eq!(
+                    logs,
+                    vec!["a {\"b\":1}".to_string(), "... logs truncated".to_string()]
+                );
             }
             _ => panic!("expected completed"),
         }

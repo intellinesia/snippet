@@ -321,6 +321,37 @@ const TASK: Surface = Surface {
     ],
 };
 
+const CODE: Surface = Surface {
+    name: "code",
+    intro: "Run a script that calls your tools: many steps in one round trip, and only what it returns comes back. Use it for chains of three or more calls, loops over items, or large output you only need part of; call directly for one step, or when you want to see each result before the next.",
+    acts: &[
+        act("run", "code_run", "run JavaScript that calls your tools."),
+        act(
+            "resume",
+            "code_resume",
+            "continue a paused run with your answer, or rerun it with edited code.",
+        ),
+        act(
+            "describe",
+            "code_describe",
+            "one tool's signature as a TypeScript declaration.",
+        ),
+    ],
+};
+
+const CALLS: Surface = Surface {
+    name: "calls",
+    intro: "Your past tool calls: list them, or run one again with changes.",
+    acts: &[
+        act("list", "calls_list", "recent calls with ids, newest first."),
+        act(
+            "retry",
+            "calls_retry",
+            "run a past call again with some arguments changed.",
+        ),
+    ],
+};
+
 const WAKE: Surface = Surface {
     name: "wake",
     intro: "Wakes: once, on a schedule, or from a watched script.",
@@ -471,7 +502,7 @@ const AMBIENT: Surface = Surface {
 
 pub const SURFACES: &[&Surface] = &[
     &WEB, &PROCESS, &PRESENT, &DELEGATE, &SKILL, &MESSAGE, &READ, &TASK, &WAKE, &TASKS, &GOALS,
-    &SESSIONS, &AMBIENT,
+    &SESSIONS, &AMBIENT, &CODE, &CALLS,
 ];
 
 fn keep_for(role: SeatRole) -> &'static [&'static str] {
@@ -509,12 +540,14 @@ fn keep_for(role: SeatRole) -> &'static [&'static str] {
 fn surfaces_for(role: SeatRole) -> &'static [&'static Surface] {
     match role {
         SeatRole::Work => &[
-            &PROCESS, &WEB, &PRESENT, &DELEGATE, &MESSAGE, &READ, &SKILL, &TASK, &WAKE,
+            &PROCESS, &WEB, &PRESENT, &DELEGATE, &MESSAGE, &READ, &SKILL, &TASK, &WAKE, &CODE,
+            &CALLS,
         ],
-        SeatRole::Desk => &[&WEB, &MESSAGE, &READ, &TASK, &WAKE, &PRESENT],
+        SeatRole::Desk => &[&WEB, &MESSAGE, &READ, &TASK, &WAKE, &PRESENT, &CODE, &CALLS],
         SeatRole::Lane => &[&PROCESS, &WEB, &SKILL],
         SeatRole::Lead => &[
-            &WEB, &PRESENT, &MESSAGE, &READ, &AMBIENT, &TASKS, &GOALS, &SESSIONS, &WAKE,
+            &WEB, &PRESENT, &MESSAGE, &READ, &AMBIENT, &TASKS, &GOALS, &SESSIONS, &WAKE, &CODE,
+            &CALLS,
         ],
     }
 }
@@ -525,6 +558,15 @@ fn find_surface(name: &str) -> Option<&'static Surface> {
 
 pub fn is_surface(name: &str) -> bool {
     find_surface(name).is_some()
+}
+
+/// The action whose description line lists `action`'s fields (acts sharing a
+/// tool list them once), and whether `action` takes `op`.
+pub fn fields_listed_under(name: &str, action: &str) -> Option<(&'static str, bool)> {
+    let surface = find_surface(name)?;
+    let act = surface.acts.iter().find(|a| a.action == action)?;
+    let first = surface.acts.iter().find(|a| a.tool == act.tool)?;
+    Some((first.action, act.op))
 }
 
 pub fn uses_op(name: &str, args: &Value) -> bool {
@@ -879,7 +921,10 @@ pub fn format_argument_error(
     if lines.is_empty() {
         return format!("{error_text}\n{call}; it takes no fields.");
     }
-    format!("{error_text}\n{call} and these fields:\n{}", lines.join("\n"))
+    format!(
+        "{error_text}\n{call} and these fields:\n{}",
+        lines.join("\n")
+    )
 }
 
 #[cfg(test)]
@@ -1038,7 +1083,13 @@ mod tests {
             "set_session_title",
             "report_progress",
         ] {
-            for names in [&work_names, &cli_names, &desk_names, &lane_names, &lead_names] {
+            for names in [
+                &work_names,
+                &cli_names,
+                &desk_names,
+                &lane_names,
+                &lead_names,
+            ] {
                 assert!(
                     !names.iter().any(|n| n == hidden),
                     "{hidden} leaked into {names:?}"

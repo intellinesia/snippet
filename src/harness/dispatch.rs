@@ -693,6 +693,33 @@ impl CodingHarness {
             stats.only_delegations = false;
         }
 
+        if crate::code_mode::runner::is_code_tool(&tool_name) {
+            if in_code {
+                return Executed::Answer(tool_error(format!(
+                    "`{surface_name}` cannot run inside code."
+                )));
+            }
+            let result = self
+                .run_code_tool(
+                    state,
+                    lanes,
+                    watches,
+                    vars,
+                    conversation_mode,
+                    approval_rx,
+                    &tool_name,
+                    &args,
+                    stats,
+                    total_mutating,
+                    approval_index,
+                )
+                .await;
+            if is_error_result(&result) {
+                stats.failed += 1;
+            }
+            return Executed::Answer(result);
+        }
+
         let is_meta = conversation_mode
             && meta::is_meta_tool(&tool_name)
             && (self.config.allow_lane_control
@@ -1009,5 +1036,108 @@ impl CodingHarness {
             collapse_repeated_output(vars, command, &mut result);
         }
         Executed::Answer(result)
+    }
+}
+
+struct NativeExec<'a> {
+    harness: &'a CodingHarness,
+    state: &'a mut HarnessState,
+    lanes: &'a mut LaneManager,
+    watches: &'a mut WatchManager,
+    vars: &'a mut LoopVars,
+    conversation_mode: bool,
+    approval_rx: &'a mut mpsc::UnboundedReceiver<(ApprovalDecision, Option<DecisionSource>)>,
+    definitions: &'a [NativeToolDefinition],
+    stats: &'a mut TurnStats,
+    total_mutating: usize,
+    approval_index: &'a mut usize,
+}
+
+#[async_trait::async_trait]
+impl crate::code_mode::runner::InnerCalls for NativeExec<'_> {
+    async fn call(&mut self, name: &str, args: Value) -> Value {
+        self.state.events.push(HarnessEvent::ToolCall {
+            tool_name: name.to_string(),
+            arguments: args.clone(),
+        });
+        self.harness
+            .lane_progress("tool_call", tool_activity_text(name, &args));
+        let executed = Box::pin(self.harness.execute_call(
+            self.state,
+            self.lanes,
+            self.watches,
+            self.vars,
+            self.conversation_mode,
+            self.approval_rx,
+            name,
+            &args,
+            self.definitions,
+            self.stats,
+            self.total_mutating,
+            self.approval_index,
+            true,
+        ))
+        .await;
+        let result = match executed {
+            Executed::Answer(result)
+            | Executed::Invalid { result, .. }
+            | Executed::EndTurn { result, .. } => result,
+        };
+        self.state.events.push(HarnessEvent::ToolResult {
+            tool_name: name.to_string(),
+            result: result.clone(),
+        });
+        result
+    }
+}
+
+impl CodingHarness {
+    #[allow(clippy::too_many_arguments)]
+    async fn run_code_tool(
+        &self,
+        state: &mut HarnessState,
+        lanes: &mut LaneManager,
+        watches: &mut WatchManager,
+        vars: &mut LoopVars,
+        conversation_mode: bool,
+        approval_rx: &mut mpsc::UnboundedReceiver<(ApprovalDecision, Option<DecisionSource>)>,
+        tool: &str,
+        args: &Value,
+        stats: &mut TurnStats,
+        total_mutating: usize,
+        approval_index: &mut usize,
+    ) -> Value {
+        use crate::code_mode::runner;
+        if tool == "calls_list" {
+            return runner::list_calls(args, &state.events);
+        }
+        let retry = (tool == "calls_retry").then(|| runner::retry_target(args, &state.events));
+        let goal_active = state
+            .goal
+            .as_ref()
+            .is_some_and(|g| g.status == GoalStatus::Active);
+        let (_, all) = self.seat_definitions(conversation_mode, goal_active);
+        let session = self.session_id().unwrap_or_else(|| "main".to_string());
+        let mut exec = NativeExec {
+            harness: self,
+            state,
+            lanes,
+            watches,
+            vars,
+            conversation_mode,
+            approval_rx,
+            definitions: &all,
+            stats,
+            total_mutating,
+            approval_index,
+        };
+        match retry {
+            Some(Ok((name, retried))) => {
+                use runner::InnerCalls;
+                exec.call(&name, retried).await
+            }
+            Some(Err(error)) => error,
+            None => runner::execute(tool, args, &session, &all, &mut exec).await,
+        }
     }
 }

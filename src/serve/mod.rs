@@ -1814,6 +1814,7 @@ struct ProfileView {
     /// xAI only: attach the built-in X search server tool.
     #[serde(default)]
     x_search: bool,
+    tool_mode: crate::config::ToolMode,
 }
 
 #[derive(Serialize)]
@@ -1851,6 +1852,7 @@ async fn get_config(State(d): State<Shared>) -> Response {
                 stream: m.stream,
                 supports_images: m.supports_images,
                 x_search: m.x_search,
+                tool_mode: m.tool_mode,
             });
         }
     }

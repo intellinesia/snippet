@@ -578,11 +578,7 @@ pub(crate) fn coordination_tool_registry(exa_api_key: Option<String>) -> ToolReg
         });
         tools.insert(crate::builtins::WebReadTool { api_key: key });
     }
-    for name in [
-        "message_lead",
-        "pass_turn",
-        "post_coordination_message",
-    ] {
+    for name in ["message_lead", "pass_turn", "post_coordination_message"] {
         tools.remove(name);
     }
     tools
@@ -603,6 +599,7 @@ fn start_session_with_role(
     let workspace = config.workspace.clone();
     crate::harness::ensure_snippet_gitignored(&workspace);
     let model_config = config.model.clone();
+    let tool_mode = model_config.tool_mode;
     let setups = config.setups.clone();
     let exa_api_key = config.exa_api_key.clone();
     let manual_approval = config.manual_approval;
@@ -668,6 +665,7 @@ fn start_session_with_role(
                 profile,
                 hidden_meta: runtime.hidden_meta,
                 seat_role: runtime.seat_role,
+                tool_mode,
                 ..HarnessConfig::default()
             },
             runtime.tools,
@@ -967,10 +965,7 @@ pub fn compute_came_back(
     finished_at: Option<i64>,
     user_seen_at: Option<i64>,
 ) -> bool {
-    if crate::lead::is_session_id(id)
-        || is_inbox_session_id(id)
-        || is_lane_session_id(id)
-    {
+    if crate::lead::is_session_id(id) || is_inbox_session_id(id) || is_lane_session_id(id) {
         return false;
     }
     if matches!(status, "waiting_for_input" | "running") {
@@ -1326,10 +1321,7 @@ pub(crate) fn all_device_sessions_with(store: Option<&crate::store::Store>) -> V
 
     out.sort_by(|a, b| b.last_active.cmp(&a.last_active));
     // Lead is always the first entry.
-    if let Some(idx) = out
-        .iter()
-        .position(|s| crate::lead::is_session_id(&s.id))
-    {
+    if let Some(idx) = out.iter().position(|s| crate::lead::is_session_id(&s.id)) {
         let mc = out.remove(idx);
         out.insert(0, mc);
     }
@@ -1919,8 +1911,7 @@ fn notification_allowed(
     match settings.notification_policy.as_str() {
         "all_sessions" => true,
         "lead_only" => session.is_some_and(|id| {
-            id == crate::lead::SESSION_ID
-                || settings.lead_session_id.as_deref() == Some(id)
+            id == crate::lead::SESSION_ID || settings.lead_session_id.as_deref() == Some(id)
         }),
         _ => false,
     }

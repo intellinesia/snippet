@@ -305,6 +305,25 @@ pub struct InferenceProfileConfig {
     /// `/v1/responses` so Grok can search X. Off by default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub x_search: bool,
+    /// How sessions on this profile call tools: `direct` calls only, `code`
+    /// scripts first, or `hybrid` (both, the default). Lanes always call directly.
+    #[serde(default, skip_serializing_if = "ToolMode::is_default")]
+    pub tool_mode: ToolMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolMode {
+    Direct,
+    Code,
+    #[default]
+    Hybrid,
+}
+
+impl ToolMode {
+    fn is_default(&self) -> bool {
+        *self == ToolMode::Hybrid
+    }
 }
 
 impl Default for SnippetConfig {
@@ -1086,6 +1105,7 @@ impl Default for InferenceProfileConfig {
             cache_ttl: None,
             stream: false,
             x_search: false,
+            tool_mode: ToolMode::default(),
         }
     }
 }
