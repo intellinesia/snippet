@@ -36,7 +36,6 @@ impl Seat {
             Self::Work => &[
                 "record_coordination_note",
                 "list_coordination_agents",
-                "list_profiles",
                 "keep_warm",
                 "context_limit",
                 "reach_policy",

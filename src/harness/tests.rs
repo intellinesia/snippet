@@ -1286,8 +1286,8 @@ mod allow_rule_flow_tests {
         assert_eq!(results[2].1["status"], "error");
         let err_msg = results[2].1["error"]["message"].as_str().unwrap();
         assert!(
-            err_msg.contains("manage_process") && err_msg.contains("properties"),
-            "expected internal schema in argument error, got: {err_msg}"
+            err_msg.contains("Call `process` again") && !err_msg.contains("manage_process"),
+            "expected surface terms in argument error, got: {err_msg}"
         );
     }
 }
