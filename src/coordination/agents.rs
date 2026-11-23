@@ -178,6 +178,10 @@ impl Store {
                 params![id],
             )?;
             tx.execute(
+                "DELETE FROM agent_tool_modes WHERE agent_id = ?1",
+                params![id],
+            )?;
+            tx.execute(
                 "DELETE FROM agent_channels WHERE agent_id = ?1",
                 params![id],
             )?;
@@ -400,6 +404,40 @@ impl Store {
                 )?,
             };
             Ok(true)
+        })
+    }
+
+    /// How the agent prefers to call tools: `direct` or `code`.
+    pub fn agent_tool_mode(&self, id: &str) -> Result<Option<String>, StoreError> {
+        self.with_connection(|conn| {
+            match conn.query_row(
+                "SELECT mode FROM agent_tool_modes WHERE agent_id = ?1",
+                params![id],
+                |row| row.get::<_, String>(0),
+            ) {
+                Ok(mode) => Ok(Some(mode)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(error) => Err(error),
+            }
+        })
+    }
+
+    /// Returns whether the agent exists.
+    pub fn set_agent_tool_mode(&self, id: &str, mode: &str) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM agents WHERE id = ?1)",
+                params![id],
+                |row| row.get(0),
+            )?;
+            if exists {
+                conn.execute(
+                    "INSERT INTO agent_tool_modes (agent_id, mode) VALUES (?1, ?2)
+                     ON CONFLICT(agent_id) DO UPDATE SET mode = excluded.mode",
+                    params![id, mode],
+                )?;
+            }
+            Ok(exists)
         })
     }
 

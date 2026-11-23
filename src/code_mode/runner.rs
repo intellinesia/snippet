@@ -44,13 +44,15 @@ pub fn is_code_tool(name: &str) -> bool {
     CODE_TOOLS.contains(&name) || CALL_TOOLS.contains(&name)
 }
 
-pub fn definitions() -> Vec<NativeToolDefinition> {
-    let def =
-        |name: &str, description: &str, props: Value, required: &[&str]| NativeToolDefinition {
-            name: name.into(),
-            description: description.into(),
-            input_schema: json!({"type": "object", "properties": props, "required": required}),
-        };
+fn def(name: &str, description: &str, props: Value, required: &[&str]) -> NativeToolDefinition {
+    NativeToolDefinition {
+        name: name.into(),
+        description: description.into(),
+        input_schema: json!({"type": "object", "properties": props, "required": required}),
+    }
+}
+
+fn code_definitions() -> Vec<NativeToolDefinition> {
     vec![
         def(
             "code_run",
@@ -74,6 +76,11 @@ pub fn definitions() -> Vec<NativeToolDefinition> {
             json!({"name": {"type": "string", "description": "A tool (`bash`), a grouped tool (`task`) or one action (`task.update`)."}}),
             &["name"],
         ),
+    ]
+}
+
+fn call_definitions() -> Vec<NativeToolDefinition> {
+    vec![
         def(
             "calls_list",
             "List your recent tool calls with ids, newest first.",
@@ -477,22 +484,23 @@ pub fn seat_tools(
     mode: crate::config::ToolMode,
 ) -> (Vec<NativeToolDefinition>, Vec<NativeToolDefinition>) {
     use crate::config::ToolMode;
-    let scripts = mode != ToolMode::Direct && role != crate::surface::SeatRole::Lane;
+    let lane = role == crate::surface::SeatRole::Lane;
+    if !lane {
+        internal.extend(call_definitions());
+    }
+    let scripts = mode == ToolMode::Code && !lane;
     if scripts {
-        internal.extend(definitions());
+        internal.extend(code_definitions());
     }
     let all = crate::surface::advertise(role, internal);
     if !scripts {
         return (all.clone(), all);
     }
-    let mut shown: Vec<NativeToolDefinition> = match mode {
-        ToolMode::Code => all
-            .iter()
-            .filter(|d| CODE_MODE_DIRECT.contains(&d.name.as_str()))
-            .cloned()
-            .collect(),
-        _ => all.clone(),
-    };
+    let mut shown: Vec<NativeToolDefinition> = all
+        .iter()
+        .filter(|d| CODE_MODE_DIRECT.contains(&d.name.as_str()))
+        .cloned()
+        .collect();
     annotate(&mut shown, &all);
     (shown, all)
 }
@@ -728,10 +736,17 @@ mod tests {
                 .into_iter()
                 .chain(crate::session::work_tool_registry(None, None).definitions())
                 .collect();
+        let (direct, _) = seat_tools(
+            crate::surface::SeatRole::Work,
+            internal.clone(),
+            crate::config::ToolMode::Direct,
+        );
+        assert!(direct.iter().any(|d| d.name == "calls"));
+        assert!(!direct.iter().any(|d| d.name == "code"));
         let (shown, all) = seat_tools(
             crate::surface::SeatRole::Work,
             internal,
-            crate::config::ToolMode::Hybrid,
+            crate::config::ToolMode::Code,
         );
         assert!(
             shown

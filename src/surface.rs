@@ -341,13 +341,18 @@ const CODE: Surface = Surface {
 
 const CALLS: Surface = Surface {
     name: "calls",
-    intro: "Your past tool calls: list them, or run one again with changes.",
+    intro: "Your tool calls: list them, run one again with changes, or choose how you call tools.",
     acts: &[
         act("list", "calls_list", "recent calls with ids, newest first."),
         act(
             "retry",
             "calls_retry",
             "run a past call again with some arguments changed.",
+        ),
+        act(
+            "mode",
+            "tool_mode",
+            "show or choose direct calls or code scripts, from your next session.",
         ),
     ],
 };
@@ -1069,8 +1074,8 @@ mod tests {
             lead_names
         );
 
-        assert_eq!(desk_names.len(), 9);
-        assert_eq!(lead_names.len(), 14);
+        assert_eq!(desk_names.len(), 10);
+        assert_eq!(lead_names.len(), 15);
         assert!(cli_names.iter().any(|n| n == "custom_tool"));
         assert!(cli_names.iter().any(|n| n == "complete_goal"));
         for hidden in [
