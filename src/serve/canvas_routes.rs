@@ -40,6 +40,34 @@ pub fn router() -> Router<Shared> {
         )
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct IdQuery {
+    #[serde(default)]
+    canvas_id: Option<String>,
+    #[serde(default)]
+    workspace: Option<String>,
+}
+
+fn resolve_body_canvas_id(
+    d: &Shared,
+    body_canvas: Option<&str>,
+    body_workspace: Option<&str>,
+    q: &IdQuery,
+) -> String {
+    let non_empty = |v: Option<&str>| v.map(str::trim).filter(|s| !s.is_empty()).is_some();
+    let canvas = if non_empty(body_canvas) {
+        body_canvas
+    } else {
+        q.canvas_id.as_deref()
+    };
+    let workspace = if non_empty(body_workspace) {
+        body_workspace
+    } else {
+        q.workspace.as_deref()
+    };
+    resolve_canvas_id(d, canvas, workspace)
+}
+
 fn resolve_canvas_id(d: &Shared, canvas_id: Option<&str>, workspace: Option<&str>) -> String {
     if let Some(cid) = canvas_id.map(str::trim).filter(|s| !s.is_empty()) {
         return cid.to_string();
@@ -250,8 +278,12 @@ struct BatchReq {
     session: Option<String>,
 }
 
-async fn post_batch(State(d): State<Shared>, Json(req): Json<BatchReq>) -> Response {
-    let cid = resolve_canvas_id(&d, req.canvas_id.as_deref(), req.workspace.as_deref());
+async fn post_batch(
+    State(d): State<Shared>,
+    Query(iq): Query<IdQuery>,
+    Json(req): Json<BatchReq>,
+) -> Response {
+    let cid = resolve_body_canvas_id(&d, req.canvas_id.as_deref(), req.workspace.as_deref(), &iq);
     let author = req.author.unwrap_or_else(|| Author::user("user"));
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
@@ -290,8 +322,12 @@ struct RevertReq {
     session: Option<String>,
 }
 
-async fn post_revert(State(d): State<Shared>, Json(req): Json<RevertReq>) -> Response {
-    let cid = resolve_canvas_id(&d, req.canvas_id.as_deref(), req.workspace.as_deref());
+async fn post_revert(
+    State(d): State<Shared>,
+    Query(iq): Query<IdQuery>,
+    Json(req): Json<RevertReq>,
+) -> Response {
+    let cid = resolve_body_canvas_id(&d, req.canvas_id.as_deref(), req.workspace.as_deref(), &iq);
     let author = req.author.unwrap_or_else(|| Author::user("user"));
     let target_id = req.batch_id.clone();
     let canvas = d.canvas.clone();
@@ -367,8 +403,12 @@ struct CreatePinReq {
     workspace: Option<String>,
 }
 
-async fn create_pin(State(d): State<Shared>, Json(req): Json<CreatePinReq>) -> Response {
-    let cid = resolve_canvas_id(&d, req.canvas_id.as_deref(), req.workspace.as_deref());
+async fn create_pin(
+    State(d): State<Shared>,
+    Query(iq): Query<IdQuery>,
+    Json(req): Json<CreatePinReq>,
+) -> Response {
+    let cid = resolve_body_canvas_id(&d, req.canvas_id.as_deref(), req.workspace.as_deref(), &iq);
     let author = req.author.unwrap_or_else(|| Author::user("user"));
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
@@ -400,23 +440,28 @@ struct PatchPinReq {
     workspace: Option<String>,
 }
 
-async fn patch_pin_body(State(d): State<Shared>, Json(req): Json<PatchPinReq>) -> Response {
+async fn patch_pin_body(
+    State(d): State<Shared>,
+    Query(iq): Query<IdQuery>,
+    Json(req): Json<PatchPinReq>,
+) -> Response {
     let Some(id) = req.id.clone().filter(|s| !s.is_empty()) else {
         return api_error(StatusCode::BAD_REQUEST, "missing pin id");
     };
-    patch_pin_inner(d, id, req).await
+    patch_pin_inner(d, id, req, iq).await
 }
 
 async fn patch_pin_by_id(
     State(d): State<Shared>,
     AxPath(id): AxPath<String>,
+    Query(iq): Query<IdQuery>,
     Json(req): Json<PatchPinReq>,
 ) -> Response {
-    patch_pin_inner(d, id, req).await
+    patch_pin_inner(d, id, req, iq).await
 }
 
-async fn patch_pin_inner(d: Shared, id: String, req: PatchPinReq) -> Response {
-    let cid = resolve_canvas_id(&d, req.canvas_id.as_deref(), req.workspace.as_deref());
+async fn patch_pin_inner(d: Shared, id: String, req: PatchPinReq, iq: IdQuery) -> Response {
+    let cid = resolve_body_canvas_id(&d, req.canvas_id.as_deref(), req.workspace.as_deref(), &iq);
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
         let store = canvas.store(&cid)?;
@@ -536,11 +581,15 @@ struct HitReq {
     workspace: Option<String>,
 }
 
-async fn post_hit(State(d): State<Shared>, Json(req): Json<HitReq>) -> Response {
+async fn post_hit(
+    State(d): State<Shared>,
+    Query(iq): Query<IdQuery>,
+    Json(req): Json<HitReq>,
+) -> Response {
     if !is_safe_component(&req.frame_id) {
         return canvas_error_response(CanvasError::InvalidId(req.frame_id));
     }
-    let cid = resolve_canvas_id(&d, req.canvas_id.as_deref(), req.workspace.as_deref());
+    let cid = resolve_body_canvas_id(&d, req.canvas_id.as_deref(), req.workspace.as_deref(), &iq);
     match d
         .canvas
         .hit_test_async(cid, req.frame_id, req.x, req.y, HIT_TEST_TIMEOUT)
@@ -983,5 +1032,79 @@ mod tests {
         let lite_frame_json: serde_json::Value = serde_json::from_slice(&lite_frame_bytes).unwrap();
         assert!(lite_frame_json["frame"].get("html").is_none());
         assert_eq!(lite_frame_json["frame"]["id"], "screen-1");
+    }
+
+    async fn post_json(
+        app: &Router,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post(uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(json!({})))
+    }
+
+    #[tokio::test]
+    async fn mutating_routes_resolve_canvas_id_body_then_query_then_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(dir.path());
+        for (cid, fid) in [("qa", "fa"), ("qb", "fb")] {
+            let (st, _) = post_json(
+                &app,
+                "/canvas/batch?token=test-secret",
+                json!({"canvas_id": cid, "label": "x", "ops": [{
+                    "op": "create_frame", "id": fid, "title": fid,
+                    "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0,
+                    "html": "<div data-cv-id=\"root\">x</div>"
+                }]}),
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK);
+        }
+        let pin = |fid: &str| json!({"frame_id": fid, "el_id": "root", "dx": 0.5, "dy": 0.5, "text": "t"});
+
+        let (st, v) = post_json(
+            &app,
+            "/canvas/pins?token=test-secret&canvas_id=qa",
+            pin("fa"),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{v}");
+
+        let (st, _) = post_json(
+            &app,
+            "/canvas/pins?token=test-secret&canvas_id=qa",
+            pin("fb"),
+        )
+        .await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+
+        let mut body = pin("fb");
+        body["canvas_id"] = json!("qb");
+        let (st, v) = post_json(&app, "/canvas/pins?token=test-secret&canvas_id=qa", body).await;
+        assert_eq!(st, StatusCode::CREATED, "{v}");
+
+        let (st, _) = post_json(&app, "/canvas/pins?token=test-secret", pin("fa")).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+
+        let (st, v) = post_json(
+            &app,
+            "/canvas/batch?token=test-secret&canvas_id=qb",
+            json!({"label": "y", "ops": [{"op": "move_frame", "frame_id": "fb", "x": 5.0, "y": 5.0}]}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
     }
 }

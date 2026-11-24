@@ -622,7 +622,11 @@ impl crate::code_mode::runner::InnerCalls for CliExec {
         self.dispatch_inner(name.to_string(), args).await
     }
 
-    fn call_concurrent(&self, name: &str, args: Value) -> Option<crate::code_mode::runner::CallFuture> {
+    fn call_concurrent(
+        &self,
+        name: &str,
+        args: Value,
+    ) -> Option<crate::code_mode::runner::CallFuture> {
         Some(self.dispatch_inner(name.to_string(), args))
     }
 

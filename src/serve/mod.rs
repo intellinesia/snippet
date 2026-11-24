@@ -58,16 +58,16 @@ pub(crate) use direct::{
     relay_stop,
 };
 mod artifact_routes;
-mod canvas_routes;
-mod unified;
 pub(crate) mod attention;
 mod autonomy;
+mod canvas_routes;
 mod fs;
 mod git;
 mod github_routes;
 mod lifecycle;
 pub mod maintenance;
 mod memory_routes;
+mod unified;
 pub(crate) use maintenance::*;
 mod lead;
 pub use lead::{mission_error, validated_owned_paths};

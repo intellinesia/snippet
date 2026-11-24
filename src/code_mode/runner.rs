@@ -344,7 +344,11 @@ fn execute_fs(name: &str, args: &Value, workspace: Option<PathBuf>) -> Value {
     match name {
         "__fs_read" => {
             let Some(raw) = path_arg("path") else {
-                return failure("invalid_arguments", "fs.read: `path` is required.".into(), None);
+                return failure(
+                    "invalid_arguments",
+                    "fs.read: `path` is required.".into(),
+                    None,
+                );
             };
             let path = resolve_fs_path(workspace.as_deref(), raw);
             let meta = match std::fs::metadata(&path) {
@@ -369,10 +373,18 @@ fn execute_fs(name: &str, args: &Value, workspace: Option<PathBuf>) -> Value {
         }
         "__fs_write" => {
             let Some(raw) = path_arg("path") else {
-                return failure("invalid_arguments", "fs.write: `path` is required.".into(), None);
+                return failure(
+                    "invalid_arguments",
+                    "fs.write: `path` is required.".into(),
+                    None,
+                );
             };
             let Some(content) = args.get("content").and_then(Value::as_str) else {
-                return failure("invalid_arguments", "fs.write: `content` is required.".into(), None);
+                return failure(
+                    "invalid_arguments",
+                    "fs.write: `content` is required.".into(),
+                    None,
+                );
             };
             let path = resolve_fs_path(workspace.as_deref(), raw);
             if let Some(parent) = path.parent()
@@ -382,16 +394,30 @@ fn execute_fs(name: &str, args: &Value, workspace: Option<PathBuf>) -> Value {
                 return failure("fs_error", format!("fs.write({raw}): {e}"), None);
             }
             match std::fs::write(&path, content) {
-                Ok(()) => success(json!({"path": path.display().to_string(), "bytes": content.len()})),
+                Ok(()) => {
+                    success(json!({"path": path.display().to_string(), "bytes": content.len()}))
+                }
                 Err(e) => failure("fs_error", format!("fs.write({raw}): {e}"), None),
             }
         }
         "__fs_replace" => {
             let Some(raw) = path_arg("path") else {
-                return failure("invalid_arguments", "fs.replace: `path` is required.".into(), None);
+                return failure(
+                    "invalid_arguments",
+                    "fs.replace: `path` is required.".into(),
+                    None,
+                );
             };
-            let Some(find) = args.get("find").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
-                return failure("invalid_arguments", "fs.replace: non-empty `find` is required.".into(), None);
+            let Some(find) = args
+                .get("find")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            else {
+                return failure(
+                    "invalid_arguments",
+                    "fs.replace: non-empty `find` is required.".into(),
+                    None,
+                );
             };
             let Some(replacement) = args
                 .get("replacement")
@@ -412,7 +438,11 @@ fn execute_fs(name: &str, args: &Value, workspace: Option<PathBuf>) -> Value {
             };
             let count = current.matches(find).count();
             if count == 0 {
-                return failure("fs_error", format!("fs.replace({raw}): `find` text not found."), None);
+                return failure(
+                    "fs_error",
+                    format!("fs.replace({raw}): `find` text not found."),
+                    None,
+                );
             }
             if count > 1 && !all {
                 return failure(
@@ -429,13 +459,19 @@ fn execute_fs(name: &str, args: &Value, workspace: Option<PathBuf>) -> Value {
                 current.replacen(find, replacement, 1)
             };
             match std::fs::write(&path, updated) {
-                Ok(()) => success(json!({"path": path.display().to_string(), "replacements": count})),
+                Ok(()) => {
+                    success(json!({"path": path.display().to_string(), "replacements": count}))
+                }
                 Err(e) => failure("fs_error", format!("fs.replace({raw}): {e}"), None),
             }
         }
         "__fs_exists" => {
             let Some(raw) = path_arg("path") else {
-                return failure("invalid_arguments", "fs.exists: `path` is required.".into(), None);
+                return failure(
+                    "invalid_arguments",
+                    "fs.exists: `path` is required.".into(),
+                    None,
+                );
             };
             let path = resolve_fs_path(workspace.as_deref(), raw);
             success(Value::Bool(path.exists()))
@@ -505,8 +541,8 @@ fn attach_signature(
         return;
     }
     let action = args.get("action").and_then(Value::as_str);
-    let sig = describe_text(name, action, advertised)
-        .or_else(|| describe_text(name, None, advertised));
+    let sig =
+        describe_text(name, action, advertised).or_else(|| describe_text(name, None, advertised));
     if let (Some(decl), Some(err)) = (sig, result.get_mut("error").and_then(Value::as_object_mut)) {
         err.insert("signature".into(), Value::String(decl));
     }
@@ -728,14 +764,33 @@ async fn drive(
 
 fn describe_fs(action: Option<&str>) -> Result<String, Value> {
     let entries = [
-        ("read", "/** Read a UTF-8 file in full (no truncation, up to 2 MiB). */\nfs.read(path: string): Promise<string>"),
-        ("write", "/** Write UTF-8 text to a file, creating parent directories. */\nfs.write(path: string, content: string): Promise<{path: string, bytes: number}>"),
-        ("replace", "/** Replace `find` with `replacement` in a file (errors if missing or ambiguous unless all=true). */\nfs.replace(path: string, find: string, replacement: string, all?: boolean): Promise<{path: string, replacements: number}>"),
-        ("exists", "/** Return true if a path exists. */\nfs.exists(path: string): Promise<boolean>"),
-        ("list", "/** List sorted entries in a directory (trailing `/` on subdirectories). */\nfs.list(dir?: string): Promise<string[]>"),
+        (
+            "read",
+            "/** Read a UTF-8 file in full (no truncation, up to 2 MiB). */\nfs.read(path: string): Promise<string>",
+        ),
+        (
+            "write",
+            "/** Write UTF-8 text to a file, creating parent directories. */\nfs.write(path: string, content: string): Promise<{path: string, bytes: number}>",
+        ),
+        (
+            "replace",
+            "/** Replace `find` with `replacement` in a file (errors if missing or ambiguous unless all=true). */\nfs.replace(path: string, find: string, replacement: string, all?: boolean): Promise<{path: string, replacements: number}>",
+        ),
+        (
+            "exists",
+            "/** Return true if a path exists. */\nfs.exists(path: string): Promise<boolean>",
+        ),
+        (
+            "list",
+            "/** List sorted entries in a directory (trailing `/` on subdirectories). */\nfs.list(dir?: string): Promise<string[]>",
+        ),
     ];
     match action {
-        None => Ok(entries.iter().map(|(_, d)| *d).collect::<Vec<_>>().join("\n\n")),
+        None => Ok(entries
+            .iter()
+            .map(|(_, d)| *d)
+            .collect::<Vec<_>>()
+            .join("\n\n")),
         Some(a) => entries
             .iter()
             .find(|(k, _)| *k == a)
@@ -1240,11 +1295,11 @@ mod tests {
         assert!(text.contains("expected_version: number;"), "{text}");
         assert!(shown.iter().any(|d| d.name == "bash"));
         assert!(shown.iter().any(|d| d.name == "change_files"));
-        assert!(
-            shown
-                .iter()
-                .any(|d| d.name == "code" && d.description.contains("fs.{read,write,replace,exists,list}"))
-        );
+        assert!(shown.iter().any(|d| {
+            d.name == "code"
+                && d.description
+                    .contains("fs.{read,write,replace,exists,list}")
+        }));
         let fs_doc = describe(&json!({"name": "fs.replace"}), &all);
         assert!(
             fs_doc["data"]["declaration"]
@@ -1267,7 +1322,10 @@ mod tests {
     #[tokio::test]
     async fn fs_helpers_read_write_replace_and_replay_without_truncation() {
         let dir = tempfile::tempdir().unwrap();
-        let big = format!("head\n{}\nconst x = '${{idx}}';\ntail\n", "a".repeat(30_000));
+        let big = format!(
+            "head\n{}\nconst x = '${{idx}}';\ntail\n",
+            "a".repeat(30_000)
+        );
         std::fs::write(dir.path().join("sample.dart"), &big).unwrap();
 
         struct WsExec(PathBuf);

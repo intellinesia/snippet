@@ -51,10 +51,7 @@ impl CodingHarness {
             return end;
         }
 
-        if vars
-            .last_tool_mode
-            .is_some_and(|prev| prev != current_mode)
-        {
+        if vars.last_tool_mode.is_some_and(|prev| prev != current_mode) {
             state.messages.push(HarnessMessage::System {
                 content: crate::code_mode::runner::switch_notice(current_mode, &definitions),
             });

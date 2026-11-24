@@ -328,8 +328,9 @@ fn run(
                     let wait_start = Instant::now();
                     let got = rrx.recv_timeout(call_timeout);
                     if saved_dl > 0 {
-                        let shifted = saved_dl
-                            .saturating_add(wait_start.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+                        let shifted = saved_dl.saturating_add(
+                            wait_start.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                        );
                         js_deadline_ns.store(shifted, Ordering::Relaxed);
                     }
                     match got {
@@ -419,9 +420,7 @@ fn run(
         disarm_js(tick, &mut js_remaining);
         init?;
 
-        let resolve_fn: Function = g
-            .get("__snippet_resolve")
-            .map_err(|e| describe(&ctx, e))?;
+        let resolve_fn: Function = g.get("__snippet_resolve").map_err(|e| describe(&ctx, e))?;
 
         loop {
             let tick = arm_js(js_remaining);
