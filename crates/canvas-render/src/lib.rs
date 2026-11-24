@@ -18,9 +18,12 @@ pub const MAX_HEIGHT: u32 = 8000;
 const AUTO_VIEWPORT_HEIGHT: u32 = 800;
 
 static INTER: &[u8] = include_bytes!("../fonts/Inter.ttf");
+static INTER_ITALIC: &[u8] = include_bytes!("../fonts/Inter-Italic.ttf");
+static EMOJI: &[u8] = include_bytes!("../fonts/TwemojiMozilla.ttf");
 static SERIF: &[u8] = include_bytes!("../fonts/DejaVuSerif.ttf");
 static SERIF_BOLD: &[u8] = include_bytes!("../fonts/DejaVuSerif-Bold.ttf");
 static MONO: &[u8] = include_bytes!("../fonts/JetBrainsMono.ttf");
+static MONO_ITALIC: &[u8] = include_bytes!("../fonts/JetBrainsMono-Italic.ttf");
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElementRect {
@@ -101,16 +104,22 @@ fn font_context() -> FontContext {
                 .map(|(id, _)| id)
                 .collect::<Vec<_>>()
         };
-        let sans = register(INTER);
+        let mut sans = register(INTER);
+        sans.extend(register(INTER_ITALIC));
+        sans.dedup();
+        let emoji = register(EMOJI);
         let mut serif = register(SERIF);
         serif.extend(register(SERIF_BOLD));
         serif.dedup();
-        let mono = register(MONO);
+        let mut mono = register(MONO);
+        mono.extend(register(MONO_ITALIC));
+        mono.dedup();
         register(blitz_dom::BULLET_FONT);
         use GenericFamily::*;
-        for g in [SansSerif, SystemUi, UiSansSerif, UiRounded, Cursive, Fantasy, Math, FangSong, Emoji] {
+        for g in [SansSerif, SystemUi, UiSansSerif, UiRounded, Cursive, Fantasy, Math, FangSong] {
             ctx.collection.set_generic_families(g, sans.iter().copied());
         }
+        ctx.collection.set_generic_families(Emoji, emoji.iter().copied());
         ctx.collection.set_generic_families(Serif, serif.iter().copied());
         ctx.collection.set_generic_families(UiSerif, serif.iter().copied());
         ctx.collection.set_generic_families(Monospace, mono.iter().copied());
