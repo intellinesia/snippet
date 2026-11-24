@@ -196,6 +196,31 @@ pub fn list(session: &str) -> Vec<Artifact> {
     out
 }
 
+/// Every artifact across all sessions as (session id, artifact), newest first.
+pub fn list_all() -> Vec<(String, Artifact)> {
+    let Ok(sessions) = fs::read_dir(root()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for dir in sessions.flatten().take(2000) {
+        let Some(name) = dir.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let session = name.replace('~', "/");
+        let Ok(entries) = fs::read_dir(dir.path()) else {
+            continue;
+        };
+        out.extend(
+            entries
+                .flatten()
+                .filter_map(|e| load(&e.path()))
+                .map(|a| (session.clone(), a)),
+        );
+    }
+    out.sort_by_key(|(_, a)| std::cmp::Reverse(a.latest().map(|v| v.created_at).unwrap_or(0)));
+    out
+}
+
 pub fn markdown_link(session: &str, title: &str, id: &str, version: u32) -> String {
     let label: String = title
         .chars()

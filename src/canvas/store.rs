@@ -39,6 +39,9 @@ const MIN_SCALE_MILLIS: u32 = 250;
 const MAX_SCALE_MILLIS: u32 = 3000;
 
 const OPS_FILE: &str = "ops.jsonl";
+const META_FILE: &str = "meta.json";
+const MAX_CANVASES_LISTED: usize = 200;
+const MAX_CANVAS_TITLE_CHARS: usize = 120;
 const PINS_FILE: &str = "pins.json";
 const SNAPSHOTS_DIR: &str = "snapshots";
 const CACHE_DIR: &str = "cache";
@@ -206,6 +209,27 @@ pub struct CanvasStore {
     frames: BTreeMap<String, Frame>,
     ops_log: Vec<Batch>,
     pins: Vec<Pin>,
+    meta: CanvasMeta,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct CanvasMeta {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub created_ts: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CanvasSummary {
+    pub canvas_id: String,
+    pub title: String,
+    pub frames: usize,
+    pub rev: u64,
+    pub updated_at: i64,
+    pub author: Option<String>,
+    #[serde(skip)]
+    pub thumb_frame: Option<(String, u64)>,
 }
 
 impl CanvasStore {
@@ -225,9 +249,15 @@ impl CanvasStore {
             frames: BTreeMap::new(),
             ops_log: Vec::new(),
             pins: Vec::new(),
+            meta: CanvasMeta::default(),
         };
         if store.root.is_dir() {
             store.load_from_disk()?;
+            if let Ok(bytes) = fs::read(store.root.join(META_FILE))
+                && let Ok(meta) = serde_json::from_slice(&bytes)
+            {
+                store.meta = meta;
+            }
         }
         Ok(store)
     }
@@ -242,6 +272,35 @@ impl CanvasStore {
 
     pub fn rev(&self) -> u64 {
         self.rev
+    }
+
+    pub fn title(&self) -> String {
+        self.meta
+            .title
+            .clone()
+            .unwrap_or_else(|| self.canvas_id.clone())
+    }
+
+    pub fn summary(&self) -> CanvasSummary {
+        CanvasSummary {
+            canvas_id: self.canvas_id.clone(),
+            title: self.title(),
+            frames: self.frames.len(),
+            rev: self.rev,
+            updated_at: self
+                .ops_log
+                .last()
+                .map(|b| b.ts)
+                .unwrap_or(self.meta.created_ts),
+            author: self.ops_log.last().map(|b| b.author.id.clone()),
+            thumb_frame: self.frames.values().next().map(|f| (f.id.clone(), f.rev)),
+        }
+    }
+
+    fn write_meta(&self) -> Result<(), CanvasError> {
+        fs::create_dir_all(&self.root)?;
+        fs::write(self.root.join(META_FILE), serde_json::to_vec(&self.meta)?)?;
+        Ok(())
     }
 
     pub fn frames(&self) -> Vec<Frame> {
@@ -454,8 +513,13 @@ impl CanvasStore {
         let mut seen_touched: HashSet<String> = HashSet::new();
 
         for op in ops {
-            let (concrete, inverse, frame_id, new_ids) =
-                Self::apply_single_op(&mut staging, op, next_rev, &mut id_gen)?;
+            html::clear_dropped();
+            let applied = Self::apply_single_op(&mut staging, op, next_rev, &mut id_gen);
+            let dropped = html::take_dropped();
+            if !dropped.is_empty() {
+                return Err(CanvasError::Html(html::HtmlError::Unsupported(dropped)));
+            }
+            let (concrete, inverse, frame_id, new_ids) = applied?;
             if seen_touched.insert(frame_id.clone()) {
                 touched_frames.push(frame_id);
             }
@@ -1002,6 +1066,14 @@ fn prune_cache_dir(cache_dir: &Path) {
     }
 }
 
+fn sort_summaries(items: &mut [CanvasSummary]) {
+    items.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| a.canvas_id.cmp(&b.canvas_id))
+    });
+}
+
 /// Thread-safe multi-canvas service holding stores + the pluggable [`FrameRenderer`].
 pub struct CanvasService {
     root: PathBuf,
@@ -1034,6 +1106,67 @@ impl CanvasService {
                 ))
             })
             .clone()
+    }
+
+    /// Create an empty titled canvas with an artifact-style id: slug of the title plus a short random suffix.
+    pub fn create_canvas(&self, title: &str) -> Result<CanvasSummary, CanvasError> {
+        let title = title.trim();
+        if title.is_empty() || title.chars().count() > MAX_CANVAS_TITLE_CHARS {
+            return Err(CanvasError::InvalidArgument(format!(
+                "canvas title must be 1..={MAX_CANVAS_TITLE_CHARS} characters"
+            )));
+        }
+        let base = slug(title);
+        let base = if base == "frame" && !title.to_ascii_lowercase().starts_with("frame") {
+            "canvas".to_string()
+        } else {
+            base
+        };
+        for _ in 0..8 {
+            let suffix = &uuid::Uuid::new_v4().simple().to_string()[..6];
+            let id = format!("{base}-{suffix}");
+            if self.root.join(&id).exists() {
+                continue;
+            }
+            let store = self.store(&id)?;
+            let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+            s.meta = CanvasMeta {
+                title: Some(title.to_string()),
+                created_ts: chrono::Utc::now().timestamp(),
+            };
+            s.write_meta()?;
+            return Ok(s.summary());
+        }
+        Err(CanvasError::InvalidArgument(
+            "could not allocate a unique canvas id; retry".into(),
+        ))
+    }
+
+    /// All canvases on disk, most recently updated first.
+    pub fn list_canvases(&self) -> Result<Vec<CanvasSummary>, CanvasError> {
+        let mut out = Vec::new();
+        let entries = match fs::read_dir(&self.root) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(e.into()),
+        };
+        for entry in entries.flatten().take(MAX_CANVASES_LISTED * 4) {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if !is_safe_component(&id) {
+                continue;
+            }
+            let Ok(store) = self.store(&id) else { continue };
+            let s = store.lock().unwrap_or_else(|e| e.into_inner());
+            out.push(s.summary());
+        }
+        sort_summaries(&mut out);
+        out.truncate(MAX_CANVASES_LISTED);
+        Ok(out)
     }
 
     pub fn renderer(&self) -> &Arc<dyn FrameRenderer> {

@@ -59,6 +59,7 @@ pub(crate) use direct::{
 };
 mod artifact_routes;
 mod canvas_routes;
+mod unified;
 pub(crate) mod attention;
 mod autonomy;
 mod fs;

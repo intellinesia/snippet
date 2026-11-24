@@ -16,9 +16,9 @@ pub use model::{
 };
 pub use render::{BlitzRenderer, ElementRect, FrameRenderer, RenderError, Rendered, StubRenderer};
 pub use store::{
-    CachedLayout, CanvasService, CanvasStore, HIT_TEST_TIMEOUT, RENDER_TIMEOUT, SNAPSHOT_INTERVAL,
-    THUMB_LINK_TTL_SECS, canvas_id_for_workspace, canvases_root, emit_canvas_rev_event,
-    normalize_scale, signed_thumb_path, verify_signed_thumb,
+    CachedLayout, CanvasMeta, CanvasService, CanvasStore, CanvasSummary, HIT_TEST_TIMEOUT,
+    RENDER_TIMEOUT, SNAPSHOT_INTERVAL, THUMB_LINK_TTL_SECS, canvas_id_for_workspace, canvases_root,
+    emit_canvas_rev_event, normalize_scale, signed_thumb_path, verify_signed_thumb,
 };
 pub use tools::{
     CANVAS_HTML_SUBSET_NOTE, CanvasApplyTool, CanvasPinsTool, CanvasReadTool, CanvasThumbnailTool,
@@ -632,5 +632,85 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, CanvasError::Render(RenderError::Timeout)));
+    }
+
+    #[test]
+    fn create_and_list_canvases_order_and_ids() {
+        let dir = TempDir::new().unwrap();
+        let svc = CanvasService::with_stub_renderer(dir.path().to_path_buf());
+        let a = svc.create_canvas("Q4 Planning Board!").unwrap();
+        assert!(a.canvas_id.starts_with("q4-planning-board-"));
+        assert_eq!(a.title, "Q4 Planning Board!");
+        let b = svc.create_canvas("   ").unwrap_err();
+        assert!(matches!(b, CanvasError::InvalidArgument(_)));
+        let emoji = svc.create_canvas("\u{1f680}").unwrap();
+        assert!(emoji.canvas_id.starts_with("canvas-"));
+        let link = format_markdown_link("x", &CanvasLink::new(&a.canvas_id, "f", None, None));
+        assert_eq!(extract_markdown_links(&link).len(), 1);
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let store = svc.store(&a.canvas_id).unwrap();
+        store
+            .lock()
+            .unwrap()
+            .apply_batch(
+                "one".into(),
+                vec![Op::CreateFrame {
+                    id: Some("f".into()),
+                    title: "F".into(),
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 100.0,
+                    html: "<div>x</div>".into(),
+                }],
+                agent(),
+                None,
+            )
+            .unwrap();
+        let fresh = CanvasService::with_stub_renderer(dir.path().to_path_buf());
+        let list = fresh.list_canvases().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].canvas_id, a.canvas_id);
+        assert_eq!(list[0].frames, 1);
+        assert_eq!(list[0].title, "Q4 Planning Board!");
+    }
+
+    #[test]
+    fn apply_rejects_content_the_sanitiser_would_drop() {
+        let dir = TempDir::new().unwrap();
+        let mut store = CanvasStore::open(dir.path(), "proj").unwrap();
+        let mk = |html: &str| Op::CreateFrame {
+            id: Some("f".into()),
+            title: "F".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+            html: html.into(),
+        };
+        let err = store
+            .apply_batch(
+                "bad".into(),
+                vec![mk(
+                    "<div onclick=\"x()\" style=\"background:url(http://a/b.png)\"><script>1</script></div>",
+                )],
+                agent(),
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+        for needle in ["<script>", "onclick", "url("] {
+            assert!(err.contains(needle), "{err}");
+        }
+        assert_eq!(store.rev(), 0);
+        store
+            .apply_batch(
+                "ok".into(),
+                vec![mk("<div style=\"color:red /* c */\"><p>hi</p></div>")],
+                agent(),
+                None,
+            )
+            .unwrap();
     }
 }
