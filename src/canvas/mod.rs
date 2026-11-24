@@ -971,4 +971,88 @@ mod tests {
         assert!(remaining_bytes <= 1024, "remaining_bytes={remaining_bytes}");
         assert!(count_pngs() < 40);
     }
+
+    #[test]
+    fn frame_at_rev_is_fast_for_unchanged_and_accurate_for_history() {
+        let dir = TempDir::new().unwrap();
+        let mut store = CanvasStore::open(dir.path(), "big").unwrap();
+        let body = format!("<div>{}</div>", "<p>item</p>".repeat(50));
+
+        // Create 60 frames in separate batches so rev reaches 60 and triggers snapshot at 50 + 10 tail ops.
+        for i in 0..60 {
+            store
+                .apply_batch(
+                    format!("add {i}"),
+                    vec![Op::CreateFrame {
+                        id: Some(format!("f-{i:03}")),
+                        title: format!("F {i}"),
+                        x: (i as f32) * 100.0,
+                        y: 0.0,
+                        w: 100.0,
+                        h: 100.0,
+                        html: body.clone(),
+                    }],
+                    agent(),
+                    None,
+                )
+                .unwrap();
+        }
+        // Mutate f-000 at rev 61, then delete f-001 at rev 62.
+        store
+            .apply_batch(
+                "edit f-000".into(),
+                vec![Op::SetHtml {
+                    frame_id: "f-000".into(),
+                    html: "<div>v2</div>".into(),
+                }],
+                agent(),
+                None,
+            )
+            .unwrap();
+        store
+            .apply_batch(
+                "delete f-001".into(),
+                vec![Op::DeleteFrame {
+                    frame_id: "f-001".into(),
+                }],
+                agent(),
+                None,
+            )
+            .unwrap();
+
+        // Cold reopen with 12 tail ops after rev-50 snapshot must be fast.
+        let t0 = std::time::Instant::now();
+        let reopened = CanvasStore::open(dir.path(), "big").unwrap();
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(2),
+            "reopen took {:?}",
+            t0.elapsed()
+        );
+
+        // Querying all 58 unchanged frames at their own rev (< canvas rev 62) uses O(1) fast path.
+        let t1 = std::time::Instant::now();
+        for i in 2..60 {
+            let fid = format!("f-{i:03}");
+            let f = reopened
+                .frame_at_rev(&fid, (i + 1) as u64)
+                .unwrap()
+                .unwrap();
+            assert_eq!(f.rev, (i + 1) as u64);
+        }
+        assert!(
+            t1.elapsed() < std::time::Duration::from_millis(200),
+            "58 frame_at_rev lookups took {:?}",
+            t1.elapsed()
+        );
+
+        // Historical lookups still return exact pre-edit, pre-create, and pre-delete states.
+        assert!(reopened.frame_at_rev("f-005", 2).unwrap().is_none());
+        let old_f0 = reopened.frame_at_rev("f-000", 1).unwrap().unwrap();
+        assert!(old_f0.html.contains("item"));
+        assert_eq!(old_f0.rev, 1);
+        let new_f0 = reopened.frame_at_rev("f-000", 61).unwrap().unwrap();
+        assert!(new_f0.html.contains("v2"));
+        assert!(reopened.frame_at_rev("f-001", 2).unwrap().is_some());
+        assert!(reopened.frame_at_rev("f-001", 62).unwrap().is_none());
+    }
 }

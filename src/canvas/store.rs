@@ -971,8 +971,12 @@ impl CanvasStore {
             if batch.rev <= base_rev {
                 continue;
             }
-            // Match commit_ops' per-batch ID seeding so legacy and concrete DomOps replay identically.
-            let mut id_gen = Self::seed_id_gen(&self.frames);
+            // Only seed IdGen when a batch contains Dom ops; CreateFrame/SetHtml/MoveFrame/DeleteFrame never use it.
+            let mut id_gen = if batch.ops.iter().any(|op| matches!(op, Op::Dom { .. })) {
+                Self::seed_id_gen(&self.frames)
+            } else {
+                IdGen::new(&[])
+            };
             for op in &batch.ops {
                 Self::replay_op_into(&mut self.frames, op, batch.rev, &mut id_gen)?;
             }
@@ -993,7 +997,17 @@ impl CanvasStore {
         Ok(())
     }
 
-    /// Reconstruct the frame state at a historical revision by replaying the op log from rev 0.
+    fn op_touches_frame(op: &Op, frame_id: &str) -> bool {
+        match op {
+            Op::CreateFrame { id, .. } => id.as_deref() == Some(frame_id),
+            Op::SetHtml { frame_id: fid, .. }
+            | Op::Dom { frame_id: fid, .. }
+            | Op::MoveFrame { frame_id: fid, .. }
+            | Op::DeleteFrame { frame_id: fid } => fid == frame_id,
+        }
+    }
+
+    /// Reconstruct the frame state at a historical revision.
     pub fn frame_at_rev(
         &self,
         frame_id: &str,
@@ -1005,14 +1019,30 @@ impl CanvasStore {
         if target_rev >= self.rev {
             return Ok(self.frames.get(frame_id).cloned());
         }
+        // If the frame exists now and has not changed since target_rev, its state at target_rev is identical.
+        if let Some(cur) = self.frames.get(frame_id)
+            && cur.rev <= target_rev
+        {
+            return Ok(Some(cur.clone()));
+        }
         let mut frames = BTreeMap::new();
         for batch in &self.ops_log {
             if batch.rev > target_rev {
                 break;
             }
-            let mut ids = Self::seed_id_gen(&frames);
+            let has_dom = batch
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::Dom { frame_id: fid, .. } if fid == frame_id));
+            let mut ids = if has_dom {
+                Self::seed_id_gen(&frames)
+            } else {
+                IdGen::new(&[])
+            };
             for op in &batch.ops {
-                Self::replay_op_into(&mut frames, op, batch.rev, &mut ids)?;
+                if Self::op_touches_frame(op, frame_id) {
+                    Self::replay_op_into(&mut frames, op, batch.rev, &mut ids)?;
+                }
             }
         }
         Ok(frames.remove(frame_id))
