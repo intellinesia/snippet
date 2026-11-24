@@ -80,6 +80,7 @@ pub enum HtmlError {
     Parse(String),
     TooLarge(String),
     TooDeep(usize),
+    Unsupported(Vec<String>),
 }
 
 impl std::fmt::Display for HtmlError {
@@ -95,6 +96,11 @@ impl std::fmt::Display for HtmlError {
             HtmlError::TooDeep(max) => {
                 write!(f, "html nesting depth exceeds maximum of {max} levels")
             }
+            HtmlError::Unsupported(items) => write!(
+                f,
+                "canvas html contains content the sanitiser removes, so nothing was applied: {}. Remove these and resend (no scripts, iframes, forms-as-embeds, event handlers, external urls or CSS url()/@import; images must be raster data: URIs)",
+                items.join("; ")
+            ),
         }
     }
 }
@@ -143,6 +149,27 @@ fn base36(mut n: u64) -> String {
     }
     out.reverse();
     String::from_utf8(out).unwrap_or_default()
+}
+
+thread_local! {
+    static DROPPED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_dropped(what: String) {
+    DROPPED.with(|d| {
+        let mut d = d.borrow_mut();
+        if d.len() < 20 && !d.contains(&what) {
+            d.push(what);
+        }
+    });
+}
+
+pub fn clear_dropped() {
+    DROPPED.with(|d| d.borrow_mut().clear());
+}
+
+pub fn take_dropped() -> Vec<String> {
+    DROPPED.with(|d| std::mem::take(&mut *d.borrow_mut()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -835,6 +862,32 @@ fn sanitize_css(s: &str) -> String {
     cur.replace('<', "\\3c ")
 }
 
+fn sanitize_css_noting(s: &str) -> String {
+    let out = sanitize_css(s);
+    let base = css_unescape(&strip_css_comments(s)).replace('<', "\\3c ");
+    if out != base {
+        let (lb, lo) = (base.to_ascii_lowercase(), out.to_ascii_lowercase());
+        for kw in [
+            "@import",
+            "url(",
+            "src(",
+            "image-set(",
+            "expression",
+            "behavior",
+            "-moz-binding",
+            "javascript:",
+            "vbscript:",
+        ] {
+            if lb.matches(kw).count() != lo.matches(kw).count() {
+                note_dropped(format!(
+                    "CSS `{kw}` is not allowed (external or unsafe CSS removed)"
+                ));
+            }
+        }
+    }
+    out
+}
+
 fn sanitize_nodes(nodes: Vec<Node>) -> Vec<Node> {
     nodes.into_iter().filter_map(sanitize_node).collect()
 }
@@ -845,6 +898,7 @@ fn sanitize_node(node: Node) -> Option<Node> {
     };
     let tag = el.tag.to_ascii_lowercase();
     if DROP_TAGS.contains(&tag.as_str()) {
+        note_dropped(format!("element <{tag}> is not allowed"));
         return None;
     }
     if tag == "meta" {
@@ -857,20 +911,22 @@ fn sanitize_node(node: Node) -> Option<Node> {
                 .iter()
                 .any(|(k, _)| k.eq_ignore_ascii_case("http-equiv"));
         if !has_charset_only {
+            note_dropped("element <meta> is not allowed (only charset)".into());
             return None;
         }
     }
     let attrs = std::mem::take(&mut el.attrs);
     for (name, value) in attrs {
         let lname = name.to_ascii_lowercase();
-        if let Some(clean) = sanitize_attr(&tag, &lname, &value) {
-            el.attrs.push((lname, clean));
+        match sanitize_attr(&tag, &lname, &value) {
+            Some(clean) => el.attrs.push((lname, clean)),
+            None => note_dropped(format!("attribute `{lname}` on <{tag}> is not allowed")),
         }
     }
     if tag == "style" {
         for child in el.children.iter_mut() {
             if let Node::Text(t) = child {
-                *t = sanitize_css(t);
+                *t = sanitize_css_noting(t);
             }
         }
     }
@@ -905,7 +961,7 @@ fn sanitize_attr(tag: &str, lname: &str, value: &str) -> Option<String> {
         return None;
     }
     if lname == "style" {
-        return Some(sanitize_css(value));
+        return Some(sanitize_css_noting(value));
     }
     if lname == "srcset" {
         return srcset_allowed(value).then(|| value.trim().to_string());

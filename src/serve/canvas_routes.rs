@@ -20,6 +20,7 @@ use crate::canvas::{
 pub fn router() -> Router<Shared> {
     Router::new()
         .route("/canvas", get(get_canvas))
+        .route("/canvases", get(list_canvases).post(create_canvas))
         .route("/canvas/frames/{id}", get(get_frame))
         .route("/canvas/frames/{id}/thumb.png", get(get_frame_thumb))
         .route("/canvas/frames/{id}/layout.json", get(get_frame_layout))
@@ -74,6 +75,29 @@ fn canvas_error_response(err: CanvasError) -> Response {
         | CanvasError::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     api_error(status, err.to_string())
+}
+
+async fn list_canvases(State(d): State<Shared>) -> Response {
+    let canvas = d.canvas.clone();
+    match tokio::task::spawn_blocking(move || canvas.list_canvases()).await {
+        Ok(Ok(list)) => Json(list).into_response(),
+        Ok(Err(e)) => canvas_error_response(e),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateCanvasReq {
+    title: String,
+}
+
+async fn create_canvas(State(d): State<Shared>, Json(req): Json<CreateCanvasReq>) -> Response {
+    let canvas = d.canvas.clone();
+    match tokio::task::spawn_blocking(move || canvas.create_canvas(&req.title)).await {
+        Ok(Ok(c)) => Json(json!({ "canvas_id": c.canvas_id, "title": c.title })).into_response(),
+        Ok(Err(e)) => canvas_error_response(e),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 #[derive(Deserialize, Default)]

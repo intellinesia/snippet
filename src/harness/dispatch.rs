@@ -89,6 +89,8 @@ pub(super) fn tool_activity_text(name: &str, args: &Value) -> String {
         "canvas_apply" => "Updating canvas".into(),
         "canvas_thumbnail" => "Rendering canvas frame".into(),
         "canvas_pins" => "Managing canvas pins".into(),
+        "canvas_create" => "Creating canvas".into(),
+        "canvas_list" => "Listing canvases".into(),
         "web_search" => "Searching the web".into(),
         "web_read" => "Reading web page".into(),
         "search_skills" => "Finding skills".into(),

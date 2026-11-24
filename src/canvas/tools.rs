@@ -17,7 +17,7 @@ use super::store::{CanvasService, RENDER_TIMEOUT, canvas_id_for_workspace, emit_
 pub const MAX_CANVAS_READ_BYTES: usize = 16_000;
 const MAX_CREATED_IDS_RETURNED: usize = 100;
 
-pub const CANVAS_HTML_SUBSET_NOTE: &str = "Supported HTML/CSS subset (Blitz renderer, max frame 4000x8000 px, max HTML 512 KiB): block, inline, flex, grid, absolute/relative positioning, margin/padding/border/radius, box-shadow, linear/radial gradients, opacity, overflow hidden, basic transforms, text styling, inline SVG (no <foreignObject> or external <use>), img with raster data:image/(png|jpeg|gif|webp|avif|bmp) URIs only (no SVG data URIs). NO JavaScript, forms, sticky, subgrid, filters, animations, or external resources. Known renderer gaps: avoid <select> and <input placeholder> (use styled divs), text-overflow: ellipsis, background-clip: text and CSS filter; page CSS does not style inline SVG, so put explicit fill/font-family attributes on SVG text; set the body background on a full-height wrapper div; no non-Latin scripts (emoji are fine). Every element is addressed by `data-cv-id`; whole-frame `set_html` preserves `data-cv-id` of unchanged elements.";
+pub const CANVAS_HTML_SUBSET_NOTE: &str = "Supported HTML/CSS subset (Blitz renderer, max frame 4000x8000 px, max HTML 512 KiB): block, inline, flex, grid, absolute/relative positioning, margin/padding/border/radius, box-shadow, linear/radial gradients, opacity, overflow hidden, basic transforms, text styling, inline SVG (no <foreignObject> or external <use>), img with raster data:image/(png|jpeg|gif|webp|avif|bmp) URIs only (no SVG data URIs). NO JavaScript, forms, sticky, subgrid, filters, animations, or external resources. Content the sanitiser would remove (script, iframe, on* handlers, external urls, CSS url()/@import) makes canvas_apply fail with an error naming it; nothing is applied. Known renderer gaps: avoid border-collapse tables (use divs), <select> and <input placeholder> (use styled divs), text-overflow: ellipsis, background-clip: text and CSS filter; page CSS does not style inline SVG, so put explicit fill/font-family attributes on SVG text; set the body background on a full-height wrapper div; no non-Latin scripts (emoji are fine). Every element is addressed by `data-cv-id`; whole-frame `set_html` preserves `data-cv-id` of unchanged elements.";
 
 fn truncate_utf8_bytes(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
@@ -35,6 +35,8 @@ pub fn add_canvas_tools(registry: &mut ToolRegistry) {
     registry.insert(CanvasApplyTool);
     registry.insert(CanvasThumbnailTool);
     registry.insert(CanvasPinsTool);
+    registry.insert(CanvasCreateTool);
+    registry.insert(CanvasListTool);
 }
 
 fn active_canvas_service() -> Arc<CanvasService> {
@@ -609,5 +611,64 @@ impl Tool for CanvasPinsTool {
         .await
         .map_err(|e| ToolError::msg(format!("canvas_pins join: {e}")))??;
         Ok(ToolResult::success(payload))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CanvasCreateArgs {
+    title: String,
+}
+
+pub struct CanvasCreateTool;
+
+#[async_trait]
+impl Tool for CanvasCreateTool {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "canvas_create".to_string(),
+            description: "Create a new empty titled canvas and return its `canvas_id`. Pass that id as `canvas_id` to canvas_read, canvas_apply, canvas_thumbnail and canvas_pins. Omit `canvas_id` in those tools to keep using this project's default canvas.".to_string(),
+            input_schema: schema(
+                json!({"title": {"type": "string", "description": "Human-readable canvas title (1 to 120 characters)."}}),
+                &["title"],
+            ),
+        }
+    }
+
+    async fn execute(&self, _ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let args: CanvasCreateArgs = expect_object("canvas_create", arguments)?;
+        let svc = active_canvas_service();
+        let created = tokio::task::spawn_blocking(move || svc.create_canvas(&args.title))
+            .await
+            .map_err(|e| ToolError::msg(format!("canvas_create join: {e}")))?
+            .map_err(|e| ToolError::msg(format!("canvas_create: {e}")))?;
+        Ok(ToolResult::success(
+            json!({ "canvas_id": created.canvas_id, "title": created.title }),
+        ))
+    }
+}
+
+pub struct CanvasListTool;
+
+#[async_trait]
+impl Tool for CanvasListTool {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "canvas_list".to_string(),
+            description: "List all canvases (most recently updated first) with `canvas_id`, `title`, frame count, `rev` and `updated_at`.".to_string(),
+            input_schema: schema(json!({}), &[]),
+        }
+    }
+
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _arguments: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let svc = active_canvas_service();
+        let list = tokio::task::spawn_blocking(move || svc.list_canvases())
+            .await
+            .map_err(|e| ToolError::msg(format!("canvas_list join: {e}")))?
+            .map_err(|e| ToolError::msg(format!("canvas_list: {e}")))?;
+        Ok(ToolResult::success(json!({ "canvases": list })))
     }
 }
