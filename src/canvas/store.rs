@@ -227,6 +227,9 @@ pub struct CanvasSummary {
     pub frames: usize,
     pub rev: u64,
     pub updated_at: i64,
+    pub author: Option<String>,
+    #[serde(skip)]
+    pub thumb_frame: Option<(String, u64)>,
 }
 
 impl CanvasStore {
@@ -289,6 +292,8 @@ impl CanvasStore {
                 .last()
                 .map(|b| b.ts)
                 .unwrap_or(self.meta.created_ts),
+            author: self.ops_log.last().map(|b| b.author.id.clone()),
+            thumb_frame: self.frames.values().next().map(|f| (f.id.clone(), f.rev)),
         }
     }
 

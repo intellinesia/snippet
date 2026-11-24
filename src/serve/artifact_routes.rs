@@ -13,7 +13,8 @@ const LINK_TTL_SECS: i64 = 6 * 60 * 60;
 
 pub fn router() -> Router<Shared> {
     Router::new()
-        .route("/artifacts", get(list))
+        .route("/artifacts", get(list_or_all))
+        .route("/artifacts/resolve", get(super::unified::resolve))
         .route("/artifacts/zip", post(zip_artifact))
         .route("/zip", post(zip_files))
         .route("/a/{exp}/{sig}/{*rest}", get(serve))
@@ -21,11 +22,18 @@ pub fn router() -> Router<Shared> {
 
 #[derive(Deserialize)]
 struct ListQuery {
-    session: String,
+    session: Option<String>,
 }
 
-async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
-    let artifacts: Vec<_> = crate::artifacts::list(&q.session)
+async fn list_or_all(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
+    match q.session {
+        Some(session) => list(State(d), session).await,
+        None => super::unified::list_all(State(d)).await,
+    }
+}
+
+async fn list(State(d): State<Shared>, session: String) -> Response {
+    let artifacts: Vec<_> = crate::artifacts::list(&session)
         .into_iter()
         .map(|a| {
             let versions: Vec<_> = a
@@ -37,7 +45,7 @@ async fn list(State(d): State<Shared>, Query(q): Query<ListQuery>) -> Response {
                         "created_at": v.created_at,
                         "entry": v.entry,
                         "source": v.source,
-                        "url": crate::artifacts::signed_path(&d.token, &q.session, &a.id, v, LINK_TTL_SECS),
+                        "url": crate::artifacts::signed_path(&d.token, &session, &a.id, v, LINK_TTL_SECS),
                     })
                 })
                 .collect();
