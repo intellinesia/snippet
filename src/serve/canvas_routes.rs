@@ -112,18 +112,58 @@ async fn create_canvas(State(d): State<Shared>, Json(req): Json<CreateCanvasReq>
 struct CanvasQuery {
     canvas_id: Option<String>,
     workspace: Option<String>,
+    lite: Option<String>,
+}
+
+fn is_lite(flag: Option<&str>) -> bool {
+    matches!(
+        flag.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true" | "yes")
+    )
+}
+
+#[derive(serde::Serialize)]
+struct FrameLite {
+    id: String,
+    title: String,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    rev: u64,
+}
+
+impl From<crate::canvas::Frame> for FrameLite {
+    fn from(f: crate::canvas::Frame) -> Self {
+        Self {
+            id: f.id,
+            title: f.title,
+            x: f.x,
+            y: f.y,
+            w: f.w,
+            h: f.h,
+            rev: f.rev,
+        }
+    }
 }
 
 async fn get_canvas(State(d): State<Shared>, Query(q): Query<CanvasQuery>) -> Response {
     let cid = resolve_canvas_id(&d, q.canvas_id.as_deref(), q.workspace.as_deref());
+    let lite = is_lite(q.lite.as_deref());
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
         let store = canvas.store(&cid)?;
         let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        let frames = if lite {
+            let lite_frames: Vec<FrameLite> = s.frames().into_iter().map(FrameLite::from).collect();
+            json!(lite_frames)
+        } else {
+            json!(s.frames())
+        };
         Ok::<_, CanvasError>(json!({
             "canvas_id": s.canvas_id(),
             "rev": s.rev(),
-            "frames": s.frames(),
+            "frames": frames,
         }))
     })
     .await;
@@ -143,12 +183,20 @@ async fn get_frame(
         return canvas_error_response(CanvasError::InvalidId(id));
     }
     let cid = resolve_canvas_id(&d, q.canvas_id.as_deref(), q.workspace.as_deref());
+    let lite = is_lite(q.lite.as_deref());
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
         let store = canvas.store(&cid)?;
         let s = store.lock().unwrap_or_else(|e| e.into_inner());
         match s.frame(&id) {
-            Some(frame) => Ok(json!({ "canvas_id": s.canvas_id(), "frame": frame })),
+            Some(frame) => {
+                let frame_val = if lite {
+                    json!(FrameLite::from(frame))
+                } else {
+                    json!(frame)
+                };
+                Ok(json!({ "canvas_id": s.canvas_id(), "frame": frame_val }))
+            }
             None => Err(CanvasError::FrameNotFound(id)),
         }
     })
@@ -837,5 +885,103 @@ mod tests {
         let overloaded = canvas_error_response(CanvasError::Render(RenderError::Overloaded));
         assert_eq!(overloaded.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert!(overloaded.headers().get(header::RETRY_AFTER).is_some());
+    }
+
+    #[tokio::test]
+    async fn canvas_lite_snapshot_omits_html_and_is_much_smaller() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(dir.path());
+        let big_html = format!(
+            "<div data-cv-id=\"r\">{}</div>",
+            "hello world ".repeat(2000)
+        );
+        let batch_body = json!({
+            "canvas_id": "big",
+            "label": "seed big frame",
+            "ops": [{
+                "op": "create_frame",
+                "id": "screen-1",
+                "title": "Screen 1",
+                "x": 10.0,
+                "y": 20.0,
+                "w": 390.0,
+                "h": 844.0,
+                "html": big_html
+            }]
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/canvas/batch?token=test-secret")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(batch_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let full_resp = app
+            .clone()
+            .oneshot(
+                Request::get("/canvas?token=test-secret&canvas_id=big")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(full_resp.status(), StatusCode::OK);
+        let full_bytes = axum::body::to_bytes(full_resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let full_json: serde_json::Value = serde_json::from_slice(&full_bytes).unwrap();
+        assert!(full_json["frames"][0]["html"].is_string());
+
+        let lite_resp = app
+            .clone()
+            .oneshot(
+                Request::get("/canvas?token=test-secret&canvas_id=big&lite=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lite_resp.status(), StatusCode::OK);
+        let lite_bytes = axum::body::to_bytes(lite_resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let lite_json: serde_json::Value = serde_json::from_slice(&lite_bytes).unwrap();
+        let frame = &lite_json["frames"][0];
+        assert!(frame.get("html").is_none());
+        assert_eq!(frame["id"], "screen-1");
+        assert_eq!(frame["title"], "Screen 1");
+        assert_eq!(frame["x"], 10.0);
+        assert_eq!(frame["y"], 20.0);
+        assert_eq!(frame["w"], 390.0);
+        assert_eq!(frame["h"], 844.0);
+        assert_eq!(frame["rev"], 1);
+        assert!(
+            lite_bytes.len() * 10 < full_bytes.len(),
+            "lite ({}) should be much smaller than full ({})",
+            lite_bytes.len(),
+            full_bytes.len()
+        );
+
+        let lite_frame_resp = app
+            .clone()
+            .oneshot(
+                Request::get("/canvas/frames/screen-1?token=test-secret&canvas_id=big&lite=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lite_frame_resp.status(), StatusCode::OK);
+        let lite_frame_bytes = axum::body::to_bytes(lite_frame_resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let lite_frame_json: serde_json::Value = serde_json::from_slice(&lite_frame_bytes).unwrap();
+        assert!(lite_frame_json["frame"].get("html").is_none());
+        assert_eq!(lite_frame_json["frame"]["id"], "screen-1");
     }
 }
