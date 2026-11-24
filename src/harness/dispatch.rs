@@ -1089,6 +1089,10 @@ impl crate::code_mode::runner::InnerCalls for NativeExec<'_> {
         });
         result
     }
+
+    fn workspace(&self) -> Option<std::path::PathBuf> {
+        Some(self.harness.context.current_dir())
+    }
 }
 
 impl CodingHarness {

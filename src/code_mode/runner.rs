@@ -1,8 +1,11 @@
-use std::path::PathBuf;
+use std::future::Future;
+use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
 use std::time::Duration;
 
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::sandbox::{self, Globals, HostRequest, Limits, Outcome};
 use crate::llm::NativeToolDefinition;
@@ -19,6 +22,10 @@ const DENIED: &[&str] = &[
     "view_image",
 ];
 const RESULT_CHARS: usize = 20_000;
+const MAX_FS_READ_BYTES: usize = 2 * 1024 * 1024;
+
+pub type CallFuture = Pin<Box<dyn Future<Output = Value> + Send>>;
+type InFlightCall = Pin<Box<dyn Future<Output = (usize, u64, Value)> + Send>>;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RecordedCall {
@@ -39,6 +46,16 @@ pub struct RunRecord {
 #[async_trait::async_trait]
 pub trait InnerCalls: Send {
     async fn call(&mut self, name: &str, args: Value) -> Value;
+
+    /// Optional concurrent dispatch so `Promise.all` runs inner calls in parallel.
+    fn call_concurrent(&self, _name: &str, _args: Value) -> Option<CallFuture> {
+        None
+    }
+
+    /// Working directory for relative `fs.*` paths inside scripts.
+    fn workspace(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 pub fn is_code_tool(name: &str) -> bool {
@@ -58,7 +75,7 @@ fn code_definitions() -> Vec<NativeToolDefinition> {
         def(
             "code_run",
             "Run JavaScript that calls your tools.",
-            json!({"code": {"type": "string", "description": "Body of an async function. Every other tool is a function: `await task.update({...})` for a grouped tool's action, `await bash({command})` for a plain tool. `return` the value you want back; console.log lines come back too. Each call returns the same JSON it does when called directly, and a failed call returns its error rather than throwing, so check `status`. Tools that end your turn are called directly, not from a script. `await agent.ask(question, data)` pauses the run and hands you the question and data to decide; `await view_image({path})` or `await agent.look(path, question)` pauses and shows you the image (a screenshot the script took, say). code.resume continues the script; your answer, if any, is what the call returns."}}),
+            json!({"code": {"type": "string", "description": "Body of an async function. Every tool is a function: `await task.update({...})` for a grouped tool's action, `await bash({command})` for a plain tool, and `await Promise.all([...])` runs calls concurrently. Untruncated file helpers: `await fs.read(path)`, `fs.write(path, text)`, `fs.replace(path, find, replacement, all?)`, `fs.exists(path)`, `fs.list(dir?)`. `return` only the compact value you need (skip raw tool envelopes); console.log lines come back too. Tool calls return their normal JSON and errors include the call's TypeScript signature when arguments fail—check `status`. Call direct `bash`, `change_files` or `view_image` for single steps, edits with `${...}`, or standalone image views; pause with `await agent.ask(question, data)` or `await agent.look(path, question)` only when later script steps depend on your answer, then continue with code.resume."}}),
             &["code"],
         ),
         def(
@@ -100,11 +117,15 @@ fn call_definitions() -> Vec<NativeToolDefinition> {
     ]
 }
 
-/// Globals for a script: grouped tools with their actions, and plain tools.
+/// Globals for a script: grouped tools with their actions, plain tools, and `fs.*` helpers.
 pub fn globals(advertised: &[NativeToolDefinition]) -> Globals {
     let mut surfaces = Vec::new();
     let mut plain = Vec::new();
+    let mut fs = false;
     for def in advertised {
+        if matches!(def.name.as_str(), "bash" | "change_files") {
+            fs = true;
+        }
         if DENIED.contains(&def.name.as_str()) {
             continue;
         }
@@ -113,7 +134,11 @@ pub fn globals(advertised: &[NativeToolDefinition]) -> Globals {
             None => plain.push(def.name.clone()),
         }
     }
-    Globals { surfaces, plain }
+    Globals {
+        surfaces,
+        plain,
+        fs,
+    }
 }
 
 fn actions_of(def: &NativeToolDefinition) -> Option<Vec<String>> {
@@ -140,6 +165,9 @@ fn annotate(advertised: &mut [NativeToolDefinition], all: &[NativeToolDefinition
         .map(|(name, actions)| format!("{name}.{{{}}}", actions.join(",")))
         .collect();
     names.extend(g.plain.iter().cloned());
+    if g.fs {
+        names.push("fs.{read,write,replace,exists,list}".into());
+    }
     if let Some(code) = advertised.iter_mut().find(|d| d.name == "code") {
         code.description
             .push_str(&format!("\nFunctions in scripts: {}.", names.join(", ")));
@@ -267,6 +295,238 @@ pub async fn execute(
     }
 }
 
+fn is_fs_call(name: &str) -> bool {
+    matches!(
+        name,
+        "__fs_read" | "__fs_write" | "__fs_replace" | "__fs_exists" | "__fs_list"
+    )
+}
+
+fn resolve_fs_path(workspace: Option<&Path>, raw: &str) -> PathBuf {
+    let expanded = if raw == "~" || raw.starts_with("~/") {
+        match std::env::var_os("HOME") {
+            Some(home) => format!("{}{}", home.to_string_lossy(), &raw[1..]),
+            None => raw.to_string(),
+        }
+    } else {
+        raw.to_string()
+    };
+    let candidate = Path::new(&expanded);
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        workspace
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(candidate)
+    };
+    let mut normalized = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn execute_fs(name: &str, args: &Value, workspace: Option<PathBuf>) -> Value {
+    let path_arg = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    match name {
+        "__fs_read" => {
+            let Some(raw) = path_arg("path") else {
+                return failure("invalid_arguments", "fs.read: `path` is required.".into(), None);
+            };
+            let path = resolve_fs_path(workspace.as_deref(), raw);
+            let meta = match std::fs::metadata(&path) {
+                Ok(m) => m,
+                Err(e) => return failure("fs_error", format!("fs.read({raw}): {e}"), None),
+            };
+            if meta.len() as usize > MAX_FS_READ_BYTES {
+                return failure(
+                    "fs_error",
+                    format!(
+                        "fs.read({raw}): file is {} bytes (limit {} bytes); use bash to inspect slices.",
+                        meta.len(),
+                        MAX_FS_READ_BYTES
+                    ),
+                    None,
+                );
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(content) => success(Value::String(content)),
+                Err(e) => failure("fs_error", format!("fs.read({raw}): {e}"), None),
+            }
+        }
+        "__fs_write" => {
+            let Some(raw) = path_arg("path") else {
+                return failure("invalid_arguments", "fs.write: `path` is required.".into(), None);
+            };
+            let Some(content) = args.get("content").and_then(Value::as_str) else {
+                return failure("invalid_arguments", "fs.write: `content` is required.".into(), None);
+            };
+            let path = resolve_fs_path(workspace.as_deref(), raw);
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                return failure("fs_error", format!("fs.write({raw}): {e}"), None);
+            }
+            match std::fs::write(&path, content) {
+                Ok(()) => success(json!({"path": path.display().to_string(), "bytes": content.len()})),
+                Err(e) => failure("fs_error", format!("fs.write({raw}): {e}"), None),
+            }
+        }
+        "__fs_replace" => {
+            let Some(raw) = path_arg("path") else {
+                return failure("invalid_arguments", "fs.replace: `path` is required.".into(), None);
+            };
+            let Some(find) = args.get("find").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+                return failure("invalid_arguments", "fs.replace: non-empty `find` is required.".into(), None);
+            };
+            let Some(replacement) = args
+                .get("replacement")
+                .or_else(|| args.get("with"))
+                .and_then(Value::as_str)
+            else {
+                return failure(
+                    "invalid_arguments",
+                    "fs.replace: `replacement` (or `with`) is required.".into(),
+                    None,
+                );
+            };
+            let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
+            let path = resolve_fs_path(workspace.as_deref(), raw);
+            let current = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => return failure("fs_error", format!("fs.replace({raw}): {e}"), None),
+            };
+            let count = current.matches(find).count();
+            if count == 0 {
+                return failure("fs_error", format!("fs.replace({raw}): `find` text not found."), None);
+            }
+            if count > 1 && !all {
+                return failure(
+                    "fs_error",
+                    format!(
+                        "fs.replace({raw}): `find` matched {count} times; pass all=true or a more specific snippet."
+                    ),
+                    None,
+                );
+            }
+            let updated = if all {
+                current.replace(find, replacement)
+            } else {
+                current.replacen(find, replacement, 1)
+            };
+            match std::fs::write(&path, updated) {
+                Ok(()) => success(json!({"path": path.display().to_string(), "replacements": count})),
+                Err(e) => failure("fs_error", format!("fs.replace({raw}): {e}"), None),
+            }
+        }
+        "__fs_exists" => {
+            let Some(raw) = path_arg("path") else {
+                return failure("invalid_arguments", "fs.exists: `path` is required.".into(), None);
+            };
+            let path = resolve_fs_path(workspace.as_deref(), raw);
+            success(Value::Bool(path.exists()))
+        }
+        "__fs_list" => {
+            let raw = path_arg("dir").or_else(|| path_arg("path")).unwrap_or(".");
+            let path = resolve_fs_path(workspace.as_deref(), raw);
+            let entries = match std::fs::read_dir(&path) {
+                Ok(rd) => rd,
+                Err(e) => return failure("fs_error", format!("fs.list({raw}): {e}"), None),
+            };
+            let mut names = Vec::new();
+            for entry in entries.flatten() {
+                let mut name = entry.file_name().to_string_lossy().to_string();
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    name.push('/');
+                }
+                names.push(name);
+            }
+            names.sort();
+            success(json!(names))
+        }
+        _ => failure("unknown_tool", format!("Unknown fs helper `{name}`."), None),
+    }
+}
+
+fn should_attach_signature(result: &Value) -> bool {
+    if result.get("status").and_then(Value::as_str) != Some("error") {
+        return false;
+    }
+    let code = result
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if matches!(code, "invalid_arguments" | "unknown_action") {
+        return true;
+    }
+    if code != "tool_error" {
+        return false;
+    }
+    let msg = result
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    [
+        "required",
+        "missing",
+        "unknown",
+        "invalid",
+        "must be",
+        "expected",
+        "no action",
+        "unrecognized",
+    ]
+    .iter()
+    .any(|kw| msg.contains(kw))
+}
+
+fn attach_signature(
+    name: &str,
+    args: &Value,
+    result: &mut Value,
+    advertised: &[NativeToolDefinition],
+) {
+    if !should_attach_signature(result) || is_fs_call(name) {
+        return;
+    }
+    let action = args.get("action").and_then(Value::as_str);
+    let sig = describe_text(name, action, advertised)
+        .or_else(|| describe_text(name, None, advertised));
+    if let (Some(decl), Some(err)) = (sig, result.get_mut("error").and_then(Value::as_object_mut)) {
+        err.insert("signature".into(), Value::String(decl));
+    }
+}
+
+fn finish_in_flight(
+    record: &mut RunRecord,
+    slot: usize,
+    id: u64,
+    mut result: Value,
+    advertised: &[NativeToolDefinition],
+    reply_tx: &std::sync::mpsc::Sender<(u64, Value)>,
+) {
+    if let Some(entry) = record.calls.get_mut(slot) {
+        attach_signature(&entry.name, &entry.args, &mut result, advertised);
+        entry.result = result.clone();
+    }
+    let _ = reply_tx.send((id, result));
+}
+
 async fn drive(
     mut record: RunRecord,
     earlier: Vec<RecordedCall>,
@@ -275,45 +535,106 @@ async fn drive(
     exec: &mut dyn InnerCalls,
 ) -> Value {
     let limits = Limits {
-        timeout: Duration::from_secs(150),
+        js_timeout: Duration::from_secs(30),
+        call_timeout: Duration::from_secs(180),
         memory_bytes: 64 * 1024 * 1024,
         max_log_chars: 8_000,
     };
-    let (mut rx, handle) = sandbox::spawn(record.code.clone(), globals(advertised), limits);
+    let g = globals(advertised);
+    let fs_enabled = g.fs;
+    let workspace = exec.workspace();
+    let (mut rx, reply_tx, handle) = sandbox::spawn(record.code.clone(), g, limits);
     let mut replayed = 0usize;
     let mut diverged = false;
     let mut asked = 0usize;
-    while let Some(request) = rx.recv().await {
-        match request {
-            HostRequest::Call { name, args, reply } => {
-                let index = record.calls.len();
-                let result = if DENIED.contains(&name.as_str()) {
-                    failure(
-                        "not_in_code",
-                        format!("`{name}` cannot run inside code; call it directly."),
-                        None,
-                    )
-                } else if !diverged
-                    && earlier
-                        .get(index)
-                        .is_some_and(|c| c.name == name && c.args == args)
-                {
-                    replayed += 1;
-                    earlier[index].result.clone()
-                } else {
-                    diverged = true;
-                    exec.call(&name, args.clone()).await
-                };
-                let _ = reply.send(result.clone());
-                record.calls.push(RecordedCall { name, args, result });
+    let mut in_flight: FuturesUnordered<InFlightCall> = FuturesUnordered::new();
+
+    loop {
+        tokio::select! {
+            biased;
+            Some((slot, id, result)) = in_flight.next(), if !in_flight.is_empty() => {
+                finish_in_flight(&mut record, slot, id, result, advertised, &reply_tx);
             }
-            HostRequest::Ask { reply, .. } => {
-                let answer = record.answers.get(asked).cloned();
-                asked += 1;
-                let _ = reply.send(answer);
+            req = rx.recv() => {
+                let Some(request) = req else {
+                    break;
+                };
+                match request {
+                    HostRequest::Call { id, name, args } => {
+                        let slot = record.calls.len();
+                        record.calls.push(RecordedCall {
+                            name: name.clone(),
+                            args: args.clone(),
+                            result: Value::Null,
+                        });
+                        if DENIED.contains(&name.as_str()) {
+                            let res = failure(
+                                "not_in_code",
+                                format!("`{name}` cannot run inside code; call it directly."),
+                                None,
+                            );
+                            finish_in_flight(&mut record, slot, id, res, advertised, &reply_tx);
+                        } else if is_fs_call(&name) && !fs_enabled {
+                            let res = failure(
+                                "not_in_code",
+                                "Filesystem helpers are not enabled for this seat.".into(),
+                                None,
+                            );
+                            finish_in_flight(&mut record, slot, id, res, advertised, &reply_tx);
+                        } else if !diverged
+                            && earlier
+                                .get(slot)
+                                .is_some_and(|c| c.name == name && c.args == args)
+                        {
+                            replayed += 1;
+                            let cached = earlier[slot].result.clone();
+                            record.calls[slot].result = cached.clone();
+                            let _ = reply_tx.send((id, cached));
+                        } else {
+                            diverged = true;
+                            if is_fs_call(&name) {
+                                let ws = workspace.clone();
+                                in_flight.push(Box::pin(async move {
+                                    let res = tokio::task::spawn_blocking(move || {
+                                        execute_fs(&name, &args, ws)
+                                    })
+                                    .await
+                                    .unwrap_or_else(|e| {
+                                        failure("fs_error", format!("fs task failed: {e}"), None)
+                                    });
+                                    (slot, id, res)
+                                }));
+                            } else if let Some(fut) = exec.call_concurrent(&name, args.clone()) {
+                                in_flight.push(Box::pin(async move {
+                                    let res = fut.await;
+                                    (slot, id, res)
+                                }));
+                            } else {
+                                let res = exec.call(&name, args).await;
+                                finish_in_flight(&mut record, slot, id, res, advertised, &reply_tx);
+                            }
+                        }
+                    }
+                    HostRequest::Ask { reply, .. } => {
+                        let answer = record.answers.get(asked).cloned();
+                        asked += 1;
+                        if answer.is_none() {
+                            // Drain any already-launched concurrent calls so their results are recorded before pausing.
+                            while let Some((slot, id, result)) = in_flight.next().await {
+                                finish_in_flight(&mut record, slot, id, result, advertised, &reply_tx);
+                            }
+                        }
+                        let _ = reply.send(answer);
+                    }
+                }
             }
         }
     }
+    while let Some((slot, id, result)) = in_flight.next().await {
+        finish_in_flight(&mut record, slot, id, result, advertised, &reply_tx);
+    }
+    drop(reply_tx);
+
     let outcome = match handle.await {
         Ok(outcome) => outcome,
         Err(error) => Outcome::Failed {
@@ -325,57 +646,140 @@ async fn drive(
     let result = match outcome {
         Outcome::Completed { value, logs } => {
             record.status = "completed".into();
-            success(
-                json!({"status": "completed", "run_id": record.run_id, "result": capped(value), "logs": logs, "calls": calls, "replayed": replayed}),
-            )
+            let mut data = Map::new();
+            data.insert("status".into(), json!("completed"));
+            data.insert("run_id".into(), json!(record.run_id));
+            data.insert("result".into(), capped(value));
+            data.insert("calls".into(), json!(calls));
+            if !logs.is_empty() {
+                data.insert("logs".into(), json!(logs));
+            }
+            if replayed > 0 {
+                data.insert("replayed".into(), json!(replayed));
+            }
+            success(Value::Object(data))
         }
         Outcome::Paused {
             question,
-            data,
+            data: pause_data,
             logs,
-        } if data.get("__look").is_some_and(Value::is_string) => {
+        } if pause_data.get("__look").is_some_and(Value::is_string) => {
             record.status = "paused".into();
-            success(json!({
-                "status": "paused",
-                "run_id": record.run_id,
-                "question": question,
-                "path": data["__look"],
-                "logs": logs,
-                "calls": calls,
-                "replayed": replayed,
-                "next": "Look at the image, then code.resume with this run_id and your answer."
-            }))
+            let mut data = Map::new();
+            data.insert("status".into(), json!("paused"));
+            data.insert("run_id".into(), json!(record.run_id));
+            data.insert("question".into(), json!(question));
+            data.insert("path".into(), pause_data["__look"].clone());
+            data.insert("calls".into(), json!(calls));
+            if !logs.is_empty() {
+                data.insert("logs".into(), json!(logs));
+            }
+            if replayed > 0 {
+                data.insert("replayed".into(), json!(replayed));
+            }
+            data.insert(
+                "next".into(),
+                json!("Look at the image, then code.resume with this run_id and your answer."),
+            );
+            success(Value::Object(data))
         }
         Outcome::Paused {
             question,
-            data,
+            data: pause_data,
             logs,
         } => {
             record.status = "paused".into();
-            success(json!({
-                "status": "paused",
-                "run_id": record.run_id,
-                "question": question,
-                "data": capped(data),
-                "logs": logs,
-                "calls": calls,
-                "replayed": replayed,
-                "next": "Decide, then code.resume with this run_id and your answer."
-            }))
+            let mut data = Map::new();
+            data.insert("status".into(), json!("paused"));
+            data.insert("run_id".into(), json!(record.run_id));
+            data.insert("question".into(), json!(question));
+            data.insert("data".into(), capped(pause_data));
+            data.insert("calls".into(), json!(calls));
+            if !logs.is_empty() {
+                data.insert("logs".into(), json!(logs));
+            }
+            if replayed > 0 {
+                data.insert("replayed".into(), json!(replayed));
+            }
+            data.insert(
+                "next".into(),
+                json!("Decide, then code.resume with this run_id and your answer."),
+            );
+            success(Value::Object(data))
         }
         Outcome::Failed { message, logs } => {
             record.status = "failed".into();
-            failure(
-                "script_error",
-                message,
-                Some(
-                    json!({"run_id": record.run_id, "logs": logs, "calls": calls, "next": "Fix the code and code.resume with this run_id and `code`; calls that match reuse their results."}),
-                ),
-            )
+            let mut details = Map::new();
+            details.insert("run_id".into(), json!(record.run_id));
+            details.insert("calls".into(), json!(calls));
+            if !logs.is_empty() {
+                details.insert("logs".into(), json!(logs));
+            }
+            details.insert(
+                "next".into(),
+                json!("Fix the code and code.resume with this run_id and `code`; calls that match reuse their results."),
+            );
+            failure("script_error", message, Some(Value::Object(details)))
         }
     };
     save(session, &record);
     result
+}
+
+fn describe_fs(action: Option<&str>) -> Result<String, Value> {
+    let entries = [
+        ("read", "/** Read a UTF-8 file in full (no truncation, up to 2 MiB). */\nfs.read(path: string): Promise<string>"),
+        ("write", "/** Write UTF-8 text to a file, creating parent directories. */\nfs.write(path: string, content: string): Promise<{path: string, bytes: number}>"),
+        ("replace", "/** Replace `find` with `replacement` in a file (errors if missing or ambiguous unless all=true). */\nfs.replace(path: string, find: string, replacement: string, all?: boolean): Promise<{path: string, replacements: number}>"),
+        ("exists", "/** Return true if a path exists. */\nfs.exists(path: string): Promise<boolean>"),
+        ("list", "/** List sorted entries in a directory (trailing `/` on subdirectories). */\nfs.list(dir?: string): Promise<string[]>"),
+    ];
+    match action {
+        None => Ok(entries.iter().map(|(_, d)| *d).collect::<Vec<_>>().join("\n\n")),
+        Some(a) => entries
+            .iter()
+            .find(|(k, _)| *k == a)
+            .map(|(_, d)| (*d).to_string())
+            .ok_or_else(|| {
+                failure(
+                    "unknown_action",
+                    format!("`fs` has no helper `{a}`; it has read, write, replace, exists, list."),
+                    None,
+                )
+            }),
+    }
+}
+
+fn describe_text(
+    tool: &str,
+    action: Option<&str>,
+    advertised: &[NativeToolDefinition],
+) -> Option<String> {
+    let def = advertised
+        .iter()
+        .find(|d| d.name == tool && !DENIED.contains(&tool))?;
+    match (actions_of(def), action) {
+        (Some(actions), Some(action)) if actions.iter().any(|a| a == action) => Some(declaration(
+            &format!("{tool}.{action}"),
+            &action_fields(def, action),
+            &def.description,
+        )),
+        (Some(_), Some(_)) => None,
+        (Some(actions), None) => Some(
+            actions
+                .iter()
+                .map(|a| {
+                    declaration(
+                        &format!("{tool}.{a}"),
+                        &action_fields(def, a),
+                        &def.description,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        ),
+        (None, _) => Some(declaration(tool, &all_fields(def), &def.description)),
+    }
 }
 
 fn describe(args: &Value, advertised: &[NativeToolDefinition]) -> Value {
@@ -388,6 +792,12 @@ fn describe(args: &Value, advertised: &[NativeToolDefinition]) -> Value {
         Some((t, a)) => (t, Some(a)),
         None => (name, None),
     };
+    if tool == "fs" && globals(advertised).fs {
+        return match describe_fs(action) {
+            Ok(text) => success(json!({"name": name, "declaration": text})),
+            Err(err) => err,
+        };
+    }
     let Some(def) = advertised
         .iter()
         .find(|d| d.name == tool && !DENIED.contains(&tool))
@@ -527,6 +937,8 @@ pub fn seat_tools(
 const CODE_MODE_DIRECT: &[&str] = &[
     "code",
     "calls",
+    "bash",
+    "change_files",
     "view_image",
     "ask_user",
     "complete_goal",
@@ -534,6 +946,25 @@ const CODE_MODE_DIRECT: &[&str] = &[
     "speak",
     "custom_tool",
 ];
+
+/// Reminder injected on the next turn when a session switches tool mode mid-conversation.
+pub fn switch_notice(
+    mode: crate::config::ToolMode,
+    direct_tools: &[NativeToolDefinition],
+) -> String {
+    match mode {
+        crate::config::ToolMode::Code => {
+            let names: Vec<&str> = direct_tools.iter().map(|d| d.name.as_str()).collect();
+            format!(
+                "Tool mode switched to code mode. Direct tools now available: {}. All other tools are functions inside `code.run` scripts (with `Promise.all` concurrency and untruncated `fs.{{read,write,replace,exists,list}}` helpers). Call `bash`, `change_files` and `view_image` directly for single steps, file edits or standalone images; use `code.run` to batch multi-step workflows, loops or filtered output.",
+                names.join(", ")
+            )
+        }
+        crate::config::ToolMode::Direct => {
+            "Tool mode switched to direct mode. All tools are now called directly; `code` is no longer available.".into()
+        }
+    }
+}
 
 fn ts_type(schema: &Value) -> String {
     if let Some(values) = schema.get("enum").and_then(Value::as_array) {
@@ -807,6 +1238,20 @@ mod tests {
         let text = out["data"]["declaration"].as_str().unwrap();
         assert!(text.contains("task.update(args: {"), "{text}");
         assert!(text.contains("expected_version: number;"), "{text}");
+        assert!(shown.iter().any(|d| d.name == "bash"));
+        assert!(shown.iter().any(|d| d.name == "change_files"));
+        assert!(
+            shown
+                .iter()
+                .any(|d| d.name == "code" && d.description.contains("fs.{read,write,replace,exists,list}"))
+        );
+        let fs_doc = describe(&json!({"name": "fs.replace"}), &all);
+        assert!(
+            fs_doc["data"]["declaration"]
+                .as_str()
+                .unwrap()
+                .contains("fs.replace(")
+        );
         let (code_only, _) = seat_tools(
             crate::surface::SeatRole::Work,
             Vec::new(),
@@ -817,5 +1262,168 @@ mod tests {
                 .iter()
                 .all(|d| CODE_MODE_DIRECT.contains(&d.name.as_str()))
         );
+    }
+
+    #[tokio::test]
+    async fn fs_helpers_read_write_replace_and_replay_without_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = format!("head\n{}\nconst x = '${{idx}}';\ntail\n", "a".repeat(30_000));
+        std::fs::write(dir.path().join("sample.dart"), &big).unwrap();
+
+        struct WsExec(PathBuf);
+        #[async_trait::async_trait]
+        impl InnerCalls for WsExec {
+            async fn call(&mut self, _name: &str, _args: Value) -> Value {
+                success(json!({}))
+            }
+            fn workspace(&self) -> Option<PathBuf> {
+                Some(self.0.clone())
+            }
+        }
+
+        let session = format!("test-{}", uuid::Uuid::new_v4().simple());
+        let mut exec = WsExec(dir.path().to_path_buf());
+        let code = r#"
+            const before = await fs.read('sample.dart');
+            await fs.replace('sample.dart', "const x = '${idx}';", "const x = '${idx + 1}';");
+            await fs.write('sub/out.txt', 'ok');
+            const after = await fs.read('sample.dart');
+            const entries = await fs.list('.');
+            const hasSub = await fs.exists('sub/out.txt');
+            return { len: before.length, changed: after.includes('${idx + 1}'), hasSub, entries };
+        "#;
+        let out = execute(
+            "code_run",
+            &json!({"code": code}),
+            &session,
+            &defs(),
+            &mut exec,
+        )
+        .await;
+        assert_eq!(out["data"]["status"], "completed", "{out}");
+        assert_eq!(out["data"]["result"]["len"], big.len());
+        assert_eq!(out["data"]["result"]["changed"], true);
+        assert_eq!(out["data"]["result"]["hasSub"], true);
+        assert_eq!(
+            out["data"]["result"]["entries"],
+            json!(["sample.dart", "sub/"])
+        );
+        // Slim output: empty logs and zero replays are omitted.
+        assert!(out["data"].get("logs").is_none(), "{out}");
+        assert!(out["data"].get("replayed").is_none(), "{out}");
+        let _ = std::fs::remove_dir_all(runs_dir(&session));
+    }
+
+    #[tokio::test]
+    async fn promise_all_runs_concurrent_inner_calls_and_replays_deterministically() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct ParallelExec {
+            calls: Arc<AtomicUsize>,
+        }
+        #[async_trait::async_trait]
+        impl InnerCalls for ParallelExec {
+            async fn call(&mut self, _name: &str, _args: Value) -> Value {
+                unreachable!("concurrent path should be used")
+            }
+            fn call_concurrent(&self, _name: &str, args: Value) -> Option<CallFuture> {
+                let calls = self.calls.clone();
+                Some(Box::pin(async move {
+                    let delay = args["delay"].as_u64().unwrap_or(0);
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    success(json!({"label": args["label"]}))
+                }))
+            }
+        }
+
+        let session = format!("test-{}", uuid::Uuid::new_v4().simple());
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut exec = ParallelExec {
+            calls: counter.clone(),
+        };
+        let code = r#"
+            const [a, b, c] = await Promise.all([
+                bash({label: 'first', delay: 180}),
+                bash({label: 'second', delay: 40}),
+                bash({label: 'third', delay: 120}),
+            ]);
+            const ans = await agent.ask('ok?', [a.data.label, b.data.label, c.data.label]);
+            return { labels: [a.data.label, b.data.label, c.data.label], ans };
+        "#;
+        let t0 = std::time::Instant::now();
+        let paused = execute(
+            "code_run",
+            &json!({"code": code}),
+            &session,
+            &defs(),
+            &mut exec,
+        )
+        .await;
+        let elapsed = t0.elapsed();
+        assert_eq!(paused["data"]["status"], "paused", "{paused}");
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+        // Sequential would take >= 340ms; concurrent finishes near max(180, 40, 120) = 180ms.
+        assert!(
+            elapsed < Duration::from_millis(310),
+            "expected concurrent execution, took {elapsed:?}"
+        );
+
+        let run_id = paused["data"]["run_id"].as_str().unwrap().to_string();
+        let done = execute(
+            "code_resume",
+            &json!({"run_id": run_id, "answer": "yes"}),
+            &session,
+            &defs(),
+            &mut exec,
+        )
+        .await;
+        assert_eq!(done["data"]["status"], "completed", "{done}");
+        assert_eq!(done["data"]["replayed"], 3);
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            done["data"]["result"],
+            json!({"labels": ["first", "second", "third"], "ans": "yes"})
+        );
+        let _ = std::fs::remove_dir_all(runs_dir(&session));
+    }
+
+    #[tokio::test]
+    async fn inner_argument_errors_attach_tool_signature() {
+        struct ErrExec;
+        #[async_trait::async_trait]
+        impl InnerCalls for ErrExec {
+            async fn call(&mut self, _name: &str, _args: Value) -> Value {
+                failure("tool_error", "`command` is required".into(), None)
+            }
+        }
+
+        let session = format!("test-{}", uuid::Uuid::new_v4().simple());
+        let mut exec = ErrExec;
+        let out = execute(
+            "code_run",
+            &json!({"code": "return await bash({});"}),
+            &session,
+            &defs(),
+            &mut exec,
+        )
+        .await;
+        assert_eq!(out["data"]["status"], "completed", "{out}");
+        let sig = out["data"]["result"]["error"]["signature"]
+            .as_str()
+            .expect("signature attached on missing required arg");
+        assert!(sig.contains("bash(args: {"), "{sig}");
+        assert!(sig.contains("command: string;"), "{sig}");
+        let _ = std::fs::remove_dir_all(runs_dir(&session));
+    }
+
+    #[test]
+    fn switch_notice_lists_direct_tools_in_code_mode() {
+        let notice = switch_notice(crate::config::ToolMode::Code, &defs());
+        assert!(notice.contains("code mode"), "{notice}");
+        assert!(notice.contains("bash"), "{notice}");
+        let direct = switch_notice(crate::config::ToolMode::Direct, &[]);
+        assert!(direct.contains("direct mode"), "{direct}");
     }
 }

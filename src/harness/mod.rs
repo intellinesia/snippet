@@ -987,6 +987,8 @@ struct LoopVars {
     /// `HarnessState::compactions` when `reminded` was last valid; compaction
     /// drops the old reminders from history, so everything is told again.
     reminded_compactions: u64,
+    /// Tool mode active on the previous step, to emit a switch notice when it changes.
+    last_tool_mode: Option<crate::config::ToolMode>,
     /// Output fingerprint of each bash command run during this request, so an
     /// identical rerun returns a short notice instead of the same output again.
     bash_outputs: std::collections::HashMap<String, u64>,

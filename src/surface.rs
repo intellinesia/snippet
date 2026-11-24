@@ -323,7 +323,7 @@ const TASK: Surface = Surface {
 
 const CODE: Surface = Surface {
     name: "code",
-    intro: "Run a script that calls your tools: many steps in one round trip, and only what it returns comes back. Use it for chains of three or more calls, loops over items, or large output you only need part of; call directly for one step, or when you want to see each result before the next.",
+    intro: "Run a script that calls your tools: many steps (or concurrent Promise.all batches) in one round trip, and only what it returns comes back. Call bash, change_files and view_image directly for single steps, file edits, or standalone image views; use code for multi-step chains, loops, parallel batches, or filtering large output.",
     acts: &[
         act("run", "code_run", "run JavaScript that calls your tools."),
         act(

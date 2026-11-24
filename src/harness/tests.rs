@@ -1465,4 +1465,72 @@ mod code_mode_tests {
             if tool_name == "code" && content["data"]["status"] == "paused" && content.pointer("/data/image_base64").is_some()));
         assert!(shown, "{seen:?}");
     }
+
+    #[tokio::test]
+    async fn code_mode_exposes_direct_bash_and_change_files_and_runs_fs_helpers_in_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("widget.dart"), "final s = '${count}';\n").unwrap();
+        let harness = CodingHarness::new(
+            HarnessConfig {
+                state_path: Some(dir.path().join("state.json")),
+                memory_enabled: false,
+                tool_mode: Some(crate::config::ToolMode::Code),
+                ..HarnessConfig::default()
+            },
+            crate::session::work_tool_registry(None, None),
+            ToolContext::new(dir.path())
+                .unwrap()
+                .with_store_path(dir.path().join("store.db")),
+        );
+        let defs = harness.definitions_for(true, false);
+        assert!(defs.iter().any(|d| d.name == "code"));
+        assert!(defs.iter().any(|d| d.name == "bash"));
+        assert!(defs.iter().any(|d| d.name == "change_files"));
+
+        let code = "await fs.replace('widget.dart', \"${count}\", \"${count + 1}\"); return await fs.read('widget.dart');";
+        let mut model = Scripted(
+            [
+                ModelOutput {
+                    calls: vec![GeneratedToolCall {
+                        tool_name: "code".into(),
+                        arguments: json!({"action": "run", "code": code}),
+                        id: Some("c1".into()),
+                        origin_model: None,
+                        signature: None,
+                    }],
+                    ..Default::default()
+                },
+                ModelOutput {
+                    content_text: Some("done".into()),
+                    ..Default::default()
+                },
+            ]
+            .into(),
+            Vec::new(),
+        );
+        let id = harness.session_id().unwrap();
+        let mut presence = crate::session::subscribe_device_events();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let watch = async {
+            while let Ok(event) = presence.recv().await {
+                if event["session"] == id
+                    && event["kind"] == "agent_presence"
+                    && event["state"] == "idle"
+                {
+                    break;
+                }
+            }
+            drop(tx);
+        };
+        let run = harness.run_interactive(&mut model, Some("edit".into()), rx, None, None);
+        let (ran, _) =
+            tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(run, watch) })
+                .await
+                .expect("run finished");
+        ran.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("widget.dart")).unwrap(),
+            "final s = '${count + 1}';\n"
+        );
+    }
 }
