@@ -890,4 +890,85 @@ mod tests {
         }
         assert_eq!(renderer.calls.load(Ordering::SeqCst), 3);
     }
+
+    #[test]
+    fn thumbnail_cache_scales_with_frame_count_and_enforces_limits() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingRenderer(AtomicUsize);
+        impl FrameRenderer for CountingRenderer {
+            fn render(&self, _html: &str, w: u32, h: u32, s: f32) -> Result<Rendered, RenderError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                StubRenderer.render("", w, h, s)
+            }
+            fn hit_test(&self, _html: &str, _w: u32, _x: f32, _y: f32) -> Option<String> {
+                None
+            }
+        }
+
+        assert_eq!(store::cache_entry_limit(1), 64);
+        assert_eq!(store::cache_entry_limit(100), 300);
+        assert_eq!(store::cache_entry_limit(362), 1086);
+        assert_eq!(store::cache_entry_limit(1000), 2048);
+
+        let dir = TempDir::new().unwrap();
+        let renderer = std::sync::Arc::new(CountingRenderer(AtomicUsize::new(0)));
+        let svc = CanvasService::new(dir.path().to_path_buf(), renderer.clone());
+
+        let ops: Vec<Op> = (0..100)
+            .map(|i| Op::CreateFrame {
+                id: Some(format!("f-{i:03}")),
+                title: format!("F {i}"),
+                x: (i as f32) * 100.0,
+                y: 0.0,
+                w: 80.0,
+                h: 60.0,
+                html: format!("<div>{i}</div>"),
+            })
+            .collect();
+        svc.store("many")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .apply_batch("seed 100".into(), ops, agent(), None)
+            .unwrap();
+
+        // Render all 100 frames at one scale; all 100 must remain cached.
+        for i in 0..100 {
+            svc.render_frame_cached("many", &format!("f-{i:03}"), None, 1.0)
+                .unwrap();
+        }
+        assert_eq!(renderer.0.load(Ordering::SeqCst), 100);
+
+        // Repeat all 100: zero additional renders.
+        for i in 0..100 {
+            svc.render_frame_cached("many", &format!("f-{i:03}"), None, 1.0)
+                .unwrap();
+        }
+        assert_eq!(renderer.0.load(Ordering::SeqCst), 100);
+
+        let cache_dir = dir.path().join("many/cache");
+        let count_pngs = || {
+            std::fs::read_dir(&cache_dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("png"))
+                .count()
+        };
+        assert_eq!(count_pngs(), 100);
+
+        // Entry-count eviction past cap.
+        store::prune_cache_dir_with_limits(&cache_dir, 40, u64::MAX);
+        assert_eq!(count_pngs(), 40);
+
+        // Byte-size eviction past cap.
+        store::prune_cache_dir_with_limits(&cache_dir, 1000, 1024);
+        let remaining_bytes: u64 = std::fs::read_dir(&cache_dir)
+            .unwrap()
+            .flatten()
+            .filter_map(|e| e.metadata().ok().map(|m| m.len()))
+            .sum();
+        assert!(remaining_bytes <= 1024, "remaining_bytes={remaining_bytes}");
+        assert!(count_pngs() < 40);
+    }
 }

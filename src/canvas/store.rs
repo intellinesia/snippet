@@ -30,6 +30,8 @@ pub const MAX_FRAMES_PER_CANVAS: usize = 500;
 pub const MAX_PIN_TEXT_CHARS: usize = 4_000;
 pub const MAX_LABEL_CHARS: usize = 256;
 pub const MAX_CACHE_ENTRIES: usize = 64;
+pub const MAX_CACHE_ENTRIES_CAP: usize = 2048;
+pub const MAX_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_STORES_CACHED: usize = 64;
 pub const RENDER_TIMEOUT: Duration = Duration::from_secs(15);
 pub const RENDER_QUEUE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1040,31 +1042,53 @@ pub struct CachedLayout {
     pub layout: Vec<ElementRect>,
 }
 
-fn prune_cache_dir(cache_dir: &Path) {
+pub(crate) fn cache_entry_limit(frame_count: usize) -> usize {
+    frame_count
+        .saturating_mul(3)
+        .clamp(MAX_CACHE_ENTRIES, MAX_CACHE_ENTRIES_CAP)
+}
+
+pub(crate) fn prune_cache_dir_with_limits(cache_dir: &Path, max_entries: usize, max_bytes: u64) {
     let Ok(entries) = fs::read_dir(cache_dir) else {
         return;
     };
-    let mut pngs: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut pngs: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let mut total_bytes: u64 = 0;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("png") {
-            let mtime = entry
-                .metadata()
-                .and_then(|m| m.modified())
+            let meta = entry.metadata().ok();
+            let mtime = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            pngs.push((mtime, path));
+            let png_bytes = meta.map(|m| m.len()).unwrap_or(0);
+            let layout_bytes = fs::metadata(path.with_extension("layout.json"))
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let pair_bytes = png_bytes.saturating_add(layout_bytes);
+            total_bytes = total_bytes.saturating_add(pair_bytes);
+            pngs.push((mtime, pair_bytes, path));
         }
     }
-    if pngs.len() <= MAX_CACHE_ENTRIES {
+    if pngs.len() <= max_entries && total_bytes <= max_bytes {
         return;
     }
-    pngs.sort_by_key(|(mtime, _)| *mtime);
-    let to_remove = pngs.len() - MAX_CACHE_ENTRIES;
-    for (_, png_path) in pngs.into_iter().take(to_remove) {
+    pngs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
+    let mut remaining = pngs.len();
+    for (_, pair_bytes, png_path) in pngs {
+        if remaining <= max_entries && total_bytes <= max_bytes {
+            break;
+        }
         let _ = fs::remove_file(&png_path);
-        let layout_path = png_path.with_extension("layout.json");
-        let _ = fs::remove_file(layout_path);
+        let _ = fs::remove_file(png_path.with_extension("layout.json"));
+        remaining -= 1;
+        total_bytes = total_bytes.saturating_sub(pair_bytes);
     }
+}
+
+fn prune_cache_dir(cache_dir: &Path, frame_count: usize) {
+    prune_cache_dir_with_limits(cache_dir, cache_entry_limit(frame_count), MAX_CACHE_BYTES);
 }
 
 fn sort_summaries(items: &mut [CanvasSummary]) {
@@ -1128,6 +1152,7 @@ struct RenderPlan {
     png_path: PathBuf,
     layout_path: PathBuf,
     cache_dir: PathBuf,
+    frame_count: usize,
 }
 
 enum CacheLookup {
@@ -1292,7 +1317,7 @@ impl CanvasService {
         }
         let (scale, scale_millis) = normalize_scale(scale)?;
         let store_arc = self.store(canvas_id)?;
-        let (frame, png_path, layout_path, cache_dir) = {
+        let (frame, png_path, layout_path, cache_dir, frame_count) = {
             let store = store_arc.lock().unwrap_or_else(|e| e.into_inner());
             let frame = match requested_rev {
                 Some(rev) => store.frame_at_rev(frame_id, rev)?,
@@ -1303,7 +1328,8 @@ impl CanvasService {
             let png_path = store.cache_png_path(&frame.id, cache_rev, scale_millis);
             let layout_path = store.cache_layout_path(&frame.id, cache_rev, scale_millis);
             let cache_dir = store.root().join(CACHE_DIR);
-            (frame, png_path, layout_path, cache_dir)
+            let frame_count = store.frames.len();
+            (frame, png_path, layout_path, cache_dir, frame_count)
         };
 
         if let Some(hit) = Self::read_cached_render(&png_path, &layout_path) {
@@ -1324,6 +1350,7 @@ impl CanvasService {
             png_path,
             layout_path,
             cache_dir,
+            frame_count,
         }))
     }
 
@@ -1347,7 +1374,7 @@ impl CanvasService {
         };
         atomic_write(&plan.png_path, &rendered.png)?;
         atomic_write(&plan.layout_path, &serde_json::to_vec(&cached_layout)?)?;
-        prune_cache_dir(&plan.cache_dir);
+        prune_cache_dir(&plan.cache_dir, plan.frame_count);
         Ok((plan.png_path, rendered.png, cached_layout))
     }
 
