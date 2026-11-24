@@ -44,11 +44,22 @@ impl CodingHarness {
             .goal
             .as_ref()
             .is_some_and(|g| g.status == GoalStatus::Active);
+        let current_mode = self.tool_mode();
         let definitions = self.definitions_for(conversation_mode, goal_active);
 
         if let Some(end) = unproductive_stop(state, vars) {
             return end;
         }
+
+        if vars
+            .last_tool_mode
+            .is_some_and(|prev| prev != current_mode)
+        {
+            state.messages.push(HarnessMessage::System {
+                content: crate::code_mode::runner::switch_notice(current_mode, &definitions),
+            });
+        }
+        vars.last_tool_mode = Some(current_mode);
 
         // This turn counts against the current request's soft turn budget.
         vars.turns_this_request = vars.turns_this_request.saturating_add(1);

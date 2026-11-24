@@ -1,6 +1,6 @@
-use rquickjs::{Context, Ctx, Exception, Function, Promise, Runtime};
+use rquickjs::{Context, Ctx, Exception, Function, Runtime};
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -9,19 +9,23 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 pub struct Globals {
     pub surfaces: Vec<(String, Vec<String>)>,
     pub plain: Vec<String>,
+    pub fs: bool,
 }
 
 pub struct Limits {
-    pub timeout: Duration,
+    /// Budget for JavaScript execution itself (paused while awaiting host calls).
+    pub js_timeout: Duration,
+    /// Per-wait timeout while host calls are in flight; resets on each completion.
+    pub call_timeout: Duration,
     pub memory_bytes: usize,
     pub max_log_chars: usize,
 }
 
 pub enum HostRequest {
     Call {
+        id: u64,
         name: String,
         args: Value,
-        reply: mpsc::Sender<Value>,
     },
     Ask {
         question: String,
@@ -50,6 +54,17 @@ const PRELUDE_BASE: &str = r#"
 const __fmt = (a) => typeof a === 'string' ? a : (() => { try { const s = JSON.stringify(a); return s === undefined ? String(a) : s; } catch (_) { return String(a); } })();
 const __logger = (...a) => { __snippet_log(a.map(__fmt).join(' ')); };
 globalThis.console = { log: __logger, info: __logger, warn: __logger, error: __logger };
+const __pending = new Map();
+let __next_id = 1;
+globalThis.__snippet_resolve = (id, jsonStr) => {
+  const p = __pending.get(id);
+  if (p) { __pending.delete(id); p.resolve(JSON.parse(jsonStr)); }
+};
+const __call = (name, args) => new Promise((resolve) => {
+  const id = __next_id++;
+  __pending.set(id, { resolve });
+  __snippet_start_call(id, name, JSON.stringify(args));
+});
 globalThis.agent = {
   ask: async (question, data) => {
     const r = __snippet_ask(String(question), JSON.stringify(data === undefined ? null : data));
@@ -61,6 +76,23 @@ globalThis.agent = {
 globalThis.view_image = async (args = {}) => {
   const answer = await globalThis.agent.look(args.path, args.question);
   return { status: "success", data: { path: String(args.path), answer } };
+};
+"#;
+
+const PRELUDE_FS: &str = r#"
+const __fs = async (op, args) => {
+  const r = await __call('__fs_' + op, args);
+  if (r && r.status === 'error') {
+    throw new Error((r.error && r.error.message) || ('fs.' + op + ' failed'));
+  }
+  return r ? r.data : null;
+};
+globalThis.fs = {
+  read: (p) => __fs('read', typeof p === 'object' && p !== null ? p : { path: String(p) }),
+  write: (p, content) => __fs('write', typeof p === 'object' && p !== null ? p : { path: String(p), content: String(content) }),
+  replace: (p, find, replacement, all = false) => __fs('replace', typeof p === 'object' && p !== null ? p : { path: String(p), find: String(find), replacement: String(replacement), all: Boolean(all) }),
+  exists: (p) => __fs('exists', typeof p === 'object' && p !== null ? p : { path: String(p) }),
+  list: (d = '.') => __fs('list', typeof d === 'object' && d !== null ? d : { dir: String(d) }),
 };
 "#;
 
@@ -97,13 +129,16 @@ fn js_str(s: &str) -> String {
 
 fn build_prelude(globals: &Globals) -> String {
     let mut src = String::from(PRELUDE_BASE);
+    if globals.fs {
+        src.push_str(PRELUDE_FS);
+    }
     for (surface, actions) in &globals.surfaces {
         let s = js_str(surface);
         src.push_str(&format!("globalThis[{s}] = {{\n"));
         for action in actions {
             let a = js_str(action);
             src.push_str(&format!(
-                "  [{a}]: async (args = {{}}) => JSON.parse(__snippet_call({s}, JSON.stringify({{...args, action: {a}}}))),\n"
+                "  [{a}]: (args = {{}}) => __call({s}, {{...args, action: {a}}}),\n"
             ));
         }
         src.push_str("};\n");
@@ -111,7 +146,7 @@ fn build_prelude(globals: &Globals) -> String {
     for name in &globals.plain {
         let n = js_str(name);
         src.push_str(&format!(
-            "globalThis[{n}] = async (args = {{}}) => JSON.parse(__snippet_call({n}, JSON.stringify(args)));\n"
+            "globalThis[{n}] = (args = {{}}) => __call({n}, args);\n"
         ));
     }
     src
@@ -131,9 +166,11 @@ pub fn spawn(
     limits: Limits,
 ) -> (
     UnboundedReceiver<HostRequest>,
+    mpsc::Sender<(u64, Value)>,
     tokio::task::JoinHandle<Outcome>,
 ) {
     let (tx, rx) = unbounded_channel();
+    let (reply_tx, reply_rx) = mpsc::channel();
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     let logs = Arc::new(Mutex::new(LogBuf {
         lines: Vec::new(),
@@ -143,7 +180,7 @@ pub fn spawn(
     }));
     let thread_logs = logs.clone();
     std::thread::spawn(move || {
-        let outcome = run(code, globals, limits, tx, thread_logs.clone());
+        let outcome = run(code, globals, limits, tx, reply_rx, thread_logs.clone());
         let _ = done_tx.send(outcome);
     });
     let handle = tokio::spawn(async move {
@@ -152,7 +189,7 @@ pub fn spawn(
             Err(_) => failed_with(&logs, "sandbox thread terminated unexpectedly".into()),
         }
     });
-    (rx, handle)
+    (rx, reply_tx, handle)
 }
 
 fn failed_with(logs: &Arc<Mutex<LogBuf>>, message: String) -> Outcome {
@@ -171,15 +208,20 @@ fn run(
     globals: Globals,
     limits: Limits,
     tx: UnboundedSender<HostRequest>,
+    reply_rx: mpsc::Receiver<(u64, Value)>,
     logs: Arc<Mutex<LogBuf>>,
 ) -> Outcome {
     let fail = |message: String| failed_with(&logs, message);
-    let deadline = Instant::now() + limits.timeout;
-    let timed_out = Arc::new(AtomicBool::new(false));
+    let start = Instant::now();
+    // 0 means the JS thread is waiting on the host and not consuming JS CPU budget.
+    let js_deadline_ns = Arc::new(AtomicU64::new(0));
+    let timed_out_msg: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let pause = Arc::new(PauseState {
         flag: AtomicBool::new(false),
         info: Mutex::new(None),
     });
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let done_state: Arc<Mutex<Option<Result<String, String>>>> = Arc::new(Mutex::new(None));
 
     let rt = match Runtime::new() {
         Ok(rt) => rt,
@@ -187,14 +229,21 @@ fn run(
     };
     rt.set_memory_limit(limits.memory_bytes);
     {
-        let timed_out = timed_out.clone();
+        let js_deadline_ns = js_deadline_ns.clone();
+        let timed_out_msg = timed_out_msg.clone();
         let pause = pause.clone();
+        let js_limit = limits.js_timeout;
         rt.set_interrupt_handler(Some(Box::new(move || {
             if pause.flag.load(Ordering::SeqCst) {
                 return true;
             }
-            if Instant::now() >= deadline {
-                timed_out.store(true, Ordering::SeqCst);
+            let dl = js_deadline_ns.load(Ordering::Relaxed);
+            if dl > 0 && start.elapsed().as_nanos() as u64 >= dl {
+                if let Ok(mut m) = timed_out_msg.lock()
+                    && m.is_none()
+                {
+                    *m = Some(format!("timed out after {}", fmt_timeout(js_limit)));
+                }
                 return true;
             }
             false
@@ -206,8 +255,24 @@ fn run(
     };
     let prelude = build_prelude(&globals);
     let wrapped = format!(
-        "(async () => {{ {code} \n}})().then((v) => {{ const s = JSON.stringify(v); return s === undefined ? 'null' : s; }})"
+        "(async () => {{ {code} \n}})().then(\
+         (v) => {{ const s = JSON.stringify(v); __snippet_done(s === undefined ? 'null' : s); }},\
+         (e) => {{ __snippet_fail(e && e.stack ? ((e.message || String(e)) + '\\n' + e.stack) : (e && e.message ? e.message : String(e))); }}\
+         );"
     );
+
+    let mut js_remaining = limits.js_timeout;
+    let arm_js = |remaining: Duration| -> Instant {
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(start);
+        let dl = (elapsed + remaining).as_nanos().min(u64::MAX as u128) as u64;
+        js_deadline_ns.store(dl.max(1), Ordering::Relaxed);
+        now
+    };
+    let disarm_js = |tick: Instant, remaining: &mut Duration| {
+        js_deadline_ns.store(0, Ordering::Relaxed);
+        *remaining = remaining.saturating_sub(tick.elapsed());
+    };
 
     let result: Result<String, String> = ctx.with(|ctx| {
         let log_fn = {
@@ -219,33 +284,21 @@ fn run(
             })
         }
         .map_err(|e| e.to_string())?;
-        let call_fn = {
+        let start_call_fn = {
             let tx = tx.clone();
-            let timed_out = timed_out.clone();
+            let in_flight = in_flight.clone();
             Function::new(
                 ctx.clone(),
-                move |ctx: Ctx<'_>, name: String, args: String| {
+                move |ctx: Ctx<'_>, id: u64, name: String, args: String| -> rquickjs::Result<()> {
                     let args: Value = serde_json::from_str(&args).map_err(|e| {
                         Exception::throw_message(&ctx, &format!("invalid args: {e}"))
                     })?;
-                    let (rtx, rrx) = mpsc::channel();
-                    tx.send(HostRequest::Call {
-                        name,
-                        args,
-                        reply: rtx,
-                    })
-                    .map_err(|_| Exception::throw_message(&ctx, "host is unavailable"))?;
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    match rrx.recv_timeout(remaining) {
-                        Ok(v) => Ok(v.to_string()),
-                        Err(RecvTimeoutError::Timeout) => {
-                            timed_out.store(true, Ordering::SeqCst);
-                            Err(Exception::throw_message(&ctx, "timed out"))
-                        }
-                        Err(RecvTimeoutError::Disconnected) => {
-                            Err(Exception::throw_message(&ctx, "host dropped the call"))
-                        }
-                    }
+                    in_flight.fetch_add(1, Ordering::SeqCst);
+                    tx.send(HostRequest::Call { id, name, args }).map_err(|_| {
+                        in_flight.fetch_sub(1, Ordering::SeqCst);
+                        Exception::throw_message(&ctx, "host is unavailable")
+                    })?;
+                    Ok(())
                 },
             )
         }
@@ -253,7 +306,9 @@ fn run(
         let ask_fn = {
             let tx = tx.clone();
             let pause = pause.clone();
-            let timed_out = timed_out.clone();
+            let js_deadline_ns = js_deadline_ns.clone();
+            let timed_out_msg = timed_out_msg.clone();
+            let call_timeout = limits.call_timeout;
             Function::new(
                 ctx.clone(),
                 move |ctx: Ctx<'_>,
@@ -268,8 +323,16 @@ fn run(
                         reply: rtx,
                     })
                     .map_err(|_| Exception::throw_message(&ctx, "host is unavailable"))?;
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    match rrx.recv_timeout(remaining) {
+                    // Pause the JS CPU deadline while waiting on the host reply.
+                    let saved_dl = js_deadline_ns.swap(0, Ordering::Relaxed);
+                    let wait_start = Instant::now();
+                    let got = rrx.recv_timeout(call_timeout);
+                    if saved_dl > 0 {
+                        let shifted = saved_dl
+                            .saturating_add(wait_start.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+                        js_deadline_ns.store(shifted, Ordering::Relaxed);
+                    }
+                    match got {
                         Ok(Some(v)) => Ok(Some(v.to_string())),
                         Ok(None) => {
                             if let Ok(mut i) = pause.info.lock() {
@@ -279,7 +342,14 @@ fn run(
                             Ok(None)
                         }
                         Err(RecvTimeoutError::Timeout) => {
-                            timed_out.store(true, Ordering::SeqCst);
+                            if let Ok(mut m) = timed_out_msg.lock()
+                                && m.is_none()
+                            {
+                                *m = Some(format!(
+                                    "timed out waiting for host after {}",
+                                    fmt_timeout(call_timeout)
+                                ));
+                            }
                             Err(Exception::throw_message(&ctx, "timed out"))
                         }
                         Err(RecvTimeoutError::Disconnected) => {
@@ -290,12 +360,38 @@ fn run(
             )
         }
         .map_err(|e| e.to_string())?;
+        let done_fn = {
+            let done_state = done_state.clone();
+            Function::new(ctx.clone(), move |s: String| {
+                if let Ok(mut d) = done_state.lock()
+                    && d.is_none()
+                {
+                    *d = Some(Ok(s));
+                }
+            })
+        }
+        .map_err(|e| e.to_string())?;
+        let fail_fn = {
+            let done_state = done_state.clone();
+            Function::new(ctx.clone(), move |msg: String| {
+                if let Ok(mut d) = done_state.lock()
+                    && d.is_none()
+                {
+                    *d = Some(Err(msg));
+                }
+            })
+        }
+        .map_err(|e| e.to_string())?;
 
         let g = ctx.globals();
         g.set("__snippet_log", log_fn).map_err(|e| e.to_string())?;
-        g.set("__snippet_call", call_fn)
+        g.set("__snippet_start_call", start_call_fn)
             .map_err(|e| e.to_string())?;
         g.set("__snippet_ask", ask_fn).map_err(|e| e.to_string())?;
+        g.set("__snippet_done", done_fn)
+            .map_err(|e| e.to_string())?;
+        g.set("__snippet_fail", fail_fn)
+            .map_err(|e| e.to_string())?;
 
         let describe = |ctx: &Ctx<'_>, e: rquickjs::Error| -> String {
             if !matches!(e, rquickjs::Error::Exception) {
@@ -315,10 +411,68 @@ fn run(
             }
         };
 
-        ctx.eval::<(), _>(prelude.as_str())
+        let tick = arm_js(js_remaining);
+        let init = ctx
+            .eval::<(), _>(prelude.as_str())
+            .and_then(|_| ctx.eval::<(), _>(wrapped.as_str()))
+            .map_err(|e| describe(&ctx, e));
+        disarm_js(tick, &mut js_remaining);
+        init?;
+
+        let resolve_fn: Function = g
+            .get("__snippet_resolve")
             .map_err(|e| describe(&ctx, e))?;
-        let promise: Promise = ctx.eval(wrapped).map_err(|e| describe(&ctx, e))?;
-        promise.finish::<String>().map_err(|e| describe(&ctx, e))
+
+        loop {
+            let tick = arm_js(js_remaining);
+            while ctx.execute_pending_job() {
+                if pause.flag.load(Ordering::SeqCst)
+                    || timed_out_msg.lock().ok().is_some_and(|m| m.is_some())
+                {
+                    break;
+                }
+            }
+            disarm_js(tick, &mut js_remaining);
+
+            if pause.flag.load(Ordering::SeqCst) {
+                return Err("__snippet_pause__".into());
+            }
+            if let Some(msg) = timed_out_msg.lock().ok().and_then(|m| m.clone()) {
+                return Err(msg);
+            }
+            if let Some(outcome) = done_state.lock().ok().and_then(|mut d| d.take()) {
+                return outcome;
+            }
+            if in_flight.load(Ordering::SeqCst) == 0 {
+                return Err("script ended with an unresolved promise".into());
+            }
+            match reply_rx.recv_timeout(limits.call_timeout) {
+                Ok((id, value)) => {
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    let tick = arm_js(js_remaining);
+                    let res = resolve_fn
+                        .call::<_, ()>((id, value.to_string()))
+                        .map_err(|e| describe(&ctx, e));
+                    disarm_js(tick, &mut js_remaining);
+                    res?;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    let msg = format!(
+                        "timed out waiting for tool call after {}",
+                        fmt_timeout(limits.call_timeout)
+                    );
+                    if let Ok(mut m) = timed_out_msg.lock()
+                        && m.is_none()
+                    {
+                        *m = Some(msg.clone());
+                    }
+                    return Err(msg);
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("host dropped the call".into());
+                }
+            }
+        }
     });
 
     if pause.flag.load(Ordering::SeqCst) {
@@ -334,8 +488,8 @@ fn run(
             logs: take_logs(&logs),
         };
     }
-    if timed_out.load(Ordering::SeqCst) {
-        return fail(format!("timed out after {}", fmt_timeout(limits.timeout)));
+    if let Some(msg) = timed_out_msg.lock().ok().and_then(|m| m.clone()) {
+        return fail(msg);
     }
     match result {
         Ok(s) => match serde_json::from_str(&s) {
@@ -356,7 +510,8 @@ mod tests {
 
     fn limits(ms: u64) -> Limits {
         Limits {
-            timeout: Duration::from_millis(ms),
+            js_timeout: Duration::from_millis(ms),
+            call_timeout: Duration::from_millis(ms),
             memory_bytes: 64 * 1024 * 1024,
             max_log_chars: 200,
         }
@@ -366,12 +521,13 @@ mod tests {
         Globals {
             surfaces: vec![("files".into(), vec!["read".into()])],
             plain: vec!["echo".into()],
+            fs: true,
         }
     }
 
     #[tokio::test]
     async fn returns_computed_object() {
-        let (_rx, h) = spawn(
+        let (_rx, _tx, h) = spawn(
             "const a = [1,2,3].map(x => x * 2); return { a, u: undefined };".into(),
             globals(),
             limits(5000),
@@ -380,7 +536,7 @@ mod tests {
             Outcome::Completed { value, .. } => assert_eq!(value, json!({"a": [2, 4, 6]})),
             _ => panic!("expected completed"),
         }
-        let (_rx, h) = spawn("let x = 1;".into(), globals(), limits(5000));
+        let (_rx, _tx, h) = spawn("let x = 1;".into(), globals(), limits(5000));
         match h.await.unwrap() {
             Outcome::Completed { value, .. } => assert_eq!(value, Value::Null),
             _ => panic!("expected completed"),
@@ -389,14 +545,16 @@ mod tests {
 
     #[tokio::test]
     async fn calls_round_trip() {
-        let (mut rx, h) = spawn(
+        let (mut rx, reply_tx, h) = spawn(
             "const a = await files.read({path: '/x'}); const b = await echo({n: 1}); return [a, b];".into(),
             globals(),
             limits(5000),
         );
         while let Some(req) = rx.recv().await {
-            if let HostRequest::Call { name, args, reply } = req {
-                reply.send(json!({"name": name, "args": args})).unwrap();
+            if let HostRequest::Call { id, name, args } = req {
+                reply_tx
+                    .send((id, json!({"name": name, "args": args})))
+                    .unwrap();
             }
         }
         match h.await.unwrap() {
@@ -412,8 +570,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn promise_all_dispatches_concurrently_and_handles_out_of_order_replies() {
+        let (mut rx, reply_tx, h) = spawn(
+            "return await Promise.all([echo({n: 1}), echo({n: 2}), echo({n: 3})]);".into(),
+            globals(),
+            limits(5000),
+        );
+        // All 3 calls must arrive before ANY reply is sent.
+        let mut received = Vec::new();
+        for _ in 0..3 {
+            match tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("call dispatched without blocking")
+                .expect("channel open")
+            {
+                HostRequest::Call { id, args, .. } => received.push((id, args)),
+                _ => panic!("expected Call"),
+            }
+        }
+        // Reply in reverse order and confirm Promise.all preserves original order.
+        for (id, args) in received.into_iter().rev() {
+            reply_tx.send((id, args)).unwrap();
+        }
+        match h.await.unwrap() {
+            Outcome::Completed { value, .. } => {
+                assert_eq!(value, json!([{"n": 1}, {"n": 2}, {"n": 3}]));
+            }
+            Outcome::Failed { message, .. } => panic!("failed: {message}"),
+            Outcome::Paused { .. } => panic!("unexpected pause"),
+        }
+    }
+
+    #[tokio::test]
+    async fn slow_host_call_does_not_burn_js_cpu_timeout() {
+        let limits = Limits {
+            js_timeout: Duration::from_millis(250),
+            call_timeout: Duration::from_secs(3),
+            memory_bytes: 64 * 1024 * 1024,
+            max_log_chars: 200,
+        };
+        let (mut rx, reply_tx, h) = spawn(
+            "const a = await echo({n: 1}); const b = await echo({n: 2}); return [a.n, b.n];".into(),
+            globals(),
+            limits,
+        );
+        while let Some(HostRequest::Call { id, args, .. }) = rx.recv().await {
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let _ = reply_tx.send((id, args));
+        }
+        match h.await.unwrap() {
+            Outcome::Completed { value, .. } => assert_eq!(value, json!([1, 2])),
+            Outcome::Failed { message, .. } => panic!("failed: {message}"),
+            Outcome::Paused { .. } => panic!("unexpected pause"),
+        }
+    }
+
+    #[tokio::test]
     async fn ask_continues_or_pauses() {
-        let (mut rx, h) = spawn(
+        let (mut rx, _tx, h) = spawn(
             "return await agent.ask('ok?', {a: 1});".into(),
             globals(),
             limits(5000),
@@ -433,7 +647,7 @@ mod tests {
             _ => panic!("expected completed"),
         }
 
-        let (mut rx, h) = spawn(
+        let (mut rx, _tx, h) = spawn(
             "console.log('before'); try { await agent.ask('q', [1]); } catch (e) {} while (true) {} ".into(),
             globals(),
             limits(5000),
@@ -457,7 +671,7 @@ mod tests {
 
     #[tokio::test]
     async fn thrown_error_fails() {
-        let (_rx, h) = spawn("throw new Error('boom');".into(), globals(), limits(5000));
+        let (_rx, _tx, h) = spawn("throw new Error('boom');".into(), globals(), limits(5000));
         match h.await.unwrap() {
             Outcome::Failed { message, .. } => assert!(message.contains("boom")),
             _ => panic!("expected failed"),
@@ -466,7 +680,7 @@ mod tests {
 
     #[tokio::test]
     async fn infinite_loop_times_out() {
-        let (_rx, h) = spawn("while (true) {}".into(), globals(), limits(300));
+        let (_rx, _tx, h) = spawn("while (true) {}".into(), globals(), limits(300));
         match h.await.unwrap() {
             Outcome::Failed { message, .. } => {
                 assert!(message.starts_with("timed out after"), "{message}")
@@ -477,7 +691,7 @@ mod tests {
 
     #[tokio::test]
     async fn logs_captured_and_truncated() {
-        let (_rx, h) = spawn(
+        let (_rx, _tx, h) = spawn(
             "console.log('a', {b: 1}); console.warn('x'.repeat(300)); console.log('late');".into(),
             globals(),
             limits(5000),

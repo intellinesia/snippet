@@ -582,33 +582,52 @@ type InnerLog = std::sync::Arc<std::sync::Mutex<Vec<HarnessEvent>>>;
 struct CliExec {
     calls: mpsc::UnboundedSender<McpCall>,
     log: InnerLog,
+    workspace: PathBuf,
+}
+
+impl CliExec {
+    fn dispatch_inner(&self, name: String, args: Value) -> crate::code_mode::runner::CallFuture {
+        let calls = self.calls.clone();
+        let log = self.log.clone();
+        Box::pin(async move {
+            let (reply, rx) = oneshot::channel();
+            let sent = calls.send(McpCall {
+                name: name.clone(),
+                arguments: args,
+                surface_name: None,
+                uses_op: false,
+                inner: true,
+                reply,
+            });
+            let result = match sent {
+                Ok(()) => rx
+                    .await
+                    .unwrap_or_else(|_| error_result("interrupted", "The call was interrupted.")),
+                Err(_) => error_result("interrupted", "The session ended."),
+            };
+            if let Ok(mut log) = log.lock() {
+                log.push(HarnessEvent::ToolResult {
+                    tool_name: name,
+                    result: result.clone(),
+                });
+            }
+            result
+        })
+    }
 }
 
 #[async_trait::async_trait]
 impl crate::code_mode::runner::InnerCalls for CliExec {
     async fn call(&mut self, name: &str, args: Value) -> Value {
-        let (reply, rx) = oneshot::channel();
-        let sent = self.calls.send(McpCall {
-            name: name.to_string(),
-            arguments: args,
-            surface_name: None,
-            uses_op: false,
-            inner: true,
-            reply,
-        });
-        let result = match sent {
-            Ok(()) => rx
-                .await
-                .unwrap_or_else(|_| error_result("interrupted", "The call was interrupted.")),
-            Err(_) => error_result("interrupted", "The session ended."),
-        };
-        if let Ok(mut log) = self.log.lock() {
-            log.push(HarnessEvent::ToolResult {
-                tool_name: name.to_string(),
-                result: result.clone(),
-            });
-        }
-        result
+        self.dispatch_inner(name.to_string(), args).await
+    }
+
+    fn call_concurrent(&self, name: &str, args: Value) -> Option<crate::code_mode::runner::CallFuture> {
+        Some(self.dispatch_inner(name.to_string(), args))
+    }
+
+    fn workspace(&self) -> Option<PathBuf> {
+        Some(self.workspace.clone())
     }
 }
 
@@ -2249,6 +2268,7 @@ impl CodingHarness {
         let mut save_at: Option<tokio::time::Instant> = None;
         let mut memory_saving = false;
         let mut after_compaction: Option<String> = None;
+        let mut mode_notice: Option<String> = None;
         let mut cli_window: u64 = 0;
         if matches!(kind, CliKind::Antigravity | CliKind::Devin) {
             session.tool_guide = guide;
@@ -2447,6 +2467,7 @@ impl CodingHarness {
                         internal_tools.clone(),
                         wanted,
                     );
+                    let notice = crate::code_mode::runner::switch_notice(wanted, &bridge);
                     let guide = tool_guide(kind, &bridge);
                     if let Ok((url, rx, tx)) =
                         start_mcp_server(bridge, steers.clone(), parse.served.clone(), true).await
@@ -2461,6 +2482,7 @@ impl CodingHarness {
                         advertised_tools = scripts.clone();
                         script_tools = scripts;
                         bridge_mode = wanted;
+                        mode_notice = Some(notice);
                         if let Some(mut p) = process.take() {
                             let _ = p.child.start_kill();
                         }
@@ -2537,6 +2559,7 @@ impl CodingHarness {
                     }
                     let note = crate::coordination_tools::task_awareness(&self.context);
                     let mut reminder: Vec<String> = after_compaction.take().into_iter().collect();
+                    reminder.extend(mode_notice.take());
                     if note != last_task_note {
                         reminder.push(if note.is_empty() {
                             "You have no open task now.".to_string()
@@ -3404,7 +3427,11 @@ impl CodingHarness {
                             let tool = call.name.clone();
                             let session = self.session_id().unwrap_or_else(|| "main".to_string());
                             let tools = script_tools.clone();
-                            let mut exec = CliExec { calls: mcp_tx.clone(), log: inner_log.clone() };
+                            let mut exec = CliExec {
+                                calls: mcp_tx.clone(),
+                                log: inner_log.clone(),
+                                workspace: self.context.current_dir(),
+                            };
                             running.push(Box::pin(async move {
                                 let mut value = crate::code_mode::runner::execute(&tool, &call.arguments, &session, &tools, &mut exec).await;
                                 let look = value.pointer("/data/path").and_then(Value::as_str).and_then(|p| self.context.resolve_workspace_path(p).ok());
