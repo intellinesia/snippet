@@ -548,7 +548,7 @@ const MAX_INLINE_OUTPUT_CHARS: usize = 60_000;
 /// a small preview envelope pointing at it. `bash` truncates and saves its own
 /// output and `view_image` carries an image, so they're exempt.
 fn bound_tool_output(ctx: &ToolContext, name: &str, value: Value) -> Value {
-    if matches!(name, "view_image" | "bash") {
+    if matches!(name, "view_image" | "canvas_thumbnail" | "bash") {
         return value;
     }
     let rendered = serde_json::to_string_pretty(&value).unwrap_or_default();

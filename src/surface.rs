@@ -139,6 +139,17 @@ const PRESENT: Surface = Surface {
     ],
 };
 
+const CANVAS: Surface = Surface {
+    name: "canvas",
+    intro: "Free-form HTML canvas (Blitz renderer, max 4000x8000 px, scale 0.25..=3.0). HTML/CSS: block/inline/flex/grid, abs/rel pos, borders/radii, box-shadow, gradients, transforms, inline SVG (explicit fill/font-family on text; no foreignObject or external <use>), raster data:image/* only. No JS, external URLs, filters, animations, sticky, subgrid, non-Latin scripts (emoji ok). Avoid <select>, <input placeholder>, text-overflow:ellipsis, background-clip:text; put frame bg on a full-height wrapper div. Elements use `data-cv-id` (preserved across `set_html`).",
+    acts: &[
+        act("read", "canvas_read", "read frames/ops (frame_id, bbox, since_rev)."),
+        act("apply", "canvas_apply", "apply atomic batch (label, ops[]) -> rev, created_ids, canvas: links."),
+        act("thumbnail", "canvas_thumbnail", "render frame PNG into context (frame_id, scale 0.25..=3.0)."),
+        op("pins", "canvas_pins", "list, reply, or resolve frame pins (op: list|reply|resolve)."),
+    ],
+};
+
 const DELEGATE: Surface = Surface {
     name: "delegate",
     intro: "Delegate background lanes, cancel them, or list profiles.",
@@ -506,8 +517,8 @@ const AMBIENT: Surface = Surface {
 };
 
 pub const SURFACES: &[&Surface] = &[
-    &WEB, &PROCESS, &PRESENT, &DELEGATE, &SKILL, &MESSAGE, &READ, &TASK, &WAKE, &TASKS, &GOALS,
-    &SESSIONS, &AMBIENT, &CODE, &CALLS,
+    &WEB, &PROCESS, &PRESENT, &CANVAS, &DELEGATE, &SKILL, &MESSAGE, &READ, &TASK, &WAKE, &TASKS,
+    &GOALS, &SESSIONS, &AMBIENT, &CODE, &CALLS,
 ];
 
 fn keep_for(role: SeatRole) -> &'static [&'static str] {
@@ -545,11 +556,11 @@ fn keep_for(role: SeatRole) -> &'static [&'static str] {
 fn surfaces_for(role: SeatRole) -> &'static [&'static Surface] {
     match role {
         SeatRole::Work => &[
-            &PROCESS, &WEB, &PRESENT, &DELEGATE, &MESSAGE, &READ, &SKILL, &TASK, &WAKE, &CODE,
-            &CALLS,
+            &PROCESS, &WEB, &PRESENT, &CANVAS, &DELEGATE, &MESSAGE, &READ, &SKILL, &TASK, &WAKE,
+            &CODE, &CALLS,
         ],
         SeatRole::Desk => &[&WEB, &MESSAGE, &READ, &TASK, &WAKE, &PRESENT, &CODE, &CALLS],
-        SeatRole::Lane => &[&PROCESS, &WEB, &SKILL],
+        SeatRole::Lane => &[&PROCESS, &WEB, &CANVAS, &SKILL],
         SeatRole::Lead => &[
             &WEB, &PRESENT, &MESSAGE, &READ, &AMBIENT, &TASKS, &GOALS, &SESSIONS, &WAKE, &CODE,
             &CALLS,

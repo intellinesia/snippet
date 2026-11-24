@@ -506,6 +506,9 @@ mod tests {
             store: crate::store::Store::open_in_memory().unwrap(),
             coordination_events: tokio::sync::broadcast::channel(16).0,
             recurring_root: tempfile::tempdir().unwrap().keep(),
+            canvas: std::sync::Arc::new(crate::canvas::CanvasService::with_stub_renderer(
+                tempfile::tempdir().unwrap().keep(),
+            )),
         });
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

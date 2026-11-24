@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/canvas-render"]
+default-members = ["."]
+
 [package]
 name = "snippet"
 version = "1.0.0-alpha.35"
@@ -42,6 +46,9 @@ libc = "0.2.189"
 vt100 = "0.15.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tower-http = { version = "0.6", features = ["compression-gzip", "compression-br"] }
+canvas-render = { path = "crates/canvas-render" }
+html5ever = "0.40.1"
+markup5ever_rcdom = "0.40.1"
 
 # Linux loads Microsoft's onnxruntime .so at runtime (fetched on first use) so the binary gains no libstdc++ dependency.
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -16,6 +16,7 @@ pub mod app_store;
 pub mod artifacts;
 pub mod bg;
 pub mod builtins;
+pub mod canvas;
 pub mod catalog;
 pub mod chatgpt;
 pub mod chatgpt_auth;

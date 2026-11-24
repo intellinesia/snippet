@@ -688,6 +688,9 @@ mod tests {
             store: Store::open_in_memory().unwrap(),
             coordination_events: tokio::sync::broadcast::channel(16).0,
             recurring_root: tempfile::tempdir().expect("tempdir").keep(),
+            canvas: std::sync::Arc::new(crate::canvas::CanvasService::with_stub_renderer(
+                tempfile::tempdir().expect("tempdir").keep(),
+            )),
         })
     }
 
