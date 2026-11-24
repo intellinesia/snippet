@@ -30,8 +30,11 @@ pub const MAX_FRAMES_PER_CANVAS: usize = 500;
 pub const MAX_PIN_TEXT_CHARS: usize = 4_000;
 pub const MAX_LABEL_CHARS: usize = 256;
 pub const MAX_CACHE_ENTRIES: usize = 64;
+pub const MAX_CACHE_ENTRIES_CAP: usize = 2048;
+pub const MAX_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_STORES_CACHED: usize = 64;
 pub const RENDER_TIMEOUT: Duration = Duration::from_secs(15);
+pub const RENDER_QUEUE_TIMEOUT: Duration = Duration::from_secs(60);
 pub const HIT_TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 const MAX_CONCURRENT_RENDERS: usize = 4;
@@ -1039,31 +1042,53 @@ pub struct CachedLayout {
     pub layout: Vec<ElementRect>,
 }
 
-fn prune_cache_dir(cache_dir: &Path) {
+pub(crate) fn cache_entry_limit(frame_count: usize) -> usize {
+    frame_count
+        .saturating_mul(3)
+        .clamp(MAX_CACHE_ENTRIES, MAX_CACHE_ENTRIES_CAP)
+}
+
+pub(crate) fn prune_cache_dir_with_limits(cache_dir: &Path, max_entries: usize, max_bytes: u64) {
     let Ok(entries) = fs::read_dir(cache_dir) else {
         return;
     };
-    let mut pngs: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut pngs: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let mut total_bytes: u64 = 0;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("png") {
-            let mtime = entry
-                .metadata()
-                .and_then(|m| m.modified())
+            let meta = entry.metadata().ok();
+            let mtime = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            pngs.push((mtime, path));
+            let png_bytes = meta.map(|m| m.len()).unwrap_or(0);
+            let layout_bytes = fs::metadata(path.with_extension("layout.json"))
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let pair_bytes = png_bytes.saturating_add(layout_bytes);
+            total_bytes = total_bytes.saturating_add(pair_bytes);
+            pngs.push((mtime, pair_bytes, path));
         }
     }
-    if pngs.len() <= MAX_CACHE_ENTRIES {
+    if pngs.len() <= max_entries && total_bytes <= max_bytes {
         return;
     }
-    pngs.sort_by_key(|(mtime, _)| *mtime);
-    let to_remove = pngs.len() - MAX_CACHE_ENTRIES;
-    for (_, png_path) in pngs.into_iter().take(to_remove) {
+    pngs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
+    let mut remaining = pngs.len();
+    for (_, pair_bytes, png_path) in pngs {
+        if remaining <= max_entries && total_bytes <= max_bytes {
+            break;
+        }
         let _ = fs::remove_file(&png_path);
-        let layout_path = png_path.with_extension("layout.json");
-        let _ = fs::remove_file(layout_path);
+        let _ = fs::remove_file(png_path.with_extension("layout.json"));
+        remaining -= 1;
+        total_bytes = total_bytes.saturating_sub(pair_bytes);
     }
+}
+
+fn prune_cache_dir(cache_dir: &Path, frame_count: usize) {
+    prune_cache_dir_with_limits(cache_dir, cache_entry_limit(frame_count), MAX_CACHE_BYTES);
 }
 
 fn sort_summaries(items: &mut [CanvasSummary]) {
@@ -1074,12 +1099,89 @@ fn sort_summaries(items: &mut [CanvasSummary]) {
     });
 }
 
+type RenderKey = (String, String, u64, u32);
+type CachedRender = (PathBuf, Vec<u8>, CachedLayout);
+
+#[derive(Clone)]
+enum InFlightError {
+    RenderTimeout,
+    RenderOverloaded,
+    RenderTooLarge,
+    RenderParse(String),
+    RenderLayout(String),
+    RenderPaint(String),
+    Other(String),
+}
+
+impl From<CanvasError> for InFlightError {
+    fn from(err: CanvasError) -> Self {
+        match err {
+            CanvasError::Render(RenderError::Timeout) => Self::RenderTimeout,
+            CanvasError::Render(RenderError::Overloaded) => Self::RenderOverloaded,
+            CanvasError::Render(RenderError::TooLarge) => Self::RenderTooLarge,
+            CanvasError::Render(RenderError::Parse(s)) => Self::RenderParse(s),
+            CanvasError::Render(RenderError::Layout(s)) => Self::RenderLayout(s),
+            CanvasError::Render(RenderError::Paint(s)) => Self::RenderPaint(s),
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+impl From<InFlightError> for CanvasError {
+    fn from(err: InFlightError) -> Self {
+        match err {
+            InFlightError::RenderTimeout => CanvasError::Render(RenderError::Timeout),
+            InFlightError::RenderOverloaded => CanvasError::Render(RenderError::Overloaded),
+            InFlightError::RenderTooLarge => CanvasError::Render(RenderError::TooLarge),
+            InFlightError::RenderParse(s) => CanvasError::Render(RenderError::Parse(s)),
+            InFlightError::RenderLayout(s) => CanvasError::Render(RenderError::Layout(s)),
+            InFlightError::RenderPaint(s) => CanvasError::Render(RenderError::Paint(s)),
+            InFlightError::Other(s) => CanvasError::Render(RenderError::Paint(s)),
+        }
+    }
+}
+
+type InFlightOutcome = Result<CachedRender, InFlightError>;
+type InFlightMap = HashMap<RenderKey, tokio::sync::watch::Receiver<Option<InFlightOutcome>>>;
+
+struct RenderPlan {
+    key: RenderKey,
+    canvas_id: String,
+    frame: Frame,
+    scale: f32,
+    png_path: PathBuf,
+    layout_path: PathBuf,
+    cache_dir: PathBuf,
+    frame_count: usize,
+}
+
+enum CacheLookup {
+    Hit(CachedRender),
+    Miss(RenderPlan),
+}
+
+struct InFlightGuard {
+    svc: Arc<CanvasService>,
+    key: RenderKey,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.svc
+            .inflight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
 /// Thread-safe multi-canvas service holding stores + the pluggable [`FrameRenderer`].
 pub struct CanvasService {
     root: PathBuf,
     renderer: Arc<dyn FrameRenderer>,
     stores: Mutex<HashMap<String, Arc<Mutex<CanvasStore>>>>,
     render_semaphore: Arc<Semaphore>,
+    inflight: Mutex<InFlightMap>,
 }
 
 impl CanvasService {
@@ -1089,6 +1191,7 @@ impl CanvasService {
             renderer,
             stores: Mutex::new(HashMap::new()),
             render_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_RENDERS)),
+            inflight: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1190,20 +1293,31 @@ impl CanvasService {
         Ok(opened)
     }
 
-    /// Render (or fetch from disk cache) a frame's PNG thumbnail and layout map, keyed by (frame, rev, scale).
-    pub fn render_frame_cached(
+    fn read_cached_render(png_path: &Path, layout_path: &Path) -> Option<CachedRender> {
+        if png_path.is_file()
+            && layout_path.is_file()
+            && let Ok(png) = fs::read(png_path)
+            && let Ok(layout_bytes) = fs::read(layout_path)
+            && let Ok(cached_layout) = serde_json::from_slice::<CachedLayout>(&layout_bytes)
+        {
+            return Some((png_path.to_path_buf(), png, cached_layout));
+        }
+        None
+    }
+
+    fn resolve_and_check_cache(
         &self,
         canvas_id: &str,
         frame_id: &str,
         requested_rev: Option<u64>,
         scale: f32,
-    ) -> Result<(PathBuf, Vec<u8>, CachedLayout), CanvasError> {
+    ) -> Result<CacheLookup, CanvasError> {
         if !is_safe_component(frame_id) {
             return Err(CanvasError::InvalidId(frame_id.to_string()));
         }
         let (scale, scale_millis) = normalize_scale(scale)?;
         let store_arc = self.store(canvas_id)?;
-        let (frame, png_path, layout_path, cache_dir) = {
+        let (frame, png_path, layout_path, cache_dir, frame_count) = {
             let store = store_arc.lock().unwrap_or_else(|e| e.into_inner());
             let frame = match requested_rev {
                 Some(rev) => store.frame_at_rev(frame_id, rev)?,
@@ -1214,37 +1328,74 @@ impl CanvasService {
             let png_path = store.cache_png_path(&frame.id, cache_rev, scale_millis);
             let layout_path = store.cache_layout_path(&frame.id, cache_rev, scale_millis);
             let cache_dir = store.root().join(CACHE_DIR);
-            (frame, png_path, layout_path, cache_dir)
+            let frame_count = store.frames.len();
+            (frame, png_path, layout_path, cache_dir, frame_count)
         };
 
-        if png_path.is_file()
-            && layout_path.is_file()
-            && let Ok(png) = fs::read(&png_path)
-            && let Ok(layout_bytes) = fs::read(&layout_path)
-            && let Ok(cached_layout) = serde_json::from_slice::<CachedLayout>(&layout_bytes)
-        {
-            return Ok((png_path, png, cached_layout));
+        if let Some(hit) = Self::read_cached_render(&png_path, &layout_path) {
+            return Ok(CacheLookup::Hit(hit));
         }
 
-        let width = frame.w.round().max(1.0) as u32;
-        let height = frame.h.round().max(1.0) as u32;
-        let rendered: Rendered = self.renderer.render(&frame.html, width, height, scale)?;
-        let cached_layout = CachedLayout {
+        let key = (
+            canvas_id.to_string(),
+            frame.id.clone(),
+            frame.rev,
+            scale_millis,
+        );
+        Ok(CacheLookup::Miss(RenderPlan {
+            key,
             canvas_id: canvas_id.to_string(),
-            frame_id: frame.id.clone(),
-            rev: frame.rev,
-            width: rendered.width,
-            height: rendered.height,
+            frame,
             scale,
-            layout: rendered.layout,
-        };
-        atomic_write(&png_path, &rendered.png)?;
-        atomic_write(&layout_path, &serde_json::to_vec(&cached_layout)?)?;
-        prune_cache_dir(&cache_dir);
-        Ok((png_path, rendered.png, cached_layout))
+            png_path,
+            layout_path,
+            cache_dir,
+            frame_count,
+        }))
     }
 
-    /// Async wrapper for [`Self::render_frame_cached`] running on a blocking thread with concurrency limit and timeout.
+    fn execute_render_plan(&self, plan: RenderPlan) -> Result<CachedRender, CanvasError> {
+        if let Some(hit) = Self::read_cached_render(&plan.png_path, &plan.layout_path) {
+            return Ok(hit);
+        }
+        let width = plan.frame.w.round().max(1.0) as u32;
+        let height = plan.frame.h.round().max(1.0) as u32;
+        let rendered: Rendered =
+            self.renderer
+                .render(&plan.frame.html, width, height, plan.scale)?;
+        let cached_layout = CachedLayout {
+            canvas_id: plan.canvas_id,
+            frame_id: plan.frame.id,
+            rev: plan.frame.rev,
+            width: rendered.width,
+            height: rendered.height,
+            scale: plan.scale,
+            layout: rendered.layout,
+        };
+        atomic_write(&plan.png_path, &rendered.png)?;
+        atomic_write(&plan.layout_path, &serde_json::to_vec(&cached_layout)?)?;
+        prune_cache_dir(&plan.cache_dir, plan.frame_count);
+        Ok((plan.png_path, rendered.png, cached_layout))
+    }
+
+    /// Render (or fetch from disk cache) a frame's PNG thumbnail and layout map, keyed by (frame, rev, scale).
+    pub fn render_frame_cached(
+        &self,
+        canvas_id: &str,
+        frame_id: &str,
+        requested_rev: Option<u64>,
+        scale: f32,
+    ) -> Result<(PathBuf, Vec<u8>, CachedLayout), CanvasError> {
+        match self.resolve_and_check_cache(canvas_id, frame_id, requested_rev, scale)? {
+            CacheLookup::Hit(hit) => Ok(hit),
+            CacheLookup::Miss(plan) => self.execute_render_plan(plan),
+        }
+    }
+
+    /// Async wrapper for [`Self::render_frame_cached`]:
+    /// - Cache hits bypass the render semaphore completely.
+    /// - Duplicate in-flight renders for the same `(canvas, frame, rev, scale)` coalesce into one render.
+    /// - Queue wait uses [`RENDER_QUEUE_TIMEOUT`] (returning [`RenderError::Overloaded`]), separate from `timeout` for the render itself.
     pub async fn render_frame_cached_async(
         self: &Arc<Self>,
         canvas_id: String,
@@ -1253,21 +1404,101 @@ impl CanvasService {
         scale: f32,
         timeout: Duration,
     ) -> Result<(PathBuf, Vec<u8>, CachedLayout), CanvasError> {
-        let permit = tokio::time::timeout(timeout, self.render_semaphore.clone().acquire_owned())
-            .await
-            .map_err(|_| CanvasError::Render(RenderError::Timeout))?
-            .map_err(|_| CanvasError::Render(RenderError::Paint("renderer closed".into())))?;
+        self.render_frame_cached_async_with_queue_timeout(
+            canvas_id,
+            frame_id,
+            requested_rev,
+            scale,
+            timeout,
+            RENDER_QUEUE_TIMEOUT,
+        )
+        .await
+    }
+
+    pub(crate) async fn render_frame_cached_async_with_queue_timeout(
+        self: &Arc<Self>,
+        canvas_id: String,
+        frame_id: String,
+        requested_rev: Option<u64>,
+        scale: f32,
+        render_timeout: Duration,
+        queue_timeout: Duration,
+    ) -> Result<(PathBuf, Vec<u8>, CachedLayout), CanvasError> {
         let svc = self.clone();
-        let handle = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            svc.render_frame_cached(&canvas_id, &frame_id, requested_rev, scale)
-        });
-        tokio::time::timeout(timeout, handle)
+        let lookup = tokio::task::spawn_blocking(move || {
+            svc.resolve_and_check_cache(&canvas_id, &frame_id, requested_rev, scale)
+        })
+        .await
+        .map_err(|e| {
+            CanvasError::Render(RenderError::Paint(format!("cache lookup failed: {e}")))
+        })??;
+
+        let plan = match lookup {
+            CacheLookup::Hit(hit) => return Ok(hit),
+            CacheLookup::Miss(plan) => plan,
+        };
+
+        let key = plan.key.clone();
+        let mut rx = {
+            let mut map = self.inflight.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = map.get(&key) {
+                existing.clone()
+            } else {
+                let (tx, rx) = tokio::sync::watch::channel(None);
+                map.insert(key.clone(), rx.clone());
+                let svc = self.clone();
+                // Detached task so cancelling one coalesced caller does not abort other waiters.
+                tokio::spawn(async move {
+                    let _guard = InFlightGuard {
+                        svc: svc.clone(),
+                        key,
+                    };
+                    let outcome: InFlightOutcome = match tokio::time::timeout(
+                        queue_timeout,
+                        svc.render_semaphore.clone().acquire_owned(),
+                    )
+                    .await
+                    {
+                        Err(_) => Err(InFlightError::RenderOverloaded),
+                        Ok(Err(_)) => Err(InFlightError::RenderPaint("renderer closed".into())),
+                        Ok(Ok(permit)) => {
+                            let svc_inner = svc.clone();
+                            let handle = tokio::task::spawn_blocking(move || {
+                                let _permit = permit;
+                                svc_inner.execute_render_plan(plan)
+                            });
+                            match tokio::time::timeout(render_timeout, handle).await {
+                                Err(_) => Err(InFlightError::RenderTimeout),
+                                Ok(Err(e)) => Err(InFlightError::RenderPaint(format!(
+                                    "render task failed: {e}"
+                                ))),
+                                Ok(Ok(res)) => res.map_err(InFlightError::from),
+                            }
+                        }
+                    };
+                    drop(_guard);
+                    let _ = tx.send(Some(outcome));
+                });
+                rx
+            }
+        };
+
+        let guard = rx
+            .wait_for(|v| v.is_some())
             .await
-            .map_err(|_| CanvasError::Render(RenderError::Timeout))?
-            .map_err(|e| {
-                CanvasError::Render(RenderError::Paint(format!("render task failed: {e}")))
-            })?
+            .map_err(|_| CanvasError::Render(RenderError::Paint("render worker dropped".into())))?;
+        match guard.as_ref().cloned() {
+            Some(Ok(rendered)) => Ok(rendered),
+            Some(Err(e)) => Err(e.into()),
+            None => Err(CanvasError::Render(RenderError::Paint(
+                "empty render outcome".into(),
+            ))),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn render_semaphore(&self) -> &Arc<Semaphore> {
+        &self.render_semaphore
     }
 
     pub fn hit_test(
@@ -1296,7 +1527,7 @@ impl CanvasService {
         Ok(self.renderer.hit_test(&frame.html, width, x, y))
     }
 
-    /// Async wrapper for [`Self::hit_test`] running on a blocking thread with concurrency limit and timeout.
+    /// Async wrapper for [`Self::hit_test`] running on a blocking thread with separate queue wait and execution timeout.
     pub async fn hit_test_async(
         self: &Arc<Self>,
         canvas_id: String,
@@ -1305,10 +1536,13 @@ impl CanvasService {
         y: f32,
         timeout: Duration,
     ) -> Result<Option<String>, CanvasError> {
-        let permit = tokio::time::timeout(timeout, self.render_semaphore.clone().acquire_owned())
-            .await
-            .map_err(|_| CanvasError::Render(RenderError::Timeout))?
-            .map_err(|_| CanvasError::Render(RenderError::Paint("renderer closed".into())))?;
+        let permit = tokio::time::timeout(
+            RENDER_QUEUE_TIMEOUT,
+            self.render_semaphore.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| CanvasError::Render(RenderError::Overloaded))?
+        .map_err(|_| CanvasError::Render(RenderError::Paint("renderer closed".into())))?;
         let svc = self.clone();
         let handle = tokio::task::spawn_blocking(move || {
             let _permit = permit;
