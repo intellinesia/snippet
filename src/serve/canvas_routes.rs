@@ -57,6 +57,14 @@ fn resolve_canvas_id(d: &Shared, canvas_id: Option<&str>, workspace: Option<&str
 }
 
 fn canvas_error_response(err: CanvasError) -> Response {
+    if matches!(err, CanvasError::Render(RenderError::Overloaded)) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, "2")],
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response();
+    }
     let status = match &err {
         CanvasError::FrameNotFound(_)
         | CanvasError::BatchNotFound(_)
@@ -824,5 +832,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+        // Queue saturation maps to 503 Service Unavailable with Retry-After header.
+        let overloaded = canvas_error_response(CanvasError::Render(RenderError::Overloaded));
+        assert_eq!(overloaded.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(overloaded.headers().get(header::RETRY_AFTER).is_some());
     }
 }

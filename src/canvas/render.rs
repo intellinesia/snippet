@@ -44,6 +44,8 @@ pub enum RenderError {
     TooLarge,
     #[error("render timed out")]
     Timeout,
+    #[error("render queue saturated; retry shortly")]
+    Overloaded,
 }
 
 pub trait FrameRenderer: Send + Sync {

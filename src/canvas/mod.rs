@@ -17,8 +17,9 @@ pub use model::{
 pub use render::{BlitzRenderer, ElementRect, FrameRenderer, RenderError, Rendered, StubRenderer};
 pub use store::{
     CachedLayout, CanvasMeta, CanvasService, CanvasStore, CanvasSummary, HIT_TEST_TIMEOUT,
-    RENDER_TIMEOUT, SNAPSHOT_INTERVAL, THUMB_LINK_TTL_SECS, canvas_id_for_workspace, canvases_root,
-    emit_canvas_rev_event, normalize_scale, signed_thumb_path, verify_signed_thumb,
+    RENDER_QUEUE_TIMEOUT, RENDER_TIMEOUT, SNAPSHOT_INTERVAL, THUMB_LINK_TTL_SECS,
+    canvas_id_for_workspace, canvases_root, emit_canvas_rev_event, normalize_scale,
+    signed_thumb_path, verify_signed_thumb,
 };
 pub use tools::{
     CANVAS_HTML_SUBSET_NOTE, CanvasApplyTool, CanvasPinsTool, CanvasReadTool, CanvasThumbnailTool,
@@ -712,5 +713,181 @@ mod tests {
                 None,
             )
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn render_queue_cache_bypass_wait_coalescing_and_overload() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingRenderer {
+            calls: AtomicUsize,
+            delay_ms: u64,
+        }
+        impl FrameRenderer for CountingRenderer {
+            fn render(&self, _html: &str, w: u32, h: u32, s: f32) -> Result<Rendered, RenderError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                if self.delay_ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(self.delay_ms));
+                }
+                StubRenderer.render("", w, h, s)
+            }
+            fn hit_test(&self, _html: &str, _w: u32, _x: f32, _y: f32) -> Option<String> {
+                None
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let renderer = std::sync::Arc::new(CountingRenderer {
+            calls: AtomicUsize::new(0),
+            delay_ms: 40,
+        });
+        let svc = std::sync::Arc::new(CanvasService::new(
+            dir.path().to_path_buf(),
+            renderer.clone(),
+        ));
+        {
+            let store = svc.store("q").unwrap();
+            let mut s = store.lock().unwrap();
+            s.apply_batch(
+                "seed".into(),
+                vec![
+                    Op::CreateFrame {
+                        id: Some("cached".into()),
+                        title: "Cached".into(),
+                        x: 0.0,
+                        y: 0.0,
+                        w: 100.0,
+                        h: 100.0,
+                        html: "<div>cached</div>".into(),
+                    },
+                    Op::CreateFrame {
+                        id: Some("queued".into()),
+                        title: "Queued".into(),
+                        x: 120.0,
+                        y: 0.0,
+                        w: 100.0,
+                        h: 100.0,
+                        html: "<div>queued</div>".into(),
+                    },
+                    Op::CreateFrame {
+                        id: Some("coalesce".into()),
+                        title: "Coalesce".into(),
+                        x: 240.0,
+                        y: 0.0,
+                        w: 100.0,
+                        h: 100.0,
+                        html: "<div>coalesce</div>".into(),
+                    },
+                    Op::CreateFrame {
+                        id: Some("shed".into()),
+                        title: "Shed".into(),
+                        x: 360.0,
+                        y: 0.0,
+                        w: 100.0,
+                        h: 100.0,
+                        html: "<div>shed</div>".into(),
+                    },
+                ],
+                agent(),
+                None,
+            )
+            .unwrap();
+        }
+
+        // Prime disk cache for `cached`.
+        svc.render_frame_cached_async(
+            "q".into(),
+            "cached".into(),
+            None,
+            1.0,
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(renderer.calls.load(Ordering::SeqCst), 1);
+
+        // Hold all render semaphore permits.
+        let permits = svc
+            .render_semaphore()
+            .clone()
+            .acquire_many_owned(4)
+            .await
+            .unwrap();
+
+        // 1. Cached thumb returns immediately even with all permits held and tiny timeouts.
+        let (_, png, _) = svc
+            .render_frame_cached_async_with_queue_timeout(
+                "q".into(),
+                "cached".into(),
+                None,
+                1.0,
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(20),
+            )
+            .await
+            .unwrap();
+        assert!(png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+        assert_eq!(renderer.calls.load(Ordering::SeqCst), 1);
+
+        // 2. Saturated queue returns RenderError::Overloaded when permit wait expires.
+        let err = svc
+            .render_frame_cached_async_with_queue_timeout(
+                "q".into(),
+                "shed".into(),
+                None,
+                1.0,
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_millis(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CanvasError::Render(RenderError::Overloaded)));
+
+        // 3. Queued render waits longer than render_timeout while permits are held,
+        //    then completes cleanly once permits free within queue_timeout.
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            drop(permits);
+        });
+        let (_, png, _) = svc
+            .render_frame_cached_async_with_queue_timeout(
+                "q".into(),
+                "queued".into(),
+                None,
+                1.0,
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+        release.await.unwrap();
+        assert!(png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+        assert_eq!(renderer.calls.load(Ordering::SeqCst), 2);
+
+        // 4. Duplicate concurrent renders of the same (canvas, frame, rev, scale) coalesce to 1 render.
+        let mut futs = Vec::new();
+        for _ in 0..6 {
+            let svc = svc.clone();
+            futs.push(tokio::spawn(async move {
+                svc.render_frame_cached_async(
+                    "q".into(),
+                    "coalesce".into(),
+                    None,
+                    1.0,
+                    std::time::Duration::from_secs(2),
+                )
+                .await
+            }));
+        }
+        let mut first_png = None;
+        for f in futs {
+            let (_, bytes, _) = f.await.unwrap().unwrap();
+            if let Some(ref prev) = first_png {
+                assert_eq!(&bytes, prev);
+            } else {
+                first_png = Some(bytes);
+            }
+        }
+        assert_eq!(renderer.calls.load(Ordering::SeqCst), 3);
     }
 }
