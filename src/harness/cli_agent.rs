@@ -3668,7 +3668,7 @@ impl CodingHarness {
             .execute(&self.context, &call.name, call.arguments.clone())
             .await
         {
-            Ok(mut result) if call.name == "view_image" => {
+            Ok(mut result) if matches!(call.name.as_str(), "view_image" | "canvas_thumbnail") => {
                 let resolved = result
                     .value
                     .pointer("/data/path")

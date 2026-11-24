@@ -23,6 +23,7 @@ pub fn coding_tools(exa_api_key: Option<String>) -> ToolRegistry {
     registry.insert(ChangeFilesTool);
     registry.insert(ViewImageTool);
     registry.insert(ManageProcessTool);
+    crate::canvas::add_canvas_tools(&mut registry);
     // Skill tools only when the user actually has skills installed — otherwise they
     // are dead weight in every prompt's tool list.
     if !crate::skills::discover().is_empty() {

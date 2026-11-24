@@ -335,6 +335,9 @@ mod tests {
             store,
             coordination_events: tokio::sync::broadcast::channel(32).0,
             recurring_root,
+            canvas: std::sync::Arc::new(crate::canvas::CanvasService::with_stub_renderer(
+                dir.join("canvases"),
+            )),
         })
     }
 

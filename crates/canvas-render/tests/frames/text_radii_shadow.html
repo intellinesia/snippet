@@ -1,0 +1,20 @@
+<!doctype html>
+<html><head><style>
+body { margin: 0; padding: 40px; background: #fff; }
+.hero { border-radius: 24px; padding: 32px; background: #fef3c7; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+h1 { font-family: serif; font-size: 40px; margin: 0 0 12px; color: #78350f; }
+p { font-family: Inter, sans-serif; font-size: 16px; line-height: 1.5; color: #451a03; margin: 0 0 16px; }
+code { font-family: monospace; background: #fde68a; padding: 2px 4px; border-radius: 4px; }
+.pill { display: inline-block; border-radius: 999px; padding: 6px 16px; border: 2px solid #b45309; color: #b45309; font-weight: 700; }
+.avatar { width: 64px; height: 64px; border-radius: 50%; background: #f59e0b; margin-top: 16px; box-shadow: 0 0 0 4px #fff, 0 0 0 6px #f59e0b; }
+img { display: block; margin-top: 12px; width: 20px; height: 20px; }
+</style></head><body>
+<section class="hero" data-cv-id="hero">
+  <h1 data-cv-id="title">Readable headline</h1>
+  <p data-cv-id="body">Body copy in a sans face, with <code data-cv-id="code">inline code</code> set in mono. External images are skipped.</p>
+  <span class="pill" data-cv-id="pill">Featured</span>
+  <div class="avatar" data-cv-id="avatar"></div>
+  <img data-cv-id="remote" src="https://example.com/x.png">
+  <img data-cv-id="dot" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==">
+</section>
+</body></html>

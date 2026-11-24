@@ -58,6 +58,7 @@ pub(crate) use direct::{
     relay_stop,
 };
 mod artifact_routes;
+mod canvas_routes;
 pub(crate) mod attention;
 mod autonomy;
 mod fs;
@@ -204,6 +205,7 @@ pub(crate) struct Daemon {
     coordination_events:
         tokio::sync::broadcast::Sender<crate::coordination::types::CoordinationEvent>,
     recurring_root: PathBuf,
+    pub(crate) canvas: Arc<crate::canvas::CanvasService>,
 }
 
 /// The machine's hostname, used as the app's default instance name.
@@ -1095,6 +1097,7 @@ pub async fn run_serve(
         store,
         coordination_events: tokio::sync::broadcast::channel(256).0,
         recurring_root: crate::recurring::default_root(),
+        canvas: crate::canvas::CanvasService::default_instance(),
     });
 
     let _ = LIVE_DAEMON.set(daemon.clone());
@@ -1263,6 +1266,7 @@ pub async fn run_serve(
         .merge(keep_warm::router())
         .merge(memory_routes::router())
         .merge(artifact_routes::router())
+        .merge(canvas_routes::router())
         .merge(github_routes::router())
         .merge(lead::router())
         .merge(goals::router())

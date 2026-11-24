@@ -16,6 +16,9 @@ fn test_daemon() -> Daemon {
         store: crate::store::Store::open_in_memory().unwrap(),
         coordination_events: tokio::sync::broadcast::channel(256).0,
         recurring_root: tempfile::tempdir().expect("temporary directory").keep(),
+        canvas: std::sync::Arc::new(crate::canvas::CanvasService::with_stub_renderer(
+            tempfile::tempdir().expect("temporary directory").keep(),
+        )),
     }
 }
 
