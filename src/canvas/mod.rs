@@ -17,8 +17,8 @@ pub use model::{
 pub use render::{BlitzRenderer, ElementRect, FrameRenderer, RenderError, Rendered, StubRenderer};
 pub use store::{
     CachedLayout, CanvasMeta, CanvasService, CanvasStore, CanvasSummary, HIT_TEST_TIMEOUT,
-    RENDER_QUEUE_TIMEOUT, RENDER_TIMEOUT, SNAPSHOT_INTERVAL, THUMB_LINK_TTL_SECS,
-    canvas_id_for_workspace, canvases_root, emit_canvas_rev_event, normalize_scale,
+    RENDER_QUEUE_TIMEOUT, RENDER_TIMEOUT, SNAPSHOT_INTERVAL, THUMB_LINK_TTL_SECS, ThumbFormat,
+    ThumbResult, canvas_id_for_workspace, canvases_root, emit_canvas_rev_event, normalize_scale,
     signed_thumb_path, verify_signed_thumb,
 };
 pub use tools::{
@@ -301,7 +301,7 @@ mod tests {
         let svc = CanvasService::with_stub_renderer(dir.path().to_path_buf());
         {
             let store = svc.store("proj").unwrap();
-            let mut s = store.lock().unwrap();
+            let mut s = store.write().unwrap();
             s.apply_batch(
                 "create".into(),
                 vec![Op::CreateFrame {
@@ -524,7 +524,7 @@ mod tests {
                 let mut revs = Vec::new();
                 for i in 0..10 {
                     let store = svc.store("conc").unwrap();
-                    let mut s = store.lock().unwrap();
+                    let mut s = store.write().unwrap();
                     let c = s
                         .apply_batch(
                             format!("t{t}-{i}"),
@@ -583,7 +583,7 @@ mod tests {
         ));
         {
             let store = svc.store("slow").unwrap();
-            let mut s = store.lock().unwrap();
+            let mut s = store.write().unwrap();
             s.apply_batch(
                 "create".into(),
                 vec![Op::CreateFrame {
@@ -652,7 +652,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1100));
         let store = svc.store(&a.canvas_id).unwrap();
         store
-            .lock()
+            .write()
             .unwrap()
             .apply_batch(
                 "one".into(),
@@ -747,7 +747,7 @@ mod tests {
         ));
         {
             let store = svc.store("q").unwrap();
-            let mut s = store.lock().unwrap();
+            let mut s = store.write().unwrap();
             s.apply_batch(
                 "seed".into(),
                 vec![
@@ -810,7 +810,7 @@ mod tests {
         let permits = svc
             .render_semaphore()
             .clone()
-            .acquire_many_owned(4)
+            .acquire_many_owned(svc.render_concurrency() as u32)
             .await
             .unwrap();
 
@@ -928,7 +928,7 @@ mod tests {
             .collect();
         svc.store("many")
             .unwrap()
-            .lock()
+            .write()
             .unwrap()
             .apply_batch("seed 100".into(), ops, agent(), None)
             .unwrap();
@@ -1054,5 +1054,109 @@ mod tests {
         assert!(new_f0.html.contains("v2"));
         assert!(reopened.frame_at_rev("f-001", 2).unwrap().is_some());
         assert!(reopened.frame_at_rev("f-001", 62).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn content_addressed_cache_reuses_render_across_move_and_webp() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingRenderer(AtomicUsize);
+        impl FrameRenderer for CountingRenderer {
+            fn render(&self, _html: &str, w: u32, h: u32, s: f32) -> Result<Rendered, RenderError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                StubRenderer.render("", w, h, s)
+            }
+            fn hit_test(&self, _html: &str, _w: u32, _x: f32, _y: f32) -> Option<String> {
+                None
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let renderer = std::sync::Arc::new(CountingRenderer(AtomicUsize::new(0)));
+        let svc = std::sync::Arc::new(CanvasService::new(
+            dir.path().to_path_buf(),
+            renderer.clone(),
+        ));
+        {
+            let store = svc.store("ca").unwrap();
+            let mut s = store.write().unwrap();
+            s.apply_batch(
+                "create".into(),
+                vec![Op::CreateFrame {
+                    id: Some("card".into()),
+                    title: "Card".into(),
+                    x: 0.0,
+                    y: 0.0,
+                    w: 120.0,
+                    h: 80.0,
+                    html: "<div>same</div>".into(),
+                }],
+                agent(),
+                None,
+            )
+            .unwrap();
+        }
+
+        let t1 = svc
+            .render_frame_thumb_async(
+                "ca".into(),
+                "card".into(),
+                None,
+                1.0,
+                ThumbFormat::Png,
+                RENDER_TIMEOUT,
+            )
+            .await
+            .unwrap();
+        assert_eq!(renderer.0.load(Ordering::SeqCst), 1);
+
+        // Move frame (rev 1 -> 2) without changing HTML or dimensions: content hash stays identical.
+        {
+            let store = svc.store("ca").unwrap();
+            let mut s = store.write().unwrap();
+            s.apply_batch(
+                "move".into(),
+                vec![Op::MoveFrame {
+                    frame_id: "card".into(),
+                    x: 300.0,
+                    y: 400.0,
+                    w: None,
+                    h: None,
+                    title: Some("Moved Card".into()),
+                }],
+                agent(),
+                None,
+            )
+            .unwrap();
+        }
+        let t2 = svc
+            .render_frame_thumb_async(
+                "ca".into(),
+                "card".into(),
+                None,
+                1.0,
+                ThumbFormat::Png,
+                RENDER_TIMEOUT,
+            )
+            .await
+            .unwrap();
+        assert_eq!(t2.content_hash, t1.content_hash);
+        assert_eq!(renderer.0.load(Ordering::SeqCst), 1);
+
+        // WebP encodes from cached PNG without calling Blitz renderer again.
+        let webp = svc
+            .render_frame_thumb_async(
+                "ca".into(),
+                "card".into(),
+                None,
+                1.0,
+                ThumbFormat::Webp,
+                RENDER_TIMEOUT,
+            )
+            .await
+            .unwrap();
+        assert_eq!(renderer.0.load(Ordering::SeqCst), 1);
+        assert!(webp.bytes.starts_with(b"RIFF"));
+        assert_eq!(&webp.bytes[8..12], b"WEBP");
     }
 }

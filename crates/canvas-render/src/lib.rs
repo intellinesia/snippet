@@ -206,7 +206,10 @@ fn layout_doc(html: &str, width: u32, height: u32, scale: f32) -> Result<Laid, R
         },
     );
     doc.resolve(0.0);
-    doc.resolve(0.0);
+    // Second pass is only needed when synchronous data: URI images load during the first resolve.
+    if html.contains("data:") {
+        doc.resolve(0.0);
+    }
 
     let content_height = {
         let base: &BaseDocument = doc.as_ref();

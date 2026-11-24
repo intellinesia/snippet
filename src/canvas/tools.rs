@@ -135,7 +135,7 @@ impl Tool for CanvasReadTool {
             let store = svc
                 .store(&cid)
                 .map_err(|e| ToolError::msg(format!("canvas_read: {e}")))?;
-            let s = store.lock().unwrap_or_else(|e| e.into_inner());
+            let s = store.read().unwrap_or_else(|e| e.into_inner());
             if let Some(fid) = args.frame_id.as_deref()
                 && s.frame(fid).is_none()
             {
@@ -394,17 +394,19 @@ impl Tool for CanvasApplyTool {
         let cid = resolve_canvas_id(ctx, args.canvas_id.as_deref());
         let author = Author::agent(ctx.agent_id().unwrap_or(ctx.owner()));
         let session = ctx.durable_session_id().map(str::to_string);
+        let svc_bg = svc.clone();
         let commit = tokio::task::spawn_blocking(move || {
             let store = svc
                 .store(&cid)
                 .map_err(|e| ToolError::msg(format!("canvas_apply: {e}")))?;
-            let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = store.write().unwrap_or_else(|e| e.into_inner());
             s.apply_batch(args.label, args.ops, author, session)
                 .map_err(|e| ToolError::msg(format!("canvas_apply: {e}")))
         })
         .await
         .map_err(|e| ToolError::msg(format!("canvas_apply join: {e}")))??;
         emit_canvas_rev_event(&commit);
+        svc_bg.prewarm_frames(commit.canvas_id.clone(), commit.frame_ids.clone());
         let primary_link = commit.links.first().cloned();
         let total_created = commit.created_ids.len();
         let created_truncated = total_created > MAX_CREATED_IDS_RETURNED;
@@ -548,9 +550,9 @@ impl Tool for CanvasPinsTool {
             let store = svc
                 .store(&cid)
                 .map_err(|e| ToolError::msg(format!("canvas_pins: {e}")))?;
-            let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
             match op.as_str() {
                 "list" => {
+                    let s = store.read().unwrap_or_else(|e| e.into_inner());
                     let all_pins = s.pins(frame_id.as_deref(), status);
                     let total = all_pins.len();
                     let mut kept = Vec::new();
@@ -588,6 +590,7 @@ impl Tool for CanvasPinsTool {
                         .ok_or_else(|| {
                             ToolError::msg("canvas_pins reply requires non-empty `reply`")
                         })?;
+                    let mut s = store.write().unwrap_or_else(|e| e.into_inner());
                     let pin = s
                         .update_pin(pin_id, None, Some(reply), None)
                         .map_err(|e| ToolError::msg(format!("canvas_pins: {e}")))?;
@@ -598,6 +601,7 @@ impl Tool for CanvasPinsTool {
                         .as_deref()
                         .filter(|p| !p.is_empty())
                         .ok_or_else(|| ToolError::msg("canvas_pins resolve requires `pin_id`"))?;
+                    let mut s = store.write().unwrap_or_else(|e| e.into_inner());
                     let pin = s
                         .update_pin(pin_id, Some(PinStatus::Resolved), reply, None)
                         .map_err(|e| ToolError::msg(format!("canvas_pins: {e}")))?;

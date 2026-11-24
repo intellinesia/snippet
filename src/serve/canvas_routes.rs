@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use axum::extract::{Path as AxPath, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
@@ -13,8 +13,9 @@ use serde_json::json;
 use super::{Shared, api_error};
 use crate::canvas::{
     Author, CanvasError, HIT_TEST_TIMEOUT, Op, PinStatus, RENDER_TIMEOUT, RenderError,
-    THUMB_LINK_TTL_SECS, canvas_id_for_workspace, emit_canvas_rev_event, links::is_safe_component,
-    normalize_scale, parse_canvas_ref, signed_thumb_path, verify_signed_thumb,
+    THUMB_LINK_TTL_SECS, ThumbFormat, ThumbResult, canvas_id_for_workspace, emit_canvas_rev_event,
+    links::is_safe_component, normalize_scale, parse_canvas_ref, signed_thumb_path,
+    verify_signed_thumb,
 };
 
 pub fn router() -> Router<Shared> {
@@ -23,6 +24,7 @@ pub fn router() -> Router<Shared> {
         .route("/canvases", get(list_canvases).post(create_canvas))
         .route("/canvas/frames/{id}", get(get_frame))
         .route("/canvas/frames/{id}/thumb.png", get(get_frame_thumb))
+        .route("/canvas/frames/{id}/thumb.webp", get(get_frame_thumb_webp))
         .route("/canvas/frames/{id}/layout.json", get(get_frame_layout))
         .route("/canvas/ops", get(get_ops))
         .route("/canvas/batch", post(post_batch))
@@ -153,7 +155,7 @@ async fn get_canvas(State(d): State<Shared>, Query(q): Query<CanvasQuery>) -> Re
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
         let store = canvas.store(&cid)?;
-        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        let s = store.read().unwrap_or_else(|e| e.into_inner());
         let frames = if lite {
             let lite_frames: Vec<FrameLite> = s.frames().into_iter().map(FrameLite::from).collect();
             json!(lite_frames)
@@ -187,7 +189,7 @@ async fn get_frame(
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
         let store = canvas.store(&cid)?;
-        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        let s = store.read().unwrap_or_else(|e| e.into_inner());
         match s.frame(&id) {
             Some(frame) => {
                 let frame_val = if lite {
@@ -221,7 +223,7 @@ async fn get_ops(State(d): State<Shared>, Query(q): Query<OpsQuery>) -> Response
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
         let store = canvas.store(&cid)?;
-        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        let s = store.read().unwrap_or_else(|e| e.into_inner());
         Ok::<_, CanvasError>(json!({
             "canvas_id": s.canvas_id(),
             "rev": s.rev(),
@@ -256,13 +258,15 @@ async fn post_batch(State(d): State<Shared>, Json(req): Json<BatchReq>) -> Respo
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
         let store = canvas.store(&cid)?;
-        let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = store.write().unwrap_or_else(|e| e.into_inner());
         s.apply_batch(req.label, req.ops, author, req.session)
     })
     .await;
     match res {
         Ok(Ok(commit)) => {
             emit_canvas_rev_event(&commit);
+            d.canvas
+                .prewarm_frames(commit.canvas_id.clone(), commit.frame_ids.clone());
             Json(json!({
                 "canvas_id": commit.canvas_id,
                 "rev": commit.rev,
@@ -297,13 +301,15 @@ async fn post_revert(State(d): State<Shared>, Json(req): Json<RevertReq>) -> Res
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
         let store = canvas.store(&cid)?;
-        let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = store.write().unwrap_or_else(|e| e.into_inner());
         s.revert_batch(&req.batch_id, author, req.session)
     })
     .await;
     match res {
         Ok(Ok(commit)) => {
             emit_canvas_rev_event(&commit);
+            d.canvas
+                .prewarm_frames(commit.canvas_id.clone(), commit.frame_ids.clone());
             Json(json!({
                 "canvas_id": commit.canvas_id,
                 "rev": commit.rev,
@@ -337,7 +343,7 @@ async fn list_pins(State(d): State<Shared>, Query(q): Query<PinsQuery>) -> Respo
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
         let store = canvas.store(&cid)?;
-        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        let s = store.read().unwrap_or_else(|e| e.into_inner());
         Ok::<_, CanvasError>(json!({
             "canvas_id": s.canvas_id(),
             "pins": s.pins(q.frame_id.as_deref(), q.status),
@@ -373,7 +379,7 @@ async fn create_pin(State(d): State<Shared>, Json(req): Json<CreatePinReq>) -> R
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
         let store = canvas.store(&cid)?;
-        let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = store.write().unwrap_or_else(|e| e.into_inner());
         s.add_pin(req.frame_id, req.el_id, req.dx, req.dy, req.text, author)
     })
     .await;
@@ -420,7 +426,7 @@ async fn patch_pin_inner(d: Shared, id: String, req: PatchPinReq) -> Response {
     let canvas = d.canvas.clone();
     let res = tokio::task::spawn_blocking(move || {
         let store = canvas.store(&cid)?;
-        let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = store.write().unwrap_or_else(|e| e.into_inner());
         s.update_pin(&id, req.status, req.reply, req.text)
     })
     .await;
@@ -437,23 +443,89 @@ struct RenderQuery {
     rev: Option<u64>,
     canvas_id: Option<String>,
     workspace: Option<String>,
+    format: Option<String>,
 }
 
-fn png_response(bytes: Vec<u8>) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "image/png"),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (header::REFERRER_POLICY, "no-referrer"),
-            (header::CACHE_CONTROL, "private, max-age=300"),
-        ],
-        bytes,
-    )
-        .into_response()
+fn negotiate_thumb_format(explicit: Option<&str>, headers: &HeaderMap) -> ThumbFormat {
+    if let Some(fmt) = explicit.map(str::trim) {
+        if fmt.eq_ignore_ascii_case("webp") {
+            return ThumbFormat::Webp;
+        }
+        if fmt.eq_ignore_ascii_case("png") {
+            return ThumbFormat::Png;
+        }
+    }
+    if let Some(accept) = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok())
+        && accept
+            .split(',')
+            .any(|part| part.trim().to_ascii_lowercase().starts_with("image/webp"))
+    {
+        return ThumbFormat::Webp;
+    }
+    ThumbFormat::Png
+}
+
+fn etag_matches(headers: &HeaderMap, etag: &str) -> bool {
+    let Some(raw) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    raw.split(',').any(|cand| {
+        let c = cand.trim();
+        c == "*" || c == etag || c.strip_prefix("W/").is_some_and(|w| w == etag)
+    })
+}
+
+fn thumb_response(
+    headers: &HeaderMap,
+    canvas_id: &str,
+    frame_id: &str,
+    immutable: bool,
+    thumb: ThumbResult,
+) -> Response {
+    let etag = format!(
+        "\"c-{canvas_id}-{frame_id}-h{}-s{}-{}\"",
+        thumb.content_hash,
+        thumb.scale_millis,
+        thumb.format.ext()
+    );
+    let cache_control = if immutable {
+        "private, max-age=31536000, immutable"
+    } else {
+        "private, max-age=60, must-revalidate"
+    };
+    let mut out_headers = HeaderMap::new();
+    out_headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    out_headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    out_headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    );
+    out_headers.insert(header::VARY, HeaderValue::from_static("Accept"));
+    if let Ok(val) = HeaderValue::from_str(&etag) {
+        out_headers.insert(header::ETAG, val);
+    }
+    if etag_matches(headers, &etag) {
+        return (StatusCode::NOT_MODIFIED, out_headers).into_response();
+    }
+    out_headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(thumb.format.content_type()),
+    );
+    (out_headers, (*thumb.bytes).clone()).into_response()
 }
 
 async fn get_frame_thumb(
     State(d): State<Shared>,
+    headers: HeaderMap,
     AxPath(id): AxPath<String>,
     Query(q): Query<RenderQuery>,
 ) -> Response {
@@ -462,18 +534,57 @@ async fn get_frame_thumb(
     }
     let cid = resolve_canvas_id(&d, q.canvas_id.as_deref(), q.workspace.as_deref());
     let scale = q.scale.unwrap_or(1.0);
+    let format = negotiate_thumb_format(q.format.as_deref(), &headers);
+    let immutable = q.rev.is_some();
     match d
         .canvas
-        .render_frame_cached_async(cid, id, q.rev, scale, RENDER_TIMEOUT)
+        .render_frame_thumb_async(
+            cid.clone(),
+            id.clone(),
+            q.rev,
+            scale,
+            format,
+            RENDER_TIMEOUT,
+        )
         .await
     {
-        Ok((_, png, _)) => png_response(png),
+        Ok(thumb) => thumb_response(&headers, &cid, &id, immutable, thumb),
+        Err(e) => canvas_error_response(e),
+    }
+}
+
+async fn get_frame_thumb_webp(
+    State(d): State<Shared>,
+    headers: HeaderMap,
+    AxPath(id): AxPath<String>,
+    Query(q): Query<RenderQuery>,
+) -> Response {
+    if !is_safe_component(&id) {
+        return canvas_error_response(CanvasError::InvalidId(id));
+    }
+    let cid = resolve_canvas_id(&d, q.canvas_id.as_deref(), q.workspace.as_deref());
+    let scale = q.scale.unwrap_or(1.0);
+    let immutable = q.rev.is_some();
+    match d
+        .canvas
+        .render_frame_thumb_async(
+            cid.clone(),
+            id.clone(),
+            q.rev,
+            scale,
+            ThumbFormat::Webp,
+            RENDER_TIMEOUT,
+        )
+        .await
+    {
+        Ok(thumb) => thumb_response(&headers, &cid, &id, immutable, thumb),
         Err(e) => canvas_error_response(e),
     }
 }
 
 async fn get_frame_layout(
     State(d): State<Shared>,
+    headers: HeaderMap,
     AxPath(id): AxPath<String>,
     Query(q): Query<RenderQuery>,
 ) -> Response {
@@ -482,18 +593,40 @@ async fn get_frame_layout(
     }
     let cid = resolve_canvas_id(&d, q.canvas_id.as_deref(), q.workspace.as_deref());
     let scale = q.scale.unwrap_or(1.0);
+    let immutable = q.rev.is_some();
     match d
         .canvas
-        .render_frame_cached_async(cid, id, q.rev, scale, RENDER_TIMEOUT)
+        .render_frame_cached_async(cid.clone(), id.clone(), q.rev, scale, RENDER_TIMEOUT)
         .await
     {
-        Ok((_, _, layout)) => Json(layout).into_response(),
+        Ok((_, _, layout)) => {
+            let scale_millis = (layout.scale * 1000.0).round() as u32;
+            let etag = format!("\"l-{cid}-{id}-r{}-s{scale_millis}\"", layout.rev);
+            let cache_control = if immutable {
+                "private, max-age=31536000, immutable"
+            } else {
+                "private, max-age=60, must-revalidate"
+            };
+            let mut out_headers = HeaderMap::new();
+            out_headers.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static(cache_control),
+            );
+            if let Ok(val) = HeaderValue::from_str(&etag) {
+                out_headers.insert(header::ETAG, val);
+            }
+            if etag_matches(&headers, &etag) {
+                return (StatusCode::NOT_MODIFIED, out_headers).into_response();
+            }
+            (out_headers, Json(layout)).into_response()
+        }
         Err(e) => canvas_error_response(e),
     }
 }
 
 async fn serve_signed_thumb(
     State(d): State<Shared>,
+    headers: HeaderMap,
     AxPath((exp, sig, canvas_id, frame_id, rev, scale_millis)): AxPath<(
         i64,
         String,
@@ -515,12 +648,20 @@ async fn serve_signed_thumb(
         return api_error(StatusCode::NOT_FOUND, "not found");
     }
     let scale = scale_millis as f32 / 1000.0;
+    let format = negotiate_thumb_format(None, &headers);
     match d
         .canvas
-        .render_frame_cached_async(canvas_id, frame_id, Some(rev), scale, RENDER_TIMEOUT)
+        .render_frame_thumb_async(
+            canvas_id.clone(),
+            frame_id.clone(),
+            Some(rev),
+            scale,
+            format,
+            RENDER_TIMEOUT,
+        )
         .await
     {
-        Ok((_, png, _)) => png_response(png),
+        Ok(thumb) => thumb_response(&headers, &canvas_id, &frame_id, true, thumb),
         Err(e) => canvas_error_response(e),
     }
 }
@@ -574,7 +715,7 @@ async fn resolve_link(State(d): State<Shared>, Query(q): Query<LinkQuery>) -> Re
     let rev = parsed.rev;
     let frame = match tokio::task::spawn_blocking(move || {
         let store = canvas.store(&cid)?;
-        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        let s = store.read().unwrap_or_else(|e| e.into_inner());
         let found = match rev {
             Some(r) => s.frame_at_rev(&fid, r)?,
             None => s.frame(&fid),
@@ -983,5 +1124,90 @@ mod tests {
         let lite_frame_json: serde_json::Value = serde_json::from_slice(&lite_frame_bytes).unwrap();
         assert!(lite_frame_json["frame"].get("html").is_none());
         assert_eq!(lite_frame_json["frame"]["id"], "screen-1");
+
+        // Immutable Cache-Control + ETag + 304 Not Modified on rev-pinned thumb.
+        let t1 = app
+            .clone()
+            .oneshot(
+                Request::get(
+                    "/canvas/frames/screen-1/thumb.png?token=test-secret&canvas_id=big&rev=1",
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(t1.status(), StatusCode::OK);
+        assert_eq!(t1.headers().get(header::CONTENT_TYPE).unwrap(), "image/png");
+        assert!(
+            t1.headers()
+                .get(header::CACHE_CONTROL)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("immutable")
+        );
+        let etag = t1
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let t_304 = app
+            .clone()
+            .oneshot(
+                Request::get(
+                    "/canvas/frames/screen-1/thumb.png?token=test-secret&canvas_id=big&rev=1",
+                )
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(t_304.status(), StatusCode::NOT_MODIFIED);
+
+        // Content-negotiated WebP via Accept header and explicit /thumb.webp route.
+        let tw = app
+            .clone()
+            .oneshot(
+                Request::get(
+                    "/canvas/frames/screen-1/thumb.png?token=test-secret&canvas_id=big&rev=1",
+                )
+                .header(header::ACCEPT, "image/webp,image/png,*/*")
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tw.status(), StatusCode::OK);
+        assert_eq!(
+            tw.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/webp"
+        );
+        let wb = axum::body::to_bytes(tw.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        assert!(wb.starts_with(b"RIFF"));
+        assert_eq!(&wb[8..12], b"WEBP");
+
+        let tw_path = app
+            .clone()
+            .oneshot(
+                Request::get(
+                    "/canvas/frames/screen-1/thumb.webp?token=test-secret&canvas_id=big&rev=1",
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tw_path.status(), StatusCode::OK);
+        assert_eq!(
+            tw_path.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/webp"
+        );
     }
 }

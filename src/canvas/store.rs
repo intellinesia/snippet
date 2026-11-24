@@ -2,9 +2,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -32,14 +33,130 @@ pub const MAX_LABEL_CHARS: usize = 256;
 pub const MAX_CACHE_ENTRIES: usize = 64;
 pub const MAX_CACHE_ENTRIES_CAP: usize = 2048;
 pub const MAX_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_HOT_THUMB_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_STORES_CACHED: usize = 64;
 pub const RENDER_TIMEOUT: Duration = Duration::from_secs(15);
 pub const RENDER_QUEUE_TIMEOUT: Duration = Duration::from_secs(60);
 pub const HIT_TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-const MAX_CONCURRENT_RENDERS: usize = 4;
+const PRUNE_EVERY_N_WRITES: usize = 32;
+const MAX_PREWARM_FRAMES: usize = 8;
 const MIN_SCALE_MILLIS: u32 = 250;
 const MAX_SCALE_MILLIS: u32 = 3000;
+
+fn default_render_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(2).clamp(2, 8))
+        .unwrap_or(4)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ThumbFormat {
+    Png,
+    Webp,
+}
+
+impl ThumbFormat {
+    pub fn content_type(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Webp => "image/webp",
+        }
+    }
+
+    pub fn ext(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Webp => "webp",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ThumbResult {
+    pub bytes: Arc<Vec<u8>>,
+    pub format: ThumbFormat,
+    pub rev: u64,
+    pub content_hash: String,
+    pub scale_millis: u32,
+}
+
+fn frame_content_hash(html: &str, width: u32, height: u32, scale_millis: u32) -> String {
+    let mut h = Sha256::new();
+    h.update(width.to_le_bytes());
+    h.update(height.to_le_bytes());
+    h.update(scale_millis.to_le_bytes());
+    h.update(html.as_bytes());
+    let digest = h.finalize();
+    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+fn encode_webp_from_png(png_bytes: &[u8]) -> Result<Vec<u8>, CanvasError> {
+    let img = image::load_from_memory_with_format(png_bytes, image::ImageFormat::Png)
+        .map_err(|e| CanvasError::Render(RenderError::Paint(format!("webp decode: {e}"))))?;
+    let mut out = Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::WebP)
+        .map_err(|e| CanvasError::Render(RenderError::Paint(format!("webp encode: {e}"))))?;
+    Ok(out.into_inner())
+}
+
+type HotThumbKey = (String, ThumbFormat);
+type HotThumbMap = HashMap<HotThumbKey, (AtomicU64, Arc<Vec<u8>>)>;
+
+struct HotThumbCache {
+    entries: RwLock<HotThumbMap>,
+    tick: AtomicU64,
+    total_bytes: AtomicUsize,
+    max_bytes: usize,
+}
+
+impl HotThumbCache {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            entries: RwLock::new(HashMap::new()),
+            tick: AtomicU64::new(1),
+            total_bytes: AtomicUsize::new(0),
+            max_bytes,
+        }
+    }
+
+    fn get(&self, key: &(String, ThumbFormat)) -> Option<Arc<Vec<u8>>> {
+        let map = self.entries.read().unwrap_or_else(|e| e.into_inner());
+        let (last_used, bytes) = map.get(key)?;
+        let t = self.tick.fetch_add(1, Ordering::Relaxed);
+        last_used.store(t, Ordering::Relaxed);
+        Some(bytes.clone())
+    }
+
+    fn insert(&self, key: (String, ThumbFormat), bytes: Arc<Vec<u8>>) {
+        let sz = bytes.len();
+        if sz > self.max_bytes {
+            return;
+        }
+        let mut map = self.entries.write().unwrap_or_else(|e| e.into_inner());
+        let t = self.tick.fetch_add(1, Ordering::Relaxed);
+        if let Some((_, old)) = map.insert(key, (AtomicU64::new(t), bytes)) {
+            self.total_bytes.fetch_sub(old.len(), Ordering::Relaxed);
+        }
+        let mut total = self.total_bytes.fetch_add(sz, Ordering::Relaxed) + sz;
+        if total > self.max_bytes {
+            let mut order: Vec<(u64, (String, ThumbFormat), usize)> = map
+                .iter()
+                .map(|(k, (u, b))| (u.load(Ordering::Relaxed), k.clone(), b.len()))
+                .collect();
+            order.sort_unstable_by_key(|(u, _, _)| *u);
+            for (_, k, len) in order {
+                if total <= self.max_bytes {
+                    break;
+                }
+                if map.remove(&k).is_some() {
+                    total = total.saturating_sub(len);
+                    self.total_bytes.fetch_sub(len, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+}
 
 const OPS_FILE: &str = "ops.jsonl";
 const META_FILE: &str = "meta.json";
@@ -221,6 +338,16 @@ pub struct CanvasMeta {
     pub title: Option<String>,
     #[serde(default)]
     pub created_ts: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumb_frame: Option<(String, u64)>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -300,10 +427,22 @@ impl CanvasStore {
         }
     }
 
+    fn sync_meta_summary(&mut self) {
+        self.meta.frames = Some(self.frames.len());
+        self.meta.rev = Some(self.rev);
+        self.meta.updated_at = Some(
+            self.ops_log
+                .last()
+                .map(|b| b.ts)
+                .unwrap_or(self.meta.created_ts),
+        );
+        self.meta.author = self.ops_log.last().map(|b| b.author.id.clone());
+        self.meta.thumb_frame = self.frames.values().next().map(|f| (f.id.clone(), f.rev));
+    }
+
     fn write_meta(&self) -> Result<(), CanvasError> {
-        fs::create_dir_all(&self.root)?;
-        fs::write(self.root.join(META_FILE), serde_json::to_vec(&self.meta)?)?;
-        Ok(())
+        let bytes = serde_json::to_vec(&self.meta)?;
+        atomic_write(&self.root.join(META_FILE), &bytes)
     }
 
     pub fn frames(&self) -> Vec<Frame> {
@@ -551,6 +690,8 @@ impl CanvasStore {
         self.rev = next_rev;
         self.frames = staging;
         self.ops_log.push(batch.clone());
+        self.sync_meta_summary();
+        let _ = self.write_meta();
 
         if self.rev.is_multiple_of(SNAPSHOT_INTERVAL) {
             // Snapshot is a replay optimization; ops.jsonl is authoritative so a snapshot failure does not uncommit the batch.
@@ -1059,6 +1200,18 @@ impl CanvasStore {
             .join(CACHE_DIR)
             .join(format!("{frame_id}-r{rev}-s{scale_millis}.layout.json"))
     }
+
+    fn cache_hashed_path(
+        &self,
+        frame_id: &str,
+        hash: &str,
+        scale_millis: u32,
+        ext: &str,
+    ) -> PathBuf {
+        self.root
+            .join(CACHE_DIR)
+            .join(format!("{frame_id}-h{hash}-s{scale_millis}.{ext}"))
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1093,12 +1246,17 @@ pub(crate) fn prune_cache_dir_with_limits(cache_dir: &Path, max_entries: usize, 
                 .and_then(|m| m.modified().ok())
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
             let png_bytes = meta.map(|m| m.len()).unwrap_or(0);
+            let webp_bytes = fs::metadata(path.with_extension("webp"))
+                .map(|m| m.len())
+                .unwrap_or(0);
             let layout_bytes = fs::metadata(path.with_extension("layout.json"))
                 .map(|m| m.len())
                 .unwrap_or(0);
-            let pair_bytes = png_bytes.saturating_add(layout_bytes);
-            total_bytes = total_bytes.saturating_add(pair_bytes);
-            pngs.push((mtime, pair_bytes, path));
+            let group_bytes = png_bytes
+                .saturating_add(webp_bytes)
+                .saturating_add(layout_bytes);
+            total_bytes = total_bytes.saturating_add(group_bytes);
+            pngs.push((mtime, group_bytes, path));
         }
     }
     if pngs.len() <= max_entries && total_bytes <= max_bytes {
@@ -1106,14 +1264,15 @@ pub(crate) fn prune_cache_dir_with_limits(cache_dir: &Path, max_entries: usize, 
     }
     pngs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
     let mut remaining = pngs.len();
-    for (_, pair_bytes, png_path) in pngs {
+    for (_, group_bytes, png_path) in pngs {
         if remaining <= max_entries && total_bytes <= max_bytes {
             break;
         }
         let _ = fs::remove_file(&png_path);
+        let _ = fs::remove_file(png_path.with_extension("webp"));
         let _ = fs::remove_file(png_path.with_extension("layout.json"));
         remaining -= 1;
-        total_bytes = total_bytes.saturating_sub(pair_bytes);
+        total_bytes = total_bytes.saturating_sub(group_bytes);
     }
 }
 
@@ -1129,7 +1288,7 @@ fn sort_summaries(items: &mut [CanvasSummary]) {
     });
 }
 
-type RenderKey = (String, String, u64, u32);
+type RenderKey = (String, String, String, u32);
 type CachedRender = (PathBuf, Vec<u8>, CachedLayout);
 
 #[derive(Clone)]
@@ -1179,7 +1338,10 @@ struct RenderPlan {
     canvas_id: String,
     frame: Frame,
     scale: f32,
+    scale_millis: u32,
+    content_hash: String,
     png_path: PathBuf,
+    webp_path: PathBuf,
     layout_path: PathBuf,
     cache_dir: PathBuf,
     frame_count: usize,
@@ -1209,19 +1371,28 @@ impl Drop for InFlightGuard {
 pub struct CanvasService {
     root: PathBuf,
     renderer: Arc<dyn FrameRenderer>,
-    stores: Mutex<HashMap<String, Arc<Mutex<CanvasStore>>>>,
+    stores: RwLock<HashMap<String, Arc<RwLock<CanvasStore>>>>,
     render_semaphore: Arc<Semaphore>,
+    #[cfg(test)]
+    render_concurrency: usize,
     inflight: Mutex<InFlightMap>,
+    hot_thumbs: HotThumbCache,
+    cache_writes: AtomicUsize,
 }
 
 impl CanvasService {
     pub fn new(root: PathBuf, renderer: Arc<dyn FrameRenderer>) -> Self {
+        let concurrency = default_render_concurrency();
         Self {
             root,
             renderer,
-            stores: Mutex::new(HashMap::new()),
-            render_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_RENDERS)),
+            stores: RwLock::new(HashMap::new()),
+            render_semaphore: Arc::new(Semaphore::new(concurrency)),
+            #[cfg(test)]
+            render_concurrency: concurrency,
             inflight: Mutex::new(HashMap::new()),
+            hot_thumbs: HotThumbCache::new(MAX_HOT_THUMB_BYTES),
+            cache_writes: AtomicUsize::new(0),
         }
     }
 
@@ -1262,10 +1433,16 @@ impl CanvasService {
                 continue;
             }
             let store = self.store(&id)?;
-            let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = store.write().unwrap_or_else(|e| e.into_inner());
+            let now = chrono::Utc::now().timestamp();
             s.meta = CanvasMeta {
                 title: Some(title.to_string()),
-                created_ts: chrono::Utc::now().timestamp(),
+                created_ts: now,
+                frames: Some(0),
+                rev: Some(0),
+                updated_at: Some(now),
+                author: None,
+                thumb_frame: None,
             };
             s.write_meta()?;
             return Ok(s.summary());
@@ -1276,6 +1453,7 @@ impl CanvasService {
     }
 
     /// All canvases on disk, most recently updated first.
+    /// Reads persisted summary from `meta.json` for unloaded canvases so listing stays O(1) per board.
     pub fn list_canvases(&self) -> Result<Vec<CanvasSummary>, CanvasError> {
         let mut out = Vec::new();
         let entries = match fs::read_dir(&self.root) {
@@ -1284,7 +1462,8 @@ impl CanvasService {
             Err(e) => return Err(e.into()),
         };
         for entry in entries.flatten().take(MAX_CANVASES_LISTED * 4) {
-            if !entry.path().is_dir() {
+            let path = entry.path();
+            if !path.is_dir() {
                 continue;
             }
             let Some(id) = entry.file_name().to_str().map(str::to_string) else {
@@ -1293,8 +1472,34 @@ impl CanvasService {
             if !is_safe_component(&id) {
                 continue;
             }
+            let loaded = self
+                .stores
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&id)
+                .cloned();
+            if let Some(store) = loaded {
+                let s = store.read().unwrap_or_else(|e| e.into_inner());
+                out.push(s.summary());
+                continue;
+            }
+            if let Ok(bytes) = fs::read(path.join(META_FILE))
+                && let Ok(meta) = serde_json::from_slice::<CanvasMeta>(&bytes)
+                && let (Some(frames), Some(rev)) = (meta.frames, meta.rev)
+            {
+                out.push(CanvasSummary {
+                    title: meta.title.unwrap_or_else(|| id.clone()),
+                    canvas_id: id,
+                    frames,
+                    rev,
+                    updated_at: meta.updated_at.unwrap_or(meta.created_ts),
+                    author: meta.author,
+                    thumb_frame: meta.thumb_frame,
+                });
+                continue;
+            }
             let Ok(store) = self.store(&id) else { continue };
-            let s = store.lock().unwrap_or_else(|e| e.into_inner());
+            let s = store.read().unwrap_or_else(|e| e.into_inner());
             out.push(s.summary());
         }
         sort_summaries(&mut out);
@@ -1306,11 +1511,21 @@ impl CanvasService {
         &self.renderer
     }
 
-    pub fn store(&self, canvas_id: &str) -> Result<Arc<Mutex<CanvasStore>>, CanvasError> {
+    pub fn store(&self, canvas_id: &str) -> Result<Arc<RwLock<CanvasStore>>, CanvasError> {
         if !is_safe_component(canvas_id) {
             return Err(CanvasError::InvalidId(canvas_id.to_string()));
         }
-        let mut map = self.stores.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = self
+            .stores
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(canvas_id)
+        {
+            return Ok(existing.clone());
+        }
+        // Open outside the stores map lock so cold-loading one canvas never stalls other canvases.
+        let opened = CanvasStore::open(&self.root, canvas_id)?;
+        let mut map = self.stores.write().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = map.get(canvas_id) {
             return Ok(existing.clone());
         }
@@ -1318,9 +1533,13 @@ impl CanvasService {
             // Evict idle unreferenced stores so typos or many canvases never grow memory unboundedly.
             map.retain(|_, arc| Arc::strong_count(arc) > 1);
         }
-        let opened = Arc::new(Mutex::new(CanvasStore::open(&self.root, canvas_id)?));
-        map.insert(canvas_id.to_string(), opened.clone());
-        Ok(opened)
+        let arc = Arc::new(RwLock::new(opened));
+        map.insert(canvas_id.to_string(), arc.clone());
+        Ok(arc)
+    }
+
+    fn hot_key(canvas_id: &str, frame_id: &str, hash: &str, scale_millis: u32) -> String {
+        format!("{canvas_id}/{frame_id}/h{hash}/s{scale_millis}")
     }
 
     fn read_cached_render(png_path: &Path, layout_path: &Path) -> Option<CachedRender> {
@@ -1335,6 +1554,78 @@ impl CanvasService {
         None
     }
 
+    fn build_render_plan(
+        &self,
+        canvas_id: &str,
+        frame_id: &str,
+        requested_rev: Option<u64>,
+        scale: f32,
+    ) -> Result<RenderPlan, CanvasError> {
+        if !is_safe_component(frame_id) {
+            return Err(CanvasError::InvalidId(frame_id.to_string()));
+        }
+        let (scale, scale_millis) = normalize_scale(scale)?;
+        let store_arc = self.store(canvas_id)?;
+        let (
+            frame,
+            width,
+            height,
+            content_hash,
+            png_path,
+            webp_path,
+            layout_path,
+            cache_dir,
+            frame_count,
+        ) = {
+            let store = store_arc.read().unwrap_or_else(|e| e.into_inner());
+            let frame = match requested_rev {
+                Some(rev) => store.frame_at_rev(frame_id, rev)?,
+                None => store.frame(frame_id),
+            }
+            .ok_or_else(|| CanvasError::FrameNotFound(frame_id.to_string()))?;
+            let width = frame.w.round().max(1.0) as u32;
+            let height = frame.h.round().max(1.0) as u32;
+            let content_hash = frame_content_hash(&frame.html, width, height, scale_millis);
+            let png_path = store.cache_hashed_path(&frame.id, &content_hash, scale_millis, "png");
+            let webp_path = store.cache_hashed_path(&frame.id, &content_hash, scale_millis, "webp");
+            let layout_path =
+                store.cache_hashed_path(&frame.id, &content_hash, scale_millis, "layout.json");
+            let cache_dir = store.root().join(CACHE_DIR);
+            let frame_count = store.frames.len();
+            (
+                frame,
+                width,
+                height,
+                content_hash,
+                png_path,
+                webp_path,
+                layout_path,
+                cache_dir,
+                frame_count,
+            )
+        };
+        let _ = (width, height);
+        let key = (
+            canvas_id.to_string(),
+            frame.id.clone(),
+            content_hash.clone(),
+            scale_millis,
+        );
+        Ok(RenderPlan {
+            key,
+            canvas_id: canvas_id.to_string(),
+            frame,
+            scale,
+            scale_millis,
+            content_hash,
+            png_path,
+            webp_path,
+            layout_path,
+            cache_dir,
+            frame_count,
+        })
+    }
+
     fn resolve_and_check_cache(
         &self,
         canvas_id: &str,
@@ -1342,50 +1633,30 @@ impl CanvasService {
         requested_rev: Option<u64>,
         scale: f32,
     ) -> Result<CacheLookup, CanvasError> {
-        if !is_safe_component(frame_id) {
-            return Err(CanvasError::InvalidId(frame_id.to_string()));
-        }
-        let (scale, scale_millis) = normalize_scale(scale)?;
-        let store_arc = self.store(canvas_id)?;
-        let (frame, png_path, layout_path, cache_dir, frame_count) = {
-            let store = store_arc.lock().unwrap_or_else(|e| e.into_inner());
-            let frame = match requested_rev {
-                Some(rev) => store.frame_at_rev(frame_id, rev)?,
-                None => store.frame(frame_id),
-            }
-            .ok_or_else(|| CanvasError::FrameNotFound(frame_id.to_string()))?;
-            let cache_rev = frame.rev;
-            let png_path = store.cache_png_path(&frame.id, cache_rev, scale_millis);
-            let layout_path = store.cache_layout_path(&frame.id, cache_rev, scale_millis);
-            let cache_dir = store.root().join(CACHE_DIR);
-            let frame_count = store.frames.len();
-            (frame, png_path, layout_path, cache_dir, frame_count)
-        };
-
-        if let Some(hit) = Self::read_cached_render(&png_path, &layout_path) {
+        let plan = self.build_render_plan(canvas_id, frame_id, requested_rev, scale)?;
+        if let Some(hit) = Self::read_cached_render(&plan.png_path, &plan.layout_path) {
             return Ok(CacheLookup::Hit(hit));
         }
+        Ok(CacheLookup::Miss(plan))
+    }
 
-        let key = (
-            canvas_id.to_string(),
-            frame.id.clone(),
-            frame.rev,
-            scale_millis,
-        );
-        Ok(CacheLookup::Miss(RenderPlan {
-            key,
-            canvas_id: canvas_id.to_string(),
-            frame,
-            scale,
-            png_path,
-            layout_path,
-            cache_dir,
-            frame_count,
-        }))
+    fn maybe_prune_cache(&self, cache_dir: &Path, frame_count: usize) {
+        let n = self.cache_writes.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_multiple_of(PRUNE_EVERY_N_WRITES) {
+            prune_cache_dir(cache_dir, frame_count);
+        }
     }
 
     fn execute_render_plan(&self, plan: RenderPlan) -> Result<CachedRender, CanvasError> {
         if let Some(hit) = Self::read_cached_render(&plan.png_path, &plan.layout_path) {
+            let hk = Self::hot_key(
+                &plan.canvas_id,
+                &plan.frame.id,
+                &plan.content_hash,
+                plan.scale_millis,
+            );
+            self.hot_thumbs
+                .insert((hk, ThumbFormat::Png), Arc::new(hit.1.clone()));
             return Ok(hit);
         }
         let width = plan.frame.w.round().max(1.0) as u32;
@@ -1394,8 +1665,8 @@ impl CanvasService {
             self.renderer
                 .render(&plan.frame.html, width, height, plan.scale)?;
         let cached_layout = CachedLayout {
-            canvas_id: plan.canvas_id,
-            frame_id: plan.frame.id,
+            canvas_id: plan.canvas_id.clone(),
+            frame_id: plan.frame.id.clone(),
             rev: plan.frame.rev,
             width: rendered.width,
             height: rendered.height,
@@ -1404,11 +1675,19 @@ impl CanvasService {
         };
         atomic_write(&plan.png_path, &rendered.png)?;
         atomic_write(&plan.layout_path, &serde_json::to_vec(&cached_layout)?)?;
-        prune_cache_dir(&plan.cache_dir, plan.frame_count);
+        let hk = Self::hot_key(
+            &plan.canvas_id,
+            &plan.frame.id,
+            &plan.content_hash,
+            plan.scale_millis,
+        );
+        self.hot_thumbs
+            .insert((hk, ThumbFormat::Png), Arc::new(rendered.png.clone()));
+        self.maybe_prune_cache(&plan.cache_dir, plan.frame_count);
         Ok((plan.png_path, rendered.png, cached_layout))
     }
 
-    /// Render (or fetch from disk cache) a frame's PNG thumbnail and layout map, keyed by (frame, rev, scale).
+    /// Render (or fetch from disk cache) a frame's PNG thumbnail and layout map, keyed by content hash and scale.
     pub fn render_frame_cached(
         &self,
         canvas_id: &str,
@@ -1422,52 +1701,12 @@ impl CanvasService {
         }
     }
 
-    /// Async wrapper for [`Self::render_frame_cached`]:
-    /// - Cache hits bypass the render semaphore completely.
-    /// - Duplicate in-flight renders for the same `(canvas, frame, rev, scale)` coalesce into one render.
-    /// - Queue wait uses [`RENDER_QUEUE_TIMEOUT`] (returning [`RenderError::Overloaded`]), separate from `timeout` for the render itself.
-    pub async fn render_frame_cached_async(
+    async fn render_plan_coalesced(
         self: &Arc<Self>,
-        canvas_id: String,
-        frame_id: String,
-        requested_rev: Option<u64>,
-        scale: f32,
-        timeout: Duration,
-    ) -> Result<(PathBuf, Vec<u8>, CachedLayout), CanvasError> {
-        self.render_frame_cached_async_with_queue_timeout(
-            canvas_id,
-            frame_id,
-            requested_rev,
-            scale,
-            timeout,
-            RENDER_QUEUE_TIMEOUT,
-        )
-        .await
-    }
-
-    pub(crate) async fn render_frame_cached_async_with_queue_timeout(
-        self: &Arc<Self>,
-        canvas_id: String,
-        frame_id: String,
-        requested_rev: Option<u64>,
-        scale: f32,
+        plan: RenderPlan,
         render_timeout: Duration,
         queue_timeout: Duration,
-    ) -> Result<(PathBuf, Vec<u8>, CachedLayout), CanvasError> {
-        let svc = self.clone();
-        let lookup = tokio::task::spawn_blocking(move || {
-            svc.resolve_and_check_cache(&canvas_id, &frame_id, requested_rev, scale)
-        })
-        .await
-        .map_err(|e| {
-            CanvasError::Render(RenderError::Paint(format!("cache lookup failed: {e}")))
-        })??;
-
-        let plan = match lookup {
-            CacheLookup::Hit(hit) => return Ok(hit),
-            CacheLookup::Miss(plan) => plan,
-        };
-
+    ) -> Result<CachedRender, CanvasError> {
         let key = plan.key.clone();
         let mut rx = {
             let mut map = self.inflight.lock().unwrap_or_else(|e| e.into_inner());
@@ -1526,9 +1765,272 @@ impl CanvasService {
         }
     }
 
+    /// Async wrapper for [`Self::render_frame_cached`]:
+    /// - Cache hits bypass the render semaphore completely.
+    /// - Duplicate in-flight renders for the same content+scale coalesce into one render.
+    /// - Queue wait uses [`RENDER_QUEUE_TIMEOUT`] (returning [`RenderError::Overloaded`]), separate from `timeout` for the render itself.
+    pub async fn render_frame_cached_async(
+        self: &Arc<Self>,
+        canvas_id: String,
+        frame_id: String,
+        requested_rev: Option<u64>,
+        scale: f32,
+        timeout: Duration,
+    ) -> Result<(PathBuf, Vec<u8>, CachedLayout), CanvasError> {
+        self.render_frame_cached_async_with_queue_timeout(
+            canvas_id,
+            frame_id,
+            requested_rev,
+            scale,
+            timeout,
+            RENDER_QUEUE_TIMEOUT,
+        )
+        .await
+    }
+
+    pub(crate) async fn render_frame_cached_async_with_queue_timeout(
+        self: &Arc<Self>,
+        canvas_id: String,
+        frame_id: String,
+        requested_rev: Option<u64>,
+        scale: f32,
+        render_timeout: Duration,
+        queue_timeout: Duration,
+    ) -> Result<(PathBuf, Vec<u8>, CachedLayout), CanvasError> {
+        let svc = self.clone();
+        let lookup = tokio::task::spawn_blocking(move || {
+            svc.resolve_and_check_cache(&canvas_id, &frame_id, requested_rev, scale)
+        })
+        .await
+        .map_err(|e| {
+            CanvasError::Render(RenderError::Paint(format!("cache lookup failed: {e}")))
+        })??;
+
+        let plan = match lookup {
+            CacheLookup::Hit(hit) => return Ok(hit),
+            CacheLookup::Miss(plan) => plan,
+        };
+        self.render_plan_coalesced(plan, render_timeout, queue_timeout)
+            .await
+    }
+
+    /// Fast thumbnail-only path:
+    /// 1. Lock-free RAM LRU hit directly on the async thread (zero `spawn_blocking`, zero syscalls).
+    /// 2. Disk PNG/WebP hit without reading or parsing `layout.json` and without touching `render_semaphore`.
+    /// 3. Coalesced Blitz render on miss, optionally encoding WebP.
+    pub async fn render_frame_thumb_async(
+        self: &Arc<Self>,
+        canvas_id: String,
+        frame_id: String,
+        requested_rev: Option<u64>,
+        scale: f32,
+        format: ThumbFormat,
+        timeout: Duration,
+    ) -> Result<ThumbResult, CanvasError> {
+        if !is_safe_component(&canvas_id) {
+            return Err(CanvasError::InvalidId(canvas_id));
+        }
+        if !is_safe_component(&frame_id) {
+            return Err(CanvasError::InvalidId(frame_id));
+        }
+        let (_, scale_millis) = normalize_scale(scale)?;
+
+        // Fast path: if the store is already in RAM and frame is unchanged, serve from hot LRU without spawn_blocking.
+        let loaded = self
+            .stores
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&canvas_id)
+            .cloned();
+        if let Some(store_arc) = loaded {
+            let fast = {
+                let s = store_arc.read().unwrap_or_else(|e| e.into_inner());
+                let cur = s.frames.get(&frame_id);
+                match (cur, requested_rev) {
+                    (Some(f), None) => Some(f),
+                    (Some(f), Some(rev)) if f.rev <= rev || rev >= s.rev => Some(f),
+                    _ => None,
+                }
+                .map(|f| {
+                    let w = f.w.round().max(1.0) as u32;
+                    let h = f.h.round().max(1.0) as u32;
+                    let hash = frame_content_hash(&f.html, w, h, scale_millis);
+                    (f.rev, hash)
+                })
+            };
+            if let Some((rev, content_hash)) = fast {
+                let hk = Self::hot_key(&canvas_id, &frame_id, &content_hash, scale_millis);
+                if let Some(bytes) = self.hot_thumbs.get(&(hk, format)) {
+                    return Ok(ThumbResult {
+                        bytes,
+                        format,
+                        rev,
+                        content_hash,
+                        scale_millis,
+                    });
+                }
+            }
+        }
+
+        // Disk-only check (never reads or parses layout.json).
+        let svc = self.clone();
+        let cid = canvas_id.clone();
+        let fid = frame_id.clone();
+        enum DiskThumb {
+            Ready(ThumbResult),
+            NeedRender(Box<RenderPlan>),
+        }
+        let disk = tokio::task::spawn_blocking(move || -> Result<DiskThumb, CanvasError> {
+            let plan = svc.build_render_plan(&cid, &fid, requested_rev, scale)?;
+            let hk = Self::hot_key(&cid, &plan.frame.id, &plan.content_hash, plan.scale_millis);
+            if let Some(bytes) = svc.hot_thumbs.get(&(hk.clone(), format)) {
+                return Ok(DiskThumb::Ready(ThumbResult {
+                    bytes,
+                    format,
+                    rev: plan.frame.rev,
+                    content_hash: plan.content_hash,
+                    scale_millis: plan.scale_millis,
+                }));
+            }
+            match format {
+                ThumbFormat::Png => {
+                    if plan.png_path.is_file()
+                        && let Ok(png) = fs::read(&plan.png_path)
+                    {
+                        let arc = Arc::new(png);
+                        svc.hot_thumbs.insert((hk, ThumbFormat::Png), arc.clone());
+                        return Ok(DiskThumb::Ready(ThumbResult {
+                            bytes: arc,
+                            format: ThumbFormat::Png,
+                            rev: plan.frame.rev,
+                            content_hash: plan.content_hash,
+                            scale_millis: plan.scale_millis,
+                        }));
+                    }
+                }
+                ThumbFormat::Webp => {
+                    if plan.webp_path.is_file()
+                        && let Ok(webp) = fs::read(&plan.webp_path)
+                    {
+                        let arc = Arc::new(webp);
+                        svc.hot_thumbs.insert((hk, ThumbFormat::Webp), arc.clone());
+                        return Ok(DiskThumb::Ready(ThumbResult {
+                            bytes: arc,
+                            format: ThumbFormat::Webp,
+                            rev: plan.frame.rev,
+                            content_hash: plan.content_hash,
+                            scale_millis: plan.scale_millis,
+                        }));
+                    }
+                    if plan.png_path.is_file()
+                        && let Ok(png) = fs::read(&plan.png_path)
+                    {
+                        let webp = encode_webp_from_png(&png)?;
+                        let _ = atomic_write(&plan.webp_path, &webp);
+                        let arc = Arc::new(webp);
+                        svc.hot_thumbs.insert((hk, ThumbFormat::Webp), arc.clone());
+                        return Ok(DiskThumb::Ready(ThumbResult {
+                            bytes: arc,
+                            format: ThumbFormat::Webp,
+                            rev: plan.frame.rev,
+                            content_hash: plan.content_hash,
+                            scale_millis: plan.scale_millis,
+                        }));
+                    }
+                }
+            }
+            Ok(DiskThumb::NeedRender(Box::new(plan)))
+        })
+        .await
+        .map_err(|e| {
+            CanvasError::Render(RenderError::Paint(format!("thumb lookup failed: {e}")))
+        })??;
+
+        let plan = match disk {
+            DiskThumb::Ready(res) => return Ok(res),
+            DiskThumb::NeedRender(plan) => *plan,
+        };
+
+        let rev = plan.frame.rev;
+        let content_hash = plan.content_hash.clone();
+        let webp_path = plan.webp_path.clone();
+        let hk = Self::hot_key(&canvas_id, &plan.frame.id, &content_hash, scale_millis);
+
+        let (_, png_bytes, _) = self
+            .render_plan_coalesced(plan, timeout, RENDER_QUEUE_TIMEOUT)
+            .await?;
+
+        match format {
+            ThumbFormat::Png => {
+                let arc = Arc::new(png_bytes);
+                self.hot_thumbs.insert((hk, ThumbFormat::Png), arc.clone());
+                Ok(ThumbResult {
+                    bytes: arc,
+                    format: ThumbFormat::Png,
+                    rev,
+                    content_hash,
+                    scale_millis,
+                })
+            }
+            ThumbFormat::Webp => {
+                let svc = self.clone();
+                let webp =
+                    tokio::task::spawn_blocking(move || -> Result<Arc<Vec<u8>>, CanvasError> {
+                        let bytes = encode_webp_from_png(&png_bytes)?;
+                        let _ = atomic_write(&webp_path, &bytes);
+                        let arc = Arc::new(bytes);
+                        svc.hot_thumbs.insert((hk, ThumbFormat::Webp), arc.clone());
+                        Ok(arc)
+                    })
+                    .await
+                    .map_err(|e| {
+                        CanvasError::Render(RenderError::Paint(format!("webp task failed: {e}")))
+                    })??;
+                Ok(ThumbResult {
+                    bytes: webp,
+                    format: ThumbFormat::Webp,
+                    rev,
+                    content_hash,
+                    scale_millis,
+                })
+            }
+        }
+    }
+
+    /// Best-effort background pre-warming of touched frames at default mobile thumbnail scale (0.5).
+    /// Only uses idle render permits (`try_acquire_owned`) so it never delays user requests.
+    pub fn prewarm_frames(self: &Arc<Self>, canvas_id: String, frame_ids: Vec<String>) {
+        if frame_ids.is_empty() {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let svc = self.clone();
+        handle.spawn(async move {
+            for fid in frame_ids.into_iter().take(MAX_PREWARM_FRAMES) {
+                let Ok(permit) = svc.render_semaphore.clone().try_acquire_owned() else {
+                    break;
+                };
+                let svc_inner = svc.clone();
+                let cid = canvas_id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    let _ = svc_inner.render_frame_cached(&cid, &fid, None, 0.5);
+                })
+                .await;
+            }
+        });
+    }
+
     #[cfg(test)]
     pub(crate) fn render_semaphore(&self) -> &Arc<Semaphore> {
         &self.render_semaphore
+    }
+
+    #[cfg(test)]
+    pub(crate) fn render_concurrency(&self) -> usize {
+        self.render_concurrency
     }
 
     pub fn hit_test(
@@ -1548,7 +2050,7 @@ impl CanvasService {
         }
         let store_arc = self.store(canvas_id)?;
         let frame = {
-            let store = store_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let store = store_arc.read().unwrap_or_else(|e| e.into_inner());
             store
                 .frame(frame_id)
                 .ok_or_else(|| CanvasError::FrameNotFound(frame_id.to_string()))?
