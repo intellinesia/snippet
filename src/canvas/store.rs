@@ -1051,13 +1051,13 @@ impl CanvasStore {
     pub fn cache_png_path(&self, frame_id: &str, rev: u64, scale_millis: u32) -> PathBuf {
         self.root
             .join(CACHE_DIR)
-            .join(format!("{frame_id}-r{rev}-s{scale_millis}.png"))
+            .join(format!("{frame_id}-v2-r{rev}-s{scale_millis}.png"))
     }
 
     pub fn cache_layout_path(&self, frame_id: &str, rev: u64, scale_millis: u32) -> PathBuf {
         self.root
             .join(CACHE_DIR)
-            .join(format!("{frame_id}-r{rev}-s{scale_millis}.layout.json"))
+            .join(format!("{frame_id}-v2-r{rev}-s{scale_millis}.layout.json"))
     }
 }
 

@@ -220,3 +220,23 @@ fn limits() {
     let r = render(&tall, 100, 0, 1.0).unwrap();
     assert_eq!(r.height, 8000);
 }
+
+#[test]
+fn body_margin_is_zeroed_so_frames_paint_edge_to_edge() {
+    // Frames that never reset the UA body margin used to render with an 8px
+    // white strip on the top/left edges (the pre-painted white buffer showing
+    // through the margin). The injected base style must zero it.
+    let html =
+        "<div data-cv-id=\"box\" style=\"width:200px;height:100px;background:#123456\"></div>";
+    let r = render(html, 200, 100, 1.0).unwrap();
+    assert_rect(find(&r.layout, "box"), 0.0, 0.0, 200.0, 100.0);
+    let (w, h, px) = decode(&r.png);
+    assert_eq!((w, h), (200, 100));
+    let px_at = |x: u32, y: u32| {
+        let i = ((y * w + x) * 4) as usize;
+        (px[i], px[i + 1], px[i + 2])
+    };
+    for (x, y) in [(0, 0), (7, 7), (0, h - 1), (w - 1, 0), (w - 1, h - 1)] {
+        assert_eq!(px_at(x, y), (0x12, 0x34, 0x56), "white strip at {x},{y}");
+    }
+}

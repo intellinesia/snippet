@@ -166,7 +166,7 @@ fn font_context() -> FontContext {
     .clone()
 }
 
-const UA_EXTRA: &str = "html { font-family: sans-serif; }";
+const UA_EXTRA: &str = "html { font-family: sans-serif; } html, body { margin: 0; }";
 
 struct Laid {
     doc: HtmlDocument,
