@@ -49,6 +49,12 @@ fn main() {
         let mut warm = times[1..].to_vec();
         warm.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let pct = |p: f64| warm[((warm.len() as f64 - 1.0) * p).round() as usize];
-        eprintln!("render_ms first={:.1} p50={:.1} p95={:.1} n={}", times[0], pct(0.5), pct(0.95), warm.len());
+        eprintln!(
+            "render_ms first={:.1} p50={:.1} p95={:.1} n={}",
+            times[0],
+            pct(0.5),
+            pct(0.95),
+            warm.len()
+        );
     }
 }
