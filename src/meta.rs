@@ -10,12 +10,10 @@ use serde_json::{Value, json};
 use crate::llm::NativeToolDefinition;
 
 /// Names the harness loop must intercept instead of dispatching to the registry.
-pub const META_TOOL_NAMES: [&str; 7] = [
-    "update_plan",
+pub const META_TOOL_NAMES: [&str; 5] = [
     "ask_user",
     "delegate_task",
     "cancel_delegated_task",
-    "complete_goal",
     "monitor",
     "present_file",
 ];
@@ -26,11 +24,9 @@ pub fn is_meta_tool(name: &str) -> bool {
 
 pub fn definition_for(name: &str) -> Option<NativeToolDefinition> {
     match name {
-        "update_plan" => Some(update_plan_tool()),
         "ask_user" => Some(ask_user_tool()),
         "delegate_task" => Some(delegate_task_tool()),
         "cancel_delegated_task" => Some(cancel_delegated_task_tool()),
-        "complete_goal" => Some(complete_goal_tool()),
         "monitor" => Some(monitor_tool()),
         "present_file" => Some(present_file_tool()),
         "terminate_loop" => Some(terminate_loop_tool()),
@@ -39,21 +35,13 @@ pub fn definition_for(name: &str) -> Option<NativeToolDefinition> {
 }
 
 pub fn conversation_meta_definitions_for(
-    goal_active: bool,
+    _goal_active: bool,
     allow_lane_control: bool,
 ) -> Vec<NativeToolDefinition> {
-    let mut tools = vec![
-        update_plan_tool(),
-        ask_user_tool(),
-        monitor_tool(),
-        present_file_tool(),
-    ];
+    let mut tools = vec![ask_user_tool(), monitor_tool(), present_file_tool()];
     if allow_lane_control {
         tools.push(delegate_task_tool());
         tools.push(cancel_delegated_task_tool());
-    }
-    if goal_active {
-        tools.push(complete_goal_tool());
     }
     tools
 }

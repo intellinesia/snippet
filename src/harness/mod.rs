@@ -574,10 +574,9 @@ pub struct HarnessState {
     /// renaming replaces it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// An active `/goal` the agent is autonomously working toward (None = normal
-    /// interactive mode). See [`Goal`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub goal: Option<Goal>,
+    /// Legacy `/goal` field kept deserializable for existing session state rows.
+    #[serde(default, skip_serializing)]
+    pub goal: Option<serde_json::Value>,
     /// True while a history-compaction pass is running (manual or auto). Surfaced
     /// so the UI can show a distinct "Compacting…" state instead of a generic
     /// "Running" — compaction can take a while and otherwise looks like a normal turn.
@@ -825,12 +824,6 @@ pub enum LoopInput {
     DropQueued,
     /// Rename the session (user-set title override).
     SetTitle(String),
-    /// Set (or replace) the autonomous `/goal` — the agent begins driving toward it.
-    SetGoal(String),
-    /// Resume a paused rate-limited goal without replacing its text.
-    ResumeGoal,
-    /// Cancel the active goal — the agent is told and winds down.
-    CancelGoal,
     /// Cancel the run.
     Interrupt,
     /// Record an event WITHOUT starting a turn.

@@ -73,7 +73,6 @@ mod lead;
 pub use lead::{mission_error, validated_owned_paths};
 mod agent_wakes;
 mod followups;
-mod goals;
 mod groups;
 pub(crate) mod handoff;
 mod keep_warm;
@@ -260,8 +259,6 @@ pub(crate) fn wakes_settled(input: &LoopInput) -> bool {
             | LoopInput::Answer(_)
             | LoopInput::Queue(_)
             | LoopInput::SteerQueued(_)
-            | LoopInput::SetGoal(_)
-            | LoopInput::ResumeGoal
     )
 }
 
@@ -1270,7 +1267,6 @@ pub async fn run_serve(
         .merge(canvas_routes::router())
         .merge(github_routes::router())
         .merge(lead::router())
-        .merge(goals::router())
         .route("/fs", get(browse_fs))
         .route("/fs/file", get(read_fs_file))
         .route("/fs/files", get(list_fs_files))
@@ -1919,11 +1915,9 @@ mod wake_tests {
     use super::*;
 
     #[test]
-    fn goals_wake_a_settled_session() {
-        assert!(wakes_settled(&LoopInput::SetGoal("run".into())));
+    fn user_messages_wake_a_settled_session() {
         assert!(wakes_settled(&LoopInput::UserMessage("hi".into())));
         assert!(!wakes_settled(&LoopInput::Compact));
-        assert!(!wakes_settled(&LoopInput::CancelGoal));
     }
 
     #[test]

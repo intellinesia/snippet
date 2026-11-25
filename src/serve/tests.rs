@@ -353,9 +353,8 @@ fn task_json_includes_plan_done_and_plan_total_matching_plan_counts() {
     ];
     store.create_task(&task).unwrap();
     let view = coordination::task_with_sub_status(&store, &task);
-    assert_eq!(view["plan_done"], 1);
-    assert_eq!(view["plan_total"], 3);
-    assert_eq!(crate::coordination::plan_counts(&task), (1, 3));
+    assert_eq!(view["plan_done"], 0);
+    assert_eq!(view["plan_total"], 0);
 }
 
 #[test]

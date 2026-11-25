@@ -27,22 +27,12 @@ pub fn ledger_block(store: &Store, task: &Task, full: bool) -> String {
                 String::new()
             };
             format!(
-                "{}{}{}{log}",
+                "{}{}{log}",
                 state.render(full),
                 memory_line(task),
-                goal_part(store, task, full)
             )
         }
         _ => String::new(),
-    }
-}
-
-fn goal_part(store: &Store, task: &Task, full: bool) -> String {
-    let block = crate::coordination::goals::goal_block(store, task, full);
-    if block.is_empty() {
-        block
-    } else {
-        format!("\n{}", block.trim_end())
     }
 }
 
@@ -82,10 +72,9 @@ pub fn dispatch_ledger(
         state.brief.clear();
     }
     format!(
-        "{}{}{}{}",
+        "{}{}{}",
         state.render(true),
         memory_line(task),
-        goal_part(store, task, true),
         crate::progress::ledger_log(store, &task.id),
     )
 }
@@ -197,16 +186,8 @@ pub fn api_fields(store: &Store, task: &Task) -> serde_json::Map<String, Value> 
             "waived": (!s.waiver.is_empty()).then(|| s.waiver.clone()),
         }))),
     );
-    out.insert("goal_id".into(), json!(task.goal_id));
-    let goal_title = task
-        .goal_id
-        .as_deref()
-        .and_then(|id| store.get_goal(id).ok().flatten())
-        .map(|g| g.title);
-    let (plan_done, plan_total) = crate::coordination::plan_counts(task);
-    out.insert("plan_done".into(), json!(plan_done));
-    out.insert("plan_total".into(), json!(plan_total));
-    out.insert("goal_title".into(), json!(goal_title));
+    out.insert("plan_done".into(), json!(0));
+    out.insert("plan_total".into(), json!(0));
     out.insert("ledger".into(), json!(state));
     out
 }

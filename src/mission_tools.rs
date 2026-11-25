@@ -72,12 +72,6 @@ pub fn add_lead_tools(registry: &mut ToolRegistry) {
     registry.insert(crate::task_state_tools::UpdateTaskState);
     registry.insert(crate::task_state_tools::TaskLedger);
     registry.insert(crate::review_tools::SubmitReview);
-    registry.insert(crate::goal_tools::CreateGoal);
-    registry.insert(crate::goal_tools::UpdateGoal);
-    registry.insert(crate::goal_tools::CloseGoal);
-    registry.insert(crate::goal_tools::ListGoals);
-    registry.insert(crate::goal_plan::PlanGoal);
-    registry.insert(crate::goal_plan::ReplanGoal);
     registry.insert(Speak);
     registry.insert(AmbientMode);
     registry.insert(AmbientTune);
@@ -2122,24 +2116,7 @@ fn candidate_list(candidates: &[crate::session_resolve::Candidate]) -> String {
         .join("; ")
 }
 
-pub(crate) fn open_goal_id(store: &Store, goal: Option<&str>) -> Result<Option<String>, ToolError> {
-    let Some(id) = goal.map(str::trim).filter(|g| !g.is_empty()) else {
-        return Ok(None);
-    };
-    let found = store
-        .get_goal(id)
-        .map_err(|e| ToolError::msg(format!("look up goal: {e}")))?
-        .ok_or_else(|| {
-            ToolError::msg(format!("goal names no goal `{id}`; goals.list shows them"))
-        })?;
-    if found.status != crate::coordination::GoalStatus::Open {
-        return Err(ToolError::msg(format!(
-            "goal `{id}` is {}; reopen it with goals.update first",
-            found.status.as_str()
-        )));
-    }
-    Ok(Some(found.id))
-}
+
 
 /// File a task: validate the target, record the worker on the roster, link
 /// any blockers, and leave the offer and delivery to the daemon. A task with
@@ -2309,7 +2286,6 @@ async fn create_task(
                 blockers.push(found);
             }
         }
-        let goal_id = open_goal_id(&store, args.goal.as_deref())?;
         let supersedes = args
             .supersedes
             .as_deref()
@@ -2339,7 +2315,6 @@ async fn create_task(
             now_rfc3339(),
         );
         task.profile = profile.clone();
-        task.goal_id = goal_id;
         task.expected_minutes = Some(args.expected_minutes.filter(|m| *m > 0).unwrap_or(
             match verify_mode {
                 crate::coordination::VerifyMode::SelfCheck => 10,

@@ -40,7 +40,7 @@ async fn gather(d: &Shared, id: &str) -> Option<Gathered> {
     let row = store.get_session_row(id).ok()??;
     let state_path = state_path_for_id(&row.id)?;
     let state = read_session_meta(&state_path)?;
-    use crate::harness::{GoalStatus, HarnessStatus};
+    use crate::harness::HarnessStatus;
     let alive = d
         .sessions
         .lock()
@@ -64,10 +64,7 @@ async fn gather(d: &Shared, id: &str) -> Option<Gathered> {
         settled: row.settled_at.is_some(),
         keep_awake: row.keep_awake,
         live_busy: (alive && busy_status) || state.compacting || state.pending_question.is_some(),
-        has_goal: state
-            .goal
-            .as_ref()
-            .is_some_and(|g| matches!(g.status, GoalStatus::Active | GoalStatus::Paused)),
+        has_goal: false,
         has_open_task: open_task,
         has_lanes_or_watches: !state.watches.is_empty()
             || state

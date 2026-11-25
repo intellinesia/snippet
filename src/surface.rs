@@ -471,23 +471,6 @@ const TASKS: Surface = Surface {
     ],
 };
 
-const GOALS: Surface = Surface {
-    name: "goals",
-    intro: "Create, plan, update, list, or close goals.",
-    acts: &[
-        act("create", "create_goal", "open a goal."),
-        act("plan", "plan_goal", "plan a goal into tasks."),
-        act(
-            "replan",
-            "replan_goal",
-            "replan a goal after new information.",
-        ),
-        act("update", "update_goal", "change a goal."),
-        act("list", "list_goals", "list goals."),
-        act("close", "close_goal", "close a goal."),
-    ],
-};
-
 const SESSIONS: Surface = Surface {
     name: "sessions",
     intro: "Create, message, stop, inspect, clean up, or answer worker sessions.",
@@ -544,7 +527,7 @@ const AMBIENT: Surface = Surface {
 
 pub const SURFACES: &[&Surface] = &[
     &WEB, &PROCESS, &PRESENT, &CANVAS, &DELEGATE, &SKILL, &MESSAGE, &READ, &TASK, &WAKE, &TASKS,
-    &GOALS, &SESSIONS, &AMBIENT, &CODE, &CALLS,
+    &SESSIONS, &AMBIENT, &CODE, &CALLS,
 ];
 
 fn keep_for(role: SeatRole) -> &'static [&'static str] {
@@ -553,12 +536,10 @@ fn keep_for(role: SeatRole) -> &'static [&'static str] {
             "bash",
             "change_files",
             "view_image",
-            "update_plan",
             "ask_user",
-            "complete_goal",
             "custom_tool",
         ],
-        SeatRole::Desk => &["bash", "change_files", "view_image", "complete_goal"],
+        SeatRole::Desk => &["bash", "change_files", "view_image"],
         SeatRole::Lane => &[
             "bash",
             "change_files",
@@ -568,14 +549,7 @@ fn keep_for(role: SeatRole) -> &'static [&'static str] {
             "submit_review",
             "custom_tool",
         ],
-        SeatRole::Lead => &[
-            "bash",
-            "view_image",
-            "ask_user",
-            "speak",
-            "update_brief",
-            "complete_goal",
-        ],
+        SeatRole::Lead => &["bash", "view_image", "ask_user", "speak", "update_brief"],
     }
 }
 
@@ -588,8 +562,7 @@ fn surfaces_for(role: SeatRole) -> &'static [&'static Surface] {
         SeatRole::Desk => &[&WEB, &MESSAGE, &READ, &TASK, &WAKE, &PRESENT, &CODE, &CALLS],
         SeatRole::Lane => &[&PROCESS, &WEB, &CANVAS, &SKILL],
         SeatRole::Lead => &[
-            &WEB, &PRESENT, &MESSAGE, &READ, &AMBIENT, &TASKS, &GOALS, &SESSIONS, &WAKE, &CODE,
-            &CALLS,
+            &WEB, &PRESENT, &MESSAGE, &READ, &AMBIENT, &TASKS, &SESSIONS, &WAKE, &CODE, &CALLS,
         ],
     }
 }
@@ -1112,9 +1085,10 @@ mod tests {
         );
 
         assert_eq!(desk_names.len(), 10);
-        assert_eq!(lead_names.len(), 15);
+        assert_eq!(lead_names.len(), 14);
         assert!(cli_names.iter().any(|n| n == "custom_tool"));
-        assert!(cli_names.iter().any(|n| n == "complete_goal"));
+        assert!(!cli_names.iter().any(|n| n == "complete_goal"));
+        assert!(!cli_names.iter().any(|n| n == "update_plan"));
         for hidden in [
             "record_coordination_note",
             "list_coordination_agents",

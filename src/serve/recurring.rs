@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::Shared;
-use crate::harness::{GoalStatus, LoopInput};
+use crate::harness::{HarnessStatus, LoopInput};
 use crate::recurring::{self};
 use crate::session::{read_session_meta, state_path_for_id, status_str};
 
@@ -18,11 +18,6 @@ pub(super) fn session_busy_for_recurring(id: &str) -> bool {
             .lanes
             .iter()
             .any(|l| matches!(l.status, crate::lanes::LaneStatus::Running))
-        || state.goal.as_ref().is_some_and(|g| match g.status {
-            GoalStatus::Active => true,
-            GoalStatus::Paused => !g.text.starts_with("**Scheduled run"),
-            _ => false,
-        })
 }
 
 pub async fn tick_loop(daemon: Shared) {
@@ -62,7 +57,7 @@ pub async fn tick_loop(daemon: Shared) {
                         .map(|s| s.events.len())
                         .unwrap_or(0);
                     daemon
-                        .deliver(&job.session_id, LoopInput::SetGoal(text))
+                        .deliver(&job.session_id, LoopInput::UserMessage(text))
                         .await;
                     let _ = recurring::mark_fired(&daemon.recurring_root, &job.id, now);
                     let run_id = recurring::store_at(&daemon.recurring_root)
@@ -166,27 +161,28 @@ async fn watch_run(daemon: Shared, job: recurring::RecurringJob, run_id: Option<
         let Some(state) = crate::session::read_session_state(&sp) else {
             continue;
         };
-        let outcome = state
+        if state.events.len() <= seen || state.status == HarnessStatus::Running {
+            continue;
+        }
+        let status = match state.status {
+            HarnessStatus::Failed => "failed".to_string(),
+            HarnessStatus::Interrupted => "interrupted".to_string(),
+            _ => "completed".to_string(),
+        };
+        let summary = state
             .events
             .iter()
             .skip(seen)
+            .rev()
             .find_map(|event| match event {
-                crate::harness::HarnessEvent::SystemDecision { step, reasoning }
-                    if matches!(
-                        step.as_str(),
-                        "goal_completed" | "goal_cancelled" | "goal_paused"
-                    ) =>
+                crate::harness::HarnessEvent::AssistantText { text, .. }
+                    if !text.trim().is_empty() =>
                 {
-                    Some((
-                        step.trim_start_matches("goal_").to_string(),
-                        reasoning.clone(),
-                    ))
+                    Some(text.clone())
                 }
                 _ => None,
-            });
-        let Some((status, summary)) = outcome else {
-            continue;
-        };
+            })
+            .unwrap_or_default();
         let summary = summary.trim().to_string();
         let previous = job.last_result.clone();
         let _ = recurring::update_job(&daemon.recurring_root, &job.id, |j| {

@@ -1122,11 +1122,7 @@ impl CodingHarness {
             return runner::list_calls(args, &state.events);
         }
         let retry = (tool == "calls_retry").then(|| runner::retry_target(args, &state.events));
-        let goal_active = state
-            .goal
-            .as_ref()
-            .is_some_and(|g| g.status == GoalStatus::Active);
-        let (_, all) = self.seat_definitions(conversation_mode, goal_active);
+        let (_, all) = self.seat_definitions(conversation_mode, false);
         let session = self.session_id().unwrap_or_else(|| "main".to_string());
         let mut exec = NativeExec {
             harness: self,

@@ -316,9 +316,6 @@ impl CodingHarness {
                                 other,
                                 LoopInput::SetMode(_)
                                     | LoopInput::SetTitle(_)
-                                    | LoopInput::SetGoal(_)
-                                    | LoopInput::ResumeGoal
-                                    | LoopInput::CancelGoal
                                     | LoopInput::Notice(_)
                             ) {
                                 needs_persist = true;
@@ -578,30 +575,6 @@ impl CodingHarness {
                             message: message.clone(),
                         });
                         // Goal mode: a rate limit PAUSES the goal rather than failing
-                        // the session — the drive stops until the window resets. Record
-                        // when that is (from the last rate-limit snapshot) so the UI can
-                        // show it. The user can re-issue /goal to resume.
-                        if is_rate_limit_error(&message)
-                            && let Some(goal) = state
-                                .goal
-                                .as_mut()
-                                .filter(|g| g.status == GoalStatus::Active)
-                        {
-                            goal.status = GoalStatus::Paused;
-                            goal.resume_at = state
-                                .rate_limit
-                                .as_ref()
-                                .and_then(earliest_reset)
-                                .unwrap_or(0);
-                            let text = goal.text.clone();
-                            state.events.push(HarnessEvent::SystemDecision {
-                                step: "goal_paused".to_string(),
-                                reasoning: format!("rate limited — goal paused: {text}"),
-                            });
-                            state.status = HarnessStatus::Idle;
-                            self.persist(&mut state, &lanes).await?;
-                            continue;
-                        }
                         if crate::routing::is_limit_error(&message) {
                             state.status = HarnessStatus::Idle;
                             self.persist(&mut state, &lanes).await?;
@@ -673,8 +646,6 @@ impl CodingHarness {
                     lane_prompt_shown = true;
                     self.persist(&mut state, &lanes).await?;
                 }
-                let goal_driving = state.status == HarnessStatus::Idle
-                    && matches!(&state.goal, Some(g) if g.status == GoalStatus::Active);
                 tokio::select! {
                     biased;
                     input = input_rx.recv() => match input.map(LoopInput::unwrap_source) {
@@ -731,32 +702,6 @@ impl CodingHarness {
                         Some((LoopInput::SetTitle(title), _)) => {
                             let t = title.trim();
                             state.title = if t.is_empty() { None } else { Some(t.to_string()) };
-                            self.persist(&mut state, &lanes).await?;
-                        }
-                        Some((LoopInput::SetGoal(text), source)) => {
-                            let (by, via) = super::events::decision_origin(source.as_ref(), "");
-                            if lane_prompt_shown {
-                                self.record_outdated_approval(&mut state, &by, &via);
-                                lane_prompt_shown = false;
-                            }
-                            self.record_outdated_question(&mut state, &by, &via);
-                            self.begin_goal(&mut state, text);
-                            consecutive_errors = 0;
-                            self.persist(&mut state, &lanes).await?;
-                        }
-                        Some((LoopInput::ResumeGoal, source)) => {
-                            let (by, via) = super::events::decision_origin(source.as_ref(), "");
-                            if lane_prompt_shown {
-                                self.record_outdated_approval(&mut state, &by, &via);
-                                lane_prompt_shown = false;
-                            }
-                            self.record_outdated_question(&mut state, &by, &via);
-                            self.resume_goal(&mut state);
-                            consecutive_errors = 0;
-                            self.persist(&mut state, &lanes).await?;
-                        }
-                        Some((LoopInput::CancelGoal, _)) => {
-                            self.end_goal(&mut state);
                             self.persist(&mut state, &lanes).await?;
                         }
                         Some((LoopInput::Rewind { checkpoint }, source)) => {
@@ -827,7 +772,6 @@ impl CodingHarness {
                             }
                             self.record_outdated_question(&mut state, &by, &via);
                             state.pending_question = None;
-                            pause_goal_on_interrupt(&mut state);
                             state.status = HarnessStatus::Interrupted;
                             self.persist(&mut state, &lanes).await?;
                             state.status = HarnessStatus::Idle;
@@ -901,12 +845,6 @@ impl CodingHarness {
                         if state.status == HarnessStatus::Idle {
                             state.status = HarnessStatus::Running;
                         }
-                        consecutive_errors = 0;
-                        self.persist(&mut state, &lanes).await?;
-                    }
-                    _ = std::future::ready(()), if goal_driving => {
-                        // Autonomous goal, nothing else queued: take the next goal turn.
-                        self.drive_goal_turn(&mut state, &mut vars);
                         consecutive_errors = 0;
                         self.persist(&mut state, &lanes).await?;
                     }
@@ -1000,7 +938,6 @@ impl CodingHarness {
         lanes: &LaneManager,
     ) -> Result<(), ToolError> {
         state.pending_question = None;
-        pause_goal_on_interrupt(state);
         state.status = HarnessStatus::Interrupted;
         state.events.push(HarnessEvent::SystemDecision {
             step: "interrupted".to_string(),
@@ -1012,23 +949,7 @@ impl CodingHarness {
     }
 }
 
-/// A manual stop must also stop the goal: left Active, the idle loop re-drives it
-/// and a scheduled job's later runs stay blocked behind it.
-pub(super) fn pause_goal_on_interrupt(state: &mut HarnessState) {
-    if let Some(goal) = state
-        .goal
-        .as_mut()
-        .filter(|g| g.status == GoalStatus::Active)
-    {
-        goal.status = GoalStatus::Paused;
-        goal.resume_at = 0;
-        let text = goal.text.clone();
-        state.events.push(HarnessEvent::SystemDecision {
-            step: "goal_paused".to_string(),
-            reasoning: format!("stopped by user — {text}"),
-        });
-    }
-}
+
 
 fn is_speak_tool(name: &str) -> bool {
     name == "speak" || name.ends_with("__speak")

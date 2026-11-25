@@ -33,8 +33,6 @@ pub mod doctor;
 pub mod envelope;
 pub mod followup_tool;
 pub mod gemini;
-pub mod goal_plan;
-pub mod goal_tools;
 pub mod harness;
 pub mod history_archive;
 pub mod inline;
@@ -91,8 +89,8 @@ pub mod xai;
 pub mod xai_auth;
 
 pub use harness::{
-    CodingHarness, GoalStatus, HarnessConfig, HarnessEvent, HarnessOutcome, HarnessState,
-    HarnessStatus, LoopInput,
+    CodingHarness, HarnessConfig, HarnessEvent, HarnessOutcome, HarnessState, HarnessStatus,
+    LoopInput,
 };
 pub use lanes::{LaneManager, LaneRecord, LaneResult, LaneStatus, ModelFactory};
 pub use llm::{AgentModel, GeneratedToolCall, ModelOutput, NativeToolDefinition};

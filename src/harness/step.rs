@@ -40,12 +40,8 @@ impl CodingHarness {
         sink: Option<&StreamHandle>,
         approval_rx: &mut mpsc::UnboundedReceiver<(ApprovalDecision, Option<DecisionSource>)>,
     ) -> StepResult {
-        let goal_active = state
-            .goal
-            .as_ref()
-            .is_some_and(|g| g.status == GoalStatus::Active);
         let current_mode = self.tool_mode();
-        let definitions = self.definitions_for(conversation_mode, goal_active);
+        let definitions = self.definitions_for(conversation_mode, false);
 
         if let Some(end) = unproductive_stop(state, vars) {
             return end;

@@ -529,7 +529,7 @@ pub fn goal_addendum(
         ReportTo::None => "the run log only".to_string(),
     };
     let mut out = format!(
-        "\n\n---\n\nThis is your scheduled wake. Your complete_goal summary goes to {dest}"
+        "\n\n---\n\nThis is your scheduled wake. Your final reply summary goes to {dest}"
     );
     if policy.report.only_on_change {
         out.push_str(&format!(

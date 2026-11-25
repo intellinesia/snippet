@@ -243,11 +243,7 @@ impl CodingHarness {
             .session_id()
             .map(|id| format!("snippet://session/{id}"))
             .unwrap_or_else(|| "snippet://session".to_string());
-        let goal_active = state
-            .goal
-            .as_ref()
-            .is_some_and(|g| g.status == GoalStatus::Active);
-        let definitions = self.definitions_for(true, goal_active);
+        let definitions = self.definitions_for(true, false);
         let mut messages = state.messages.clone();
         messages.push(HarnessMessage::User {
             content: reflection_instruction(&repos, &since),

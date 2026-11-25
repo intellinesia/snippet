@@ -1007,52 +1007,7 @@ impl App {
                     self.status = "No active session to compact.".to_string();
                 }
             }
-            "/goal" => {
-                let rest = text.strip_prefix("/goal").unwrap_or("").trim();
-                if rest.eq_ignore_ascii_case("cancel") || rest.eq_ignore_ascii_case("stop") {
-                    if self.agent_alive() {
-                        let _ = self.send_loop_input(LoopInput::CancelGoal);
-                        self.status = "Cancelling the goal…".to_string();
-                    } else {
-                        self.status = "No active goal.".to_string();
-                    }
-                } else if rest.eq_ignore_ascii_case("resume")
-                    || rest.eq_ignore_ascii_case("continue")
-                {
-                    if self.agent_alive() {
-                        let _ = self.send_loop_input(LoopInput::ResumeGoal);
-                        self.status = "Resuming the paused goal…".to_string();
-                    } else {
-                        self.status = "No active session to resume the goal.".to_string();
-                    }
-                } else if rest.is_empty() {
-                    self.status =
-                        "Usage: /goal <what to accomplish>   ·   /goal resume   ·   /goal cancel"
-                            .to_string();
-                } else {
-                    // The agent must be running to receive the goal; start it if idle.
-                    if !self.agent_alive() {
-                        self.spawn_loop(None, true);
-                    }
-                    if self
-                        .send_loop_input(LoopInput::SetGoal(rest.to_string()))
-                        .is_ok()
-                    {
-                        self.status =
-                            "Goal set — the agent will drive toward it. /goal cancel to stop."
-                                .to_string();
-                    } else {
-                        // Sidecar attach may still be pending — queue the goal for after attach.
-                        self.status = "Starting session for goal…".to_string();
-                        if self.pending_sidecar_attach.is_some() {
-                            // Will be delivered after attach if we stash it as initial.
-                            // For now just mark pending and let user retry if needed.
-                        } else {
-                            self.status = "Couldn't start the agent loop for the goal.".to_string();
-                        }
-                    }
-                }
-            }
+
             "/term" => {
                 if parts.get(1).is_some_and(|p| *p == "new") {
                     self.new_term();

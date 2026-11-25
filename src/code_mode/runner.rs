@@ -996,8 +996,6 @@ const CODE_MODE_DIRECT: &[&str] = &[
     "change_files",
     "view_image",
     "ask_user",
-    "complete_goal",
-    "update_plan",
     "speak",
     "custom_tool",
 ];

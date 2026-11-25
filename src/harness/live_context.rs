@@ -44,30 +44,15 @@ pub(super) fn build_reminder(
         .iter()
         .map(RuntimeSignal::message)
         .collect();
-    let goal_active = matches!(&state.goal, Some(g) if g.status == GoalStatus::Active);
     let n = vars.turns_this_request;
-    if !goal_active {
-        if n + 5 == TURN_BUDGET {
-            signals.push(format!(
-                "This request is at step {n} of a {TURN_BUDGET}-step budget."
-            ));
-        } else if n >= TURN_BUDGET && (n - TURN_BUDGET) % 10 == 0 {
-            signals.push(format!(
-                "This request is at step {n}, past the {TURN_BUDGET}-step budget."
-            ));
-        }
-    }
-    let open_steps = state
-        .plan
-        .iter()
-        .filter(|s| s.status != PlanStatus::Done)
-        .count();
-    let lane_running = state.lanes.iter().any(|l| l.status == LaneStatus::Running);
-    if used >= 60 && open_steps >= 2 && !lane_running && !vars.capacity_nudged {
+    if n + 5 == TURN_BUDGET {
         signals.push(format!(
-            "Context is {used}% used with {open_steps} plan steps open and no lane running."
+            "This request is at step {n} of a {TURN_BUDGET}-step budget."
         ));
-        vars.capacity_nudged = true;
+    } else if n >= TURN_BUDGET && (n - TURN_BUDGET) % 10 == 0 {
+        signals.push(format!(
+            "This request is at step {n}, past the {TURN_BUDGET}-step budget."
+        ));
     }
     lines.extend(signals);
 
@@ -196,22 +181,9 @@ fn sections(
     out
 }
 
-/// The plan as the model is reminded of it (after compaction or at the start
-/// of a request); empty when there is none.
-pub(super) fn render_plan(plan: &[PlanStep]) -> String {
-    if plan.is_empty() {
-        return String::new();
-    }
-    let mut text = String::from("Your current plan (update_plan changes it):");
-    for step in plan {
-        let mark = match step.status {
-            PlanStatus::Done => "[x]",
-            PlanStatus::InProgress => "[>]",
-            PlanStatus::Pending => "[ ]",
-        };
-        text.push_str(&format!("\n{mark} {}", step.step));
-    }
-    text
+/// Plans have been removed; kept as a no-op helper for callers.
+pub(super) fn render_plan(_plan: &[PlanStep]) -> String {
+    String::new()
 }
 
 fn render_lanes(state: &HarnessState) -> String {
@@ -466,21 +438,12 @@ mod tests {
         assert!(!r.contains("plan steps left"), "got: {r}");
         assert!(!vars.capacity_nudged);
 
-        // No lane running, two open steps, 65% used: nudges once across two builds.
+        // Plans are removed, so no plan-based capacity nudge fires.
         state.lanes.clear();
         let mut vars = LoopVars::default();
         let first = build_reminder(&state, &mut vars, cwd, cwd, String::new(), 100_000, 90)
-            .expect("first build emits reminder");
-        assert!(
-            first.contains("Context is 65% used with 2 plan steps open and no lane running."),
-            "got: {first}"
-        );
-        assert!(vars.capacity_nudged);
-
-        let second = build_reminder(&state, &mut vars, cwd, cwd, String::new(), 100_000, 90);
-        assert!(
-            second.is_none(),
-            "second build at 65% must not nudge again, got: {second:?}"
-        );
+            .unwrap_or_default();
+        assert!(!first.contains("plan steps open"), "got: {first}");
+        assert!(!vars.capacity_nudged);
     }
 }

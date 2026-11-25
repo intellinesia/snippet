@@ -123,38 +123,6 @@ impl CodingHarness {
                     ),
                 }
             }
-            "update_plan" => match parse_plan(arguments) {
-                Ok(steps) => {
-                    let done = steps
-                        .iter()
-                        .filter(|s| s.status == PlanStatus::Done)
-                        .count();
-                    let total = steps.len();
-                    let explanation = arguments
-                        .get("explanation")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string);
-                    let note = arguments
-                        .get("note")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string);
-                    let previous = std::mem::replace(&mut state.plan, steps.clone());
-                    self.mirror_plan_to_task(&steps);
-                    self.record_done_plan_steps(&previous, &steps, note.as_deref());
-                    state
-                        .events
-                        .push(HarnessEvent::PlanUpdated { steps, explanation });
-                    (
-                        json!({"schema_version": 1, "status": "success", "data": {"done": done, "total": total}}),
-                        MetaControl::Continue,
-                    )
-                }
-                Err(message) => (tool_error(&message), MetaControl::Continue),
-            },
             "present_file" => {
                 let text = |key: &str| {
                     arguments
@@ -300,45 +268,6 @@ impl CodingHarness {
                     }}),
                     MetaControl::Continue,
                 )
-            }
-            "complete_goal" => {
-                let summary = arguments
-                    .get("summary")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                match state.goal.as_mut() {
-                    Some(goal)
-                        if matches!(goal.status, GoalStatus::Active | GoalStatus::Paused) =>
-                    {
-                        goal.status = GoalStatus::Complete;
-                        let text = goal.text.clone();
-                        state.events.push(HarnessEvent::SystemDecision {
-                            step: "goal_completed".to_string(),
-                            reasoning: if summary.is_empty() {
-                                text
-                            } else {
-                                summary.clone()
-                            },
-                        });
-                        (
-                            json!({"schema_version": 1, "status": "success", "data": {"completed": true}}),
-                            MetaControl::EndTurn {
-                                kind: TurnEndKind::Complete,
-                                final_text: Some(if summary.is_empty() {
-                                    "Goal complete.".to_string()
-                                } else {
-                                    summary
-                                }),
-                            },
-                        )
-                    }
-                    _ => (
-                        tool_error("complete_goal: there is no active goal to complete."),
-                        MetaControl::Continue,
-                    ),
-                }
             }
             "ask_user" => match parse_ask_user(arguments) {
                 Ok(rendered) => {
@@ -861,55 +790,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn complete_goal_accepts_a_paused_goal_but_not_a_finished_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let harness = CodingHarness::new(
-            HarnessConfig {
-                memory_enabled: false,
-                ..HarnessConfig::default()
-            },
-            ToolRegistry::new(),
-            ToolContext::new(dir.path()).unwrap(),
-        );
-        let mut state = HarnessState::blank(&dir.path().display().to_string(), None);
-        let (result_tx, _result_rx) = mpsc::unbounded_channel();
-        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
-        let (watch_tx, _watch_rx) = mpsc::unbounded_channel();
-        let mut watches = WatchManager::new(dir.path().to_path_buf(), watch_tx);
-        let mut lanes = LaneManager::new(
-            None,
-            dir.path().to_path_buf(),
-            dir.path().join("lanes"),
-            result_tx,
-            progress_tx,
-            None,
-        );
-        state.goal = Some(Goal {
-            text: "sync".to_string(),
-            dir: String::new(),
-            status: GoalStatus::Paused,
-            autonomous_turns: 0,
-            resume_at: 0,
-        });
-        let (done, _) = harness.dispatch_meta(
-            &mut state,
-            &mut lanes,
-            &mut watches,
-            "complete_goal",
-            &json!({"summary": "finished"}),
-        );
-        assert_eq!(done["status"], "success", "{done}");
-        assert_eq!(state.goal.as_ref().unwrap().status, GoalStatus::Complete);
-        let (again, _) = harness.dispatch_meta(
-            &mut state,
-            &mut lanes,
-            &mut watches,
-            "complete_goal",
-            &json!({}),
-        );
-        assert_eq!(again["status"], "error");
-    }
+
 
     #[tokio::test]
     async fn delegate_task_review_of_requires_completed_lane_and_prefixes_read_only_brief() {
@@ -1067,97 +948,5 @@ mod tests {
         );
     }
 
-    #[test]
-    fn update_plan_writes_board_progress_only_for_newly_done_steps() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("store.db");
-        let store = crate::store::Store::open(&db_path).unwrap();
-        let ctx = ToolContext::new(dir.path())
-            .unwrap()
-            .with_durable_session_id("work-1")
-            .with_store_path(&db_path)
-            .with_agent_id("rook");
-        let harness = CodingHarness::new(
-            HarnessConfig {
-                state_path: Some(dir.path().join("state.json")),
-                ..HarnessConfig::default()
-            },
-            ToolRegistry::new(),
-            ctx,
-        );
-        let mut state = HarnessState::blank(&dir.path().display().to_string(), None);
-        let (lane_tx, _) = mpsc::unbounded_channel();
-        let (progress_tx, _) = mpsc::unbounded_channel();
-        let mut lanes = LaneManager::new(
-            None,
-            dir.path().to_path_buf(),
-            dir.path().join("lanes"),
-            lane_tx,
-            progress_tx,
-            None,
-        );
-        let (watch_tx, _) = mpsc::unbounded_channel();
-        let mut watches = WatchManager::new(dir.path().to_path_buf(), watch_tx);
 
-        let (res, _) = harness.dispatch_meta(
-            &mut state,
-            &mut lanes,
-            &mut watches,
-            "update_plan",
-            &json!({
-                "steps": [
-                    {"step": "Implement surface", "status": "in_progress"},
-                    {"step": "Verify tests", "status": "pending"}
-                ]
-            }),
-        );
-        assert_eq!(res["status"], "success");
-        let rows = store
-            .read_board("rook", &crate::coordination::BoardQuery::default(), 10)
-            .unwrap();
-        assert!(rows.is_empty());
-
-        let (res, _) = harness.dispatch_meta(
-            &mut state,
-            &mut lanes,
-            &mut watches,
-            "update_plan",
-            &json!({
-                "steps": [
-                    {"step": "Implement surface", "status": "done"},
-                    {"step": "Verify tests", "status": "in_progress"}
-                ],
-                "note": "Wired both dispatch paths"
-            }),
-        );
-        assert_eq!(res["status"], "success");
-        let rows = store
-            .read_board("rook", &crate::coordination::BoardQuery::default(), 10)
-            .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].kind, "progress");
-        assert_eq!(
-            rows[0].summary,
-            "Implement surface: Wired both dispatch paths"
-        );
-
-        let (res, _) = harness.dispatch_meta(
-            &mut state,
-            &mut lanes,
-            &mut watches,
-            "update_plan",
-            &json!({
-                "steps": [
-                    {"step": "Implement surface", "status": "done"},
-                    {"step": "Verify tests", "status": "in_progress"}
-                ],
-                "note": "No new done steps"
-            }),
-        );
-        assert_eq!(res["status"], "success");
-        let rows = store
-            .read_board("rook", &crate::coordination::BoardQuery::default(), 10)
-            .unwrap();
-        assert_eq!(rows.len(), 1);
-    }
 }

@@ -11,7 +11,6 @@ pub mod board;
 mod consumed;
 pub mod direct;
 mod events;
-pub mod goals;
 pub mod groups;
 pub mod handoffs;
 pub mod last_message;
@@ -41,7 +40,6 @@ pub use direct::{
     DirectThreadSummary, InboxEntry, InboxKind, InboxQuery, LOCAL_HUMAN_ID, OwedReply,
     PendingDirectMessage, actor_ref, direct_thread_id,
 };
-pub use goals::{Goal, GoalCriterion, GoalStatus};
 pub use groups::{GroupMember, GroupSummary};
 pub use identity::{AgentHome, IdentityError};
 pub use task_state::{Decision, PendingReport, StatePatch, TaskState, VerifyMethod, VerifyMode};

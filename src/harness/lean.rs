@@ -188,11 +188,7 @@ mod tests {
         assert!(text.contains("- fix the header"));
         assert!(!text.contains("noise"));
         assert!(crate::envelope::is(&text, "lean_continuation"));
-        assert!(
-            crate::envelope::child(&text, "plan")
-                .unwrap()
-                .contains("[>] Ship it")
-        );
+        assert!(crate::envelope::child(&text, "plan").is_none());
         assert_eq!(
             crate::envelope::attr(&text, "branch").as_deref(),
             Some("ui-polish")

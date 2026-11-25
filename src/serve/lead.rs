@@ -1136,7 +1136,6 @@ pub async fn dispatch_loop(daemon: Shared) {
         if last_sweep == 0 || sweep_now.timestamp() - last_sweep >= 60 {
             super::stall::seat_sweep(&daemon.store, sweep_now);
         }
-        wake_for_stalled_goals(&daemon).await;
         for (session, notice) in super::stall::owed_sweep(&daemon.store, chrono::Utc::now()) {
             daemon
                 .deliver(&session, crate::harness::LoopInput::UserMessage(notice))
@@ -1261,22 +1260,6 @@ async fn drive_reflection(daemon: &Shared) {
             )
             .await;
     }
-}
-
-async fn wake_for_stalled_goals(daemon: &Shared) {
-    let state = crate::mission_autonomy::load();
-    let quiet = crate::mission_autonomy::in_quiet_hours(&state.settings);
-    let Some(text) = super::stall::goal_stall_wake(
-        &daemon.store,
-        chrono::Utc::now(),
-        quiet || !state.settings.on,
-    ) else {
-        return;
-    };
-    if super::autonomy::lead_busy() {
-        return;
-    }
-    super::autonomy::deliver_to_lead(daemon, text).await;
 }
 
 fn task_artifacts_block(session_id: &str, created_at: &str) -> String {

@@ -1552,18 +1552,6 @@ fn stall_action(restarts: u8, kind: CliKind) -> StallAction {
     }
 }
 
-fn cli_goal_due(state: &HarnessState, idle_pass: bool, outbox_empty: bool, once: bool) -> bool {
-    !once
-        && idle_pass
-        && outbox_empty
-        && state.status == HarnessStatus::Idle
-        && state.pending_question.is_none()
-        && state
-            .goal
-            .as_ref()
-            .is_some_and(|g| g.status == GoalStatus::Active)
-}
-
 async fn start_mcp_server(
     tools: Vec<NativeToolDefinition>,
     steers: SteerQueue,
@@ -2403,20 +2391,7 @@ impl CodingHarness {
                 }
                 self.persist(&mut state, &lanes).await?;
             }
-            if cli_goal_due(
-                &state,
-                compaction == CliCompaction::Idle && !compact_wanted && pending_approval.is_none(),
-                outbox.is_empty(),
-                once,
-            ) {
-                self.drive_goal_turn(&mut state, &mut vars);
-                if state.status == HarnessStatus::Running
-                    && let Some(HarnessMessage::User { content }) = state.messages.last()
-                {
-                    outbox.push(content.clone());
-                }
-                self.persist(&mut state, &lanes).await?;
-            }
+
             if !outbox.is_empty() {
                 if session.started && session.synced > 0 {
                     let len = state.messages.len();
@@ -2862,34 +2837,9 @@ impl CodingHarness {
                             if let Some(s) = sink.as_ref() {
                                 StreamBuffer::clear(s);
                             }
-                            super::runner::pause_goal_on_interrupt(&mut state);
                             state.status = HarnessStatus::Interrupted;
                             self.persist(&mut state, &lanes).await?;
                             state.status = HarnessStatus::Idle;
-                        }
-                        goal_input @ (LoopInput::SetGoal(_) | LoopInput::ResumeGoal | LoopInput::CancelGoal) => {
-                            let mid_turn = state.status == HarnessStatus::Running && process.is_some();
-                            let before = state.messages.len();
-                            let wrapped = match source {
-                                Some(src) => goal_input.with_source(src.by, src.via),
-                                None => goal_input,
-                            };
-                            self.apply_input(&mut state, wrapped);
-                            if state.messages.len() > before
-                                && let Some(HarnessMessage::User { content }) = state.messages.last()
-                            {
-                                let directive = content.clone();
-                                if mid_turn && matches!(kind, CliKind::Antigravity | CliKind::Devin) {
-                                    if let Ok(mut queue) = steers.lock() {
-                                        queue.push(directive);
-                                    }
-                                } else {
-                                    outbox.push(directive);
-                                }
-                            } else if state.status == HarnessStatus::Running && process.is_none() && outbox.is_empty() {
-                                state.status = HarnessStatus::Idle;
-                            }
-                            self.persist(&mut state, &lanes).await?;
                         }
                         LoopInput::SteerQueued(id) => {
                             let Some(text) = take_queued(&mut state, &id) else {
@@ -4615,20 +4565,6 @@ impl CodingHarness {
 mod goal_tests {
     use super::*;
 
-    fn active_goal_state(status: HarnessStatus) -> HarnessState {
-        HarnessState {
-            status,
-            goal: Some(Goal {
-                text: "ship it".into(),
-                dir: String::new(),
-                status: GoalStatus::Active,
-                autonomous_turns: 0,
-                resume_at: 0,
-            }),
-            ..Default::default()
-        }
-    }
-
     #[test]
     fn a_claude_tool_result_keeps_its_structured_value_even_out_of_order() {
         let served: ServedResults = Default::default();
@@ -4680,45 +4616,8 @@ mod goal_tests {
                 .map(|d| d.name)
                 .collect()
         };
-        assert!(names(false).iter().any(|n| n == "complete_goal"));
+        assert!(!names(false).iter().any(|n| n == "complete_goal"));
         assert!(!names(true).iter().any(|n| n == "complete_goal"));
-    }
-
-    #[test]
-    fn idle_cli_loop_drives_an_active_goal() {
-        assert!(cli_goal_due(
-            &active_goal_state(HarnessStatus::Idle),
-            true,
-            true,
-            false
-        ));
-        assert!(!cli_goal_due(
-            &active_goal_state(HarnessStatus::Running),
-            true,
-            true,
-            false
-        ));
-        assert!(!cli_goal_due(
-            &active_goal_state(HarnessStatus::Idle),
-            true,
-            false,
-            false
-        ));
-        assert!(!cli_goal_due(
-            &active_goal_state(HarnessStatus::Idle),
-            false,
-            true,
-            false
-        ));
-        assert!(!cli_goal_due(
-            &active_goal_state(HarnessStatus::Idle),
-            true,
-            true,
-            true
-        ));
-        let mut paused = active_goal_state(HarnessStatus::Idle);
-        paused.goal.as_mut().unwrap().status = GoalStatus::Paused;
-        assert!(!cli_goal_due(&paused, true, true, false));
     }
 
     #[test]
