@@ -88,7 +88,11 @@ pub(crate) async fn attach_ws(
 ) -> Response {
     let on = |v: &Option<String>| v.as_deref().is_some_and(|v| v != "0" && v != "false");
     let stream_delta = on(&q.stream_delta);
-    let packed = q.enc.as_deref() == Some("gzip");
+    let wire_mode = match q.enc.as_deref() {
+        Some("zstream") => WireMode::Stream,
+        Some("gzip") => WireMode::Gzip,
+        _ => WireMode::Plain,
+    };
     let resume = q.from.zip(q.at).filter(|(from, _)| *from > 0);
     if crate::session::is_lane_session_id(&q.session) {
         let Some(state_path) = state_path_for_id(&q.session)
@@ -111,7 +115,7 @@ pub(crate) async fn attach_ws(
                 AttachOptions {
                     stream_delta,
                     read_only: true,
-                    packed,
+                    wire_mode,
                     resume,
                 },
             )
@@ -136,7 +140,7 @@ pub(crate) async fn attach_ws(
                     AttachOptions {
                         stream_delta,
                         read_only: false,
-                        packed,
+                        wire_mode,
                         resume,
                     },
                 )
@@ -150,7 +154,7 @@ pub(crate) async fn attach_ws(
 struct AttachOptions {
     stream_delta: bool,
     read_only: bool,
-    packed: bool,
+    wire_mode: WireMode,
     resume: Option<(usize, i64)>,
 }
 
@@ -166,7 +170,7 @@ async fn handle_ws(
     let AttachOptions {
         stream_delta,
         read_only,
-        packed,
+        wire_mode,
         resume: resume_request,
     } = options;
     let (mut sender, mut receiver) = socket.split();
@@ -215,6 +219,8 @@ async fn handle_ws(
         let mut last_counts_check: Option<tokio::time::Instant> = None;
         let mut workspace_dir: Option<PathBuf> = None;
         let mut resume_request = resume_request;
+        let mut packer = Packer::new(wire_mode);
+        let packed = wire_mode != WireMode::Plain;
         let mut last_frame_sent = tokio::time::Instant::now();
         let load_initial = |path: &Path| {
             let path = path.to_path_buf();
@@ -337,6 +343,7 @@ async fn handle_ws(
                     };
                     last_counts = Some(counts);
                     let events = std::mem::take(&mut state.events);
+                    let mut backfill: Option<serde_json::Value> = None;
                     if let Ok(mut v) = serde_json::to_value(&state) {
                         if let Some(o) = v.as_object_mut() {
                             o.remove("messages");
@@ -428,8 +435,23 @@ async fn handle_ws(
                                 o.insert("wire".into(), serde_json::json!("snapshot"));
                                 let mut window = wire_events_slice(&events, rel_start);
                                 stamp_event_times(&state_path, start, &mut window).await;
+                                let older = if packed {
+                                    split_first_paint(&mut window)
+                                } else {
+                                    Vec::new()
+                                };
+                                let shown_start = start + older.len();
+                                if !older.is_empty() {
+                                    backfill = Some(serde_json::json!({
+                                        "wire": "history",
+                                        "events": older,
+                                        "start": start,
+                                        "end": shown_start,
+                                        "has_older": start > 0,
+                                    }));
+                                }
                                 o.insert("events".into(), window);
-                                o.insert("event_offset".into(), serde_json::json!(start));
+                                o.insert("event_offset".into(), serde_json::json!(shown_start));
                                 last_events = events[rel_start..].to_vec();
                             }
                         }
@@ -437,7 +459,12 @@ async fn handle_ws(
                         last_lane_map = lane_map;
                         last_queue_revision = queue_revision;
                         if let Ok(json) = serde_json::to_string(&v) {
-                            if !send_wire(&mut sender, json, packed).await {
+                            if !send_wire(&mut sender, json, &mut packer).await {
+                                break;
+                            }
+                            if let Some(frame) = backfill.take()
+                                && !send_wire(&mut sender, frame.to_string(), &mut packer).await
+                            {
                                 break;
                             }
                             last_frame_sent = tokio::time::Instant::now();
@@ -480,7 +507,7 @@ async fn handle_ws(
                     sent_text = snap;
                     sent_thinking = think;
                     if let Ok(json) = serde_json::to_string(&frame)
-                        && !send_wire(&mut sender, json, packed).await
+                        && !send_wire(&mut sender, json, &mut packer).await
                     {
                         break;
                     }
@@ -512,7 +539,7 @@ async fn handle_ws(
                         "alive": alive,
                     });
                     if let Ok(json) = serde_json::to_string(&frame)
-                        && !send_wire(&mut sender, json, packed).await
+                        && !send_wire(&mut sender, json, &mut packer).await
                     {
                         break 'attach;
                     }
@@ -564,7 +591,7 @@ async fn handle_ws(
                         "end": end,
                         "has_older": has_older,
                     });
-                    if !send_wire(&mut sender, frame.to_string(), packed).await {
+                    if !send_wire(&mut sender, frame.to_string(), &mut packer).await {
                         break;
                     }
                     last_frame_sent = tokio::time::Instant::now();
@@ -739,6 +766,64 @@ const PACK_BLOCKING_BYTES: usize = 256 * 1024;
 const PACK_FLAG_BASE: u8 = 0x80;
 const PACK_FLAG_FINAL: u8 = 0x01;
 const PACK_FLAG_GZIP: u8 = 0x02;
+const PACK_FLAG_STREAM: u8 = 0x04;
+const FIRST_PAINT_BYTES: usize = 32 * 1024;
+const FIRST_PAINT_MIN_EVENTS: usize = 12;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WireMode {
+    Plain,
+    Gzip,
+    Stream,
+}
+
+struct Packer {
+    mode: WireMode,
+    stream: Option<Box<flate2::Compress>>,
+}
+
+impl Packer {
+    fn new(mode: WireMode) -> Self {
+        let stream = (mode == WireMode::Stream)
+            .then(|| Box::new(flate2::Compress::new(flate2::Compression::new(6), false)));
+        Self { mode, stream }
+    }
+}
+
+fn deflate_sync(z: &mut flate2::Compress, input: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len() / 3 + 256);
+    let mut consumed = 0usize;
+    loop {
+        if out.capacity() - out.len() < 1024 {
+            out.reserve(out.capacity().max(4096));
+        }
+        let before = z.total_in();
+        z.compress_vec(&input[consumed..], &mut out, flate2::FlushCompress::Sync)
+            .ok()?;
+        consumed += (z.total_in() - before) as usize;
+        if consumed >= input.len() && out.len() < out.capacity() {
+            return Some(out);
+        }
+    }
+}
+
+fn split_first_paint(window: &mut serde_json::Value) -> Vec<serde_json::Value> {
+    let Some(list) = window.as_array_mut() else {
+        return Vec::new();
+    };
+    let mut bytes = 0usize;
+    let mut keep = 0usize;
+    for event in list.iter().rev() {
+        let size = event.to_string().len();
+        if keep >= FIRST_PAINT_MIN_EVENTS && bytes + size > FIRST_PAINT_BYTES {
+            break;
+        }
+        bytes += size;
+        keep += 1;
+    }
+    let split = list.len() - keep;
+    list.drain(..split).collect()
+}
 
 fn gzip_bytes(raw: &[u8]) -> Option<Vec<u8>> {
     use std::io::Write;
@@ -750,11 +835,43 @@ fn gzip_bytes(raw: &[u8]) -> Option<Vec<u8>> {
     enc.finish().ok()
 }
 
-async fn send_wire<S>(sender: &mut S, json: String, packed: bool) -> bool
+async fn send_wire<S>(sender: &mut S, json: String, packer: &mut Packer) -> bool
 where
     S: futures_util::Sink<Message> + Unpin,
 {
-    if !packed || json.len() < PACK_MIN_BYTES {
+    if packer.mode == WireMode::Stream {
+        let Some(mut z) = packer.stream.take() else {
+            return false;
+        };
+        let out = if json.len() >= PACK_BLOCKING_BYTES {
+            match tokio::task::spawn_blocking(move || {
+                let out = deflate_sync(&mut z, json.as_bytes());
+                (z, out)
+            })
+            .await
+            {
+                Ok((z, out)) => {
+                    packer.stream = Some(z);
+                    out
+                }
+                Err(_) => return false,
+            }
+        } else {
+            let out = deflate_sync(&mut z, json.as_bytes());
+            packer.stream = Some(z);
+            out
+        };
+        let Some(out) = out else {
+            return false;
+        };
+        for message in pack_messages(&out, PACK_FLAG_STREAM) {
+            if sender.send(Message::Binary(message.into())).await.is_err() {
+                return false;
+            }
+        }
+        return true;
+    }
+    if packer.mode == WireMode::Plain || json.len() < PACK_MIN_BYTES {
         return sender.send(Message::Text(json.into())).await.is_ok();
     }
     let gz = if json.len() >= PACK_BLOCKING_BYTES {
@@ -770,7 +887,7 @@ where
         return sender.send(Message::Text(json.into())).await.is_ok();
     };
     drop(json);
-    for message in pack_messages(&gz) {
+    for message in pack_messages(&gz, PACK_FLAG_GZIP) {
         if sender.send(Message::Binary(message.into())).await.is_err() {
             return false;
         }
@@ -778,13 +895,13 @@ where
     true
 }
 
-fn pack_messages(gz: &[u8]) -> Vec<Vec<u8>> {
+fn pack_messages(gz: &[u8], kind: u8) -> Vec<Vec<u8>> {
     let count = gz.len().div_ceil(PACK_CHUNK_BYTES).max(1);
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let chunk =
             &gz[(i * PACK_CHUNK_BYTES).min(gz.len())..((i + 1) * PACK_CHUNK_BYTES).min(gz.len())];
-        let mut flag = PACK_FLAG_BASE | PACK_FLAG_GZIP;
+        let mut flag = PACK_FLAG_BASE | kind;
         if i + 1 == count {
             flag |= PACK_FLAG_FINAL;
         }
