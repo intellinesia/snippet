@@ -576,7 +576,7 @@ fn thread_page(
 
 #[derive(Deserialize)]
 struct SendAgentMessageArgs {
-    recipient_agent_id: String,
+    to: String,
     #[serde(default)]
     body: String,
     #[serde(default)]
@@ -647,7 +647,7 @@ impl Tool for SendAgentMessage {
             description: "Reply to a message or contact an agent. For a session-origin message the recipient is its exact `reply_to` value (`session:<id>`); `human` is the user, otherwise an agent id or `task:<id>`. This is conversation only: it cannot create work, transfer ownership or authorise workspace changes (`post_task_coordination` posts task updates). `urgent` interrupts the recipient. reaction acknowledges the message in reply_to without words (check: done or agreed, eyes: seen and on it, thumbs_up, question: unclear, thinking); only a desk's reply to `human` quotes it.".into(),
             input_schema: schema(
                 json!({
-                    "recipient_agent_id":{"type":"string","description":"agent id, `task:<id>`, `session:<id>` or `human`"},
+                    "to":{"type":"string","description":"agent id, `task:<id>`, `session:<id>` or `human`"},
                     "body":{"type":"string"},
                     "idempotency_key":{"type":"string"},
                     "kind":{"type":"string","enum":["note","question","status","handoff_note","blocker","result","interrupt"]},
@@ -656,7 +656,7 @@ impl Tool for SendAgentMessage {
                     "reaction":{"type":"string","enum":["check","eyes","thumbs_up","question","thinking"]},
                     "forward":{"type":"string","description":"event id of a chat message to quote under your body as context"}
                 }),
-                &["recipient_agent_id"],
+                &["to"],
             ),
         }
     }
@@ -664,9 +664,9 @@ impl Tool for SendAgentMessage {
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: SendAgentMessageArgs =
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let recipient = bare_address(&args.recipient_agent_id);
+        let recipient = bare_address(&args.to);
         if recipient.is_empty() {
-            return Err(ToolError::msg("recipient_agent_id must not be empty"));
+            return Err(ToolError::msg("to must not be empty"));
         }
         let (reply_to, reaction) = crate::coordination::typed::parse_reply_and_reaction(
             args.reply_to.as_deref(),
@@ -963,7 +963,7 @@ impl Tool for SendAgentMessage {
 
 #[derive(Deserialize)]
 struct ReadAgentThreadArgs {
-    peer_agent_id: String,
+    peer: String,
     #[serde(default)]
     after_sequence: Option<u64>,
     #[serde(default)]
@@ -980,11 +980,11 @@ impl Tool for ReadAgentThread {
             description: "Read your direct conversation with one agent — or with `human`/`local` for the user — oldest first. Omit after_sequence for the most recent messages; pass it to page forward. The wake message already includes the recent history. For group threads, task rooms and any thread by id, use read_chat.".into(),
             input_schema: schema(
                 json!({
-                    "peer_agent_id":{"type":"string"},
+                    "peer":{"type":"string","description":"peer agent id or `human`"},
                     "after_sequence":{"type":"integer","minimum":0},
                     "limit":{"type":"integer","minimum":1,"maximum":100}
                 }),
-                &["peer_agent_id"],
+                &["peer"],
             ),
         }
     }
@@ -992,9 +992,9 @@ impl Tool for ReadAgentThread {
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let args: ReadAgentThreadArgs =
             serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
-        let peer = args.peer_agent_id.trim();
+        let peer = args.peer.trim();
         if peer.is_empty() {
-            return Err(ToolError::msg("peer_agent_id must not be empty"));
+            return Err(ToolError::msg("peer must not be empty"));
         }
         let (kind, id) = actor(ctx)?;
         let (peer_kind, peer_id) = match peer {
@@ -3597,7 +3597,7 @@ mod tests {
         let first = SendAgentMessage
             .execute(
                 &ctx,
-                json!({"recipient_agent_id": "peer", "body": "can you verify?"}),
+                json!({"to": "peer", "body": "can you verify?"}),
             )
             .await
             .unwrap();
@@ -3610,14 +3610,14 @@ mod tests {
             SendAgentMessage
                 .execute(
                     &ctx,
-                    json!({"recipient_agent_id": "peer", "reaction": "eyes"})
+                    json!({"to": "peer", "reaction": "eyes"})
                 )
                 .await
                 .is_err()
         );
         assert!(
             SendAgentMessage
-                .execute(&ctx, json!({"recipient_agent_id": "peer", "body": ""}))
+                .execute(&ctx, json!({"to": "peer", "body": ""}))
                 .await
                 .is_err()
         );
@@ -3626,7 +3626,7 @@ mod tests {
             .execute(
                 &ctx,
                 json!({
-                    "recipient_agent_id": "peer",
+                    "to": "peer",
                     "reply_to": target_id,
                     "reaction": "eyes",
                     "body": "ignored text",
@@ -3639,7 +3639,7 @@ mod tests {
             .execute(
                 &ctx,
                 json!({
-                    "recipient_agent_id": "peer",
+                    "to": "peer",
                     "reply_to": target_id,
                     "body": "all set",
                 }),
@@ -3683,7 +3683,7 @@ mod tests {
             SendAgentMessage
                 .execute(
                     &ctx,
-                    json!({"recipient_agent_id": "human", "reply_to": quote, "body": "on it"}),
+                    json!({"to": "human", "reply_to": quote, "body": "on it"}),
                 )
                 .await
                 .unwrap();
@@ -3737,7 +3737,7 @@ mod tests {
             .execute(
                 &outsider_ctx,
                 json!({
-                    "recipient_agent_id": "b",
+                    "to": "b",
                     "forward": orig.event_id,
                     "body": "leak",
                 }),
@@ -3751,7 +3751,7 @@ mod tests {
             .execute(
                 &a_ctx,
                 json!({
-                    "recipient_agent_id": "b",
+                    "to": "b",
                     "forward": orig.event_id,
                     "body": "please check",
                 }),
@@ -3808,7 +3808,7 @@ mod tests {
             .execute(
                 &a_ctx,
                 json!({
-                    "recipient_agent_id": "task:t-fwd",
+                    "to": "task:t-fwd",
                     "forward": orig.event_id,
                     "body": "on your task",
                 }),
@@ -3857,7 +3857,7 @@ mod tests {
             .execute(
                 &a_ctx,
                 json!({
-                    "recipient_agent_id": "task:t-fwd",
+                    "to": "task:t-fwd",
                     "forward": room_post.event_id,
                     "body": "from room",
                 }),

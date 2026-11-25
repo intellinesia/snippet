@@ -119,11 +119,12 @@ impl FrameRenderer for StubRenderer {
         height: u32,
         scale: f32,
     ) -> Result<Rendered, RenderError> {
-        if !scale.is_finite() || !(MIN_RENDER_SCALE..=MAX_RENDER_SCALE).contains(&scale) {
+        if !scale.is_finite() {
             return Err(RenderError::Layout(format!(
-                "scale must be between {MIN_RENDER_SCALE} and {MAX_RENDER_SCALE}"
+                "scale must be a finite number between {MIN_RENDER_SCALE} and {MAX_RENDER_SCALE}"
             )));
         }
+        let scale = scale.clamp(MIN_RENDER_SCALE, MAX_RENDER_SCALE);
         let pw = ((width.max(1) as f64) * (scale as f64)).round();
         let ph = ((height.max(1) as f64) * (scale as f64)).round();
         if pw < 1.0

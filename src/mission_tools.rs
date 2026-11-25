@@ -4237,20 +4237,26 @@ fn report_text(args: &ReportArgs, status: &TaskStatus, is_mc: bool) -> Result<St
         ("Done", args.done.trim()),
         ("How", args.how.trim()),
     ];
-    if parts.iter().all(|(_, text)| text.is_empty()) && (is_mc || *status != TaskStatus::Done) {
-        let summary = args.summary.trim();
+    let summary = args.summary.trim();
+    if parts.iter().all(|(_, text)| text.is_empty()) {
         if summary.is_empty() {
             return Err(ToolError::msg(
-                "say what happened: blocked and failed reports need a summary",
+                "say what happened: include `summary` (or `scope`, `done`, `how`)",
             ));
         }
         return Ok(summary.to_string());
     }
-    if let Some((label, _)) = parts.iter().find(|(_, text)| text.is_empty()) {
-        return Err(ToolError::msg(format!(
-            "report refused: `{}` is missing. A done report needs scope, done and how, a sentence or two each.",
-            label.to_lowercase()
-        )));
+    let _ = is_mc;
+    let non_empty: Vec<String> = parts
+        .iter()
+        .filter(|(_, text)| !text.is_empty())
+        .map(|(label, text)| format!("{label}: {text}"))
+        .collect();
+    if !summary.is_empty() && non_empty.len() < 3 {
+        return Ok(format!("{}\nSummary: {summary}", non_empty.join("\n")));
+    }
+    if non_empty.len() < 3 && *status == TaskStatus::Done {
+        return Ok(non_empty.join("\n"));
     }
     Ok(parts
         .iter()

@@ -236,7 +236,7 @@ fn sent_to_human_ok(
                 .and_then(|v| v.as_str())
                 .is_none_or(|r| r.trim().is_empty())
             && resolved_args
-                .get("recipient_agent_id")
+                .get("to")
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .is_some_and(|to| {
@@ -2310,7 +2310,7 @@ mod tests {
         vec![
             E::ToolCall {
                 tool_name: "send_agent_message".into(),
-                arguments: serde_json::json!({"recipient_agent_id": to, "body": "x"}),
+                arguments: serde_json::json!({"to": to, "body": "x"}),
             },
             E::ToolResult {
                 tool_name: "send_agent_message".into(),
@@ -3734,7 +3734,7 @@ mod tests {
             });
             state.events.push(E::ToolCall {
                 tool_name: "message".into(),
-                arguments: json!({"action": "send", "recipient_agent_id": to, "body": "done"}),
+                arguments: json!({"action": "send", "to": to, "body": "done"}),
             });
             state.events.push(E::ToolResult {
                 tool_name: "message".into(),

@@ -809,11 +809,11 @@ mod tests {
             .with_store_path(dir.path().join("snippet.db"));
         let report = |how: &str| json!({"task_id": "rv1", "status": "done", "scope": "fix a", "done": "all of it", "how": how});
         let refused = crate::mission_tools::ReportMissionTask
-            .execute(&worker, report(" "))
+            .execute(&worker, json!({"task_id": "rv1", "status": "done"}))
             .await
             .unwrap_err()
             .to_string();
-        assert!(refused.contains("`how` is missing"), "{refused}");
+        assert!(refused.contains("say what happened"), "{refused}");
         let held = crate::mission_tools::ReportMissionTask
             .execute(&worker, report("ran the tests"))
             .await

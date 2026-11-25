@@ -169,8 +169,10 @@ fn annotate(advertised: &mut [NativeToolDefinition], all: &[NativeToolDefinition
         names.push("fs.{read,write,replace,exists,list}".into());
     }
     if let Some(code) = advertised.iter_mut().find(|d| d.name == "code") {
-        code.description
-            .push_str(&format!("\nFunctions in scripts: {}.", names.join(", ")));
+        code.description.push_str(&format!(
+            "\nFunctions ONLY inside `code` scripts (NOT direct MCP tools — calling them directly fails): {}. Passing `code` without `action` defaults to `action: \"run\"`.",
+            names.join(", ")
+        ));
     }
 }
 
@@ -1009,7 +1011,7 @@ pub fn switch_notice(
         crate::config::ToolMode::Code => {
             let names: Vec<&str> = direct_tools.iter().map(|d| d.name.as_str()).collect();
             format!(
-                "Tool mode switched to code mode. Direct tools now available: {}. All other tools are functions inside `code.run` scripts (with `Promise.all` concurrency and untruncated `fs.{{read,write,replace,exists,list}}` helpers). Call `bash`, `change_files` and `view_image` directly for single steps, file edits or standalone images; use `code.run` to batch multi-step workflows, loops or filtered output.",
+                "Tool mode switched to code mode. Direct tools now available: {}. Every other surface (`message`, `task`, `read`, `wake`, `delegate`, `web`, `present`, `canvas`, etc.) is ONLY callable inside `code` scripts — calling them directly as MCP tools will fail. Inside `code` scripts you also have `Promise.all` concurrency and untruncated `fs.{{read,write,replace,exists,list}}` helpers. Call `bash`, `change_files` and `view_image` directly for single steps, file edits or standalone images.",
                 names.join(", ")
             )
         }

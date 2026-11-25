@@ -609,11 +609,28 @@ pub fn lower(name: &str, args: &Value) -> Result<Option<(String, Value)>, String
             valid.join(", ")
         ));
     };
-    let Some(action) = map.get("action").and_then(Value::as_str) else {
-        return Err(format!(
-            "`{name}` requires `action` (one of: {}).",
-            valid.join(", ")
-        ));
+    let action = match map.get("action").and_then(Value::as_str) {
+        Some(a) => a,
+        None if name == "code" => {
+            if map.contains_key("run_id") {
+                "resume"
+            } else if map.contains_key("code") {
+                "run"
+            } else if map.contains_key("name") {
+                "describe"
+            } else {
+                return Err(format!(
+                    "`{name}` requires `action` (one of: {}).",
+                    valid.join(", ")
+                ));
+            }
+        }
+        None => {
+            return Err(format!(
+                "`{name}` requires `action` (one of: {}).",
+                valid.join(", ")
+            ));
+        }
     };
     let Some(act) = surface.acts.iter().find(|a| a.action == action) else {
         return Err(format!(
@@ -656,11 +673,28 @@ pub fn lower_for_advertised(
             allowed.join(", ")
         ));
     };
-    let Some(action) = map.get("action").and_then(Value::as_str) else {
-        return Err(format!(
-            "`{name}` requires `action` (one of: {}).",
-            allowed.join(", ")
-        ));
+    let action = match map.get("action").and_then(Value::as_str) {
+        Some(a) => a,
+        None if name == "code" => {
+            if map.contains_key("run_id") {
+                "resume"
+            } else if map.contains_key("code") {
+                "run"
+            } else if map.contains_key("name") {
+                "describe"
+            } else {
+                return Err(format!(
+                    "`{name}` requires `action` (one of: {}).",
+                    allowed.join(", ")
+                ));
+            }
+        }
+        None => {
+            return Err(format!(
+                "`{name}` requires `action` (one of: {}).",
+                allowed.join(", ")
+            ));
+        }
     };
     if !allowed.is_empty() && !allowed.contains(&action) {
         return Err(format!(

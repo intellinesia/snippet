@@ -82,12 +82,13 @@ pub fn canvas_id_for_workspace(workspace: &Path) -> String {
 }
 
 pub fn normalize_scale(scale: f32) -> Result<(f32, u32), CanvasError> {
-    if !scale.is_finite() || !(MIN_RENDER_SCALE..=MAX_RENDER_SCALE).contains(&scale) {
+    if !scale.is_finite() {
         return Err(CanvasError::InvalidArgument(format!(
-            "scale must be between {MIN_RENDER_SCALE} and {MAX_RENDER_SCALE}"
+            "scale must be a finite number between {MIN_RENDER_SCALE} and {MAX_RENDER_SCALE}"
         )));
     }
-    let millis = (scale * 1000.0).round() as u32;
+    let clamped = scale.clamp(MIN_RENDER_SCALE, MAX_RENDER_SCALE);
+    let millis = (clamped * 1000.0).round() as u32;
     let millis = millis.clamp(MIN_SCALE_MILLIS, MAX_SCALE_MILLIS);
     Ok((millis as f32 / 1000.0, millis))
 }
