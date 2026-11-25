@@ -584,6 +584,12 @@ pub(crate) struct AttachQuery {
     pub(crate) session: String,
     #[serde(default)]
     pub(crate) stream_delta: Option<String>,
+    #[serde(default)]
+    pub(crate) enc: Option<String>,
+    #[serde(default)]
+    pub(crate) from: Option<usize>,
+    #[serde(default)]
+    pub(crate) at: Option<i64>,
 }
 
 #[derive(Deserialize)]

@@ -88,6 +88,8 @@ pub(crate) async fn attach_ws(
 ) -> Response {
     let on = |v: &Option<String>| v.as_deref().is_some_and(|v| v != "0" && v != "false");
     let stream_delta = on(&q.stream_delta);
+    let packed = q.enc.as_deref() == Some("gzip");
+    let resume = q.from.zip(q.at).filter(|(from, _)| *from > 0);
     if crate::session::is_lane_session_id(&q.session) {
         let Some(state_path) = state_path_for_id(&q.session)
             .filter(|path| crate::session::read_session_meta(path).is_some())
@@ -109,6 +111,8 @@ pub(crate) async fn attach_ws(
                 AttachOptions {
                     stream_delta,
                     read_only: true,
+                    packed,
+                    resume,
                 },
             )
         });
@@ -132,6 +136,8 @@ pub(crate) async fn attach_ws(
                     AttachOptions {
                         stream_delta,
                         read_only: false,
+                        packed,
+                        resume,
                     },
                 )
             })
@@ -144,6 +150,8 @@ pub(crate) async fn attach_ws(
 struct AttachOptions {
     stream_delta: bool,
     read_only: bool,
+    packed: bool,
+    resume: Option<(usize, i64)>,
 }
 
 async fn handle_ws(
@@ -158,6 +166,8 @@ async fn handle_ws(
     let AttachOptions {
         stream_delta,
         read_only,
+        packed,
+        resume: resume_request,
     } = options;
     let (mut sender, mut receiver) = socket.split();
     let (history_tx, history_rx) = tokio::sync::mpsc::unbounded_channel::<(usize, Option<usize>)>();
@@ -190,6 +200,8 @@ async fn handle_ws(
         let mut last_events: Vec<crate::harness::HarnessEvent> = Vec::new();
         let mut last_event_offset = 0usize;
         let mut last_lanes_json: Option<String> = None;
+        let mut last_lane_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         let mut last_stream_fp: u64 = 0;
         let mut sent_text = String::new();
         let mut sent_thinking = String::new();
@@ -202,6 +214,7 @@ async fn handle_ws(
         let mut last_counts_pr_rev: u64 = 0;
         let mut last_counts_check: Option<tokio::time::Instant> = None;
         let mut workspace_dir: Option<PathBuf> = None;
+        let mut resume_request = resume_request;
         let mut last_frame_sent = tokio::time::Instant::now();
         let load_initial = |path: &Path| {
             let path = path.to_path_buf();
@@ -258,7 +271,16 @@ async fn handle_ws(
                 && (state_changed || counts_changed)
             {
                 let resume = !last_events.is_empty();
-                let loaded = if resume {
+                let resumed = match resume_request.take() {
+                    Some((from, at)) => resume_tail(&state_path, from, at).await,
+                    None => None,
+                };
+                let was_resumed = resumed.is_some();
+                let loaded = if let Some((state, base, from)) = resumed {
+                    last_events = state.events[..from - base].to_vec();
+                    last_event_offset = base;
+                    Some((state, true, base))
+                } else if resume {
                     let path = state_path.clone();
                     let from = last_event_offset;
                     let tail =
@@ -338,6 +360,19 @@ async fn handle_ws(
                                 crate::lanes::attach_recent(lane_json, record);
                             }
                         }
+                        let lane_map: std::collections::HashMap<String, String> = v
+                            .get("lanes")
+                            .and_then(|l| l.as_array())
+                            .map(|lanes| {
+                                lanes
+                                    .iter()
+                                    .filter_map(|lane| {
+                                        let id = lane.get("id")?.as_str()?.to_string();
+                                        Some((id, lane.to_string()))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                         let lanes_json = v
                             .get("lanes")
                             .map(|l| l.to_string())
@@ -359,8 +394,29 @@ async fn handle_ws(
                                 o.insert("new_events".into(), added);
                                 o.insert("event_count".into(), serde_json::json!(events.len()));
                                 o.insert("total_events".into(), serde_json::json!(total_events));
+                                if was_resumed {
+                                    o.insert("resumed".into(), serde_json::json!(true));
+                                }
                                 if last_lanes_json.as_deref() == Some(lanes_json.as_str()) {
                                     o.remove("lanes");
+                                } else if packed
+                                    && !last_lane_map.is_empty()
+                                    && let Some(serde_json::Value::Array(lanes)) = o.remove("lanes")
+                                {
+                                    let ids: Vec<serde_json::Value> = lanes
+                                        .iter()
+                                        .map(|lane| lane.get("id").cloned().unwrap_or_default())
+                                        .collect();
+                                    let patch: Vec<serde_json::Value> = lanes
+                                        .into_iter()
+                                        .filter(|lane| {
+                                            let id = lane.get("id").and_then(|i| i.as_str());
+                                            id.and_then(|id| last_lane_map.get(id))
+                                                != Some(&lane.to_string())
+                                        })
+                                        .collect();
+                                    o.insert("lanes_patch".into(), serde_json::json!(patch));
+                                    o.insert("lane_ids".into(), serde_json::json!(ids));
                                 } else if !o.contains_key("lanes") {
                                     o.insert("lanes".into(), serde_json::json!([]));
                                 }
@@ -378,9 +434,10 @@ async fn handle_ws(
                             }
                         }
                         last_lanes_json = Some(lanes_json);
+                        last_lane_map = lane_map;
                         last_queue_revision = queue_revision;
                         if let Ok(json) = serde_json::to_string(&v) {
-                            if sender.send(Message::Text(json.into())).await.is_err() {
+                            if !send_wire(&mut sender, json, packed).await {
                                 break;
                             }
                             last_frame_sent = tokio::time::Instant::now();
@@ -423,7 +480,7 @@ async fn handle_ws(
                     sent_text = snap;
                     sent_thinking = think;
                     if let Ok(json) = serde_json::to_string(&frame)
-                        && sender.send(Message::Text(json.into())).await.is_err()
+                        && !send_wire(&mut sender, json, packed).await
                     {
                         break;
                     }
@@ -455,7 +512,7 @@ async fn handle_ws(
                         "alive": alive,
                     });
                     if let Ok(json) = serde_json::to_string(&frame)
-                        && sender.send(Message::Text(json.into())).await.is_err()
+                        && !send_wire(&mut sender, json, packed).await
                     {
                         break 'attach;
                     }
@@ -507,11 +564,7 @@ async fn handle_ws(
                         "end": end,
                         "has_older": has_older,
                     });
-                    if sender
-                        .send(Message::Text(frame.to_string().into()))
-                        .await
-                        .is_err()
-                    {
+                    if !send_wire(&mut sender, frame.to_string(), packed).await {
                         break;
                     }
                     last_frame_sent = tokio::time::Instant::now();
@@ -679,6 +732,89 @@ async fn handle_ws(
 }
 
 const HEARTBEAT: Duration = Duration::from_secs(5);
+const RESUME_CONTEXT_EVENTS: usize = 64;
+const PACK_MIN_BYTES: usize = 1024;
+const PACK_CHUNK_BYTES: usize = 16 * 1024;
+const PACK_BLOCKING_BYTES: usize = 256 * 1024;
+const PACK_FLAG_BASE: u8 = 0x80;
+const PACK_FLAG_FINAL: u8 = 0x01;
+const PACK_FLAG_GZIP: u8 = 0x02;
+
+fn gzip_bytes(raw: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(
+        Vec::with_capacity(raw.len() / 4),
+        flate2::Compression::new(5),
+    );
+    enc.write_all(raw).ok()?;
+    enc.finish().ok()
+}
+
+async fn send_wire<S>(sender: &mut S, json: String, packed: bool) -> bool
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    if !packed || json.len() < PACK_MIN_BYTES {
+        return sender.send(Message::Text(json.into())).await.is_ok();
+    }
+    let gz = if json.len() >= PACK_BLOCKING_BYTES {
+        let raw = json.clone();
+        tokio::task::spawn_blocking(move || gzip_bytes(raw.as_bytes()))
+            .await
+            .ok()
+            .flatten()
+    } else {
+        gzip_bytes(json.as_bytes())
+    };
+    let Some(gz) = gz else {
+        return sender.send(Message::Text(json.into())).await.is_ok();
+    };
+    drop(json);
+    for message in pack_messages(&gz) {
+        if sender.send(Message::Binary(message.into())).await.is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+fn pack_messages(gz: &[u8]) -> Vec<Vec<u8>> {
+    let count = gz.len().div_ceil(PACK_CHUNK_BYTES).max(1);
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let chunk =
+            &gz[(i * PACK_CHUNK_BYTES).min(gz.len())..((i + 1) * PACK_CHUNK_BYTES).min(gz.len())];
+        let mut flag = PACK_FLAG_BASE | PACK_FLAG_GZIP;
+        if i + 1 == count {
+            flag |= PACK_FLAG_FINAL;
+        }
+        let mut message = Vec::with_capacity(chunk.len() + 1);
+        message.push(flag);
+        message.extend_from_slice(chunk);
+        out.push(message);
+    }
+    out
+}
+
+async fn resume_tail(
+    path: &Path,
+    from: usize,
+    at: i64,
+) -> Option<(crate::harness::HarnessState, usize, usize)> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let held = crate::session::read_event_times(&path, from - 1, 1)?;
+        if held.first().copied().flatten() != Some(at) {
+            return None;
+        }
+        let base = from.saturating_sub(RESUME_CONTEXT_EVENTS);
+        let (state, count) = read_session_state_tail(&path, base)?;
+        (count >= from && base + state.events.len() == count).then_some((state, base, from))
+    })
+    .await
+    .ok()
+    .flatten()
+}
 // Backstop for writers that bypass the change signals (e.g. another process).
 const PUSH_FALLBACK_TICK: Duration = Duration::from_secs(1);
 const COUNTS_TTL_CHECK: Duration = Duration::from_secs(30);
