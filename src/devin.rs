@@ -1,10 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 
 use serde_json::{Value, json};
+#[cfg(not(unix))]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin};
+use tokio::process::Child;
+#[cfg(not(unix))]
+use tokio::process::ChildStdin;
 
 pub const SESSION_ENV: &str = "SNIPPET_DEVIN_MCP_URL";
 pub const MCP_SERVER_NAME: &str = "snippet";
@@ -639,10 +643,13 @@ pub fn quota_exhausted_hint(event: &Value) -> Option<i64> {
 
 struct Login {
     child: Child,
+    #[cfg(unix)]
+    pty: std::fs::File,
+    #[cfg(not(unix))]
     stdin: Option<ChildStdin>,
     dir: PathBuf,
     label: String,
-    lines: Arc<std::sync::Mutex<Vec<String>>>,
+    lines: Arc<std::sync::Mutex<VecDeque<String>>>,
 }
 
 static LOGINS: LazyLock<tokio::sync::Mutex<HashMap<String, Login>>> =
@@ -768,58 +775,127 @@ async fn begin_login_with(
         .env("XDG_DATA_HOME", &data)
         .env("XDG_CACHE_HOME", &cache)
         .env_remove("WINDSURF_API_KEY")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("couldn't start devin auth login: {e}"))?;
-    let stdin = child.stdin.take().ok_or("devin login stdin unavailable")?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("devin login stdout unavailable")?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or("devin login stderr unavailable")?;
+    let collected = Arc::new(std::sync::Mutex::new(VecDeque::<String>::new()));
 
-    let collected = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let stderr_lines = Arc::clone(&collected);
-    tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if let Ok(mut buf) = stderr_lines.lock()
-                && buf.len() < 64
-            {
-                buf.push(line);
-            }
+    #[cfg(unix)]
+    let (mut child, pty, url_rx) = {
+        let (master, slave) = open_login_pty()?;
+        let slave_stdout = slave
+            .try_clone()
+            .map_err(|e| format!("clone pty slave: {e}"))?;
+        let slave_stderr = slave
+            .try_clone()
+            .map_err(|e| format!("clone pty slave: {e}"))?;
+        let master_reader = master
+            .try_clone()
+            .map_err(|e| format!("clone pty master: {e}"))?;
+        let master_reply = master
+            .try_clone()
+            .map_err(|e| format!("clone pty master: {e}"))?;
+
+        cmd.env("TERM", "xterm-256color")
+            .stdin(std::process::Stdio::from(slave))
+            .stdout(std::process::Stdio::from(slave_stdout))
+            .stderr(std::process::Stdio::from(slave_stderr));
+
+        // Devin's manual-token prompt requires a controlling TTY; without one it exits immediately.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
         }
-    });
 
-    let mut out_reader = BufReader::new(stdout).lines();
-    let url_res = tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        while let Ok(Some(line)) = out_reader.next_line().await {
-            if let Some(url) = extract_login_url(&line) {
-                return Ok(url);
-            }
-            if let Ok(mut buf) = collected.lock()
-                && buf.len() < 64
-            {
-                buf.push(line);
-            }
-        }
-        Err("Devin login exited before printing a sign-in link".to_string())
-    })
-    .await;
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("couldn't start devin auth login: {e}"))?;
+        // Drop parent copies of the slave fds so reads on master observe EOF/EIO when child exits.
+        drop(cmd);
 
-    let url = match url_res {
-        Ok(Ok(url)) => url,
-        Ok(Err(msg)) => {
+        let (url_tx, url_rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+        let reader_lines = Arc::clone(&collected);
+        tokio::task::spawn_blocking(move || {
+            drain_login_pty(
+                std::fs::File::from(master_reader),
+                std::fs::File::from(master_reply),
+                reader_lines,
+                url_tx,
+            );
+        });
+
+        (child, std::fs::File::from(master), url_rx)
+    };
+
+    #[cfg(not(unix))]
+    let (mut child, stdin, url_rx) = {
+        cmd.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("couldn't start devin auth login: {e}"))?;
+        let stdin = child.stdin.take().ok_or("devin login stdin unavailable")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("devin login stdout unavailable")?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or("devin login stderr unavailable")?;
+
+        let stderr_lines = Arc::clone(&collected);
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                push_login_line(&stderr_lines, line);
+            }
+        });
+
+        let (url_tx, url_rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+        let stdout_lines = Arc::clone(&collected);
+        tokio::spawn(async move {
+            let mut tx = Some(url_tx);
+            let mut out_reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = out_reader.next_line().await {
+                if tx.is_some()
+                    && let Some(url) = extract_login_url(&line)
+                    && let Some(sender) = tx.take()
+                {
+                    let _ = sender.send(Ok(url));
+                }
+                push_login_line(&stdout_lines, line);
+            }
+            if let Some(sender) = tx.take() {
+                let _ = sender.send(Err(
+                    "Devin login exited before printing a sign-in link".to_string()
+                ));
+            }
+        });
+
+        (child, stdin, url_rx)
+    };
+
+    let url = match tokio::time::timeout(std::time::Duration::from_secs(20), url_rx).await {
+        Ok(Ok(Ok(url))) => url,
+        Ok(Ok(Err(msg))) => {
             let _ = child.kill().await;
             let detail = last_clean_line(&collected).unwrap_or(msg);
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(detail);
+        }
+        Ok(Err(_)) => {
+            let _ = child.kill().await;
+            let detail = last_clean_line(&collected)
+                .unwrap_or_else(|| "Devin login exited before printing a sign-in link".to_string());
             let _ = std::fs::remove_dir_all(&dir);
             return Err(detail);
         }
@@ -830,27 +906,17 @@ async fn begin_login_with(
         }
     };
 
-    let stdout_lines = Arc::clone(&collected);
-    tokio::spawn(async move {
-        while let Ok(Some(line)) = out_reader.next_line().await {
-            if let Ok(mut buf) = stdout_lines.lock()
-                && buf.len() < 64
-            {
-                buf.push(line);
-            }
-        }
-    });
-
-    if let Some(mut displaced) = LOGINS.lock().await.insert(
-        id.to_string(),
-        Login {
-            child,
-            stdin: Some(stdin),
-            dir: dir.clone(),
-            label: label.to_string(),
-            lines: collected,
-        },
-    ) {
+    let entry = Login {
+        child,
+        #[cfg(unix)]
+        pty,
+        #[cfg(not(unix))]
+        stdin: Some(stdin),
+        dir: dir.clone(),
+        label: label.to_string(),
+        lines: collected,
+    };
+    if let Some(mut displaced) = LOGINS.lock().await.insert(id.to_string(), entry) {
         let _ = displaced.child.kill().await;
         if displaced.dir != dir {
             let _ = std::fs::remove_dir_all(&displaced.dir);
@@ -876,7 +942,122 @@ async fn begin_login_with(
     Ok(url)
 }
 
-fn last_clean_line(lines: &std::sync::Mutex<Vec<String>>) -> Option<String> {
+fn push_login_line(lines: &std::sync::Mutex<VecDeque<String>>, line: String) {
+    if let Ok(mut buf) = lines.lock() {
+        if buf.len() >= 64 {
+            buf.pop_front();
+        }
+        buf.push_back(line);
+    }
+}
+
+#[cfg(unix)]
+fn open_login_pty() -> Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd), String> {
+    use std::os::fd::FromRawFd;
+
+    let mut master_fd: libc::c_int = -1;
+    let mut slave_fd: libc::c_int = -1;
+    let mut ws = libc::winsize {
+        ws_row: 24,
+        ws_col: 200,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // macOS libc::openpty takes *mut winsize; Linux accepts *const.
+    #[allow(clippy::unnecessary_mut_passed)]
+    let rc = unsafe {
+        libc::openpty(
+            &mut master_fd,
+            &mut slave_fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut ws,
+        )
+    };
+    if rc != 0 {
+        return Err(format!(
+            "couldn't allocate pty for devin login: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let master = unsafe { std::os::fd::OwnedFd::from_raw_fd(master_fd) };
+    let slave = unsafe { std::os::fd::OwnedFd::from_raw_fd(slave_fd) };
+    unsafe {
+        let flags = libc::fcntl(master_fd, libc::F_GETFD);
+        if flags >= 0 {
+            libc::fcntl(master_fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+        }
+    }
+    Ok((master, slave))
+}
+
+#[cfg(unix)]
+fn drain_login_pty(
+    mut reader: std::fs::File,
+    mut reply: std::fs::File,
+    lines: Arc<std::sync::Mutex<VecDeque<String>>>,
+    url_tx: tokio::sync::oneshot::Sender<Result<String, String>>,
+) {
+    let mut tx = Some(url_tx);
+    let mut buf = [0u8; 4096];
+    let mut partial = Vec::<u8>::new();
+
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let chunk = &buf[..n];
+                // Answer DA/DSR probes so the interactive prompt does not stall waiting for a terminal reply.
+                if chunk.windows(3).any(|w| w == b"\x1b[c") {
+                    let _ = reply.write_all(b"\x1b[?1;2c");
+                }
+                if chunk.windows(4).any(|w| w == b"\x1b[6n") {
+                    let _ = reply.write_all(b"\x1b[1;1R");
+                }
+                for &b in chunk {
+                    if b == b'\n' {
+                        let line = String::from_utf8_lossy(&partial)
+                            .trim_end_matches('\r')
+                            .to_string();
+                        partial.clear();
+                        if tx.is_some()
+                            && let Some(url) = extract_login_url(&line)
+                            && let Some(sender) = tx.take()
+                        {
+                            let _ = sender.send(Ok(url));
+                        }
+                        push_login_line(&lines, line);
+                    } else {
+                        partial.push(b);
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+
+    if !partial.is_empty() {
+        let line = String::from_utf8_lossy(&partial)
+            .trim_end_matches('\r')
+            .to_string();
+        if tx.is_some()
+            && let Some(url) = extract_login_url(&line)
+            && let Some(sender) = tx.take()
+        {
+            let _ = sender.send(Ok(url));
+        }
+        push_login_line(&lines, line);
+    }
+
+    if let Some(sender) = tx.take() {
+        let _ = sender.send(Err(
+            "Devin login exited before printing a sign-in link".to_string()
+        ));
+    }
+}
+
+fn last_clean_line(lines: &std::sync::Mutex<VecDeque<String>>) -> Option<String> {
     let guard = lines.lock().ok()?;
     guard
         .iter()
@@ -896,17 +1077,51 @@ pub async fn complete_login(id: &str, code: &str) -> Result<(String, String), St
 }
 
 async fn finish_login(login: &mut Login, code: &str) -> Result<(String, String), String> {
-    let mut stdin = login
-        .stdin
-        .take()
-        .ok_or_else(|| "devin login stdin unavailable".to_string())?;
-    let payload = format!("{}\n", code.trim());
-    stdin
-        .write_all(payload.as_bytes())
+    if let Ok(Some(_)) = login.child.try_wait() {
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let msg = last_clean_line(&login.lines).unwrap_or_else(|| {
+            "Devin login exited before the code was sent; start again".to_string()
+        });
+        return Err(msg);
+    }
+
+    #[cfg(unix)]
+    {
+        let mut writer = login
+            .pty
+            .try_clone()
+            .map_err(|e| format!("couldn't clone Devin login pty: {e}"))?;
+        let payload = format!("{}\r", code.trim());
+        let write_res = tokio::task::spawn_blocking(move || {
+            writer.write_all(payload.as_bytes())?;
+            writer.flush()
+        })
         .await
         .map_err(|e| format!("couldn't send code to Devin login: {e}"))?;
-    let _ = stdin.flush().await;
-    drop(stdin);
+        if let Err(e) = write_res {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            let msg = last_clean_line(&login.lines)
+                .unwrap_or_else(|| format!("couldn't send code to Devin login: {e}"));
+            return Err(msg);
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let mut stdin = login
+            .stdin
+            .take()
+            .ok_or_else(|| "devin login stdin unavailable".to_string())?;
+        let payload = format!("{}\n", code.trim());
+        if let Err(e) = stdin.write_all(payload.as_bytes()).await {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            let msg = last_clean_line(&login.lines)
+                .unwrap_or_else(|| format!("couldn't send code to Devin login: {e}"));
+            return Err(msg);
+        }
+        let _ = stdin.flush().await;
+        drop(stdin);
+    }
 
     let status =
         match tokio::time::timeout(std::time::Duration::from_secs(60), login.child.wait()).await {
@@ -1213,5 +1428,58 @@ exit 1
         let err = complete_login("slotB2", "wrong").await.unwrap_err();
         assert_eq!(err, "Error: invalid authorization code");
         assert!(!snippet_home.join("devin/login/slotB2").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn login_spawns_with_controlling_tty_and_reports_early_exit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tty_bin = tmp.path().join("tty-devin");
+        let tty_script = r#"#!/bin/sh
+printf 'Visit https://app.devin.ai/auth/cli/continue?state=ttystate to sign in.\n'
+if [ ! -t 0 ] || [ ! -t 1 ] || [ ! -r /dev/tty ]; then
+  printf 'Error: Failed to read code - user canceled\n' >&2
+  exit 1
+fi
+IFS= read -r code < /dev/tty
+if [ "$code" = "tty-code" ]; then
+  mkdir -p "$XDG_DATA_HOME/devin"
+  printf 'windsurf_api_key = "tty-token-456"\n' > "$XDG_DATA_HOME/devin/credentials.toml"
+  exit 0
+fi
+printf 'Error: bad tty code\n' >&2
+exit 1
+"#;
+        std::fs::write(&tty_bin, tty_script).unwrap();
+        std::fs::set_permissions(&tty_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let snippet_home = tmp.path().join("snippet");
+        let url = begin_login_with(&tty_bin, &snippet_home, "slotTty1", "TTY")
+            .await
+            .unwrap();
+        assert_eq!(url, "https://app.devin.ai/auth/cli/continue?state=ttystate");
+        let (tok, label) = complete_login("slotTty1", "tty-code").await.unwrap();
+        assert_eq!(tok, "tty-token-456");
+        assert_eq!(label, "TTY");
+
+        // If the child exits after printing the link, surface its error instead of Broken pipe.
+        let exit_bin = tmp.path().join("early-exit-devin");
+        let exit_script = r#"#!/bin/sh
+printf 'Visit https://app.devin.ai/auth/cli/continue?state=earlyexit to sign in.\n'
+printf 'Error: session expired\n' >&2
+exit 1
+"#;
+        std::fs::write(&exit_bin, exit_script).unwrap();
+        std::fs::set_permissions(&exit_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        begin_login_with(&exit_bin, &snippet_home, "slotExit1", "Exit")
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        let err = complete_login("slotExit1", "any-code").await.unwrap_err();
+        assert_eq!(err, "Error: session expired");
+        assert!(!snippet_home.join("devin/login/slotExit1").exists());
     }
 }
