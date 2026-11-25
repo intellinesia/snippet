@@ -117,7 +117,6 @@ impl CodingHarness {
             updated_at: now.clone(),
             workspace: self.context.workspace_root().display().to_string(),
             title,
-            goal: None,
             compacting: false,
             turn_started_at: if matches!(status, HarnessStatus::Running) {
                 Some(now.clone())

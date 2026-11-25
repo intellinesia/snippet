@@ -1529,14 +1529,7 @@ impl Tool for PostTaskCoordination {
                 .collect::<String>();
             let now_step = now_rfc3339();
             let _ = db.touch_task_progress(&task.id, &now_step);
-            if !step_line.is_empty() {
-                let _ = db.update_task_in(&task.id, &now_step, |t| {
-                    if let Some(active) = t.work_plan.iter_mut().find(|s| s.status == "in_progress")
-                    {
-                        active.step = step_line.clone();
-                    }
-                });
-            }
+            let _ = step_line;
             out["note"] = json!(
                 "Posted to the task room. Note: a room post does not complete the task; call task.report when the work is finished."
             );
@@ -1739,8 +1732,6 @@ impl Tool for InspectTask {
             "title": task.title,
             "description": task.description,
             "status": task.status,
-            "plan": task.plan,
-            "work_plan": task.work_plan,
             "profile": task.profile,
             "session_id": task.session_id,
             "owned_paths": task.owned_paths,

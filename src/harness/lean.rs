@@ -61,7 +61,7 @@ pub(super) fn handover(
              bring back what you need with `snippet history search <words>` and `snippet history show --from <id> --to <id>` rather than guessing.",
         )
         .child_with("requests", &[("order", "oldest first")], requests)
-        .child("plan", render_plan(&state.plan))
+
         .child("lanes_running", running.join(", "))
         .child("active_watches", watches.join(", "))
         .child_opt("last_reply", last)

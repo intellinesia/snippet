@@ -582,7 +582,6 @@ fn apply_wire_frame(
                     if v.get("checkpoints").is_some() {
                         acc.checkpoints = partial.checkpoints;
                     }
-                    acc.goal = partial.goal;
                     if v.get("lanes").is_some() {
                         acc.lanes = partial.lanes;
                     }

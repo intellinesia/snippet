@@ -995,29 +995,7 @@ impl CodingHarness {
     }
 }
 
-const GOAL_IDLE_TURNS_LIMIT: usize = 2;
 
-/// Goal turns at the end of the history in which the agent made no tool call.
-fn idle_goal_turns(messages: &[HarnessMessage]) -> usize {
-    let mut idle = 0;
-    let mut acted = false;
-    for message in messages.iter().rev() {
-        match message {
-            HarnessMessage::Assistant { tool_calls, .. } if !tool_calls.is_empty() => acted = true,
-            HarnessMessage::User { content } if crate::envelope::is(content, "goal") => {
-                if acted {
-                    break;
-                }
-                idle += 1;
-                if crate::envelope::attr(content, "kind").as_deref() == Some("start") {
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    idle
-}
 
 pub(crate) fn render_lane_report(result: &LaneResult, outstanding: usize) -> String {
     let status = match result.status {

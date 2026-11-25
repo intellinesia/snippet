@@ -186,8 +186,6 @@ pub fn api_fields(store: &Store, task: &Task) -> serde_json::Map<String, Value> 
             "waived": (!s.waiver.is_empty()).then(|| s.waiver.clone()),
         }))),
     );
-    out.insert("plan_done".into(), json!(0));
-    out.insert("plan_total".into(), json!(0));
     out.insert("ledger".into(), json!(state));
     out
 }

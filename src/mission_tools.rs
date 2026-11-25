@@ -46,7 +46,6 @@ fn task_view(task: &Task) -> Value {
         "notifications": task.notifications, "updated_at": task.updated_at,
         "dispatch_failures": task.dispatch_failures,
         "profile": task.profile,
-        "work_plan": task.work_plan,
         "last_progress_at": task.last_progress_at, "expected_minutes": task.expected_minutes,
     })
 }
@@ -1671,15 +1670,6 @@ impl Tool for ViewTaskBoard {
                     "status": task.status,
                     "session_id": task.session_id,
                     "team": team,
-                    "plan": if task.work_plan.is_empty() {
-                        Value::Null
-                    } else {
-                        json!(format!(
-                            "{}/{} steps done",
-                            task.work_plan.iter().filter(|s| s.status == "done").count(),
-                            task.work_plan.len()
-                        ))
-                    },
                     "requested_by": task.created_by_id,
                     "updated_at": task.updated_at,
                 })
@@ -1885,8 +1875,6 @@ struct CreateTaskArgs {
     #[serde(default)]
     definition_of_good: Option<String>,
     #[serde(default)]
-    goal: Option<String>,
-    #[serde(default)]
     expected_minutes: Option<u32>,
     /// `start_task` desks claim their own task at filing: the roster seat is
     /// `active` in the same transaction, so the offer loop can never offer it
@@ -2088,7 +2076,9 @@ pub(crate) fn resolve_target_session(query: &str) -> Result<String, ToolError> {
     }
 }
 
-/// File one task from tool-shaped arguments; returns the tool's data (`task`, `waiting_on`, ...).
+
+
+#[cfg(test)]
 pub(crate) async fn create_task_value(ctx: &ToolContext, args: Value) -> Result<Value, ToolError> {
     let args: CreateTaskArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::msg(format!("slice arguments: {e}")))?;
@@ -2887,7 +2877,6 @@ impl Tool for FileFollowUpTask {
             read_only: true,
             audience: None,
             definition_of_good: None,
-            goal: None,
             expected_minutes: None,
             self_claim: false,
         };

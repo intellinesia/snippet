@@ -106,7 +106,6 @@ mod assistant_dedup_tests {
             updated_at: "t".into(),
             workspace: "/tmp".into(),
             title: None,
-            goal: None,
             compacting: false,
             turn_started_at: None,
             compacting_started_at: None,

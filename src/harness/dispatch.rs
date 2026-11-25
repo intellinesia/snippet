@@ -747,11 +747,7 @@ impl CodingHarness {
                     false,
                 );
             }
-            if tool_name == "update_plan" && !is_error_result(&result) {
-                stats.had_plan = true;
-                vars.turns_since_plan = 0;
-                vars.reminded.insert("plan", render_plan(&state.plan));
-            }
+
             if tool_name == "delegate_task" {
                 if result.get("status").and_then(Value::as_str) == Some("success") {
                     stats.delegations_ok += 1;

@@ -154,7 +154,7 @@ fn sections(
 
     out.push(("tasks", tasks, Some("You have no open task now.")));
 
-    out.push(("plan", render_plan(&state.plan), None));
+
 
     out.push((
         "lanes",
@@ -181,10 +181,7 @@ fn sections(
     out
 }
 
-/// Plans have been removed; kept as a no-op helper for callers.
-pub(super) fn render_plan(_plan: &[PlanStep]) -> String {
-    String::new()
-}
+
 
 fn render_lanes(state: &HarnessState) -> String {
     let running: Vec<&LaneRecord> = state

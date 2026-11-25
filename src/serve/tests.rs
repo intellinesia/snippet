@@ -326,36 +326,7 @@ fn the_task_api_exposes_ledger_acceptance_verify_mode_review_and_revision_additi
     assert_eq!(view["ledger"]["version"], 2);
 }
 
-#[test]
-fn task_json_includes_plan_done_and_plan_total_matching_plan_counts() {
-    let store = crate::store::Store::open_in_memory().unwrap();
-    let mut task = crate::coordination::Task::filed_by_human(
-        "plan1".into(),
-        "Plan task".into(),
-        "d".into(),
-        "s".into(),
-        0,
-        "2020-01-01T00:00:00Z".into(),
-    );
-    task.work_plan = vec![
-        crate::coordination::WorkStep {
-            step: "One".into(),
-            status: "done".into(),
-        },
-        crate::coordination::WorkStep {
-            step: "Two".into(),
-            status: "in_progress".into(),
-        },
-        crate::coordination::WorkStep {
-            step: "Three".into(),
-            status: "pending".into(),
-        },
-    ];
-    store.create_task(&task).unwrap();
-    let view = coordination::task_with_sub_status(&store, &task);
-    assert_eq!(view["plan_done"], 0);
-    assert_eq!(view["plan_total"], 0);
-}
+
 
 #[test]
 fn board_message_envelope_includes_bounded_history() {

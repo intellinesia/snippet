@@ -107,7 +107,6 @@ pub struct SettleFacts {
     pub settled: bool,
     pub keep_awake: bool,
     pub live_busy: bool,
-    pub has_goal: bool,
     pub has_open_task: bool,
     pub has_lanes_or_watches: bool,
     pub has_queued_input: bool,
@@ -128,9 +127,6 @@ pub fn refusal(f: &SettleFacts) -> Option<String> {
     }
     if f.live_busy || matches!(f.status.as_str(), "running" | "waiting_for_input") {
         return no("it is running or waiting for the user (question or approval pending)");
-    }
-    if f.has_goal {
-        return no("it has an ongoing goal");
     }
     if f.has_open_task {
         return no("a task assigned to it is not finished");
@@ -277,7 +273,6 @@ mod tests {
             Box::new(|f| f.live_busy = true),
             Box::new(|f| f.status = "running".into()),
             Box::new(|f| f.status = "waiting_for_input".into()),
-            Box::new(|f| f.has_goal = true),
             Box::new(|f| f.has_open_task = true),
             Box::new(|f| f.has_lanes_or_watches = true),
             Box::new(|f| f.has_queued_input = true),

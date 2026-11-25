@@ -125,17 +125,7 @@ pub fn note_tool_call(ctx: &ToolContext, tool: &str, label: String) -> Option<St
     ))
 }
 
-pub(crate) fn record_plan_progress(ctx: &ToolContext, summary: &str) {
-    let Some(session) = reporting_session(ctx) else {
-        return;
-    };
-    if let Ok(mut clocks) = CLOCKS.lock() {
-        clocks.insert(session.to_string(), Clock::new(Instant::now()));
-    }
-    if let Err(error) = record_progress(ctx, session, summary) {
-        eprintln!("progress {session}: {error}");
-    }
-}
+
 
 fn open_store(ctx: &ToolContext) -> Option<Store> {
     Store::open_cached(

@@ -116,27 +116,7 @@ fn monitor_tool() -> NativeToolDefinition {
     }
 }
 
-fn complete_goal_tool() -> NativeToolDefinition {
-    NativeToolDefinition {
-        name: "complete_goal".to_string(),
-        description: "Finish the current /goal once every part of it is done and verified; the loop then \
-            stops nudging you to continue. Pass a short `summary` of what you accomplished, which \
-            the user sees. A pause, a question or remaining work isn't a finish: keep going, or say \
-            what you need."
-            .to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "description": "A short summary of what the goal accomplished (shown to the user)."
-                }
-            },
-            "required": ["summary"],
-            "additionalProperties": false,
-        }),
-    }
-}
+
 
 /// Explicit completion tool for HEADLESS runs (delegated lanes, one-shot
 /// `run()`) — not advertised to the user-facing conversation agent. A lane ends
@@ -190,48 +170,7 @@ pub fn terminate_loop_tool() -> NativeToolDefinition {
     }
 }
 
-fn update_plan_tool() -> NativeToolDefinition {
-    NativeToolDefinition {
-        name: "update_plan".to_string(),
-        description: "Keep a short, visible plan for work with several distinct steps; the user \
-            sees it as a checklist. Send the whole list every time: short concrete steps, each \
-            `pending`, `in_progress` or `done`, with exactly one `in_progress` while you work. Mark \
-            a step done as soon as it is, in the same batch as the work, and finish with every \
-            step done or removed. Reshape the list when you learn something that \
-            changes the work (say why in `explanation`). Skip it for small tasks. Updating the \
-            plan is not progress by itself: after updating it, do the work."
-            .to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "steps": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 12,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "step": { "type": "string", "description": "A short, concrete step." },
-                            "status": { "type": "string", "enum": ["pending", "in_progress", "done"] }
-                        },
-                        "required": ["step", "status"],
-                        "additionalProperties": false
-                    }
-                },
-                "explanation": {
-                    "type": "string",
-                    "description": "Optional: why the plan changed."
-                },
-                "note": {
-                    "type": "string",
-                    "description": "What this step found or changed; written to your board."
-                }
-            },
-            "required": ["steps"],
-            "additionalProperties": false,
-        }),
-    }
-}
+
 
 fn ask_user_tool() -> NativeToolDefinition {
     NativeToolDefinition {

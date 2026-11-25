@@ -990,7 +990,7 @@ async fn open(State(d): State<Shared>, Json(req): Json<MissionOpenReq>) -> Respo
     }
 }
 
-pub(super) const WORKFLOW_PLAN: &str = "First plan: the worker has laid out how it will deliver the task. message.task in the task room reaches the worker; no reply is required.";
+
 
 pub(super) const WORKFLOW_REPORT: &str = "Task report from a worker. tasks.update (revise) sends a task back; for in_review or review_escalated, tasks.review gives the verdict.";
 
@@ -1295,28 +1295,17 @@ fn task_artifacts_block(session_id: &str, created_at: &str) -> String {
 }
 
 fn report_text(task: &Task, marker: &crate::coordination::NotificationMarker) -> String {
-    if marker.kind == "plan" {
-        crate::envelope::Envelope::new("task_plan")
-            .attr("task_id", &task.id)
-            .attr("title", &task.title)
-            .attr("session_id", &task.session_id)
-            .child("plan", &marker.message)
-            .child("instructions", WORKFLOW_PLAN)
-            .render()
-    } else {
-        let envelope = crate::envelope::Envelope::new("mission_task_report")
-            .attr("task_id", &task.id)
-            .attr("title", &task.title)
-            .attr("status", &marker.kind);
-        envelope
-            .child("summary", &marker.message)
-            .child(
-                "artifacts",
-                task_artifacts_block(&task.session_id, &task.created_at),
-            )
-            .child("instructions", WORKFLOW_REPORT)
-            .render()
-    }
+    crate::envelope::Envelope::new("mission_task_report")
+        .attr("task_id", &task.id)
+        .attr("title", &task.title)
+        .attr("status", &marker.kind)
+        .child("summary", &marker.message)
+        .child(
+            "artifacts",
+            task_artifacts_block(&task.session_id, &task.created_at),
+        )
+        .child("instructions", WORKFLOW_REPORT)
+        .render()
 }
 
 /// Outcomes that must not wait behind a question to the user.

@@ -174,7 +174,6 @@ pub fn build_forked_state(source: &HarnessState, point: ForkPoint) -> HarnessSta
     forked.lanes.clear();
     forked.watches.clear();
     forked.pending_question = None;
-    forked.goal = None;
     forked.compacting = false;
     forked.compacting_started_at = None;
     forked.turn_started_at = None;

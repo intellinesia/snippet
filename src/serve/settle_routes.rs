@@ -64,7 +64,6 @@ async fn gather(d: &Shared, id: &str) -> Option<Gathered> {
         settled: row.settled_at.is_some(),
         keep_awake: row.keep_awake,
         live_busy: (alive && busy_status) || state.compacting || state.pending_question.is_some(),
-        has_goal: false,
         has_open_task: open_task,
         has_lanes_or_watches: !state.watches.is_empty()
             || state

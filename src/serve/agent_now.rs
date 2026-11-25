@@ -383,21 +383,6 @@ pub fn agent_presence_and_needs(store: &Store, agent_id: &str) -> (Option<AgentP
 }
 
 fn task_step_summary(task: &Task, state: Option<&TaskState>) -> String {
-    let plan_step = task
-        .work_plan
-        .iter()
-        .find(|s| s.status == "in_progress")
-        .or_else(|| {
-            task.work_plan
-                .iter()
-                .find(|s| s.status != "done" && s.status != "completed")
-        })
-        .map(|s| s.step.as_str());
-    if let Some(step) = plan_step
-        && !step.trim().is_empty()
-    {
-        return trim_detail(step);
-    }
     if let Some(st) = state {
         if !st.current_step.trim().is_empty() {
             return trim_detail(&st.current_step);
