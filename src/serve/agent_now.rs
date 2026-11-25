@@ -334,7 +334,7 @@ pub fn agent_presence_and_needs(store: &Store, agent_id: &str) -> (Option<AgentP
                 push_candidate(
                     &mut best,
                     Candidate {
-                        state: "waiting",
+                        state: "reviewing",
                         detail,
                         since_rfc,
                         since_secs,
@@ -886,7 +886,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
         assert_eq!(body["agent_id"], "snippet");
-        assert_eq!(body["presence"]["state"], "waiting");
+        assert_eq!(body["presence"]["state"], "reviewing");
         assert_eq!(body["current_task"]["id"], "eb1b9fce");
         assert_eq!(body["current_task"]["status"], "in_review");
         assert_eq!(body["current_task"]["step"], "v5 delivered");

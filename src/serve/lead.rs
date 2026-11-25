@@ -597,6 +597,7 @@ fn wait_for_path_owners(
     if !claimed && task.notifications.iter().any(|n| n.message == reason) {
         return Ok(Some(task));
     }
+    let _ = reason;
     let task = d
         .store
         .update_task_in(task_id, now, |task| {
@@ -604,7 +605,6 @@ fn wait_for_path_owners(
                 task.status = TaskStatus::Todo;
                 task.reporting_session = None;
             }
-            task.notify_once("blocked", &reason);
         })
         .map_err(|error| error.to_string())?;
     Ok(Some(task))
@@ -906,8 +906,9 @@ fn release_failed_claim(d: &Daemon, task: &Task, error: &str) -> Result<(), Stri
             t.reporting_session = None;
             if t.dispatch_failures >= MAX_DISPATCH_FAILURES {
                 t.status = TaskStatus::Blocked;
+                let target = t.notification_target();
                 t.notifications.push(NotificationMarker {
-                    target: "lead".to_string(),
+                    target,
                     kind: "blocked".to_string(),
                     message: format!("dispatch failed {} times: {error}", t.dispatch_failures),
                     delivered: false,
@@ -1322,7 +1323,7 @@ fn is_outcome_report(kind: &str) -> bool {
     )
 }
 
-async fn deliver_lead_reports(daemon: &Daemon) {
+async fn deliver_lead_reports(daemon: &Shared) {
     let awaiting = lead::awaiting_user();
     let Ok(tasks) = daemon.store.list_tasks(None, None) else {
         return;
@@ -1331,21 +1332,30 @@ async fn deliver_lead_reports(daemon: &Daemon) {
     let mut digest: Vec<String> = Vec::new();
     for task in tasks {
         for marker in &task.notifications {
-            if marker.delivered || marker.target != "lead" {
+            if marker.delivered || marker.target.starts_with("offer:") {
                 continue;
             }
-            if awaiting && !is_outcome_report(&marker.kind) {
-                continue;
-            }
-            let text = report_text(&task, marker);
-            if awaiting {
-                digest.push(text);
+            if marker.target == lead::SESSION_ID {
+                if awaiting && !is_outcome_report(&marker.kind) {
+                    continue;
+                }
+                let text = report_text(&task, marker);
+                if awaiting {
+                    digest.push(text);
+                } else {
+                    daemon
+                        .deliver_wake(lead::SESSION_ID, LoopInput::UserMessage(text))
+                        .await;
+                }
+                delivered_any = true;
             } else {
+                let text = report_text(&task, marker);
+                let _ = super::direct::ensure_agent_inbox(daemon, &marker.target).await;
+                let inbox = crate::session::inbox_session_id(&marker.target);
                 daemon
-                    .deliver_wake(lead::SESSION_ID, LoopInput::UserMessage(text))
+                    .deliver_wake(&inbox, LoopInput::UserMessage(text))
                     .await;
             }
-            delivered_any = true;
             let _ = daemon
                 .store
                 .update_task_in(&task.id, &chrono::Utc::now().to_rfc3339(), |t| {

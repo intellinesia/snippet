@@ -1379,8 +1379,9 @@ impl Tool for MessageLead {
             .append_event(&event)
             .map_err(|e| ToolError::msg(format!("post message: {e}")))?;
         let _ = db.update_task_in(task_id, &now, |t| {
+            let target = t.notification_target();
             t.notifications.push(NotificationMarker {
-                target: "lead".into(),
+                target,
                 kind: "message".into(),
                 message: format!("{actor_id}: {message}"),
                 delivered: false,

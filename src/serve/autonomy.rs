@@ -94,9 +94,6 @@ pub async fn autonomy_loop(daemon: Shared) {
             continue;
         }
         mission_autonomy::release_held_pings();
-        if !crate::lead::awaiting_user() {
-            wake_for_worker_questions(&daemon).await;
-        }
         if lead_busy() {
             continue;
         }
@@ -167,10 +164,11 @@ fn round_decision(i: RoundInputs) -> Round {
     if !i.interval_due {
         return Round::NotDue;
     }
-    if i.first || !i.quiet || i.board_changed || i.run_notes {
+    let _ = i.quiet;
+    if i.first || i.board_changed || i.run_notes {
         Round::Fire
     } else {
-        Round::Skip("quiet hours and nothing changed")
+        Round::Skip("nothing changed")
     }
 }
 
@@ -319,37 +317,7 @@ pub(super) fn question_text(question: &Value) -> String {
     lines.join("\n")
 }
 
-async fn wake_for_worker_questions(daemon: &Shared) {
-    let tasks = daemon
-        .store
-        .list_tasks(None, Some(&TaskStatus::InProgress))
-        .unwrap_or_default();
-    for task in tasks {
-        let Some(state) = session_status(&task.session_id) else {
-            continue;
-        };
-        if state.status != HarnessStatus::WaitingForInput {
-            continue;
-        }
-        let Some(question) = state.pending_question.as_ref() else {
-            continue;
-        };
-        let mut hasher = DefaultHasher::new();
-        question.to_string().hash(&mut hasher);
-        let key = format!("{}:{:x}", task.session_id, hasher.finish());
-        if !mission_autonomy::remember_question(&key) {
-            continue;
-        }
-        let text = crate::envelope::Envelope::new("worker_question")
-            .attr("task_id", &task.id)
-            .attr("task", &task.title)
-            .attr("session_id", &task.session_id)
-            .child("question", question_text(question))
-            .child("instructions", format!("Worker question: the worker is paused until it is answered. sessions.answer (session_id {}) answers it.", task.session_id))
-            .render();
-        deliver_to_lead(daemon, text).await;
-    }
-}
+
 
 fn pending_offers(
     daemon: &Shared,
@@ -669,8 +637,8 @@ mod tests {
     }
 
     #[test]
-    fn interval_rounds_fire_on_a_still_board_outside_quiet_hours() {
-        assert_eq!(round_decision(due()), Round::Fire);
+    fn interval_rounds_skip_when_nothing_changed() {
+        assert_eq!(round_decision(due()), Round::Skip("nothing changed"));
     }
 
     #[test]
@@ -679,10 +647,7 @@ mod tests {
             quiet: true,
             ..due()
         };
-        assert_eq!(
-            round_decision(quiet),
-            Round::Skip("quiet hours and nothing changed")
-        );
+        assert_eq!(round_decision(quiet), Round::Skip("nothing changed"));
         assert_eq!(
             round_decision(RoundInputs {
                 board_changed: true,

@@ -1995,7 +1995,6 @@ impl Tool for StartTask {
                 (session.id, true)
             }
         };
-        let db = db(ctx)?;
         let mut description = args.description;
         description.push_str(&crate::mission_autonomy::standing_rules_note());
         let mut task_args: CreateTaskArgs = serde_json::from_value(json!({
@@ -2024,27 +2023,7 @@ impl Tool for StartTask {
             .to_string();
         let waiting_on: Vec<String> =
             serde_json::from_value(data["waiting_on"].clone()).unwrap_or_default();
-        // One line to Lead: it did not file this, the desk did.
-        let note = if waiting_on.is_empty() {
-            format!("Started task {task_id} \"{title}\" in {session_id}")
-        } else {
-            format!(
-                "Queued task {task_id} \"{title}\" after {}",
-                waiting_on.join(", ")
-            )
-        };
-        if let Ok(saved) = db.send_direct_message(
-            ("agent", agent_id.as_str()),
-            ("agent", crate::lead::SESSION_ID),
-            &note,
-            &uuid::Uuid::new_v4().to_string(),
-            &now_rfc3339(),
-        ) {
-            crate::session::emit_device_event(json!({
-                "kind": "coordination_event",
-                "event": saved,
-            }));
-        }
+        let _ = (title, agent_id);
         Ok(ToolResult::success(json!({
             "task_id": task_id,
             "session_id": session_id,
@@ -4382,8 +4361,9 @@ impl Tool for ReportMissionTask {
             store
                 .update_task_in(&args.task_id, &now, |task| {
                     task.status = status;
+                    let target = task.notification_target();
                     task.notifications.push(NotificationMarker {
-                        target: "lead".into(),
+                        target,
                         kind: "blocked".into(),
                         message: summary,
                         delivered: false,
@@ -4487,15 +4467,11 @@ mod tests {
         assert_eq!(roster[0].agent_id, "desk-agent");
         assert_eq!(roster[0].status, "active", "claimed at filing, not offered");
 
-        // Lead got the one-line note.
+        // Desk task starts write to the board only — no DM spam to Lead.
         let thread =
             crate::coordination::direct_thread_id(("agent", "lead"), ("agent", "desk-agent"));
         let events = db.direct_thread_events(&thread, 0, 10).unwrap();
-        assert!(events.iter().any(|e| {
-            e.payload["body"]
-                .as_str()
-                .is_some_and(|b| b.contains("Started task") && b.contains(&task_id))
-        }));
+        assert!(events.is_empty());
     }
 
     /// With no `session`, `start_task` opens a fresh session in `folder`.
@@ -4589,11 +4565,7 @@ mod tests {
         let thread =
             crate::coordination::direct_thread_id(("agent", "lead"), ("agent", "desk-agent"));
         let events = db.direct_thread_events(&thread, 0, 10).unwrap();
-        assert!(events.iter().any(|e| {
-            e.payload["body"]
-                .as_str()
-                .is_some_and(|b| b.contains("Queued task") && b.contains("blk-1"))
-        }));
+        assert!(events.is_empty());
 
         db.complete_task(
             "blk-1",

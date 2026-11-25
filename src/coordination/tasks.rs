@@ -346,7 +346,18 @@ pub fn offer_marker(agent_id: &str) -> String {
 /// Create a task's initial dispatch state in one value, so a caller cannot
 /// forget `handoff_mode` and leave delivery semantics unset.
 impl Task {
-    /// Queue a notice for Lead unless the same one is already on the
+    /// Who receives notifications for this task: the agent desk that created it,
+    /// or Lead when Lead or a human created it.
+    pub fn notification_target(&self) -> String {
+        let id = self.created_by_id.trim();
+        if self.created_by_kind == "agent" && !id.is_empty() {
+            id.to_string()
+        } else {
+            "lead".to_string()
+        }
+    }
+
+    /// Queue a notice for the task's owner unless the same one is already on the
     /// task, so a condition that persists across ticks is reported once.
     pub fn notify_once(&mut self, kind: &str, message: &str) {
         if self
@@ -356,8 +367,9 @@ impl Task {
         {
             return;
         }
+        let target = self.notification_target();
         self.notifications.push(NotificationMarker {
-            target: "lead".into(),
+            target,
             kind: kind.into(),
             message: message.into(),
             delivered: false,
@@ -910,8 +922,9 @@ impl Store {
             task.result = Some(result.clone());
             task.owned_paths.clear();
             task.reporting_session = None;
+            let target = task.notification_target();
             task.notifications.push(NotificationMarker {
-                target: "lead".into(),
+                target,
                 kind: kind.into(),
                 message: result.summary.clone(),
                 delivered: false,
@@ -1917,8 +1930,9 @@ impl Store {
                     }
                     t.status = TaskStatus::Blocked;
                     t.reporting_session = None;
+                    let target = t.notification_target();
                     t.notifications.push(NotificationMarker {
-                        target: "lead".into(),
+                        target,
                         kind: "blocked".into(),
                         message: message.clone(),
                         delivered: false,

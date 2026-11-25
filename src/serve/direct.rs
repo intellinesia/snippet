@@ -117,12 +117,24 @@ fn direct_message_envelope(
     }
     let body = payload_str("body").unwrap_or_default();
     let about_thread = payload_str("about_thread").filter(|s| s.starts_with("direct:agent:"));
+    let is_system_relay = event
+        .payload
+        .get("system")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        || event.payload.get("auto").is_some();
     let reply_to = if about_thread.is_some() {
         "human".to_string()
-    } else {
+    } else if event.actor_kind == "human" {
         payload_str("origin_session")
             .map(|session| format!("session:{session}"))
             .unwrap_or_else(|| "human".to_string())
+    } else if is_system_relay {
+        "none".to_string()
+    } else {
+        payload_str("origin_session")
+            .map(|session| format!("session:{session}"))
+            .unwrap_or_else(|| sender.clone())
     };
     let mut envelope = Envelope::new("direct_message")
         .attr("event_id", &event.event_id)

@@ -733,10 +733,9 @@ async fn a_path_conflict_waits_in_the_queue_without_a_dependency() {
         assert_eq!(task.status, crate::coordination::TaskStatus::Todo);
     }
     let waiter = d.store.get_task("waiter").unwrap().unwrap();
-    assert_eq!(
-        waiter.notifications.len(),
-        1,
-        "reported once, not every tick"
+    assert!(
+        waiter.notifications.is_empty(),
+        "path-queued task stays Todo without waking Lead"
     );
     assert!(d.store.blockers_of("waiter").unwrap().is_empty());
 }
