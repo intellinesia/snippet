@@ -4,6 +4,8 @@ use serde_json::{Value, json};
 
 pub const SESSION_ENV: &str = "SNIPPET_MCP_URL";
 pub const MCP_SERVER_NAME: &str = "snippet_snippet";
+pub const ACP_MCP_SERVER_NAME: &str = "snippet";
+pub const ACP_TOOL_PREFIX: &str = "mcp_snippet_";
 const RULE_CHUNK_BYTES: usize = 20_000;
 
 const ALLOWED: &[&str] = &[
@@ -53,12 +55,15 @@ fn decision(raw: &str, in_snippet: bool) -> Value {
         .pointer("/toolCall/name")
         .and_then(Value::as_str)
         .unwrap_or("");
+    if name.starts_with(ACP_TOOL_PREFIX) {
+        return json!({"decision": "allow"});
+    }
     if name == "call_mcp_tool" {
         let server = payload
             .pointer("/toolCall/args/ServerName")
             .and_then(Value::as_str)
             .unwrap_or("");
-        if server == MCP_SERVER_NAME {
+        if server == MCP_SERVER_NAME || server == ACP_MCP_SERVER_NAME {
             return json!({"decision": "allow"});
         }
         return json!({"decision": "deny", "reason": "Only the snippet MCP server is available in a snippet session."});
@@ -106,7 +111,7 @@ fn decision(raw: &str, in_snippet: bool) -> Value {
     };
     json!({
         "decision": "deny",
-        "reason": format!("In this snippet session `{name}` is handled by snippet: call {instead} through call_mcp_tool on the `{MCP_SERVER_NAME}` server instead."),
+        "reason": format!("In this snippet session `{name}` is handled by snippet: call {instead} (`{ACP_TOOL_PREFIX}<tool>`) instead."),
     })
 }
 
@@ -158,7 +163,10 @@ pub fn prepare_home(key: &str, mcp_url: &str, prompt: &str) -> Result<PathBuf, S
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
-    let rule = format!("mcp({MCP_SERVER_NAME}/*)");
+    let rules_allow = [
+        format!("mcp({ACP_MCP_SERVER_NAME}/*)"),
+        format!("mcp({MCP_SERVER_NAME}/*)"),
+    ];
     let permissions = settings
         .as_object_mut()
         .map(|o| o.entry("permissions").or_insert_with(|| json!({})))
@@ -169,8 +177,10 @@ pub fn prepare_home(key: &str, mcp_url: &str, prompt: &str) -> Result<PathBuf, S
         .map(|o| o.entry("allow").or_insert_with(|| json!([])))
         .and_then(Value::as_array_mut)
         .ok_or("antigravity settings are malformed")?;
-    if !allow.iter().any(|v| v.as_str() == Some(rule.as_str())) {
-        allow.push(json!(rule));
+    for rule in rules_allow {
+        if !allow.iter().any(|v| v.as_str() == Some(rule.as_str())) {
+            allow.push(json!(rule));
+        }
     }
     write_if_changed(&gemini.join("antigravity-cli/settings.json"), &settings)?;
 
@@ -180,10 +190,10 @@ pub fn prepare_home(key: &str, mcp_url: &str, prompt: &str) -> Result<PathBuf, S
         None => exe,
     };
     write_if_changed(&plugin.join("plugin.json"), &json!({"name": "snippet"}))?;
-    write_if_changed(
-        &plugin.join("mcp_config.json"),
-        &json!({"mcpServers": {"snippet": {"url": mcp_url}}}),
-    )?;
+    // ACP passes mcpServers directly on session/new and session/load; remove any
+    // stale plugin mcp_config.json so agy does not register a duplicate server.
+    let _ = mcp_url;
+    let _ = std::fs::remove_file(plugin.join("mcp_config.json"));
     write_if_changed(
         &plugin.join("hooks.json"),
         &json!({"snippet-gate": {"PreToolUse": [{"matcher": "*", "hooks": [{

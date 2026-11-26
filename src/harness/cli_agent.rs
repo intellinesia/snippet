@@ -51,6 +51,10 @@ impl CliKind {
         }
     }
 
+    fn is_acp(self) -> bool {
+        matches!(self, Self::Devin | Self::Antigravity)
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::ClaudeCode => "Claude Code",
@@ -447,8 +451,6 @@ fn handoff(messages: &[HarnessMessage], fresh: bool) -> Option<Handoff> {
 #[derive(Default)]
 struct CliParse {
     tool_names: HashMap<String, String>,
-    agy_text: HashMap<i64, String>,
-    agy_tools: HashSet<i64>,
     devin_text: String,
     devin_tools: HashSet<String>,
     devin_window: u64,
@@ -869,9 +871,8 @@ fn tool_prompt_preamble(kind: CliKind) -> String {
             "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{MCP_SERVER}` MCP server. Call them via `mcp_call_tool` with `server_name: \"{MCP_SERVER}\"`, `tool_name` set to the exact tool name (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate`, and the rest), and `arguments` matching its schema (call `mcp_list_tools` for `{MCP_SERVER}` once first if your runtime requires it). The nested `arguments` object is required on every call and carries the tool's own fields, written out in full each time, for example `{{\"server_name\": \"{MCP_SERVER}\", \"tool_name\": \"bash\", \"arguments\": {{\"command\": \"ls\", \"label\": \"list files\"}}}}`; a call without it reaches the tool empty and fails. Every built-in tool of yours (`exec`, `read`, `write`, `edit`, `grep`, `glob`, `skill`, `ask_user_question`, `todo_write`) is disabled in this session: read and search files with `bash` (`cat`, `sed -n`, `rg`, `ls`), edit files with `change_files`, and make every command, question and delegation through the `{MCP_SERVER}` MCP tools."
         ),
         CliKind::Antigravity => format!(
-            "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{}` MCP server: call them with call_mcp_tool, ServerName `{}` and ToolName exactly as named here (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate`, and the rest). These are your only working tools: every built-in tool of yours is switched off in this session. Read and search files with the snippet `bash` tool (cat, sed -n, rg, ls), research with its `web.search` and `web.read`, and make every change, command, question and delegation through the snippet tools. The one exception: when a tool result says its output was saved to a file inside your own Antigravity folder, read that file with view_file.",
-            crate::antigravity::MCP_SERVER_NAME,
-            crate::antigravity::MCP_SERVER_NAME,
+            "## Tools in this runtime\n\nThe tools named in these instructions are served directly as `{0}<name>`: where it says `bash`, call `{0}bash`, `change_files` -> `{0}change_files`, `code` -> `{0}code`, and so on. These are your only working tools: every built-in tool of yours is switched off in this session. Read and search files with `{0}bash` (cat, sed -n, rg, ls), edit files with `{0}change_files`, and make every command, question and delegation through the snippet tools. The one exception: when a tool result says its output was saved to a file inside your own Antigravity folder, read that file with `view_file`.",
+            crate::antigravity::ACP_TOOL_PREFIX,
         ),
     }
 }
@@ -882,7 +883,7 @@ fn tool_guide(kind: CliKind, defs: &[NativeToolDefinition]) -> String {
             "## Snippet tools and their arguments\n\nCall each through `mcp_call_tool` with `server_name: \"snippet\"` and `tool_name` set to the name below. Pass every required argument by its exact name; optional ones in brackets.\n"
         }
         _ => {
-            "## Snippet tools and their arguments\n\nCall each through call_mcp_tool with ServerName `snippet_snippet`. Pass every required argument by its exact name; optional ones in brackets.\n"
+            "## Snippet tools and their arguments\n\nCall each directly as `mcp_snippet_<name>` (for example `mcp_snippet_bash`). Pass every required argument by its exact name; optional ones in brackets.\n"
         }
     };
     let mut out = String::from(header);
@@ -1749,7 +1750,7 @@ impl CodingHarness {
 
     fn antigravity_command(
         &self,
-        profile: &InferenceProfileConfig,
+        _profile: &InferenceProfileConfig,
         prompt: &str,
         mcp_url: &str,
         session: &CliSession,
@@ -1764,26 +1765,13 @@ impl CodingHarness {
         };
         let mut cmd = Command::new(bin);
         cmd.current_dir(self.context.workspace_root())
-            .arg("--print=")
-            .args([
-                "--input-format",
-                "stream-json",
-                "--output-format",
-                "stream-json",
-            ])
-            .arg("--disable-slash-commands")
+            .arg("acp")
+            .arg("--dangerously-skip-permissions")
             .env("XDG_CONFIG_HOME", xdg("XDG_CONFIG_HOME", ".config"))
             .env("XDG_CACHE_HOME", xdg("XDG_CACHE_HOME", ".cache"))
             .env("XDG_DATA_HOME", xdg("XDG_DATA_HOME", ".local/share"))
             .env("HOME", home)
             .env(crate::antigravity::SESSION_ENV, mcp_url);
-        let model = profile.model.trim();
-        if !model.is_empty() {
-            cmd.args(["--model", model]);
-        }
-        if let Some(id) = session.id.as_deref() {
-            cmd.args(["--conversation", id]);
-        }
         Ok(cmd)
     }
 
@@ -1832,7 +1820,8 @@ impl CodingHarness {
         Ok(cmd)
     }
 
-    async fn devin_rpc(
+    async fn acp_rpc(
+        label: &str,
         stdin: &mut ChildStdin,
         reader: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
         id: u64,
@@ -1843,16 +1832,16 @@ impl CodingHarness {
         stdin
             .write_all(format!("{req}\n").as_bytes())
             .await
-            .map_err(|e| format!("send Devin {method}: {e}"))?;
+            .map_err(|e| format!("send {label} {method}: {e}"))?;
         stdin
             .flush()
             .await
-            .map_err(|e| format!("flush Devin {method}: {e}"))?;
+            .map_err(|e| format!("flush {label} {method}: {e}"))?;
         let wait = async {
             while let Some(line) = reader
                 .next_line()
                 .await
-                .map_err(|e| format!("read Devin {method}: {e}"))?
+                .map_err(|e| format!("read {label} {method}: {e}"))?
             {
                 let Ok(value) = serde_json::from_str::<Value>(&line) else {
                     continue;
@@ -1861,22 +1850,25 @@ impl CodingHarness {
                     return Ok(value);
                 }
             }
-            Err(format!("Devin exited during {method}"))
+            Err(format!("{label} exited during {method}"))
         };
         tokio::time::timeout(std::time::Duration::from_secs(20), wait)
             .await
-            .map_err(|_| format!("Devin timed out during {method}"))?
+            .map_err(|_| format!("{label} timed out during {method}"))?
     }
 
-    async fn handshake_devin(
+    async fn handshake_acp(
         &self,
+        kind: CliKind,
         profile: &InferenceProfileConfig,
         mcp_url: &str,
         stdin: &mut ChildStdin,
         reader: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
         session: &mut CliSession,
     ) -> Result<(u64, bool), String> {
-        let init = Self::devin_rpc(
+        let label = kind.label();
+        let init = Self::acp_rpc(
+            label,
             stdin,
             reader,
             1,
@@ -1892,19 +1884,24 @@ impl CodingHarness {
             let msg = err
                 .get("message")
                 .and_then(Value::as_str)
-                .unwrap_or("Devin initialize failed");
-            return Err(msg.to_string());
+                .unwrap_or("ACP initialize failed");
+            return Err(format!("{label}: {msg}"));
         }
         let cwd = self.context.workspace_root().display().to_string();
+        let mcp_name = match kind {
+            CliKind::Antigravity => crate::antigravity::ACP_MCP_SERVER_NAME,
+            _ => crate::devin::MCP_SERVER_NAME,
+        };
         let mcp_servers = json!([{
             "type": "http",
-            "name": crate::devin::MCP_SERVER_NAME,
+            "name": mcp_name,
             "url": mcp_url,
             "headers": []
         }]);
         let mut next_id = 2u64;
         let session_reply = if let Some(existing) = session.id.clone().filter(|_| session.started) {
-            let loaded = Self::devin_rpc(
+            let loaded = Self::acp_rpc(
+                label,
                 stdin,
                 reader,
                 next_id,
@@ -1916,7 +1913,8 @@ impl CodingHarness {
             if loaded.get("error").is_some() {
                 session.id = None;
                 session.started = false;
-                let created = Self::devin_rpc(
+                let created = Self::acp_rpc(
+                    label,
                     stdin,
                     reader,
                     next_id,
@@ -1930,7 +1928,8 @@ impl CodingHarness {
                 loaded
             }
         } else {
-            let created = Self::devin_rpc(
+            let created = Self::acp_rpc(
+                label,
                 stdin,
                 reader,
                 next_id,
@@ -1945,8 +1944,8 @@ impl CodingHarness {
             let msg = err
                 .get("message")
                 .and_then(Value::as_str)
-                .unwrap_or("Devin session setup failed");
-            return Err(msg.to_string());
+                .unwrap_or("ACP session setup failed");
+            return Err(format!("{label}: {msg}"));
         }
         if let Some(new_id) = session_reply
             .pointer("/result/sessionId")
@@ -1955,17 +1954,38 @@ impl CodingHarness {
             session.adopt(new_id);
         }
         let Some(sid) = session.id.clone() else {
-            return Err("Devin did not return a sessionId".to_string());
+            return Err(format!("{label} did not return a sessionId"));
         };
-        let _ = Self::devin_rpc(
-            stdin,
-            reader,
-            next_id,
-            "session/set_mode",
-            json!({"sessionId": sid, "modeId": "bypass"}),
-        )
-        .await?;
-        next_id += 1;
+        match kind {
+            CliKind::Devin => {
+                let _ = Self::acp_rpc(
+                    label,
+                    stdin,
+                    reader,
+                    next_id,
+                    "session/set_mode",
+                    json!({"sessionId": sid, "modeId": "bypass"}),
+                )
+                .await?;
+                next_id += 1;
+            }
+            CliKind::Antigravity => {
+                let model = profile.model.trim();
+                if !model.is_empty() {
+                    let _ = Self::acp_rpc(
+                        label,
+                        stdin,
+                        reader,
+                        next_id,
+                        "session/set_model",
+                        json!({"sessionId": sid, "modelId": model}),
+                    )
+                    .await;
+                    next_id += 1;
+                }
+            }
+            CliKind::ClaudeCode => {}
+        }
         if let Some(effort) = Self::effort_arg(profile) {
             let has_thought = session_reply
                 .pointer("/result/configOptions")
@@ -1975,7 +1995,8 @@ impl CodingHarness {
                         .any(|o| o.get("id").and_then(Value::as_str) == Some("thought_level"))
                 });
             if has_thought {
-                let _ = Self::devin_rpc(
+                let _ = Self::acp_rpc(
+                    label,
                     stdin,
                     reader,
                     next_id,
@@ -1986,32 +2007,38 @@ impl CodingHarness {
                 next_id += 1;
             }
         }
-        let supports_images = session_reply
-            .pointer("/result/configOptions")
-            .and_then(Value::as_array)
-            .and_then(|opts| {
-                let model_opt = opts
-                    .iter()
-                    .find(|o| o.get("id").and_then(Value::as_str) == Some("model"))?;
-                let cur = model_opt.get("currentValue").and_then(Value::as_str)?;
-                model_opt
-                    .get("options")
-                    .and_then(Value::as_array)?
-                    .iter()
-                    .find(|v| v.get("value").and_then(Value::as_str) == Some(cur))?
-                    .pointer("/_meta/cognition.ai~1supportsImages")
-                    .or_else(|| {
-                        model_opt
-                            .get("options")
-                            .and_then(Value::as_array)?
-                            .iter()
-                            .find(|v| v.get("value").and_then(Value::as_str) == Some(cur))?
-                            .get("_meta")?
-                            .get("cognition.ai/supportsImages")
-                    })
-                    .and_then(Value::as_bool)
-            })
-            .unwrap_or_else(|| !Self::resolved_devin_model(profile).starts_with("swe-2"));
+        let supports_images = if kind == CliKind::Antigravity {
+            init.pointer("/result/agentCapabilities/promptCapabilities/image")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        } else {
+            session_reply
+                .pointer("/result/configOptions")
+                .and_then(Value::as_array)
+                .and_then(|opts| {
+                    let model_opt = opts
+                        .iter()
+                        .find(|o| o.get("id").and_then(Value::as_str) == Some("model"))?;
+                    let cur = model_opt.get("currentValue").and_then(Value::as_str)?;
+                    model_opt
+                        .get("options")
+                        .and_then(Value::as_array)?
+                        .iter()
+                        .find(|v| v.get("value").and_then(Value::as_str) == Some(cur))?
+                        .pointer("/_meta/cognition.ai~1supportsImages")
+                        .or_else(|| {
+                            model_opt
+                                .get("options")
+                                .and_then(Value::as_array)?
+                                .iter()
+                                .find(|v| v.get("value").and_then(Value::as_str) == Some(cur))?
+                                .get("_meta")?
+                                .get("cognition.ai/supportsImages")
+                        })
+                        .and_then(Value::as_bool)
+                })
+                .unwrap_or_else(|| !Self::resolved_devin_model(profile).starts_with("swe-2"))
+        };
         Ok((next_id.max(10), supports_images))
     }
 
@@ -2052,9 +2079,9 @@ impl CodingHarness {
             .ok_or(format!("{label} stdout unavailable"))?;
         let stderr = child.stderr.take();
         let mut reader = BufReader::new(stdout).lines();
-        let (acp_next_id, acp_supports_images) = if kind == CliKind::Devin {
+        let (acp_next_id, acp_supports_images) = if kind.is_acp() {
             match self
-                .handshake_devin(profile, mcp_url, &mut stdin, &mut reader, session)
+                .handshake_acp(kind, profile, mcp_url, &mut stdin, &mut reader, session)
                 .await
             {
                 Ok(pair) => pair,
@@ -2479,9 +2506,7 @@ impl CodingHarness {
                         .await
                     {
                         Ok(p) => {
-                            if matches!(kind, CliKind::ClaudeCode | CliKind::Devin) {
-                                session.started = true;
-                            }
+                            session.started = true;
                             process = Some(p);
                         }
                         Err(error) => {
@@ -2564,7 +2589,7 @@ impl CodingHarness {
                         state.last_prompt_tokens,
                     );
                     last_heard = tokio::time::Instant::now();
-                    if kind == CliKind::Devin {
+                    if kind.is_acp() {
                         let combined = std::mem::take(&mut outbox)
                             .into_iter()
                             .map(|t| {
@@ -2791,7 +2816,7 @@ impl CodingHarness {
                         }
                         LoopInput::Interrupt => {
                             if let Some(mut p) = process.take() {
-                                if kind == CliKind::Devin
+                                if kind.is_acp()
                                     && let Some(sid) = session.id.as_deref()
                                 {
                                     let cancel = json!({
@@ -2966,8 +2991,9 @@ impl CodingHarness {
                                     self.apply_cli_event(&mut state, &event, sink.as_ref(), &mut parse),
                                     event.get("type").and_then(Value::as_str) == Some("result"),
                                 ),
-                                CliKind::Antigravity => self.apply_agy_event(&mut state, &event, sink.as_ref(), &mut parse),
-                                CliKind::Devin => self.apply_devin_event(&mut state, &event, sink.as_ref(), &mut parse),
+                                CliKind::Antigravity | CliKind::Devin => {
+                                    self.apply_devin_event(&mut state, &event, sink.as_ref(), &mut parse)
+                                }
                             };
                             if kind == CliKind::ClaudeCode
                                 && event.get("type").and_then(Value::as_str) == Some("rate_limit_event")
@@ -2996,8 +3022,7 @@ impl CodingHarness {
                             }
                             let turn_errored = match kind {
                                 CliKind::ClaudeCode => event.get("is_error").and_then(Value::as_bool) == Some(true),
-                                CliKind::Devin => event.get("error").is_some(),
-                                CliKind::Antigravity => false,
+                                CliKind::Devin | CliKind::Antigravity => event.get("error").is_some(),
                             };
                             if finished
                                 && turn_errored
@@ -3692,258 +3717,6 @@ impl CodingHarness {
         let _ = call.reply.send(value);
     }
 
-    fn apply_agy_event(
-        &self,
-        state: &mut HarnessState,
-        event: &Value,
-        sink: Option<&StreamHandle>,
-        parse: &mut CliParse,
-    ) -> (bool, bool) {
-        match event.get("event").and_then(Value::as_str) {
-            Some("step_update") => {
-                let Some(step) = event.get("step_update") else {
-                    return (false, false);
-                };
-                let index = step.get("step_index").and_then(Value::as_i64).unwrap_or(-1);
-                let done = step.get("state").and_then(Value::as_str);
-                match step.get("step_type").and_then(Value::as_str) {
-                    Some("agent_response") => {
-                        if state.status == HarnessStatus::Idle {
-                            state.status = HarnessStatus::Running;
-                        }
-                        if let Some(delta) = step.get("text_delta").and_then(Value::as_str) {
-                            parse.agy_text.entry(index).or_default().push_str(delta);
-                            if let Some(sink) = sink {
-                                StreamBuffer::append(sink, delta);
-                            }
-                        }
-                        if let (Some(delta), Some(sink)) =
-                            (step.get("thinking_delta").and_then(Value::as_str), sink)
-                        {
-                            StreamBuffer::append_thinking(sink, delta);
-                        }
-                        if done != Some("DONE") {
-                            return (false, false);
-                        }
-                        if let Some(usage) = step.get("usage") {
-                            let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
-                            let prompt = n("input_tokens") + n("cache_read_tokens");
-                            let completion = n("output_tokens");
-                            state.last_prompt_tokens = prompt;
-                            state.prompt_tokens += prompt;
-                            state.completion_tokens += completion;
-                            state.total_tokens += prompt + completion;
-                            state.cache_read_tokens += n("cache_read_tokens");
-                            parse.calls.push(crate::llm::TokenUsage {
-                                prompt_tokens: prompt,
-                                completion_tokens: completion,
-                                total_tokens: prompt + completion,
-                                cache_read_tokens: n("cache_read_tokens"),
-                                ..Default::default()
-                            });
-                        }
-                        let text = parse
-                            .agy_text
-                            .remove(&index)
-                            .unwrap_or_default()
-                            .trim()
-                            .to_string();
-                        if text.is_empty() {
-                            return (false, false);
-                        }
-                        if let Some(sink) = sink {
-                            StreamBuffer::clear(sink);
-                        }
-                        state.messages.push(HarnessMessage::Assistant {
-                            content: text.clone(),
-                            tool_calls: Vec::new(),
-                        });
-                        state
-                            .events
-                            .push(HarnessEvent::AssistantText { text, quiet: false });
-                        (true, false)
-                    }
-                    Some("tool") => {
-                        let info = step.get("tool_info").cloned().unwrap_or(Value::Null);
-                        let raw = info.get("name").and_then(Value::as_str).unwrap_or("tool");
-                        let params = info.get("parameters").cloned().unwrap_or(Value::Null);
-                        let mcp = raw == "call_mcp_tool";
-                        let (name, arguments) = if mcp {
-                            unwrap_custom(
-                                params
-                                    .get("ToolName")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("tool")
-                                    .to_string(),
-                                params.get("Arguments").cloned().unwrap_or(Value::Null),
-                            )
-                        } else if let Some(path) = (raw == "view_file")
-                            .then(|| params.get("AbsolutePath").and_then(Value::as_str))
-                            .flatten()
-                            .filter(|p| {
-                                !p.contains("/.gemini/antigravity-cli/")
-                                    && crate::antigravity::is_image(p)
-                            })
-                        {
-                            ("view_image".to_string(), json!({ "path": path }))
-                        } else {
-                            (raw.to_string(), params)
-                        };
-                        let schema_read = raw == "view_file"
-                            && arguments
-                                .get("AbsolutePath")
-                                .and_then(Value::as_str)
-                                .is_some_and(|p| p.contains("/.gemini/antigravity-cli/"));
-                        let redirected = done == Some("ERROR")
-                            && info
-                                .pointer("/error/message")
-                                .and_then(Value::as_str)
-                                .is_some_and(|m| m.contains("denied by pre-tool hook"));
-                        let envelope_rejected = done == Some("ERROR")
-                            && info
-                                .pointer("/error/message")
-                                .and_then(Value::as_str)
-                                .is_some_and(|m| {
-                                    m.contains("missing properties")
-                                        && (m.contains("toolSummary") || m.contains("toolAction"))
-                                });
-                        let quiet = schema_read
-                            || redirected
-                            || envelope_rejected
-                            || QUIET_TOOLS.contains(&name.as_str());
-                        let mut changed = false;
-                        if envelope_rejected {
-                            if let Some(marker) = parse.envelope_marker.as_ref() {
-                                if let Some(dir) = marker.parent() {
-                                    let _ = std::fs::create_dir_all(dir);
-                                }
-                                let _ = std::fs::write(marker, &name);
-                            }
-                            if parse.agy_tools.remove(&index)
-                                && let Some(at) = state.events.iter().rposition(|e| {
-                                    matches!(e, HarnessEvent::ToolCall { tool_name, .. } if *tool_name == name)
-                                })
-                            {
-                                state.events.remove(at);
-                                state.events_rewritten = true;
-                                changed = true;
-                            }
-                        }
-                        let announce = mcp || done.is_some_and(|d| d == "DONE" || d == "ERROR");
-                        if announce && !quiet && parse.agy_tools.insert(index) {
-                            self.lane_progress(
-                                "tool_call",
-                                super::dispatch::tool_activity_text(&name, &arguments),
-                            );
-                            self.presence("tool", &super::presence::tool_detail(&name, &arguments));
-                            state.events.push(HarnessEvent::ToolCall {
-                                tool_name: name.clone(),
-                                arguments,
-                            });
-                            changed = true;
-                        }
-                        let own = if mcp && matches!(done, Some("DONE") | Some("ERROR")) {
-                            parse.served.lock().ok().and_then(|mut served| {
-                                served.get_mut(&name).and_then(|q| q.pop_front())
-                            })
-                        } else {
-                            None
-                        };
-                        let result = match done {
-                            Some(_) if own.is_some() => own.unwrap_or_default(),
-                            Some("DONE") => {
-                                let output = info
-                                    .get("output")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("")
-                                    .to_string();
-                                serde_json::Deserializer::from_str(output.trim_start())
-                                    .into_iter::<Value>()
-                                    .next()
-                                    .and_then(Result::ok)
-                                    .filter(|v| mcp && v.get("status").is_some())
-                                    .unwrap_or_else(|| json!({"schema_version": 1, "status": "success", "data": {"output": output}}))
-                            }
-                            Some("ERROR") => {
-                                let message = info
-                                    .pointer("/error/message")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("tool failed");
-                                serde_json::from_str::<Value>(message)
-                                    .ok()
-                                    .filter(|v| mcp && v.get("status").is_some())
-                                    .unwrap_or_else(|| error_result("tool_error", message))
-                            }
-                            _ => return (changed, false),
-                        };
-                        if !quiet {
-                            state.events.push(HarnessEvent::ToolResult {
-                                tool_name: name,
-                                result,
-                            });
-                            changed = true;
-                        }
-                        (changed, false)
-                    }
-                    _ => (false, false),
-                }
-            }
-            Some("result") => {
-                let result = event.get("result").cloned().unwrap_or(Value::Null);
-                if let Some(sink) = sink {
-                    StreamBuffer::clear(sink);
-                }
-                parse.agy_text.clear();
-                parse.agy_tools.clear();
-                state.iterations +=
-                    result.get("num_turns").and_then(Value::as_u64).unwrap_or(1) as usize;
-                let error = result.get("error").and_then(Value::as_str).unwrap_or("");
-                let cancelled = error.contains("context canceled");
-                let response = result
-                    .get("response")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .unwrap_or("");
-                let replied = !response.is_empty()
-                    || state
-                        .events
-                        .iter()
-                        .rev()
-                        .take_while(|e| {
-                            !matches!(
-                                e,
-                                HarnessEvent::UserInput { .. } | HarnessEvent::Steer { .. }
-                            )
-                        })
-                        .any(|e| matches!(e, HarnessEvent::AssistantText { .. }));
-                if result.get("status").and_then(Value::as_str) == Some("ERROR")
-                    && !cancelled
-                    && !replied
-                {
-                    let message = if error.is_empty() {
-                        "Antigravity reported an error"
-                    } else {
-                        error
-                    }
-                    .to_string();
-                    state.events.push(HarnessEvent::ModelError { message });
-                } else if let Some(text) = result
-                    .get("response")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                {
-                    state.final_text = Some(text.to_string());
-                }
-                if state.status == HarnessStatus::Running {
-                    state.status = HarnessStatus::Idle;
-                }
-                (true, true)
-            }
-            _ => (false, false),
-        }
-    }
-
     fn flush_devin_text(
         &self,
         state: &mut HarnessState,
@@ -4128,8 +3901,13 @@ impl CodingHarness {
                         meta.get("cognition.ai/inferenceToolName")
                             .and_then(Value::as_str)
                     })
+                    .or_else(|| update.get("name").and_then(Value::as_str))
                     .unwrap_or("tool");
-                let raw_input = update.get("rawInput").cloned().unwrap_or(Value::Null);
+                let mut raw_input = update
+                    .get("rawInput")
+                    .or_else(|| update.get("args"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 let is_meta_list = matches!(
                     raw_name,
                     "mcp_list_tools"
@@ -4138,22 +3916,54 @@ impl CodingHarness {
                         | "list_resources"
                         | "read_resource"
                 );
+                let agy_internal_read = raw_name == "view_file"
+                    && raw_input
+                        .get("AbsolutePath")
+                        .and_then(Value::as_str)
+                        .is_some_and(|p| p.contains("/.gemini/antigravity-cli/"));
                 let (mcp, name, arguments) =
-                    if let Some(stripped) = raw_name.strip_prefix(MCP_PREFIX) {
+                    if let Some(stripped) = raw_name
+                        .strip_prefix(MCP_PREFIX)
+                        .or_else(|| raw_name.strip_prefix(crate::antigravity::ACP_TOOL_PREFIX))
+                    {
+                        if let Some(obj) = raw_input.as_object_mut() {
+                            obj.remove("toolSummary");
+                        }
                         let (n, a) = unwrap_custom(stripped.to_string(), raw_input);
                         (true, n, a)
-                    } else if raw_name == "mcp_call_tool" {
+                    } else if raw_name == "mcp_call_tool" || raw_name == "call_mcp_tool" {
                         let inner = raw_input
                             .get("tool_name")
+                            .or_else(|| raw_input.get("ToolName"))
                             .and_then(Value::as_str)
                             .unwrap_or("tool")
                             .to_string();
-                        let args = raw_input.get("arguments").cloned().unwrap_or(Value::Null);
+                        let args = raw_input
+                            .get("arguments")
+                            .or_else(|| raw_input.get("Arguments"))
+                            .cloned()
+                            .unwrap_or(Value::Null);
                         let (n, a) = unwrap_custom(inner, args);
                         (true, n, a)
+                    } else if raw_name == "view_file"
+                        && let Some(path) = raw_input
+                            .get("AbsolutePath")
+                            .and_then(Value::as_str)
+                            .filter(|p| {
+                                !p.contains("/.gemini/antigravity-cli/")
+                                    && crate::antigravity::is_image(p)
+                            })
+                    {
+                        (false, "view_image".to_string(), json!({ "path": path }))
                     } else {
                         (false, raw_name.to_string(), raw_input)
                     };
+                if agy_internal_read {
+                    if !call_id.is_empty() {
+                        parse.tool_names.insert(call_id, format!("__meta:{name}"));
+                    }
+                    return (changed, false);
+                }
                 if !call_id.is_empty() {
                     parse.tool_names.insert(
                         call_id.clone(),
@@ -4847,6 +4657,88 @@ mod devin_acp_tests {
         assert!(state.events.iter().any(
             |e| matches!(e, HarnessEvent::ToolResult { tool_name, .. } if tool_name == "bash")
         ));
+    }
+
+    #[test]
+    fn apply_acp_event_handles_antigravity_native_mcp_tools_and_usage() {
+        let harness = test_harness();
+        let mut state = HarnessState::default();
+        state.status = HarnessStatus::Running;
+        let mut parse = CliParse::default();
+
+        let call = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "agy-1",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "call_1",
+                    "name": "mcp_snippet_bash",
+                    "args": {"command": "ls", "label": "list", "toolSummary": "List files"},
+                    "status": "in_progress",
+                    "rawInput": {"command": "ls", "label": "list", "toolSummary": "List files"}
+                }
+            }
+        });
+        let (changed, finished) = harness.apply_devin_event(&mut state, &call, None, &mut parse);
+        assert!(changed && !finished);
+        match state.events.last() {
+            Some(HarnessEvent::ToolCall { tool_name, arguments }) => {
+                assert_eq!(tool_name, "bash");
+                assert_eq!(arguments.get("command").and_then(Value::as_str), Some("ls"));
+                assert!(arguments.get("toolSummary").is_none());
+            }
+            other => panic!("expected bash ToolCall, got {other:?}"),
+        }
+
+        let done = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "agy-1",
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "call_1",
+                    "name": "mcp_snippet_bash",
+                    "status": "completed"
+                }
+            }
+        });
+        let (changed, finished) = harness.apply_devin_event(&mut state, &done, None, &mut parse);
+        assert!(changed && !finished);
+
+        let usage = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "agy-1",
+                "update": {"sessionUpdate": "usage_update", "used": 14571, "size": 1048576}
+            }
+        });
+        harness.apply_devin_event(&mut state, &usage, None, &mut parse);
+        assert_eq!(parse.devin_window, 1048576);
+
+        let chunk = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "agy-1",
+                "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "OK"}}
+            }
+        });
+        harness.apply_devin_event(&mut state, &chunk, None, &mut parse);
+        let res = json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "result": {"stopReason": "end_turn", "usage": {"inputTokens": 17102, "outputTokens": 75, "cachedReadTokens": 12900, "cachedWriteTokens": 0, "thoughtTokens": 0, "totalTokens": 30077}}
+        });
+        let (changed, finished) = harness.apply_devin_event(&mut state, &res, None, &mut parse);
+        assert!(changed && finished);
+        assert_eq!(state.final_text.as_deref(), Some("OK"));
+        assert_eq!(state.prompt_tokens, 17102);
+        assert_eq!(state.cache_read_tokens, 12900);
+        assert_eq!(state.completion_tokens, 75);
     }
 
     #[test]
