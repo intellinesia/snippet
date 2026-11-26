@@ -2073,15 +2073,25 @@ impl CodingHarness {
             "The Devin CLI (devin) isn't installed or isn't on PATH (set SNIPPET_DEVIN_BIN to its path)".to_string()
         })?;
         let env = crate::devin::prepare_home(&session.key, mcp_url, prompt, account)?;
+        Ok(self.build_devin_command(bin, env, profile, mcp_url))
+    }
+
+    fn build_devin_command(
+        &self,
+        bin: PathBuf,
+        env: crate::devin::PreparedEnv,
+        profile: &InferenceProfileConfig,
+        mcp_url: &str,
+    ) -> Command {
         let mut cmd = Command::new(bin);
         cmd.current_dir(self.context.workspace_root())
-            .args(["--config", &env.config_path.display().to_string()]);
+            .args(["--config", &env.config_path.display().to_string()])
+            .arg("acp");
         let model = Self::resolved_devin_model(profile);
         if !model.is_empty() {
             cmd.args(["--model", &model]);
         }
-        cmd.arg("acp")
-            .env("HOME", &env.home)
+        cmd.env("HOME", &env.home)
             .env("XDG_CONFIG_HOME", &env.xdg_config_home)
             .env("XDG_DATA_HOME", &env.xdg_data_home)
             .env("XDG_CACHE_HOME", &env.xdg_cache_home)
@@ -2091,7 +2101,7 @@ impl CodingHarness {
         if let Some(token) = env.api_key {
             cmd.env("WINDSURF_API_KEY", token);
         }
-        Ok(cmd)
+        cmd
     }
 
     async fn acp_rpc(
@@ -4833,6 +4843,36 @@ mod devin_acp_tests {
             CodingHarness::resolved_devin_model(&cfg),
             "swe-2-flash-medium"
         );
+    }
+
+    #[test]
+    fn devin_command_passes_model_to_the_acp_subcommand() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let env = crate::devin::PreparedEnv {
+            home: dir.path().join("home"),
+            xdg_config_home: dir.path().join("xdg"),
+            xdg_data_home: dir.path().join("xdg"),
+            xdg_cache_home: dir.path().join("xdg"),
+            config_path: dir.path().join("config.json"),
+            api_key: None,
+        };
+        let mut profile = InferenceProfileConfig::default();
+        profile.provider = "devin".into();
+        profile.model = "claude-opus-5.5".into();
+        let cmd = test_harness().build_devin_command(
+            dir.path().join("devin"),
+            env,
+            &profile,
+            "http://127.0.0.1",
+        );
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let acp = args.iter().position(|a| a == "acp").unwrap();
+        let model = args.iter().position(|a| a == "--model").unwrap();
+        assert!(acp < model, "expected `acp --model`, got {args:?}");
     }
 
     #[test]

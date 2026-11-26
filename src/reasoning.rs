@@ -88,20 +88,48 @@ pub fn spec(provider: &str, model: &str) -> ReasoningSpec {
             "Antigravity sets effort through the model: pick a -low, -medium or -high variant. It doesn't stream its thinking.",
         ),
         "devin" => {
-            if m == "swe-2" || m == "swe" || m == "swe-2-flash" {
+            let swe2 = m == "swe"
+                || m == "swe-2"
+                || m == "swe-2-flash"
+                || m
+                    .strip_prefix("swe-2-")
+                    .is_some_and(|rest| !rest.starts_with('1'));
+            let fixed = m == "adaptive"
+                || m == "swe-1-6"
+                || m.starts_with("kimi-k2-")
+                || m.starts_with("claude-opus-4-6")
+                || m.starts_with("claude-opus-4.6")
+                || m.starts_with("claude-sonnet-4-6")
+                || m.starts_with("claude-sonnet-4.6");
+            if m == "adaptive" {
+                ReasoningSpec::fixed(
+                    Control::None,
+                    "Thinking",
+                    false,
+                    "Adaptive routes across Devin models; it doesn't take an effort tier.",
+                )
+            } else if fixed {
+                ReasoningSpec::fixed(
+                    Control::Model,
+                    "Thinking",
+                    true,
+                    "Devin doesn't expose a thought level for this model; behavior is pinned by the model itself.",
+                )
+            } else if swe2 {
                 ReasoningSpec::effort(
                     "Thinking",
                     &["medium", "high", "max"],
                     false,
                     true,
-                    "SWE-2 effort tier (medium, high, max); thoughts stream from Devin ACP.",
+                    "SWE-2 thought level (medium, high, max), applied via Devin ACP thought_level; thoughts stream when the model supports them.",
                 )
             } else {
-                ReasoningSpec::fixed(
-                    Control::Model,
+                ReasoningSpec::effort(
                     "Thinking",
+                    &LADDER,
+                    false,
                     true,
-                    "Devin variants pin their own effort lane (for example swe-2-high or swe-2-flash-medium); thoughts stream when the model supports them.",
+                    "Devin thought level (low to max), applied via ACP thought_level. If the model doesn't take a level it's ignored.",
                 )
             }
         }

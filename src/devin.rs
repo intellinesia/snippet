@@ -503,6 +503,42 @@ pub async fn models() -> Result<Vec<String>, String> {
     Ok(list)
 }
 
+/// Devin model_uids encode effort tiers (e.g. `-high`), speed lanes
+/// (e.g. `-fast`, `-lightning`) and genuinely distinct variants (e.g.
+/// `-thinking`, `-1m`) on top of a family uid. Devin ACP selects effort via
+/// its `thought_level` config option and speed via `speed`, so only the
+/// family base and `Extra` variants are usable picker entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DevinVariantClass {
+    Base,
+    Tier(&'static str),
+    Speed,
+    Extra,
+}
+
+pub(crate) const DEVIN_TIER_ORDER: [&str; 7] =
+    ["minimal", "none", "low", "medium", "high", "xhigh", "max"];
+
+pub(crate) fn classify_model_uid(uid: &str, family_uid: &str) -> DevinVariantClass {
+    let Some(rest) = uid.strip_prefix(family_uid) else {
+        return DevinVariantClass::Extra;
+    };
+    let Some(tail) = rest.strip_prefix('-') else {
+        return if rest.is_empty() {
+            DevinVariantClass::Base
+        } else {
+            DevinVariantClass::Extra
+        };
+    };
+    if tail.ends_with("-fast") || tail.ends_with("-lightning") {
+        return DevinVariantClass::Speed;
+    }
+    if let Some(tier) = DEVIN_TIER_ORDER.iter().find(|t| **t == tail) {
+        return DevinVariantClass::Tier(tier);
+    }
+    DevinVariantClass::Extra
+}
+
 pub fn parse_model_ids(raw: &Value) -> Vec<String> {
     let mut ids = Vec::new();
     let Some(families) = raw.get("families").and_then(Value::as_array) else {
@@ -517,6 +553,11 @@ pub fn parse_model_ids(raw: &Value) -> Vec<String> {
         if slug == "fusion" {
             continue;
         }
+        let family_uid = family
+            .get("family_uid")
+            .and_then(Value::as_str)
+            .unwrap_or(slug)
+            .trim();
         if !slug.is_empty() && !ids.iter().any(|x| x == slug) {
             ids.push(slug.to_string());
         }
@@ -528,6 +569,7 @@ pub fn parse_model_ids(raw: &Value) -> Vec<String> {
                     .map(str::trim)
                     && !uid.is_empty()
                     && !uid.starts_with("MODEL_")
+                    && classify_model_uid(uid, family_uid) == DevinVariantClass::Extra
                     && !ids.iter().any(|x| x == uid)
                 {
                     ids.push(uid.to_string());

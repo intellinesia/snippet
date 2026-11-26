@@ -256,6 +256,13 @@ async fn devin_live_catalog() -> Result<Vec<CatalogModel>, String> {
     }
 }
 
+const DEVIN_PICKER_TIERS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Devin ACP accepts the family base model (e.g. `claude-opus-5-5-medium`,
+/// reached via the family slug `claude-opus-5.5` or the variant itself) and
+/// picks effort through the `thought_level` config option, not per-variant
+/// model ids. Surface one entry per family plus genuinely distinct variants
+/// (e.g. `-thinking`, `-1m`); tier suffixes become `efforts`.
 fn parse_devin_models(raw: &Value) -> Vec<CatalogModel> {
     let mut out = Vec::new();
     let Some(families) = raw.get("families").and_then(Value::as_array) else {
@@ -267,11 +274,16 @@ fn parse_devin_models(raw: &Value) -> Vec<CatalogModel> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim();
-        if slug == "fusion" {
+        if slug.is_empty() || slug == "fusion" {
             continue;
         }
         let family_label = family
             .get("family_label")
+            .and_then(Value::as_str)
+            .unwrap_or(slug)
+            .trim();
+        let family_uid = family
+            .get("family_uid")
             .and_then(Value::as_str)
             .unwrap_or(slug)
             .trim();
@@ -280,34 +292,49 @@ fn parse_devin_models(raw: &Value) -> Vec<CatalogModel> {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        if !slug.is_empty()
-            && variants.len() > 1
-            && !out.iter().any(|m: &CatalogModel| m.id == slug)
-        {
-            let max_ctx = variants
-                .iter()
-                .filter_map(|v| v.get("max_context_tokens").and_then(Value::as_u64))
-                .max();
-            let spec = crate::reasoning::spec("devin", slug);
-            let efforts = (spec.control == crate::reasoning::Control::Effort)
-                .then(|| spec.options.iter().map(|s| s.to_string()).collect());
+        let max_ctx = variants
+            .iter()
+            .filter_map(|v| v.get("max_context_tokens").and_then(Value::as_u64))
+            .max();
+        let mut tiers = Vec::new();
+        let mut extras = Vec::new();
+        for v in &variants {
+            let Some(uid) = v.get("model_uid").and_then(Value::as_str).map(str::trim) else {
+                continue;
+            };
+            if uid.is_empty() || uid.starts_with("MODEL_") {
+                continue;
+            }
+            match crate::devin::classify_model_uid(uid, family_uid) {
+                crate::devin::DevinVariantClass::Tier(t)
+                    if DEVIN_PICKER_TIERS.contains(&t) =>
+                {
+                    tiers.push(t);
+                }
+                crate::devin::DevinVariantClass::Extra => extras.push(v),
+                _ => {}
+            }
+        }
+        let efforts: Vec<String> = DEVIN_PICKER_TIERS
+            .iter()
+            .filter(|t| tiers.contains(t))
+            .map(|t| t.to_string())
+            .collect();
+        if !out.iter().any(|m: &CatalogModel| m.id == slug) {
             out.push(CatalogModel {
                 id: slug.to_string(),
                 display_name: Some(family_label.to_string()),
                 context_window: max_ctx,
-                efforts,
-                reasoning: Some(true),
+                reasoning: Some(!efforts.is_empty()),
                 supports_images: Some(!slug.starts_with("swe-2")),
+                efforts: Some(efforts),
             });
         }
-        for v in variants {
+        for v in extras {
             let Some(uid) = v.get("model_uid").and_then(Value::as_str).map(str::trim) else {
                 continue;
             };
-            if uid.is_empty()
-                || uid.starts_with("MODEL_")
-                || out.iter().any(|m: &CatalogModel| m.id == uid)
-            {
+            if out.iter().any(|m: &CatalogModel| m.id == uid) {
                 continue;
             }
             let label = v.get("label").and_then(Value::as_str).unwrap_or(uid);
@@ -333,48 +360,46 @@ fn parse_devin_models(raw: &Value) -> Vec<CatalogModel> {
 }
 
 fn devin_catalog() -> Vec<CatalogModel> {
+    const LADDER: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
     [
         (
             "swe-2",
             "SWE-2",
             None,
-            Some(vec!["medium".into(), "high".into(), "max".into()]),
+            vec!["medium", "high", "max"],
             false,
         ),
-        ("swe-2-high", "SWE-2 High", None, Some(Vec::new()), false),
-        (
-            "swe-2-medium",
-            "SWE-2 Medium",
-            None,
-            Some(Vec::new()),
-            false,
-        ),
-        ("swe-2-max", "SWE-2 Max", None, Some(Vec::new()), false),
+        ("swe-2.1", "SWE-2.1", Some(262_144), LADDER.to_vec(), false),
         (
             "swe-2-flash",
             "SWE-2 Flash",
             Some(262_144),
-            Some(vec!["medium".into(), "high".into(), "max".into()]),
+            vec!["medium", "high", "max"],
             false,
+        ),
+        ("adaptive", "Adaptive", None, Vec::new(), true),
+        (
+            "claude-opus-5.5",
+            "Claude Opus 5.5",
+            Some(1_000_000),
+            LADDER.to_vec(),
+            true,
         ),
         (
-            "swe-2-flash-medium",
-            "SWE-2 Flash Medium",
-            Some(262_144),
-            Some(Vec::new()),
-            false,
+            "claude-sonnet-5.5",
+            "Claude Sonnet 5.5",
+            Some(1_000_000),
+            LADDER.to_vec(),
+            true,
         ),
-        ("adaptive", "Adaptive", None, Some(Vec::new()), true),
-        ("opus", "Claude Opus", None, Some(Vec::new()), true),
-        ("sonnet", "Claude Sonnet", None, Some(Vec::new()), true),
-        ("gpt", "GPT", None, Some(Vec::new()), true),
+        ("gpt-5.5", "GPT-5.5", Some(272_000), LADDER.to_vec(), true),
     ]
     .into_iter()
     .map(|(id, name, context_window, efforts, images)| CatalogModel {
         id: id.to_string(),
         display_name: Some(name.to_string()),
         context_window,
-        efforts,
+        efforts: Some(efforts.iter().map(|s| s.to_string()).collect()),
         reasoning: Some(true),
         supports_images: Some(images),
     })
@@ -614,22 +639,36 @@ mod tests {
                 {
                   "slug": "swe-2",
                   "family_label": "SWE-2",
+                  "family_uid": "swe-2",
                   "variants": [
                     {"model_uid": "swe-2-high", "label": "SWE-2 High", "description": "Default SWE-2"},
-                    {"model_uid": "swe-2-medium", "label": "SWE-2 Medium", "description": "Faster"}
+                    {"model_uid": "swe-2-medium", "label": "SWE-2 Medium", "description": "Faster"},
+                    {"model_uid": "swe-2-high-lightning", "label": "SWE-2 High Ultrafast"}
                   ]
                 },
                 {
                   "slug": "swe-2-flash",
                   "family_label": "SWE-2 Flash",
+                  "family_uid": "swe-2-flash",
                   "variants": [
                     {"model_uid": "swe-2-flash-medium", "label": "SWE-2 Flash Medium", "max_context_tokens": 262144},
                     {"model_uid": "swe-2-flash-high", "label": "SWE-2 Flash High", "max_context_tokens": 262144}
                   ]
                 },
                 {
+                  "slug": "claude-opus-4.6",
+                  "family_label": "Claude Opus 4.6",
+                  "family_uid": "claude-opus-4-6",
+                  "variants": [
+                    {"model_uid": "claude-opus-4-6", "label": "Claude Opus 4.6"},
+                    {"model_uid": "claude-opus-4-6-thinking", "label": "Claude Opus 4.6 Thinking"},
+                    {"model_uid": "claude-opus-4-6-1m", "label": "Claude Opus 4.6 1M", "max_context_tokens": 1000000}
+                  ]
+                },
+                {
                   "slug": "fusion",
                   "family_label": "Fusion",
+                  "family_uid": "fusion",
                   "variants": [{"model_uid": "fusion-claude-gpt", "label": "Fusion"}]
                 }
               ]
@@ -642,21 +681,23 @@ mod tests {
             ids,
             [
                 "swe-2",
-                "swe-2-high",
-                "swe-2-medium",
                 "swe-2-flash",
-                "swe-2-flash-medium",
-                "swe-2-flash-high"
+                "claude-opus-4.6",
+                "claude-opus-4-6-thinking",
+                "claude-opus-4-6-1m"
             ]
         );
         let swe2 = models.iter().find(|m| m.id == "swe-2").unwrap();
         assert_eq!(
             swe2.efforts.as_deref(),
-            Some(&["medium".into(), "high".into(), "max".into()][..])
+            Some(&["medium".into(), "high".into()][..])
         );
         assert_eq!(swe2.supports_images, Some(false));
         let flash = models.iter().find(|m| m.id == "swe-2-flash").unwrap();
         assert_eq!(flash.context_window, Some(262_144));
+        let opus46 = models.iter().find(|m| m.id == "claude-opus-4.6").unwrap();
+        assert_eq!(opus46.efforts.as_deref(), Some(&[][..]));
+        assert_eq!(opus46.reasoning, Some(false));
 
         let fallback = devin_catalog();
         assert!(fallback.iter().any(|m| m.id == "swe-2"));
