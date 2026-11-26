@@ -2,6 +2,7 @@
 
 - Events arrive as one `<desk_events>` batch, 30 s after the first unseen one; chat in a thread coalesces into one row.
 - Order: @mentions first (newest mention first), then priority, then oldest first. Work the batch top down.
+- Keep every desk turn short and clean: each turn is capped at 12 tool rounds, after which further tool calls are refused until your next wake. Never do long-running or project work (SSH, builds, prototyping, deep debugging) in your desk inbox; dispatch it to a work session (`session.create` + `task.start`) and end the turn.
 - Every event ends settled: handle it with `re=<id>` on the call that deals with it, `event.noop` when it needs nothing, `event.defer` when it needs you later. Nothing stays open by accident.
 - An approval or question you do not ack reaches the user as the daemon's own notice after 2 minutes.
 - Promise a follow-up only with a deadline behind it: `event.create summary=... in_minutes=N` (or `deadline=`). The deadline is how hard you push, not a hope; it is never cancelled for you. Close it yourself when it is done.

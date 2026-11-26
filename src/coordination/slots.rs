@@ -197,14 +197,18 @@ impl Store {
     }
 
     /// Distinct work sessions the agent has live: those carrying a task in
-    /// progress, and agent-managed sessions running now. Desks and Lead never count.
+    /// progress whose session is still active (not idle/stopped or user-owned),
+    /// and agent-managed sessions running now. Desks and Lead never count.
     pub fn count_active_slots(&self, agent_id: &str) -> Result<u32, StoreError> {
         self.with_connection(|conn| {
             conn.query_row(
                 "SELECT COUNT(*) FROM (
                      SELECT COALESCE(NULLIF(ta.work_session_id, ''), t.session_id) AS sid
-                     FROM task_agents ta JOIN tasks t ON t.id = ta.task_id
+                     FROM task_agents ta
+                     JOIN tasks t ON t.id = ta.task_id
+                     LEFT JOIN sessions s ON s.id = COALESCE(NULLIF(ta.work_session_id, ''), t.session_id)
                      WHERE ta.agent_id = ?1 AND ta.removed_at IS NULL AND t.status = 'in_progress'
+                       AND (s.id IS NULL OR (s.managed_by = 'agent' AND s.status IN ('running', 'waiting_for_input')))
                      UNION
                      SELECT s.id FROM sessions s
                      WHERE s.agent_id = ?1 AND s.status = 'running' AND s.managed_by = 'agent'

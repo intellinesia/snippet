@@ -2594,6 +2594,8 @@ impl CodingHarness {
         let mut held_envelopes: Vec<String> = Vec::new();
         let mut last_heard = tokio::time::Instant::now();
         let mut stall_restarts = 0u8;
+        let is_desk_inbox = crate::session::is_inbox_session_id(&session_key);
+        let mut desk_turn_rounds: u32 = 0;
 
         if state.status == HarnessStatus::Running
             && let Some(text) = state.messages.iter().rev().find_map(|m| match m {
@@ -2901,6 +2903,7 @@ impl CodingHarness {
                         state.last_prompt_tokens,
                     );
                     last_heard = tokio::time::Instant::now();
+                    desk_turn_rounds = 0;
                     if kind.is_acp() {
                         let combined = std::mem::take(&mut outbox)
                             .into_iter()
@@ -3558,6 +3561,17 @@ impl CodingHarness {
                 call = mcp_rx.recv() => {
                     let Some(mut call) = call else { continue };
                     last_heard = tokio::time::Instant::now();
+                    const DESK_TURN_ROUND_CAP: u32 = 12;
+                    if is_desk_inbox && !call.inner {
+                        desk_turn_rounds = desk_turn_rounds.saturating_add(1);
+                        if desk_turn_rounds > DESK_TURN_ROUND_CAP {
+                            let _ = call.reply.send(error_result(
+                                "desk_turn_cap",
+                                "Desk turn cap reached (12 tool rounds). Stop calling tools and end this turn now; you will wake again on the next event. Never do long-running or project work in your desk inbox: dispatch a work session with `snippet tool session.create` + `snippet tool task.start`.",
+                            ));
+                            continue;
+                        }
+                    }
                     if !call.inner
                         && let Some(nudge) = self.note_tool_round()
                     {
