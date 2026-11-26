@@ -823,7 +823,9 @@ async fn present_desk_batches(d: &Shared, now: &str) {
             };
             drop(tx);
             let mut envelope = desk_events_envelope(&batch.events);
-            let now_state = crate::progress::desk_state_render(&d.store, &batch.agent_id);
+            let batch_ids: Vec<&str> = batch.events.iter().map(|e| e.id.as_str()).collect();
+            let now_state =
+                crate::progress::desk_state_render_excluding(&d.store, &batch.agent_id, &batch_ids);
             if !now_state.is_empty() {
                 envelope = format!("{now_state}\n{envelope}");
             }
@@ -3268,8 +3270,8 @@ mod tests {
         match desk_rx.try_recv().expect("desk got the debounced batch") {
             LoopInput::UserMessage(text) => {
                 assert!(text.contains("<desk_events"), "{text}");
-                assert!(text.contains("anyone there?"), "{text}");
-                assert!(text.contains("now:"), "{text}");
+                assert_eq!(text.matches("anyone there?").count(), 1, "{text}");
+                assert!(!text.contains("now:"), "{text}");
             }
             other => panic!("unexpected desk input: {other:?}"),
         }

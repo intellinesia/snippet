@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use super::{Store, StoreError};
 
 pub const APPROVAL_PRIORITY: i64 = 50;
-const SUMMARY_PART_CHARS: usize = 200;
+const SUMMARY_PART_CHARS: usize = 800;
 const RECENT_PARTS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq)]

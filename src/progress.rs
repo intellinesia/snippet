@@ -265,9 +265,22 @@ pub const DESK_STATE_MAX_BYTES: usize = 1500;
 /// The desk's live state for its reminder: open events, their deadlines and
 /// the work sessions it is waiting on, capped so it fits every turn.
 pub fn desk_state_render(db: &Store, agent_id: &str) -> String {
-    let events = db
+    desk_state_render_excluding(db, agent_id, &[])
+}
+
+/// Same as [`desk_state_render`], omitting events already listed in the
+/// accompanying `<desk_events>` batch so a wake never prints an event twice.
+pub fn desk_state_render_excluding(
+    db: &Store,
+    agent_id: &str,
+    exclude_event_ids: &[&str],
+) -> String {
+    let events: Vec<_> = db
         .list_open_desk_events(agent_id, DESK_STATE_EVENTS)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| !exclude_event_ids.contains(&e.id.as_str()))
+        .collect();
     let sessions = db
         .desk_work_sessions(agent_id, DESK_STATE_SESSIONS)
         .unwrap_or_default();
@@ -299,9 +312,16 @@ pub fn desk_state_render(db: &Store, agent_id: &str) -> String {
         lines.push(format!("  snoozes (group.snooze off=true ends one): {}", parts.join(", ")));
     }
     if events.is_empty() {
-        lines.push("  events: none open".to_string());
+        if exclude_event_ids.is_empty() {
+            lines.push("  events: none open".to_string());
+        }
     } else {
-        lines.push("  events (event.ack/noop/defer; re=<id> on a call acks it):".to_string());
+        let label = if exclude_event_ids.is_empty() {
+            "  events (event.ack/noop/defer; re=<id> on a call acks it):"
+        } else {
+            "  other open events (event.ack/noop/defer; re=<id> on a call acks it):"
+        };
+        lines.push(label.to_string());
         for e in &events {
             let mut line = format!("  - {} {} p{}", e.id, e.kind, e.priority);
             if e.is_mention {
