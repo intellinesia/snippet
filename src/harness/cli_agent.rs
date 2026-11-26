@@ -1667,19 +1667,6 @@ impl CodingHarness {
         })
     }
 
-    fn agy_compaction_prompt(&self) -> String {
-        let save = if self.memory_on() { DURABLE_SAVE } else { "" };
-        crate::envelope::Envelope::new("compaction")
-            .attr("kind", "summary")
-            .child(
-                "note",
-                format!(
-                    "This conversation is about to be compacted: it will continue in a fresh conversation that starts from your summary. {save}The reply is only the summary, about 2k tokens: the user's requests in order (one line each), the goal and what counts as done, progress (done, in progress, left), decisions and constraints, the next steps and the exact values (paths, ids, error strings) they need."
-                ),
-            )
-            .render()
-    }
-
     fn compact_command(&self) -> String {
         "/compact Keep the summary lean, about 2k tokens: the user's requests in order (one line each), the goal and what counts as done, progress (done, in progress, left), decisions and constraints, the next steps and the exact values (paths, ids, error strings) they need.".to_string()
     }
@@ -2318,10 +2305,7 @@ impl CodingHarness {
                             "Saving working state to memory, then compacting the conversation."
                                 .to_string(),
                     });
-                    let save = match kind {
-                        CliKind::ClaudeCode => self.compaction_save_prompt(),
-                        CliKind::Antigravity | CliKind::Devin => Some(self.agy_compaction_prompt()),
-                    };
+                    let save = self.compaction_save_prompt();
                     state.reflected_events = Some(state.events.len());
                     save_at = None;
                     match save {
@@ -2406,7 +2390,10 @@ impl CodingHarness {
                         .context_window_tokens
                         .saturating_mul(self.config.compact_at_pct.clamp(1, 100) as u64)
                         / 100;
-                    let full = (away || once) && threshold > 0 && session.tokens >= threshold;
+                    let full = kind == CliKind::ClaudeCode
+                        && (away || once)
+                        && threshold > 0
+                        && session.tokens >= threshold;
                     let lost = !rewritten
                         && !behind
                         && !full
@@ -2870,7 +2857,9 @@ impl CodingHarness {
                             self.persist(&mut state, &lanes).await?;
                         }
                         LoopInput::Compact => {
-                            compact_wanted = true;
+                            if kind == CliKind::ClaudeCode {
+                                compact_wanted = true;
+                            }
                         }
                         LoopInput::ContinueLean => {
                             if let Some(text) = self.continue_lean(&mut state) {
@@ -3055,36 +3044,6 @@ impl CodingHarness {
                                     cli_window = parse.devin_window;
                                 }
                                 match compaction {
-                                    CliCompaction::Saving if matches!(kind, CliKind::Antigravity | CliKind::Devin) => {
-                                        state.final_text = final_before.clone();
-                                        let summary = state.messages.iter().rev().find_map(|m| match m {
-                                            HarnessMessage::Assistant { content, .. } if !content.trim().is_empty() => Some(content.trim().to_string()),
-                                            _ => None,
-                                        });
-                                        if let Some(mut p) = process.take() {
-                                            let _ = p.child.start_kill();
-                                        }
-                                        generation += 1;
-                                        session.id = None;
-                                        session.started = false;
-                                        self.archive_cli_compaction(&mut state);
-                                        session.mark_synced(&state.messages, state.compactions + 1, 0);
-                                        after_compaction = Some(match summary {
-                                            Some(summary) => format!("This conversation continues from an earlier one that was compacted. Summary of it:\n{summary}"),
-                                            None => "This conversation continues from an earlier one that was compacted.".to_string(),
-                                        });
-                                        last_task_note.clear();
-                                        state.compactions += 1;
-                                        state.reflected_events = Some(state.events.len());
-                                        state.last_prompt_tokens = 0;
-                                        state.events.push(HarnessEvent::SystemDecision {
-                                            step: "history_compacted".to_string(),
-                                            reasoning: "Compacted the conversation: working state saved to memory, and a fresh conversation starts from its summary.".to_string(),
-                                        });
-                                        state.compacting = false;
-                                        compaction = CliCompaction::Idle;
-                                        state.status = HarnessStatus::Idle;
-                                    }
                                     CliCompaction::Saving => {
                                         state.final_text = final_before.clone();
                                         state.status = HarnessStatus::Running;
@@ -3123,7 +3082,11 @@ impl CodingHarness {
                                             reported => reported.min(self.config.context_window_tokens.max(1)),
                                         };
                                         let threshold = window.saturating_mul(self.config.compact_at_pct.clamp(1, 100) as u64) / 100;
-                                        if !once && threshold > 0 && state.last_prompt_tokens >= threshold {
+                                        if !once
+                                            && kind == CliKind::ClaudeCode
+                                            && threshold > 0
+                                            && state.last_prompt_tokens >= threshold
+                                        {
                                             compact_wanted = true;
                                         }
                                     }
