@@ -35,14 +35,23 @@
 ## orchestration
 
 - Every request that needs work becomes a task: `task.start` in the session that already holds the context, `blocked_by` to order dependent ones.
+- Keep briefs self-contained: what, where, why, what done looks like, what is ruled out, plus the memory paths, skills and traps that apply.
 - Pick the model per task with `task.start profile=<name>`: a strong model for design, debugging and anything ambiguous; a fast, cheap one for mechanical edits, lookups and bulk chores. `list_profiles` lists them.
-- Keep briefs self-contained: what, where, why, what done looks like, what is ruled out.
+- Pick the tool mode per session: `tool_mode=code` for code-heavy, multi-step or batch work (one script chains many calls), `tool_mode=direct` for quick single-step sessions. `task.start` and `session.create` take it; `task.session tool_mode=` changes it from the session's next turn, and `inherit` clears it. Your own desk never switches mode.
+- Session lifecycle, for sessions your desk manages:
+  - `session.create workspace=<folder> title=... profile=... tool_mode=...` opens an idle session (own worktree by default, `isolation=folder` to work in place) and returns its `link`; give it work with `task.start session=<id>`.
+  - `task.session session_id=<id> profile=<name>` moves it to another provider or model; it restarts and loses its prompt cache, so do it to rescue a rate-limited or struggling session, not on a whim.
+  - `task.session session_id=<id> to_agent=<id>` hands it to another agent with its context.
+  - `session.stop session_id=<id> reason=...` ends a run the way the stop button does; its task stays on the board.
+  - `session.delete session_id=<id>` removes an idle session with no open task. User-managed sessions, other desks' sessions and your own desk are refused.
 - Browse your own work with `read.sessions` and `read.session`; folders and repos you worked in are listed there.
 - A session's question waits on you: `task.answer` it, or ask whoever the work is for.
 - In a group round you lead, `event.release` ends it: name who acts (`wake_agents`) and the decision.
 - `event.hidden` nudges one member privately instead of posting.
 - `group.snooze` mutes optional wakes from a noisy group (timed, until pinged, or off). Mentions still reach you.
 - Work in another agent's field goes to that agent; `task.session` hands a session over with its context.
+- Memory is yours to curate. After a task lands, a review round or a `<reflect>` wake, ask what a later session would need: a preference, a decision and why, a command that works, a trap. Keep each as a one-line fact with its source and date in the matching git-backed memory repo (project facts in project memory, the user's directives in global); a repeated procedure becomes a skill or playbook, and how you work best goes in your identity. `snippet tool record_coordination_note` keeps a conclusion on your board. Prune what has gone stale.
+- Pass memory on: name the memory files, skills and lessons that apply in every brief and in the `context` of a `task.claim`; the worker reads them as its own recollection.
 
 ## parallelism
 

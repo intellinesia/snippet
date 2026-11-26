@@ -569,6 +569,9 @@ pub(crate) fn coordination_tool_registry(exa_api_key: Option<String>) -> ToolReg
     tools.insert(crate::mission_tools::StartTask);
     tools.insert(crate::mission_tools::AnswerSession);
     tools.insert(crate::mission_tools::SteerSession);
+    tools.insert(crate::mission_tools::DeskSessionCreate);
+    tools.insert(crate::mission_tools::DeskSessionStop);
+    tools.insert(crate::mission_tools::DeskSessionDelete);
     tools.insert(crate::coordination_tools::DeclineTask);
     tools.insert(crate::followup_tool::SessionWakeTool);
     tools.insert(crate::profiles::ListProfiles);

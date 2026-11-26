@@ -496,6 +496,24 @@ const SLOT: Surface = Surface {
     )],
 };
 
+const SESSION: Surface = Surface {
+    name: "session",
+    intro: "Work sessions your desk manages.",
+    acts: &[
+        act(
+            "create",
+            "desk_session_create",
+            "open an idle work session (workspace, profile, tool_mode).",
+        ),
+        act("stop", "desk_session_stop", "stop a running managed session."),
+        act(
+            "delete",
+            "desk_session_delete",
+            "delete an idle managed session with no open task.",
+        ),
+    ],
+};
+
 const PROGRESS: Surface = Surface {
     name: "progress",
     intro: "Delta updates to the desk that manages this session.",
@@ -612,7 +630,7 @@ const AMBIENT: Surface = Surface {
 
 pub const SURFACES: &[&Surface] = &[
     &WEB, &PROCESS, &PRESENT, &CANVAS, &DELEGATE, &SKILL, &MESSAGE, &READ, &TASK, &WAKE, &EVENT,
-    &GROUP, &DESK, &SLOT, &PROGRESS, &TASKS, &SESSIONS, &AMBIENT, &CODE, &CALLS,
+    &GROUP, &DESK, &SLOT, &SESSION, &PROGRESS, &TASKS, &SESSIONS, &AMBIENT, &CODE, &CALLS,
 ];
 
 fn keep_for(role: SeatRole) -> &'static [&'static str] {
@@ -818,7 +836,7 @@ pub fn lower_dotted(name: &str, args: &Value) -> Result<Option<(String, Value)>,
 /// Dotted surface.action definitions for Desk's CLI-backed tools (`snippet tool`).
 pub fn desk_cli_definitions(internal: &[NativeToolDefinition]) -> Vec<NativeToolDefinition> {
     const DESK_CLI_SURFACES: &[&Surface] = &[
-        &MESSAGE, &READ, &TASK, &WAKE, &EVENT, &GROUP, &DESK, &SLOT, &PRESENT, &WEB,
+        &MESSAGE, &READ, &TASK, &WAKE, &EVENT, &GROUP, &DESK, &SLOT, &SESSION, &PRESENT, &WEB,
     ];
     let by_name: HashMap<&str, &NativeToolDefinition> = internal
         .iter()
@@ -1261,7 +1279,15 @@ mod tests {
         .into_iter()
         .map(|d| d.name)
         .collect();
-        for name in ["desk.parallelism", "desk.guide", "slot.claim", "list_profiles"] {
+        for name in [
+            "desk.parallelism",
+            "desk.guide",
+            "slot.claim",
+            "session.create",
+            "session.stop",
+            "session.delete",
+            "list_profiles",
+        ] {
             assert!(desk_cli.iter().any(|n| n == name), "{name} missing from {desk_cli:?}");
         }
         assert!(!desk_cli.iter().any(|n| n.starts_with("progress")));

@@ -277,7 +277,223 @@ struct SteerSessionArgs {
     #[serde(default)]
     to_agent: Option<String>,
     #[serde(default)]
+    tool_mode: Option<String>,
+    #[serde(default)]
     note: String,
+}
+
+fn work_tool_mode(raw: Option<&str>) -> Result<Option<String>, ToolError> {
+    let Some(mode) = raw.map(str::trim).filter(|m| !m.is_empty()) else {
+        return Ok(None);
+    };
+    if !matches!(mode, "code" | "direct" | "inherit") {
+        return Err(ToolError::msg(
+            "tool_mode must be `code`, `direct` or `inherit`",
+        ));
+    }
+    Ok(Some(mode.to_string()))
+}
+
+pub(crate) fn set_work_session_tool_mode(session: &str, mode: &str) -> Result<(), ToolError> {
+    if crate::session::is_inbox_session_id(session) || lead::is_session_id(session) {
+        return Err(ToolError::msg(
+            "tool_mode applies to work sessions, not a desk or Lead",
+        ));
+    }
+    crate::code_mode::mode::set("session", session, Some(mode)).map_err(ToolError::msg)
+}
+
+fn desk_caller(ctx: &ToolContext) -> Result<String, ToolError> {
+    let caller = ctx.durable_session_id().unwrap_or_default();
+    if !crate::session::is_inbox_session_id(caller) {
+        return Err(ToolError::msg("only a desk manages sessions this way"));
+    }
+    Ok(crate::session::owner_agent_id_for(caller, ctx.agent_id()))
+}
+
+fn desk_work_session(store: &Store, desk: &str, session: &str) -> Result<String, String> {
+    let id = desk_managed_session(store, desk, session)?;
+    if crate::session::is_inbox_session_id(&id) || lead::is_session_id(&id) {
+        return Err(format!("`{id}` is a desk or Lead, not a work session"));
+    }
+    Ok(id)
+}
+
+fn desk_deletable_session(store: &Store, desk: &str, session: &str) -> Result<String, String> {
+    let id = desk_work_session(store, desk, session)?;
+    if session_is_running(store, &id) {
+        return Err(format!("`{id}` is running; session.stop it first"));
+    }
+    let open = store
+        .list_tasks(None, None)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .any(|t| t.session_id == id && !t.status.is_terminal());
+    if open {
+        return Err(format!(
+            "`{id}` still holds an open task; finish or cancel it first"
+        ));
+    }
+    Ok(id)
+}
+
+#[derive(Deserialize)]
+struct DeskSessionCreateArgs {
+    workspace: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    isolation: Option<crate::session::WorkspaceMode>,
+    #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
+    tool_mode: Option<String>,
+    #[serde(default)]
+    force_new: bool,
+}
+
+pub struct DeskSessionCreate;
+#[async_trait]
+impl Tool for DeskSessionCreate {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "desk_session_create".into(),
+            description: "Open an idle work session your desk manages in `workspace` (a folder). isolation: worktree (default, own branch in a git repo) or folder. profile sets its model; tool_mode code suits multi-step or batch work, direct quick single steps. Give it work with task.start session=<id>.".into(),
+            input_schema: schema(
+                json!({
+                    "workspace": {"type": "string", "description": "folder path"},
+                    "title": {"type": "string"},
+                    "isolation": {"type": "string", "enum": ["worktree", "folder"]},
+                    "profile": {"type": "string"},
+                    "tool_mode": {"type": "string", "enum": ["code", "direct"]},
+                    "force_new": {"type": "boolean", "description": "open one even though this folder had a session active in the last 7 days"}
+                }),
+                &["workspace"],
+            ),
+        }
+    }
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let args: DeskSessionCreateArgs =
+            serde_json::from_value(arguments).map_err(|e| ToolError::msg(e.to_string()))?;
+        let desk = desk_caller(ctx)?;
+        let folder = args.workspace.trim();
+        if folder.is_empty() {
+            return Err(ToolError::msg("workspace must be a folder path"));
+        }
+        let tool_mode = work_tool_mode(args.tool_mode.as_deref())?;
+        let profile = args
+            .profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string);
+        let (session, _) = open_folder_session(
+            folder,
+            &args.title,
+            true,
+            args.force_new,
+            args.isolation.unwrap_or(crate::session::WorkspaceMode::Worktree),
+            profile,
+        )
+        .await?;
+        let store = crate::session::store_for_sessions()
+            .ok_or_else(|| ToolError::msg("the session store is unavailable"))?;
+        store
+            .set_session_role(
+                &session.id,
+                crate::session::role_str(crate::session::SessionRole::Standard),
+                Some(&desk),
+            )
+            .map_err(|e| ToolError::msg(e.to_string()))?;
+        store
+            .set_session_managed_by(&session.id, "agent")
+            .map_err(|e| ToolError::msg(e.to_string()))?;
+        if let Some(mode) = tool_mode.as_deref() {
+            set_work_session_tool_mode(&session.id, mode)?;
+        }
+        let label = if session.title.trim().is_empty() {
+            session.id.as_str()
+        } else {
+            session.title.trim()
+        };
+        Ok(ToolResult::success(json!({
+            "session_id": session.id,
+            "workspace": session.folder,
+            "profile": session.profile,
+            "tool_mode": tool_mode,
+            "link": format!("[{label}](session:{})", session.id),
+            "next": "idle; give it work with task.start session=<session_id>.",
+        })))
+    }
+}
+
+pub struct DeskSessionStop;
+#[async_trait]
+impl Tool for DeskSessionStop {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "desk_session_stop".into(),
+            description: "Stop a running session your desk manages, as the stop button does: work so far is kept and it waits for its next message. Its task stays on the board.".into(),
+            input_schema: schema(
+                json!({
+                    "session_id": {"type": "string"},
+                    "reason": {"type": "string", "description": "one line, shown in that session"}
+                }),
+                &["session_id"],
+            ),
+        }
+    }
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let desk = desk_caller(ctx)?;
+        let raw = arguments
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let store = ctx.store().map_err(|e| ToolError::msg(e.to_string()))?;
+        let id = desk_work_session(&store, &desk, raw).map_err(ToolError::msg)?;
+        if !session_is_running(&store, &id) {
+            return Ok(ToolResult::success(
+                json!({"session_id": id, "stopped": false, "note": "not running"}),
+            ));
+        }
+        let reason = arguments
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .unwrap_or("stopped by its desk");
+        let out = interrupt_session(&id, reason).await?;
+        Ok(ToolResult::success(
+            json!({"session_id": id, "stopped": true, "detail": out}),
+        ))
+    }
+}
+
+pub struct DeskSessionDelete;
+#[async_trait]
+impl Tool for DeskSessionDelete {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "desk_session_delete".into(),
+            description: "Delete an idle session your desk manages with no open task: the conversation goes for good; memory keeps what was learned. Running, user-managed and other desks' sessions are refused.".into(),
+            input_schema: schema(json!({"session_id": {"type": "string"}}), &["session_id"]),
+        }
+    }
+    async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let desk = desk_caller(ctx)?;
+        let raw = arguments
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let store = ctx.store().map_err(|e| ToolError::msg(e.to_string()))?;
+        let id = desk_deletable_session(&store, &desk, raw).map_err(ToolError::msg)?;
+        let daemon = crate::serve::live_daemon()
+            .ok_or_else(|| ToolError::msg("the daemon is not running"))?;
+        if !crate::serve::session_routes::purge_session(daemon, &id, false).await {
+            return Err(ToolError::msg(format!("no session `{id}`")));
+        }
+        Ok(ToolResult::success(json!({"session_id": id, "deleted": true})))
+    }
 }
 
 /// The canonical id of `session` when `desk` manages it, or why it may not steer it.
@@ -306,10 +522,11 @@ impl Tool for SteerSession {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "steer_session".into(),
-            description: "A session your desk manages: profile sets its model; to_agent hands it on with its context.".into(),
+            description: "A session your desk manages: profile sets its model; tool_mode (code|direct|inherit) applies from its next turn; to_agent hands it on with its context.".into(),
             input_schema: schema(json!({
                 "session_id": {"type": "string"},
                 "profile": {"type": "string"},
+                "tool_mode": {"type": "string", "enum": ["code", "direct", "inherit"]},
                 "to_agent": {"type": "string"},
                 "note": {"type": "string"}
             }), &["session_id"]),
@@ -336,12 +553,20 @@ impl Tool for SteerSession {
             .as_deref()
             .map(str::trim)
             .filter(|a| !a.is_empty());
+        let tool_mode = work_tool_mode(args.tool_mode.as_deref())?;
+        if profile.is_none() && to_agent.is_none() && tool_mode.is_none() {
+            return Err(ToolError::msg("give profile, tool_mode, to_agent or a mix"));
+        }
+        let mut out = json!({"session": session});
+        if let Some(mode) = tool_mode.as_deref() {
+            set_work_session_tool_mode(&session, mode)?;
+            out["tool_mode"] = json!(mode);
+        }
         if profile.is_none() && to_agent.is_none() {
-            return Err(ToolError::msg("give profile, to_agent or both"));
+            return Ok(ToolResult::success(out));
         }
         let daemon = crate::serve::live_daemon()
             .ok_or_else(|| ToolError::msg("the daemon is not running"))?;
-        let mut out = json!({"session": session});
         if let Some(profile) = profile {
             daemon
                 .run_session_on_profile(&session, profile, true)
@@ -1928,6 +2153,8 @@ struct StartTaskArgs {
     verify_mode: Option<String>,
     #[serde(default)]
     profile: Option<String>,
+    #[serde(default)]
+    tool_mode: Option<String>,
 }
 
 /// A desk's one-call task start: file AND claim, so the offer loop never
@@ -1952,7 +2179,8 @@ impl Tool for StartTask {
                     "read_only": {"type": "boolean"},
                     "expected_minutes": {"type": "integer"},
                     "verify_mode": {"type": "string", "enum": ["self", "reviewer", "lead", "user"], "description": "default self"},
-                    "profile": {"type": "string", "description": "inference profile for the work: strong for hard or open work, cheap for mechanical chores"}
+                    "profile": {"type": "string", "description": "inference profile for the work: strong for hard or open work, cheap for mechanical chores"},
+                    "tool_mode": {"type": "string", "enum": ["code", "direct", "inherit"], "description": "the work session's tool mode: code for multi-step or batch work, direct for quick single steps"}
                 }),
                 &["title", "description"],
             ),
@@ -1971,6 +2199,7 @@ impl Tool for StartTask {
                 "Lead routes work and never starts tasks itself; use tasks.create",
             ));
         }
+        let tool_mode = work_tool_mode(args.tool_mode.as_deref())?;
         let session_query = args
             .session
             .as_deref()
@@ -1998,6 +2227,9 @@ impl Tool for StartTask {
                 let (session, _) =
                     open_folder_session(folder, &args.title, true, args.force_new, workspace, None)
                         .await?;
+                if let Some(mode) = tool_mode.as_deref() {
+                    set_work_session_tool_mode(&session.id, mode)?;
+                }
                 (session.id, true)
             }
         };
@@ -2028,6 +2260,12 @@ impl Tool for StartTask {
             .as_str()
             .unwrap_or_default()
             .to_string();
+        if !fresh
+            && let Some(mode) = tool_mode.as_deref()
+            && !session_id.is_empty()
+        {
+            set_work_session_tool_mode(&session_id, mode)?;
+        }
         let waiting_on: Vec<String> =
             serde_json::from_value(data["waiting_on"].clone()).unwrap_or_default();
         let label = if title.trim().is_empty() { task_id.as_str() } else { title.trim() };
@@ -2043,6 +2281,7 @@ impl Tool for StartTask {
             "waiting_on": waiting_on,
             "link": format!("[{label}](task:{task_id})"),
             "session_link": format!("[{label}](session:{session_id})"),
+            "tool_mode": tool_mode,
             "next": next,
         })))
     }
@@ -5323,5 +5562,294 @@ mod steer_session_tests {
         assert!(super::desk_managed_session(&store, "scout", "users").is_err());
         assert!(super::desk_managed_session(&store, "scout", "theirs").is_err());
         assert!(super::desk_managed_session(&store, "scout", "missing").is_err());
+    }
+}
+
+#[cfg(test)]
+mod desk_session_tests {
+    use super::*;
+    use crate::config::ToolMode;
+    use crate::harness::HarnessState;
+
+    fn uid(prefix: &str) -> String {
+        format!("{prefix}-{}", uuid::Uuid::new_v4().simple())
+    }
+
+    fn shared() -> Store {
+        for _ in 0..50 {
+            if let Ok(store) = Store::open_cached(crate::store::default_db_path()) {
+                return store;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        Store::open_cached(crate::store::default_db_path()).unwrap()
+    }
+
+    fn seed(store: &Store, id: &str, agent: Option<&str>, managed_by: &str) {
+        store
+            .import_session(
+                id,
+                "wk",
+                &HarnessState::blank("/tmp", None),
+                &crate::conversations::SessionExtras {
+                    agent_id: agent.map(str::to_string),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        store.set_session_managed_by(id, managed_by).unwrap();
+    }
+
+    fn desk(agent: &str) -> ToolContext {
+        let dir = std::env::temp_dir();
+        ToolContext::new(&dir)
+            .unwrap()
+            .with_durable_session_id(crate::session::inbox_session_id(agent))
+            .with_store_path(crate::store::default_db_path())
+            .with_agent_id(agent)
+    }
+
+    #[tokio::test]
+    async fn session_create_opens_a_desk_managed_session_with_its_tool_mode() {
+        let agent = uid("desk");
+        let folder = tempfile::tempdir().unwrap();
+        let res = DeskSessionCreate
+            .execute(
+                &desk(&agent),
+                json!({
+                    "workspace": folder.path().display().to_string(),
+                    "title": "Refactor",
+                    "isolation": "folder",
+                    "tool_mode": "code",
+                }),
+            )
+            .await
+            .unwrap();
+        let data = &res.value["data"];
+        let id = data["session_id"].as_str().unwrap().to_string();
+        assert_eq!(data["link"], format!("[Refactor](session:{id})"));
+        assert_eq!(desk_managed_session(&shared(), &agent, &id).unwrap(), id);
+        assert_eq!(
+            crate::code_mode::mode::resolve(Some(&id), Some(&agent)),
+            (ToolMode::Code, "session")
+        );
+        assert!(desk_managed_session(&shared(), "someone-else", &id).is_err());
+
+        let bad = DeskSessionCreate
+            .execute(
+                &desk(&agent),
+                json!({"workspace": folder.path().display().to_string(), "tool_mode": "hybrid"}),
+            )
+            .await;
+        assert!(bad.is_err());
+        let not_desk = ToolContext::new(folder.path())
+            .unwrap()
+            .with_durable_session_id("work-1")
+            .with_agent_id(&agent);
+        assert!(
+            DeskSessionCreate
+                .execute(&not_desk, json!({"workspace": folder.path().display().to_string()}))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_stop_and_delete_refuse_sessions_the_desk_does_not_manage() {
+        let store = shared();
+        let agent = uid("desk");
+        let other = uid("other");
+        let mine = uid("mine");
+        let users = uid("users");
+        let theirs = uid("theirs");
+        let inbox = crate::session::inbox_session_id(&agent);
+        seed(&store, &mine, Some(&agent), "agent");
+        seed(&store, &users, Some(&agent), "human");
+        seed(&store, &theirs, Some(&other), "agent");
+        seed(&store, &inbox, Some(&agent), "agent");
+        let ctx = desk(&agent);
+
+        for refused in [&users, &theirs, &inbox, &uid("missing")] {
+            assert!(
+                DeskSessionStop
+                    .execute(&ctx, json!({"session_id": refused}))
+                    .await
+                    .is_err(),
+                "stop {refused}"
+            );
+            assert!(
+                DeskSessionDelete
+                    .execute(&ctx, json!({"session_id": refused}))
+                    .await
+                    .is_err(),
+                "delete {refused}"
+            );
+        }
+
+        let idle = DeskSessionStop
+            .execute(&ctx, json!({"session_id": format!("session:{mine}")}))
+            .await
+            .unwrap();
+        assert_eq!(idle.value["data"]["stopped"], false);
+        assert_eq!(desk_deletable_session(&store, &agent, &mine).unwrap(), mine);
+
+        store
+            .with_connection(|conn| {
+                conn.execute(
+                    "UPDATE sessions SET status = 'running' WHERE id = ?1",
+                    rusqlite::params![mine],
+                )
+            })
+            .unwrap();
+        let err = desk_deletable_session(&store, &agent, &mine).unwrap_err();
+        assert!(err.contains("running"), "{err}");
+        store
+            .with_connection(|conn| {
+                conn.execute(
+                    "UPDATE sessions SET status = 'idle' WHERE id = ?1",
+                    rusqlite::params![mine],
+                )
+            })
+            .unwrap();
+
+        let task = Task::dispatched_to(
+            uid("t"),
+            mine.clone(),
+            "open work".into(),
+            "d".into(),
+            vec![],
+            HandoffMode::Resume,
+            "agent",
+            &agent,
+            now_rfc3339(),
+        );
+        store.create_task(&task).unwrap();
+        let err = desk_deletable_session(&store, &agent, &mine).unwrap_err();
+        assert!(err.contains("open task"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn steer_session_sets_tool_mode_only_on_managed_work_sessions() {
+        let store = shared();
+        let agent = uid("desk");
+        let mine = uid("mine");
+        let users = uid("users");
+        let inbox = crate::session::inbox_session_id(&agent);
+        seed(&store, &mine, Some(&agent), "agent");
+        seed(&store, &users, Some(&agent), "human");
+        seed(&store, &inbox, Some(&agent), "agent");
+        let ctx = desk(&agent);
+
+        let res = SteerSession
+            .execute(&ctx, json!({"session_id": mine, "tool_mode": "code"}))
+            .await
+            .unwrap();
+        assert_eq!(res.value["data"]["tool_mode"], "code");
+        assert_eq!(
+            crate::code_mode::mode::resolve(Some(&mine), Some(&agent)),
+            (ToolMode::Code, "session")
+        );
+        SteerSession
+            .execute(&ctx, json!({"session_id": mine, "tool_mode": "inherit"}))
+            .await
+            .unwrap();
+        assert_ne!(
+            crate::code_mode::mode::resolve(Some(&mine), Some(&agent)).1,
+            "session"
+        );
+        for refused in [&users, &inbox] {
+            assert!(
+                SteerSession
+                    .execute(&ctx, json!({"session_id": refused, "tool_mode": "code"}))
+                    .await
+                    .is_err(),
+                "{refused}"
+            );
+        }
+        assert_ne!(
+            crate::code_mode::mode::resolve(Some(&inbox), Some(&agent)).1,
+            "session"
+        );
+        assert!(
+            SteerSession
+                .execute(&ctx, json!({"session_id": mine, "tool_mode": "hybrid"}))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn start_task_sets_the_work_session_tool_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open(dir.path().join("snippet.db")).unwrap();
+        let agent = uid("desk");
+        db.create_agent(&crate::coordination::types::Agent {
+            id: agent.clone(),
+            display_name: agent.clone(),
+            handle: agent.clone(),
+            kind: crate::coordination::types::AgentKind::Worker,
+            status: crate::coordination::types::AgentStatus::Active,
+            capabilities: vec![],
+        })
+        .unwrap();
+        let ctx = ToolContext::new(dir.path())
+            .unwrap()
+            .with_durable_session_id(crate::session::inbox_session_id(&agent))
+            .with_store_path(dir.path().join("snippet.db"))
+            .with_agent_id(&agent)
+            .with_lead_root(dir.path().join("mc"));
+        let folder = tempfile::tempdir().unwrap();
+
+        let res = StartTask
+            .execute(
+                &ctx,
+                json!({
+                    "title": "Batch rename",
+                    "description": "brief",
+                    "folder": folder.path().display().to_string(),
+                    "workspace": "folder",
+                    "tool_mode": "code",
+                }),
+            )
+            .await
+            .unwrap();
+        let fresh = res.value["data"]["session_id"].as_str().unwrap().to_string();
+        assert_eq!(res.value["data"]["tool_mode"], "code");
+        assert_eq!(
+            crate::code_mode::mode::resolve(Some(&fresh), Some(&agent)),
+            (ToolMode::Code, "session")
+        );
+
+        let warm_folder = tempfile::tempdir().unwrap();
+        let warm = crate::session::create_blank_session(
+            warm_folder.path(),
+            "Warm",
+            true,
+            crate::session::WorkspaceMode::Folder,
+        )
+        .unwrap();
+        crate::code_mode::mode::set("agent", &agent, Some("code")).unwrap();
+        StartTask
+            .execute(
+                &ctx,
+                json!({"title": "Quick fix", "description": "brief", "session": warm.id, "tool_mode": "direct"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::code_mode::mode::resolve(Some(&warm.id), Some(&agent)),
+            (ToolMode::Direct, "session")
+        );
+        crate::code_mode::mode::set("agent", &agent, None).unwrap();
+
+        assert!(
+            StartTask
+                .execute(
+                    &ctx,
+                    json!({"title": "x", "description": "y", "session": warm.id, "tool_mode": "hybrid"}),
+                )
+                .await
+                .is_err()
+        );
     }
 }
