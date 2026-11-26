@@ -953,7 +953,7 @@ fn tool_prompt_preamble(kind: CliKind) -> String {
             "## Tools in this runtime\n\nThe tools named in this prompt are served to you as `{MCP_PREFIX}<name>`: where it says `bash`, call `{MCP_PREFIX}bash`, and so on. These are your only tools: you have no built-in ones in this session. Read and search files with `bash` (cat, sed -n, rg, ls), and make every change, command, question and delegation through the snippet tools."
         ),
         CliKind::Devin => format!(
-            "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{MCP_SERVER}` MCP server. Call them via `mcp_call_tool` with `server_name: \"{MCP_SERVER}\"`, `tool_name` set to the exact tool name (`bash`, `change_files`, `update_plan`, `ask_user`, `delegate`, and the rest), and `arguments` matching its schema (call `mcp_list_tools` for `{MCP_SERVER}` once first if your runtime requires it). The nested `arguments` object is required on every call and carries the tool's own fields, written out in full each time, for example `{{\"server_name\": \"{MCP_SERVER}\", \"tool_name\": \"bash\", \"arguments\": {{\"command\": \"ls\", \"label\": \"list files\"}}}}`; a call without it reaches the tool empty and fails. Every built-in tool of yours (`exec`, `read`, `write`, `edit`, `grep`, `glob`, `skill`, `ask_user_question`, `todo_write`) is disabled in this session: read and search files with `bash` (`cat`, `sed -n`, `rg`, `ls`), edit files with `change_files`, and make every command, question and delegation through the `{MCP_SERVER}` MCP tools."
+            "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{MCP_SERVER}` MCP server. Do not call `mcp_list_tools` — every available tool and its arguments are already listed below. Call them directly via `mcp_call_tool` with `server_name: \"{MCP_SERVER}\"`, `tool_name` set to the exact tool name (`bash`, `change_files`, `code`, `ask_user`, and the rest), and `arguments` matching its schema. The nested `arguments` object is required on every call and carries the tool's own fields in full, for example `{{\"server_name\": \"{MCP_SERVER}\", \"tool_name\": \"bash\", \"arguments\": {{\"command\": \"ls\", \"label\": \"list files\"}}}}`; a call without it reaches the tool empty and fails. Every built-in tool of yours (`exec`, `read`, `write`, `edit`, `grep`, `glob`, `skill`, `ask_user_question`, `todo_write`) is disabled in this session: read and search files with `bash` (`cat`, `sed -n`, `rg`, `ls`), edit files with `change_files`, and make every command, question and delegation through the `{MCP_SERVER}` MCP tools."
         ),
         CliKind::Antigravity => format!(
             "## Tools in this runtime\n\nThe tools named in these instructions are served directly as `{0}<name>`: where it says `bash`, call `{0}bash`, `change_files` -> `{0}change_files`, `code` -> `{0}code`, and so on. These are your only working tools: every built-in tool of yours is switched off in this session. Read and search files with `{0}bash` (cat, sed -n, rg, ls), edit files with `{0}change_files`, and make every command, question and delegation through the snippet tools. The one exception: when a tool result says its output was saved to a file inside your own Antigravity folder, read that file with `view_file`.",
@@ -1721,12 +1721,114 @@ impl CodingHarness {
         } else {
             system
         };
+        if kind.is_acp() {
+            // Put the runtime tool contract first so it overrides the host CLI's
+            // built-in tool instructions immediately.
+            let mut prompt = tool_prompt_preamble(kind);
+            if !session.tool_guide.is_empty() {
+                prompt.push_str("\n\n");
+                prompt.push_str(&session.tool_guide);
+            }
+            prompt.push_str("\n\n");
+            prompt.push_str(&system);
+            return prompt;
+        }
         let mut prompt = format!("{system}\n\n{}", tool_prompt_preamble(kind));
         if !session.tool_guide.is_empty() {
             prompt.push_str("\n\n");
             prompt.push_str(&session.tool_guide);
         }
         prompt
+    }
+
+    fn workspace_snapshot(
+        &self,
+        kind: CliKind,
+        profile: &InferenceProfileConfig,
+        bridge_mode: crate::config::ToolMode,
+    ) -> String {
+        let root = self.context.workspace_root();
+        let mut lines = Vec::new();
+        let model = profile.model.trim();
+        let mode_label = crate::code_mode::mode::label(bridge_mode);
+        lines.push(format!(
+            "runtime: {} ({}, {} mode)",
+            kind.label(),
+            if model.is_empty() { "default" } else { model },
+            mode_label
+        ));
+        lines.push(format!("workspace: {}", root.display()));
+        if let Ok(out) = std::process::Command::new("git")
+            .args(["-C", &root.display().to_string(), "rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            && out.status.success()
+        {
+            let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let sha = std::process::Command::new("git")
+                .args(["-C", &root.display().to_string(), "rev-parse", "--short", "HEAD"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            if !branch.is_empty() {
+                lines.push(format!("git_head: {branch} ({sha})"));
+            }
+            if let Ok(st) = std::process::Command::new("git")
+                .args(["-C", &root.display().to_string(), "status", "--short"])
+                .output()
+                && st.status.success()
+            {
+                let dirty: Vec<String> = String::from_utf8_lossy(&st.stdout)
+                    .lines()
+                    .take(20)
+                    .map(str::to_string)
+                    .collect();
+                if dirty.is_empty() {
+                    lines.push("git_status: clean".to_string());
+                } else {
+                    lines.push(format!("git_status:\n{}", dirty.join("\n")));
+                }
+            }
+            if let Ok(log) = std::process::Command::new("git")
+                .args(["-C", &root.display().to_string(), "log", "-n", "5", "--oneline"])
+                .output()
+                && log.status.success()
+            {
+                let commits: Vec<String> = String::from_utf8_lossy(&log.stdout)
+                    .lines()
+                    .map(str::to_string)
+                    .collect();
+                if !commits.is_empty() {
+                    lines.push(format!("recent_commits:\n{}", commits.join("\n")));
+                }
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(root) {
+            let mut names: Vec<String> = entries
+                .flatten()
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if name == ".git" {
+                        return None;
+                    }
+                    let dir = e.file_type().ok().is_some_and(|t| t.is_dir());
+                    Some(if dir { format!("{name}/") } else { name })
+                })
+                .collect();
+            names.sort_unstable();
+            let total = names.len();
+            names.truncate(40);
+            if !names.is_empty() {
+                let suffix = if total > names.len() {
+                    format!(" (+{} more)", total - names.len())
+                } else {
+                    String::new()
+                };
+                lines.push(format!("top_level: {}{suffix}", names.join(", ")));
+            }
+        }
+        format!("<session_context>\n{}\n</session_context>", lines.join("\n"))
     }
 
     fn memory_on(&self) -> bool {
@@ -2360,6 +2462,7 @@ impl CodingHarness {
         let mut memory_saving = false;
         let mut after_compaction: Option<String> = None;
         let mut mode_notice: Option<String> = None;
+        let mut need_snapshot = !session.started || session.synced == 0;
         let mut cli_window: u64 = 0;
         if matches!(kind, CliKind::Antigravity | CliKind::Devin) {
             session.tool_guide = guide;
@@ -2523,6 +2626,9 @@ impl CodingHarness {
                         generation += 1;
                         session.restart();
                         state.last_prompt_tokens = 0;
+                        need_snapshot = true;
+                        last_task_note.clear();
+                        last_vault_line.clear();
                         state.events.push(HarnessEvent::SystemDecision {
                             step: "runtime_reseeded".to_string(),
                             reasoning: if rewritten {
@@ -2550,9 +2656,12 @@ impl CodingHarness {
                     if let Ok((url, rx, tx)) =
                         start_mcp_server(bridge, steers.clone(), parse.served.clone(), true).await
                     {
-                        if matches!(kind, CliKind::Antigravity | CliKind::Devin) {
-                            session.tool_guide = guide;
-                        }
+                        let full_notice = if kind.is_acp() {
+                            session.tool_guide = guide.clone();
+                            format!("{notice}\n\n{guide}")
+                        } else {
+                            notice
+                        };
                         mcp_url = url;
                         mcp_rx = rx;
                         mcp_tx = tx;
@@ -2560,7 +2669,7 @@ impl CodingHarness {
                         advertised_tools = scripts.clone();
                         script_tools = scripts;
                         bridge_mode = wanted;
-                        mode_notice = Some(notice);
+                        mode_notice = Some(full_notice);
                         if let Some(mut p) = process.take() {
                             let _ = p.child.start_kill();
                         }
@@ -2635,6 +2744,10 @@ impl CodingHarness {
                     }
                     let note = crate::coordination_tools::task_awareness(&self.context);
                     let mut reminder: Vec<String> = after_compaction.take().into_iter().collect();
+                    if need_snapshot {
+                        need_snapshot = false;
+                        reminder.push(self.workspace_snapshot(kind, &profile, bridge_mode));
+                    }
                     reminder.extend(mode_notice.take());
                     if note != last_task_note {
                         reminder.push(if note.is_empty() {
@@ -2986,7 +3099,16 @@ impl CodingHarness {
                                 session.restart();
                                 session.mark_synced(&state.messages, state.compactions, 0);
                                 after_compaction = Some(text);
+                                need_snapshot = true;
                                 last_task_note.clear();
+                                last_vault_line.clear();
+                                if kind.is_acp() && !session.tool_guide.is_empty() {
+                                    mode_notice = Some(format!(
+                                        "Current tool mode: {} mode.\n\n{}",
+                                        crate::code_mode::mode::label(bridge_mode),
+                                        session.tool_guide
+                                    ));
+                                }
                             }
                             self.persist(&mut state, &lanes).await?;
                         }
@@ -3084,6 +3206,13 @@ impl CodingHarness {
                                     ),
                                 });
                                 last_task_note.clear();
+                                last_vault_line.clear();
+                                need_snapshot = true;
+                                if bridge_mode == crate::config::ToolMode::Code {
+                                    mode_notice = Some(
+                                        "Current tool mode: code mode (use `code` for scripted/batch calls, `bash`, `change_files`, `view_image`, `ask_user`, `custom_tool`, `calls`).".to_string()
+                                    );
+                                }
                                 self.persist(&mut state, &lanes).await?;
                                 session.mark_synced(&state.messages, state.compactions, tokens("post_tokens"));
                             }

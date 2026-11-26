@@ -348,14 +348,10 @@ fn prepare_home_in(
     let config = build_config_json(&exe, org_id.as_deref());
     let config_path = cfg_dir.join("config.json");
     write_if_changed(&config_path, &config)?;
-    write_if_changed(
-        &cfg_dir.join("mcp_config.json"),
-        &json!({
-            "mcpServers": {
-                MCP_SERVER_NAME: { "type": "http", "url": mcp_url }
-            }
-        }),
-    )?;
+    // ACP passes mcpServers directly on session/new and session/load; remove any
+    // stale mcp_config.json so Devin does not register a duplicate server.
+    let _ = mcp_url;
+    let _ = std::fs::remove_file(cfg_dir.join("mcp_config.json"));
     write_text_if_changed(&cfg_dir.join("AGENTS.md"), prompt)?;
 
     Ok(PreparedEnv {
