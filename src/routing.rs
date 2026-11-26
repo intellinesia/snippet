@@ -94,14 +94,20 @@ pub fn candidates(cfg: &SnippetConfig, route: Route) -> Vec<String> {
 
 pub fn next_after(cfg: &SnippetConfig, route: Route, current: &str) -> Option<String> {
     let all = configured(cfg, route);
+    if all.is_empty() {
+        return None;
+    }
     let start = all
         .iter()
         .position(|n| n == current)
         .map(|i| i + 1)
         .unwrap_or(0);
-    all.into_iter()
+    all.iter()
+        .cycle()
         .skip(start)
-        .find(|n| n != current && limited_until(n).is_none())
+        .take(all.len())
+        .find(|n| n.as_str() != current && limited_until(n).is_none())
+        .cloned()
 }
 
 pub fn alternatives(cfg: &SnippetConfig, current: &str) -> Vec<String> {

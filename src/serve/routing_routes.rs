@@ -18,11 +18,18 @@ fn pinned_desk_profile(d: &Daemon, id: &str) -> Option<String> {
         return None;
     }
     let agent = id.strip_prefix("inbox-")?;
-    d.store
+    let pinned = d
+        .store
         .agent_desk_profile(agent)
         .ok()
         .flatten()
-        .filter(|p| !p.trim().is_empty())
+        .filter(|p| !p.trim().is_empty())?;
+    let cfg = d.config.lock().unwrap();
+    let valid = match cfg.setups.as_ref() {
+        Some(setups) if !setups.is_empty() => setups.contains_key(&pinned),
+        _ => true,
+    };
+    valid.then_some(pinned)
 }
 
 /// Where a limited session moves next; a desk pinned to a profile stays on it.

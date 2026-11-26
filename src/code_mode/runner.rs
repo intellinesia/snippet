@@ -191,6 +191,13 @@ fn runs_dir(session: &str) -> PathBuf {
 }
 
 fn load(session: &str, run_id: &str) -> Option<RunRecord> {
+    if run_id.is_empty()
+        || !run_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return None;
+    }
     let path = runs_dir(session).join(format!("{run_id}.json"));
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
@@ -631,6 +638,24 @@ async fn drive(
                         } else {
                             diverged = true;
                             if is_fs_call(&name) {
+                                if matches!(name.as_str(), "fs.write" | "fs.replace")
+                                    && !advertised.iter().any(|d| d.name == "change_files")
+                                {
+                                    let res = failure(
+                                        "fs_error",
+                                        format!("`{name}` is unavailable in a session without `change_files`."),
+                                        None,
+                                    );
+                                    finish_in_flight(
+                                        &mut record,
+                                        slot,
+                                        id,
+                                        res,
+                                        advertised,
+                                        &reply_tx,
+                                    );
+                                    continue;
+                                }
                                 let ws = workspace.clone();
                                 in_flight.push(Box::pin(async move {
                                     let res = tokio::task::spawn_blocking(move || {
