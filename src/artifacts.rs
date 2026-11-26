@@ -315,12 +315,18 @@ fn collect(base: &Path, dir: &Path, out: &mut Vec<String>) {
         return;
     };
     for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_symlink() {
+            continue;
+        }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with('.') || name == "node_modules" || name == "target" {
             continue;
         }
-        if path.is_dir() {
+        if ft.is_dir() {
             collect(base, &path, out);
         } else if let Ok(rel) = path.strip_prefix(base) {
             out.push(rel.to_string_lossy().to_string());

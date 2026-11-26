@@ -746,7 +746,7 @@ impl WatchRunner {
             }
             Err(error) => {
                 eprintln!("[watches] delivery failed for {}: {error}", watch.id);
-                let merged = merge_pending(watch.pending.as_deref(), &all);
+                let merged = merge_pending(watch.pending.as_deref(), &new);
                 let _ = self.store.set_watch_runtime(
                     &watch.id,
                     &cw::WatchRuntime {

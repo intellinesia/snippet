@@ -296,7 +296,7 @@ impl Vault {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.secrets.is_empty()
+        self.secrets.is_empty() && self.harness.is_empty()
     }
 
     pub fn names(&self) -> Vec<String> {

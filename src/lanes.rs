@@ -859,6 +859,21 @@ impl LaneManager {
                 "lane `{lane_id}` is still running — its report will arrive as a <lane_report>."
             ));
         }
+        let check_paths = if !record.read_only && !record.paths.is_empty() {
+            Some(record.paths.clone())
+        } else {
+            None
+        };
+        if let Some(paths) = check_paths.as_deref()
+            && let Some(clash) = self.scope_clash(false, paths)
+        {
+            return Err(clash);
+        }
+        let record = self
+            .records
+            .iter_mut()
+            .find(|r| r.id == lane_id)
+            .expect("lane record verified above");
         // A lane lost to a restart has no live task but its state file survives —
         // following up is exactly how to revive it.
         record.status = LaneStatus::Running;

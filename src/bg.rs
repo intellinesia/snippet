@@ -287,7 +287,20 @@ pub fn find(workspace: &Path, id: &str) -> Option<BgStatus> {
 /// Terminate a recorded background process (its group if it leads one, else the
 /// process). Returns Ok(true) if the process was running and signaled, Ok(false)
 /// if it had already exited. Returns Err if the record doesn't exist or is invalid.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 pub fn kill_by_id(workspace: &Path, id: &str) -> std::io::Result<bool> {
+    if !valid_id(id) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid process id `{id}`"),
+        ));
+    }
     let path = bg_dir(workspace).join(format!("{id}.json"));
     let txt = std::fs::read_to_string(&path)?;
     let entry: BgEntry = serde_json::from_str(&txt)
@@ -315,6 +328,12 @@ pub fn kill_by_id(workspace: &Path, id: &str) -> std::io::Result<bool> {
 /// Read trailing lines from a background process's log file.
 /// Returns (content, truncated_flag).
 pub fn tail_log(workspace: &Path, id: &str, max_lines: usize) -> std::io::Result<(String, bool)> {
+    if !valid_id(id) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid process id `{id}`"),
+        ));
+    }
     let (out, truncated) = tail_file(&log_path(workspace, id), max_lines)?;
     match tail_file(&err_path(workspace, id), max_lines) {
         Ok((err, err_truncated)) if !err.trim().is_empty() => Ok((
