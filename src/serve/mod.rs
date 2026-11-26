@@ -1527,15 +1527,27 @@ pub async fn run_serve(
         },
         _ = shutdown_signal() => Ok(()),
     };
-    let _ = tokio::time::timeout(Duration::from_secs(3), announce_restart(&daemon)).await;
+    let interrupted = tokio::time::timeout(
+        Duration::from_secs(2),
+        snapshot_interrupted_sessions(&daemon),
+    )
+    .await
+    .unwrap_or_default();
     server.abort();
     running.stop().await;
+    // Append daemon_restart AFTER running.stop() so shutdown tool_result and
+    // turn_changes events flush first and daemon_restart stays the final event.
+    let _ = tokio::time::timeout(
+        Duration::from_secs(3),
+        announce_restart(&daemon, interrupted),
+    )
+    .await;
     let _ = std::fs::remove_file(state_json_path());
     let _ = std::fs::remove_file(pid_path());
     result
 }
 
-async fn announce_restart(d: &Shared) {
+async fn snapshot_interrupted_sessions(d: &Shared) -> Vec<(String, crate::harness::HarnessState)> {
     let live: Vec<(String, PathBuf)> = d
         .sessions
         .lock()
@@ -1544,13 +1556,23 @@ async fn announce_restart(d: &Shared) {
         .filter(|(_, l)| !l.join.is_finished())
         .map(|(id, l)| (id.clone(), l.state_path.clone()))
         .collect();
+    let mut out = Vec::new();
     for (id, path) in live {
         let Some(meta) = read_session_meta(&path) else {
             continue;
         };
-        if meta.status != crate::harness::HarnessStatus::Running && meta.human_waiting.is_empty() {
-            continue;
+        if meta.status == crate::harness::HarnessStatus::Running
+            || meta.status == crate::harness::HarnessStatus::WaitingForInput
+            || !meta.human_waiting.is_empty()
+        {
+            out.push((id, meta));
         }
+    }
+    out
+}
+
+async fn announce_restart(d: &Shared, interrupted: Vec<(String, crate::harness::HarnessState)>) {
+    for (id, meta) in interrupted {
         let event = crate::harness::HarnessEvent::SystemDecision {
             step: "daemon_restart".to_string(),
             reasoning: "Snippet restarted while this turn was running; continuing is up to the next message".to_string(),

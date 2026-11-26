@@ -872,6 +872,9 @@ pub(crate) async fn restart_continuation(d: Shared) {
     };
     let now = chrono::Utc::now().to_rfc3339();
     for hit in hits {
+        let _ = d
+            .store
+            .settle_stale_relays_for_session(&hit.agent_id, &hit.session_id, &now);
         if let Err(error) = d.store.enqueue_restart_interrupted(&hit, &now) {
             eprintln!(
                 "[restart] notify {} about {}: {error}",

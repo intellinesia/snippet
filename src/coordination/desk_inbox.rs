@@ -460,6 +460,34 @@ impl Store {
         })
     }
 
+    /// On restart, close stale pre-restart approval/question relays and
+    /// fallbacks for a session whose pending prompt was canceled by shutdown.
+    pub fn settle_stale_relays_for_session(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        now: &str,
+    ) -> Result<usize, StoreError> {
+        let now = normalize_ts(now)?;
+        self.with_connection(|conn| {
+            let pattern = format!("%:{session_id}:%");
+            let count = conn.execute(
+                "UPDATE desk_inbox
+                 SET resolved_at = ?3, resolution = 'restart', updated_at = ?3
+                 WHERE agent_id = ?1 AND resolved_at IS NULL
+                   AND kind IN ('approval', 'question')
+                   AND (json_extract(payload_json, '$.session') = ?2 OR source_ref LIKE ?4)",
+                params![agent_id, session_id, now, pattern],
+            )?;
+            let _ = conn.execute(
+                "UPDATE desk_fallbacks SET handled_at = ?3
+                 WHERE desk = ?1 AND session_id = ?2 AND handled_at IS NULL",
+                params![agent_id, session_id, now],
+            );
+            Ok(count)
+        })
+    }
+
     /// Move an open event's deadline; it is presented again when the deadline
     /// comes, and stays open until the desk settles it.
     pub fn defer_desk_event(
@@ -883,5 +911,48 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn settle_stale_relays_for_session_clears_approval_and_preserves_other_events() {
+        let store = Store::open_in_memory().unwrap();
+        let approval = store
+            .enqueue_desk_event(
+                &NewDeskEvent {
+                    agent_id: "a".into(),
+                    kind: "approval".into(),
+                    source_ref: Some("desk-approval:s1:188".into()),
+                    priority: APPROVAL_PRIORITY,
+                    summary: "s1 waits on approval".into(),
+                    payload: Some(json!({"session": "s1"})),
+                    wake: true,
+                    ..Default::default()
+                },
+                T0,
+            )
+            .unwrap();
+        let other = store
+            .enqueue_desk_event(
+                &NewDeskEvent {
+                    agent_id: "a".into(),
+                    kind: "dm".into(),
+                    thread_id: Some("direct:agent:a|human:local".into()),
+                    priority: 30,
+                    summary: "human: hello".into(),
+                    wake: true,
+                    ..Default::default()
+                },
+                T0,
+            )
+            .unwrap();
+        let cleared = store
+            .settle_stale_relays_for_session("a", "s1", T1)
+            .unwrap();
+        assert_eq!(cleared, 1);
+        let open = store.list_open_desk_events("a", 10).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, other.id);
+        let closed = store.get_desk_event("a", &approval.id).unwrap().unwrap();
+        assert_eq!(closed.resolution.as_deref(), Some("restart"));
     }
 }
