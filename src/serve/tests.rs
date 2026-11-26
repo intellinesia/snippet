@@ -1904,7 +1904,7 @@ async fn unpinned_live_session_follows_agent_profile_change() {
         .unwrap();
 
     d.store.set_agent_profile("rook", Some("p_rook2")).unwrap();
-    d.follow_agent_profile("rook");
+    d.follow_agent_profile("rook", false);
 
     // Wait briefly for the spawned follow_agent_profile task to switch the unpinned session.
     let mut switched = false;

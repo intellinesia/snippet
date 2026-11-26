@@ -77,7 +77,7 @@ async fn send_input(d: &Daemon, id: &str, text: String) {
 }
 
 async fn continue_on(
-    d: &Daemon,
+    d: &Shared,
     id: &str,
     from: &str,
     to: &str,
@@ -105,6 +105,11 @@ async fn continue_on(
             .render(),
     )
     .await;
+    if crate::session::is_inbox_session_id(id)
+        && let Some(agent) = id.strip_prefix("inbox-")
+    {
+        d.on_desk_provider_changed(agent, from, to, true);
+    }
     Ok(())
 }
 

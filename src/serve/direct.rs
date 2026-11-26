@@ -838,12 +838,57 @@ async fn present_desk_batches(d: &Shared, now: &str) {
     }
 }
 
+const RESTART_SETTLE_SECS: u64 = 3;
+
+/// After a restart, tell each owning desk about agent-managed work the restart
+/// stopped mid-task, so it resumes or re-dispatches instead of stranding it.
+pub(crate) async fn restart_continuation(d: Shared) {
+    tokio::time::sleep(std::time::Duration::from_secs(RESTART_SETTLE_SECS)).await;
+    let hits = match d.store.restart_interrupted_sessions() {
+        Ok(hits) => hits,
+        Err(error) => {
+            eprintln!("[restart] interrupted sessions query failed: {error}");
+            return;
+        }
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    for hit in hits {
+        let profile = d
+            .agent_profile(&hit.agent_id)
+            .or_else(|| {
+                d.store
+                    .get_session_row(&hit.session_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|row| row.profile)
+            })
+            .or_else(|| d.config.lock().unwrap().active_setup.clone())
+            .unwrap_or_default();
+        if !profile.is_empty() && crate::routing::limited_until(&profile).is_some() {
+            continue;
+        }
+        if let Err(error) = d.store.enqueue_restart_interrupted(&hit, &now) {
+            eprintln!(
+                "[restart] notify {} about {}: {error}",
+                hit.agent_id, hit.session_id
+            );
+        }
+    }
+}
+
 pub(crate) async fn desk_fallback_loop(d: Shared) {
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(DESK_SWEEP_SECS));
     let mut sweeps = 0u64;
     loop {
         tick.tick().await;
         let now = chrono::Utc::now().to_rfc3339();
+        match d.store.run_slots_paused_safety_net(&now) {
+            Ok(claims) if !claims.is_empty() => {
+                eprintln!("[slots] safety net queued {} claim(s) for unacked pauses", claims.len())
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("[slots] paused safety net: {error}"),
+        }
         crate::coordination_tools::grant_free_slots(&d.store, &now);
         present_desk_batches(&d, &now).await;
         if sweeps % DESK_FALLBACK_EVERY_SWEEPS == 0 {

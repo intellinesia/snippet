@@ -727,7 +727,7 @@ pub(crate) async fn set_agent_profile(
     }
     match d.store.set_agent_profile(&agent_id, profile.as_deref()) {
         Ok(true) => {
-            d.follow_agent_profile(&agent_id);
+            d.follow_agent_profile(&agent_id, false);
             Json(serde_json::json!({ "id": agent_id, "profile": profile })).into_response()
         }
         Ok(false) => api_error(StatusCode::NOT_FOUND, "no such agent"),
@@ -760,7 +760,7 @@ pub(crate) async fn set_agent_desk_profile(
         .set_agent_desk_profile(&agent_id, profile.as_deref())
     {
         Ok(true) => {
-            d.follow_agent_profile(&agent_id);
+            d.follow_agent_profile(&agent_id, true);
             Json(serde_json::json!({ "id": agent_id, "desk_model": profile })).into_response()
         }
         Ok(false) => api_error(StatusCode::NOT_FOUND, "no such agent"),

@@ -3668,11 +3668,20 @@ pub(crate) fn agent_slot_window(db: &Store, agent_id: &str) -> (Option<String>, 
         .ok()
         .flatten()
         .or_else(|| config.as_ref().and_then(|c| c.active_setup.clone()));
+    let window = profile_slot_window(config.as_ref(), db, agent_id, profile.as_deref());
+    (profile, window)
+}
+
+/// The effective window an agent gets on `profile`, after its context limit.
+pub(crate) fn profile_slot_window(
+    config: Option<&crate::config::SnippetConfig>,
+    db: &Store,
+    agent_id: &str,
+    profile: Option<&str>,
+) -> u64 {
     let window = config
-        .as_ref()
         .map(|c| {
             profile
-                .as_deref()
                 .and_then(|p| c.setups.as_ref()?.get(p))
                 .unwrap_or(&c.model)
                 .context_window
@@ -3680,10 +3689,7 @@ pub(crate) fn agent_slot_window(db: &Store, agent_id: &str) -> (Option<String>, 
         .filter(|w| *w > 0)
         .unwrap_or(SLOT_FALLBACK_WINDOW);
     let limit = db.agent_context_limit(agent_id).ok().flatten();
-    (
-        profile,
-        crate::agent_context::effective_context_window(window, limit),
-    )
+    crate::agent_context::effective_context_window(window, limit)
 }
 
 /// `used/cap` for an agent: live work sessions plus held grants, against its cap.

@@ -541,7 +541,7 @@ impl Daemon {
 
     /// Moves a live desk and any unpinned live sessions owned by `agent_id` onto
     /// the agent's current profile once any turn in flight has finished.
-    pub(crate) fn follow_agent_profile(self: &Arc<Self>, agent_id: &str) {
+    pub(crate) fn follow_agent_profile(self: &Arc<Self>, agent_id: &str, desk_only: bool) {
         let agent_id = agent_id.to_string();
         let d = self.clone();
         tokio::spawn(async move {
@@ -602,7 +602,17 @@ impl Daemon {
                             .restart_session_with_profile(&id, target.as_deref(), false, None, None)
                             .await
                         {
-                            Ok(()) => config_routes::notify_models(Some(&id)),
+                            Ok(()) => {
+                                config_routes::notify_models(Some(&id));
+                                if is_agent_desk(&id) {
+                                    d.on_desk_provider_changed(
+                                        &agent_id,
+                                        current.as_deref().unwrap_or(""),
+                                        target.as_deref().unwrap_or(""),
+                                        desk_only,
+                                    );
+                                }
+                            }
                             Err(error) => {
                                 eprintln!("[agents] session `{id}` stayed on its model: {error}")
                             }
@@ -617,6 +627,86 @@ impl Daemon {
                 targets = next;
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
+        });
+    }
+
+    /// A desk moved provider: reset its cap to auto for the new window and
+    /// park the work over it behind a `slots_paused` desk event.
+    pub(crate) fn on_desk_provider_changed(
+        self: &Arc<Self>,
+        agent_id: &str,
+        from_profile: &str,
+        to_profile: &str,
+        desk_only: bool,
+    ) -> Option<crate::coordination::slots::ProviderChangeOutcome> {
+        let window = {
+            let cfg = self.config.lock().unwrap();
+            crate::coordination_tools::profile_slot_window(
+                Some(&cfg),
+                &self.store,
+                agent_id,
+                Some(to_profile).filter(|p| !p.is_empty()),
+            )
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        let outcome = match self.store.apply_desk_provider_change(
+            agent_id,
+            from_profile,
+            to_profile,
+            window,
+            desk_only,
+            &now,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                eprintln!("[slots] provider change for {agent_id}: {error}");
+                return None;
+            }
+        };
+        for paused in &outcome.paused {
+            self.pause_session_gracefully(
+                &paused.session_id,
+                from_profile,
+                to_profile,
+                outcome.parallelism.max_parallel,
+            );
+        }
+        Some(outcome)
+    }
+
+    fn pause_session_gracefully(self: &Arc<Self>, id: &str, from: &str, to: &str, cap: u32) {
+        const GRACE_POLLS: u32 = 40;
+        let running = |d: &Daemon, id: &str| {
+            d.store
+                .get_session_row(id)
+                .ok()
+                .flatten()
+                .is_some_and(|row| row.status == "running")
+        };
+        if !running(self, id) {
+            return;
+        }
+        let steer = crate::envelope::Envelope::new("slot_paused")
+            .attr("reason", "provider_change")
+            .attr("from", from)
+            .attr("to", to)
+            .attr("cap", cap.to_string())
+            .child(
+                "note",
+                format!("Your desk moved from {from} to {to} and now runs at most {cap} work sessions, so this one is paused. Save your state now (commit or note work in progress, report progress) and end this turn cleanly. Your desk resumes the task when a slot frees."),
+            )
+            .render();
+        let d = self.clone();
+        let id = id.to_string();
+        tokio::spawn(async move {
+            d.deliver(&id, LoopInput::UserMessage(steer)).await;
+            for _ in 0..GRACE_POLLS {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if !running(&d, &id) {
+                    return;
+                }
+            }
+            d.deliver(&id, LoopInput::Interrupt).await;
         });
     }
 
@@ -1179,7 +1269,9 @@ pub async fn run_serve(
         tokio::spawn(async move { watches::watch_loop(watches_d).await });
         let fallback_d = followups_d.clone();
         tokio::spawn(async move { followups::followup_loop(followups_d).await });
+        let restart_d = fallback_d.clone();
         tokio::spawn(async move { direct::desk_fallback_loop(fallback_d).await });
+        tokio::spawn(async move { direct::restart_continuation(restart_d).await });
         tokio::spawn(crate::bg::watch_loop());
     }
     {
