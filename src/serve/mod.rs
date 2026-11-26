@@ -1615,6 +1615,8 @@ pub(crate) async fn settle_stale_running(d: &Shared) {
         .filter(|(_, l)| !l.join.is_finished())
         .map(|(id, _)| id.clone())
         .collect();
+    let store = d.store.clone();
+    let cutoff = now - STALE_RUNNING_SECS;
     let _ = tokio::task::spawn_blocking(move || {
         for s in list_device_sessions() {
             if s.status != "running"
@@ -1623,13 +1625,7 @@ pub(crate) async fn settle_stale_running(d: &Shared) {
             {
                 continue;
             }
-            if let Some(sp) = state_path_for_id(&s.id)
-                && let Some(mut st) = crate::session::read_session_state(&sp)
-                && st.status == crate::harness::HarnessStatus::Running
-            {
-                st.status = crate::harness::HarnessStatus::Idle;
-                let _ = crate::session::write_session_state(&sp, &st);
-            }
+            let _ = store.mark_stale_running_idle(&s.id, cutoff);
         }
     })
     .await;

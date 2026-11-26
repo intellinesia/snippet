@@ -514,6 +514,22 @@ impl Store {
         })
     }
 
+    /// Mark a stale running session idle in-place without rewriting its
+    /// transcript, guarded by `status = 'running'` and `last_active <= cutoff`.
+    pub fn mark_stale_running_idle(&self, id: &str, cutoff: i64) -> Result<bool, StoreError> {
+        let _signal = SessionChangeSignal;
+        self.with_connection(|conn| {
+            let updated = conn.execute(
+                "UPDATE sessions
+                 SET status = 'idle',
+                     state_json = json_set(state_json, '$.status', 'idle')
+                 WHERE id = ?1 AND status = 'running' AND last_active <= ?2",
+                params![id, cutoff],
+            )?;
+            Ok(updated == 1)
+        })
+    }
+
     /// Delete a session and its transcript.
     pub fn delete_conversation(&self, id: &str) -> Result<bool, StoreError> {
         let _signal = SessionChangeSignal;
@@ -521,6 +537,14 @@ impl Store {
             let tx = conn.unchecked_transaction()?;
             tx.execute(
                 "DELETE FROM request_nonces WHERE session_id = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "DELETE FROM tool_modes WHERE scope = 'session' AND id = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "DELETE FROM session_progress WHERE session_id = ?1",
                 params![id],
             )?;
             let deleted = tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])? == 1;

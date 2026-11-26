@@ -196,24 +196,41 @@ pub(crate) fn drop_session_worktree(folder: &Path) {
     if !worktree.starts_with(&root) {
         return;
     }
-    if let Some(common) = git_stdout(&worktree, &["rev-parse", "--git-common-dir"]) {
+    let branch = git_stdout(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .filter(|b| b.starts_with("snippet/"));
+    let main_repo = git_stdout(&worktree, &["rev-parse", "--git-common-dir"]).and_then(|common| {
         let common_path = PathBuf::from(&common);
         let common_path = if common_path.is_absolute() {
             common_path
         } else {
             worktree.join(common_path)
         };
-        if let Some(main) = common_path.parent() {
-            let _ = Command::new("git")
-                .arg("-C")
-                .arg(main)
-                .args(["worktree", "remove", "--force"])
-                .arg(&worktree)
-                .status();
-        }
+        common_path.parent().map(Path::to_path_buf)
+    });
+    if let Some(main) = main_repo.as_deref() {
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(main)
+            .args(["worktree", "remove", "--force"])
+            .arg(&worktree)
+            .status();
     }
     if worktree.exists() {
         let _ = std::fs::remove_dir_all(&worktree);
+        if let Some(main) = main_repo.as_deref() {
+            let _ = Command::new("git")
+                .arg("-C")
+                .arg(main)
+                .args(["worktree", "prune"])
+                .status();
+        }
+    }
+    if let (Some(main), Some(branch)) = (main_repo.as_deref(), branch.as_deref()) {
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(main)
+            .args(["branch", "-D", branch])
+            .status();
     }
 }
 

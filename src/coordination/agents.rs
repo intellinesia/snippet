@@ -190,6 +190,11 @@ impl Store {
                 params![id],
             )?;
             tx.execute("DELETE FROM agent_watches WHERE owner = ?1", params![id])?;
+            tx.execute("DELETE FROM desk_inbox WHERE agent_id = ?1", params![id])?;
+            tx.execute("DELETE FROM slot_claims WHERE agent_id = ?1", params![id])?;
+            tx.execute("DELETE FROM agent_desk_settings WHERE agent_id = ?1", params![id])?;
+            tx.execute("DELETE FROM agent_reflections WHERE agent_id = ?1", params![id])?;
+            tx.execute("DELETE FROM group_snoozes WHERE agent_id = ?1", params![id])?;
             tx.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
             tx.commit()?;
             Ok(AgentRemoval::Removed)

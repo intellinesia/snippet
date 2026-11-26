@@ -728,6 +728,25 @@ impl Store {
         Ok(claims)
     }
 
+    /// Desk inbox sessions that were running when the daemon restarted.
+    pub fn restart_interrupted_inboxes(&self) -> Result<Vec<(String, String)>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT s.id, COALESCE(NULLIF(s.agent_id, ''), SUBSTR(s.id, 7))
+                 FROM sessions s
+                 LEFT JOIN session_events e ON e.session_id = s.id
+                  AND e.ordinal = (SELECT MAX(ordinal) FROM session_events WHERE session_id = s.id)
+                 WHERE s.id LIKE 'inbox-%'
+                   AND (s.status = 'running'
+                        OR (json_extract(e.payload_json, '$.kind') = 'system_decision'
+                            AND json_extract(e.payload_json, '$.step') = 'daemon_restart'))
+                 ORDER BY s.id",
+            )?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+    }
+
     /// Agent-managed work sessions whose last event is a `daemon_restart`
     /// notice and that still hold a task in progress.
     pub fn restart_interrupted_sessions(&self) -> Result<Vec<RestartInterrupted>, StoreError> {

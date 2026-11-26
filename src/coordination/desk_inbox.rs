@@ -367,6 +367,19 @@ impl Store {
         })
     }
 
+    /// On daemon startup, clear `presented_at` on unresolved waking events that
+    /// were in-flight when the previous daemon stopped so they re-deliver.
+    pub fn requeue_inflight_desk_events(&self) -> Result<usize, StoreError> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE desk_inbox SET presented_at = NULL
+                 WHERE resolved_at IS NULL AND presented_at IS NOT NULL
+                   AND deadline_at IS NULL AND wake = 1",
+                [],
+            )
+        })
+    }
+
     /// Settle the desk's own open events; returns the rows it settled.
     pub fn resolve_desk_events(
         &self,

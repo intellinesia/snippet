@@ -798,7 +798,7 @@ pub(crate) fn desk_events_envelope(events: &[crate::coordination::desk_inbox::De
     envelope
         .child(
             "note",
-            "Handle these in order. Pass re=<id> (comma-separated for several) on the call that handles an event and it is acked when the call succeeds; event.noop closes ones that need nothing, event.defer brings one back later. An approval or question you do not ack reaches the user as an automatic notice.",
+            "Handle these in order via bash (`snippet tool <name> key=value`, `--list`). Pass re=<id> (comma-separated for several) on the call that handles an event and it is acked when the call succeeds; event.noop closes ones that need nothing, event.defer brings one back later. An approval or question you do not ack reaches the user as an automatic notice.",
         )
         .render()
 }
@@ -846,10 +846,23 @@ async fn present_desk_batches(d: &Shared, now: &str) {
 
 const RESTART_SETTLE_SECS: u64 = 3;
 
-/// After a restart, tell each owning desk about agent-managed work the restart
-/// stopped mid-task, so it resumes or re-dispatches instead of stranding it.
+/// After a restart, re-queue in-flight desk events, auto-resume interrupted
+/// desk inboxes and agent-managed CLI work sessions, and notify owning desks.
 pub(crate) async fn restart_continuation(d: Shared) {
     tokio::time::sleep(std::time::Duration::from_secs(RESTART_SETTLE_SECS)).await;
+    if let Err(error) = d.store.requeue_inflight_desk_events() {
+        eprintln!("[restart] requeue inflight desk events failed: {error}");
+    }
+    if let Ok(inboxes) = d.store.restart_interrupted_inboxes() {
+        for (session_id, agent_id) in inboxes {
+            if super::routing_routes::is_desk_profile_limited(&d, &agent_id).await {
+                continue;
+            }
+            if ensure_agent_inbox(&d, &agent_id).await.is_ok() {
+                let _ = d.ensure_live(&session_id).await;
+            }
+        }
+    }
     let hits = match d.store.restart_interrupted_sessions() {
         Ok(hits) => hits,
         Err(error) => {
@@ -864,6 +877,17 @@ pub(crate) async fn restart_continuation(d: Shared) {
                 "[restart] notify {} about {}: {error}",
                 hit.agent_id, hit.session_id
             );
+        }
+        let still_running = d
+            .store
+            .get_session_row(&hit.session_id)
+            .ok()
+            .flatten()
+            .is_some_and(|row| row.status == "running");
+        if still_running
+            && !super::routing_routes::is_desk_profile_limited(&d, &hit.agent_id).await
+        {
+            let _ = d.ensure_live(&hit.session_id).await;
         }
     }
 }

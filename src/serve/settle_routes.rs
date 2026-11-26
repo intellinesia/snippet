@@ -373,6 +373,22 @@ pub(crate) async fn sweep_once(d: &Shared) -> (usize, usize) {
         .into_iter()
         .take(MAX_DELETES_PER_TICK)
     {
+        // Revalidate right before purging so a session woken between selection
+        // and purge is never deleted out from under live input.
+        let still_settled = store
+            .get_session_row(&id)
+            .ok()
+            .flatten()
+            .is_some_and(|row| row.settled_at.is_some() && !row.keep_awake);
+        let is_live = d
+            .sessions
+            .lock()
+            .await
+            .get(&id)
+            .is_some_and(|l| !l.join.is_finished());
+        if !still_settled || is_live {
+            continue;
+        }
         if purge_session(d, &id, true).await {
             deleted += 1;
         }
