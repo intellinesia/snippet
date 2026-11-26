@@ -329,8 +329,20 @@ fn history_cli(action: HistoryAction) -> Result<(), Box<dyn std::error::Error>> 
 /// as an identity the directory already knows.
 fn cli_actor(as_actor: Option<&str>) -> (String, String) {
     match as_actor.map(str::trim).filter(|actor| !actor.is_empty()) {
-        None | Some("human") | Some("local") => ("human".to_string(), "local".to_string()),
+        Some("human") | Some("local") => ("human".to_string(), "local".to_string()),
         Some(agent) => ("agent".to_string(), agent.to_string()),
+        None => match std::env::var("SNIPPET_SESSION_ID")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            Some(sid) if sid == snippet::lead::SESSION_ID => ("agent".to_string(), sid),
+            Some(sid) => match sid.strip_prefix("inbox-") {
+                Some(agent) if !agent.is_empty() => ("agent".to_string(), agent.to_string()),
+                _ => ("session".to_string(), sid),
+            },
+            None => ("human".to_string(), "local".to_string()),
+        },
     }
 }
 
@@ -662,15 +674,44 @@ fn parse_tool_arguments(args: &[String]) -> Result<serde_json::Value, Box<dyn st
         return Ok(value);
     }
     let mut map = serde_json::Map::new();
-    for arg in args {
-        let Some((key, value)) = arg.split_once('=') else {
-            return Err(format!("expected a JSON object or key=value pairs, got `{arg}`").into());
+    let mut stdin_used = false;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        let (raw_key, raw_val) = if let Some(rest) = arg.strip_prefix("--") {
+            if let Some((k, v)) = rest.split_once('=') {
+                (k, v)
+            } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                i += 1;
+                (rest, args[i].as_str())
+            } else {
+                (rest, "true")
+            }
+        } else if let Some((k, v)) = arg.split_once('=') {
+            (k, v)
+        } else {
+            return Err(format!(
+                "expected a JSON object, --key value, or key=value pairs, got `{arg}`"
+            )
+            .into());
         };
-        let key = key.trim();
+        let key = raw_key.trim().replace('-', "_");
         if key.is_empty() {
             return Err(format!("empty argument key in `{arg}`").into());
         }
-        map.insert(key.to_string(), parse_kv_value(value));
+        let val = if raw_val == "-" {
+            if stdin_used {
+                return Err("only one argument may read from stdin (`-`)".into());
+            }
+            stdin_used = true;
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            serde_json::Value::String(buf.trim_end_matches('\n').to_string())
+        } else {
+            parse_kv_value(raw_val)
+        };
+        map.insert(key, val);
+        i += 1;
     }
     Ok(serde_json::Value::Object(map))
 }

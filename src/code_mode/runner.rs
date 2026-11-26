@@ -970,11 +970,14 @@ pub fn seat_tools(
     mode: crate::config::ToolMode,
 ) -> (Vec<NativeToolDefinition>, Vec<NativeToolDefinition>) {
     use crate::config::ToolMode;
-    let lane = role == crate::surface::SeatRole::Lane;
-    if !lane {
+    let no_code_mode = matches!(
+        role,
+        crate::surface::SeatRole::Lane | crate::surface::SeatRole::Desk
+    );
+    if !no_code_mode {
         internal.extend(call_definitions());
     }
-    let scripts = mode == ToolMode::Code && !lane;
+    let scripts = mode == ToolMode::Code && !no_code_mode;
     if scripts {
         internal.extend(code_definitions());
     }

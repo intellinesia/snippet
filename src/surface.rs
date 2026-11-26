@@ -539,7 +539,7 @@ fn keep_for(role: SeatRole) -> &'static [&'static str] {
             "ask_user",
             "custom_tool",
         ],
-        SeatRole::Desk => &["bash", "change_files", "view_image"],
+        SeatRole::Desk => &["bash", "view_image"],
         SeatRole::Lane => &[
             "bash",
             "change_files",
@@ -559,7 +559,7 @@ fn surfaces_for(role: SeatRole) -> &'static [&'static Surface] {
             &PROCESS, &WEB, &PRESENT, &CANVAS, &DELEGATE, &MESSAGE, &READ, &SKILL, &TASK, &WAKE,
             &CODE, &CALLS,
         ],
-        SeatRole::Desk => &[&WEB, &MESSAGE, &READ, &TASK, &WAKE, &PRESENT, &CODE, &CALLS],
+        SeatRole::Desk => &[],
         SeatRole::Lane => &[&PROCESS, &WEB, &CANVAS, &SKILL],
         SeatRole::Lead => &[
             &WEB, &PRESENT, &MESSAGE, &READ, &AMBIENT, &TASKS, &SESSIONS, &WAKE, &CODE, &CALLS,
@@ -710,6 +710,55 @@ pub fn resolve(name: &str, args: &Value) -> String {
         Ok(Some((internal, _))) => internal,
         _ => name.to_string(),
     }
+}
+
+/// Resolve a dotted CLI tool name like `message.send` or `task.start` into
+/// `(internal_tool_name, lowered_args)` using the surface tables.
+pub fn lower_dotted(name: &str, args: &Value) -> Result<Option<(String, Value)>, String> {
+    let Some((surface, action)) = name.split_once('.') else {
+        return Ok(None);
+    };
+    if !is_surface(surface) {
+        return Ok(None);
+    }
+    let mut map = match args {
+        Value::Object(m) => m.clone(),
+        Value::Null => serde_json::Map::new(),
+        _ => return Err(format!("`{name}` expects a JSON object for arguments")),
+    };
+    map.insert("action".to_string(), Value::String(action.to_string()));
+    lower(surface, &Value::Object(map))
+}
+
+/// Dotted surface.action definitions for Desk's CLI-backed tools (`snippet tool`).
+pub fn desk_cli_definitions(internal: &[NativeToolDefinition]) -> Vec<NativeToolDefinition> {
+    const DESK_CLI_SURFACES: &[&Surface] = &[&MESSAGE, &READ, &TASK, &WAKE, &PRESENT, &WEB];
+    let by_name: HashMap<&str, &NativeToolDefinition> = internal
+        .iter()
+        .map(|d| (d.name.as_str(), d))
+        .collect();
+    let mut out = Vec::new();
+    let mut seen_internal: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for surface in DESK_CLI_SURFACES {
+        for act in surface.acts {
+            let Some(def) = by_name.get(act.tool) else {
+                continue;
+            };
+            seen_internal.insert(act.tool);
+            let mut d = (*def).clone();
+            d.name = format!("{}.{}", surface.name, act.action);
+            out.push(d);
+        }
+    }
+    for def in internal {
+        if matches!(def.name.as_str(), "bash" | "change_files" | "view_image")
+            || seen_internal.contains(def.name.as_str())
+        {
+            continue;
+        }
+        out.push(def.clone());
+    }
+    out
 }
 
 pub fn advertise(
@@ -1118,7 +1167,7 @@ mod tests {
             lead_names
         );
 
-        assert_eq!(desk_names.len(), 10);
+        assert_eq!(desk_names.len(), 2);
         assert_eq!(lead_names.len(), 14);
         assert!(cli_names.iter().any(|n| n == "custom_tool"));
         assert!(!cli_names.iter().any(|n| n == "complete_goal"));

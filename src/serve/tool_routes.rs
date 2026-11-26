@@ -222,6 +222,9 @@ pub(crate) fn allowed_definitions(
     seat: Seat,
     registry: &ToolRegistry,
 ) -> Vec<NativeToolDefinition> {
+    if seat == Seat::Desk {
+        return crate::surface::desk_cli_definitions(&registry.definitions());
+    }
     let mut by_name: HashMap<String, NativeToolDefinition> = registry
         .definitions()
         .into_iter()
@@ -262,18 +265,6 @@ pub(crate) async fn run_tool(State(d): State<Shared>, Json(req): Json<ToolRunReq
     if tool_name.is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "tool name is required");
     }
-    let allowed = allowed_definitions(resolved.seat, &resolved.registry);
-    if !allowed.iter().any(|def| def.name == tool_name) {
-        let names: Vec<&str> = allowed.iter().map(|def| def.name.as_str()).collect();
-        return api_error(
-            StatusCode::FORBIDDEN,
-            format!(
-                "tool `{tool_name}` is not allowed for seat `{}` (allowed tools: {})",
-                resolved.seat.as_str(),
-                names.join(", ")
-            ),
-        );
-    }
     let arguments = match req.arguments {
         Value::Null => json!({}),
         Value::Object(map) => Value::Object(map),
@@ -284,9 +275,42 @@ pub(crate) async fn run_tool(State(d): State<Shared>, Json(req): Json<ToolRunReq
             );
         }
     };
+    let (exec_name, exec_args) = if resolved.seat == Seat::Desk {
+        match crate::surface::lower_dotted(tool_name, &arguments) {
+            Ok(Some((internal, lowered))) => (internal, lowered),
+            Ok(None) => (tool_name.to_string(), arguments),
+            Err(err) => return api_error(StatusCode::BAD_REQUEST, err),
+        }
+    } else {
+        (tool_name.to_string(), arguments)
+    };
+    let is_allowed = if resolved.seat == Seat::Desk {
+        !matches!(exec_name.as_str(), "bash" | "change_files" | "view_image")
+            && resolved
+                .registry
+                .definitions()
+                .iter()
+                .any(|def| def.name == exec_name)
+    } else {
+        allowed_definitions(resolved.seat, &resolved.registry)
+            .iter()
+            .any(|def| def.name == exec_name)
+    };
+    if !is_allowed {
+        let allowed = allowed_definitions(resolved.seat, &resolved.registry);
+        let names: Vec<&str> = allowed.iter().map(|def| def.name.as_str()).collect();
+        return api_error(
+            StatusCode::FORBIDDEN,
+            format!(
+                "tool `{tool_name}` is not allowed for seat `{}` (allowed tools: {})",
+                resolved.seat.as_str(),
+                names.join(", ")
+            ),
+        );
+    }
     match resolved
         .registry
-        .execute(&resolved.context, tool_name, arguments)
+        .execute(&resolved.context, &exec_name, exec_args)
         .await
     {
         Ok(result) => {
@@ -433,8 +457,9 @@ mod tests {
             .iter()
             .filter_map(|t| t["name"].as_str())
             .collect();
-        assert!(desk_names.contains(&"share_artifact"));
-        assert!(!desk_names.contains(&"schedule_wake"));
+        assert!(desk_names.contains(&"present.share"));
+        assert!(desk_names.contains(&"message.send"));
+        assert!(!desk_names.contains(&"bash"));
 
         let lead_list = app
             .clone()

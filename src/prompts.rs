@@ -325,6 +325,17 @@ mod seat_layer_tests {
                 }
                 names.insert(d.name);
             }
+            if role == "desk" {
+                let cli_defs = crate::surface::desk_cli_definitions(
+                    &crate::session::coordination_tool_registry(Some("k".into())).definitions(),
+                );
+                for d in cli_defs {
+                    if let Some((surf, _)) = d.name.split_once('.') {
+                        names.insert(surf.to_string());
+                    }
+                    names.insert(d.name);
+                }
+            }
             all_known.extend(names.iter().cloned());
             role_tools.insert(role, names);
         }
