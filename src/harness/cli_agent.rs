@@ -451,6 +451,8 @@ fn handoff(messages: &[HarnessMessage], fresh: bool) -> Option<Handoff> {
 #[derive(Default)]
 struct CliParse {
     tool_names: HashMap<String, String>,
+    tool_hashes: HashMap<String, u64>,
+    active_prompt_id: Option<u64>,
     devin_text: String,
     devin_tools: HashSet<String>,
     devin_window: u64,
@@ -637,7 +639,90 @@ impl crate::code_mode::runner::InnerCalls for CliExec {
 
 type SteerQueue = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 type ServedResults =
-    std::sync::Arc<std::sync::Mutex<HashMap<String, std::collections::VecDeque<Value>>>>;
+    std::sync::Arc<std::sync::Mutex<HashMap<String, std::collections::VecDeque<(u64, Value)>>>>;
+
+fn hash_tool_args(val: &Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    fn feed(v: &Value, h: &mut std::collections::hash_map::DefaultHasher) {
+        match v {
+            Value::Null => 0u8.hash(h),
+            Value::Bool(b) => {
+                1u8.hash(h);
+                b.hash(h);
+            }
+            Value::Number(n) => {
+                2u8.hash(h);
+                n.to_string().hash(h);
+            }
+            Value::String(s) => {
+                3u8.hash(h);
+                s.hash(h);
+            }
+            Value::Array(arr) => {
+                4u8.hash(h);
+                arr.len().hash(h);
+                for item in arr {
+                    feed(item, h);
+                }
+            }
+            Value::Object(map) => {
+                5u8.hash(h);
+                let mut keys: Vec<&str> = map
+                    .keys()
+                    .map(String::as_str)
+                    .filter(|k| *k != "toolSummary")
+                    .collect();
+                keys.sort_unstable();
+                keys.len().hash(h);
+                for k in keys {
+                    k.hash(h);
+                    feed(&map[k], h);
+                }
+            }
+        }
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    feed(val, &mut h);
+    h.finish()
+}
+
+fn acp_server_request_reply(event: &Value) -> Value {
+    let req_id = event.get("id").cloned().unwrap_or(Value::Null);
+    let method = event.get("method").and_then(Value::as_str).unwrap_or("");
+    if method == "session/request_permission" {
+        let option_id = event
+            .pointer("/params/options")
+            .and_then(Value::as_array)
+            .and_then(|opts| {
+                opts.iter()
+                    .find(|o| {
+                        matches!(
+                            o.get("kind").and_then(Value::as_str),
+                            Some("allow_once" | "allow_always")
+                        )
+                    })
+                    .or_else(|| opts.first())
+                    .and_then(|o| o.get("optionId").and_then(Value::as_str))
+            });
+        if let Some(option_id) = option_id {
+            return json!({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": { "outcome": { "outcome": "selected", "optionId": option_id } }
+            });
+        }
+        return json!({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": { "outcome": { "outcome": "cancelled" } }
+        });
+    }
+    json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "error": { "code": -32601, "message": format!("Method not found: {method}") }
+    })
+}
 type LateResults = std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(String, String)>>>;
 
 #[derive(Clone)]
@@ -1085,8 +1170,8 @@ fn served_result_for_block(served: &ServedResults, name: &str, block: &Value) ->
     let queue = served.get_mut(name)?;
     let pos = queue
         .iter()
-        .position(|v| text.starts_with(&crate::llm::render_tool_result(v)))?;
-    queue.remove(pos)
+        .position(|(_, v)| text.starts_with(&crate::llm::render_tool_result(v)))?;
+    queue.remove(pos).map(|(_, v)| v)
 }
 
 fn tool_result_from_block(block: &Value) -> Value {
@@ -1331,6 +1416,7 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
                 .unwrap_or_else(|| json!({}));
             let known: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
             let (name, arguments) = normalise_call(&raw_name, raw_arguments, &known);
+            let args_hash = hash_tool_args(&arguments);
             let (reply, rx) = oneshot::channel();
             let mut rx = Box::pin(rx);
             let name_for_record = name.clone();
@@ -1376,7 +1462,7 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
                     // Keeps `served` one entry per call so the next call to this tool records its own value.
                     if let Ok(mut served) = state.served.lock() {
                         let queue = served.entry(name_for_record.clone()).or_default();
-                        queue.push_back(json!({"schema_version": 1, "status": "success", "data": {"output": pending.clone()}}));
+                        queue.push_back((args_hash, json!({"schema_version": 1, "status": "success", "data": {"output": pending.clone()}})));
                         if queue.len() > 32 {
                             queue.pop_front();
                         }
@@ -1401,7 +1487,7 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
             }
             if let Ok(mut served) = state.served.lock() {
                 let queue = served.entry(name_for_record).or_default();
-                queue.push_back(value.clone());
+                queue.push_back((args_hash, value.clone()));
                 if queue.len() > 32 {
                     queue.pop_front();
                 }
@@ -1852,7 +1938,8 @@ impl CodingHarness {
             }
             Err(format!("{label} exited during {method}"))
         };
-        tokio::time::timeout(std::time::Duration::from_secs(20), wait)
+        let timeout_secs = if method == "session/load" { 90 } else { 20 };
+        tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), wait)
             .await
             .map_err(|_| format!("{label} timed out during {method}"))?
     }
@@ -1876,7 +1963,7 @@ impl CodingHarness {
             json!({
                 "protocolVersion": 1,
                 "clientCapabilities": {},
-                "clientInfo": {"name": "snippet", "version": env!("CARGO_PKG_VERSION")}
+                "clientInfo": {"name": "snippet", "title": "Snippet", "version": env!("CARGO_PKG_VERSION")}
             }),
         )
         .await?;
@@ -2602,6 +2689,7 @@ impl CodingHarness {
                         let sid = session.id.clone().unwrap_or_default();
                         let req_id = p.acp_next_id;
                         p.acp_next_id += 1;
+                        parse.active_prompt_id = Some(req_id);
                         let line = json!({
                             "jsonrpc": "2.0",
                             "id": req_id,
@@ -2826,11 +2914,14 @@ impl CodingHarness {
                                     });
                                     let _ = p.stdin.write_all(format!("{cancel}\n").as_bytes()).await;
                                     let _ = p.stdin.flush().await;
+                                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                                 }
                                 let _ = p.child.start_kill();
                             }
+                            parse.active_prompt_id = None;
                             parse.devin_text.clear();
                             parse.devin_tools.clear();
+                            parse.tool_hashes.clear();
                             generation += 1;
                             running.clear();
                             // Already in history; left queued they'd fire after the next, unrelated turn.
@@ -2948,6 +3039,17 @@ impl CodingHarness {
                     match line {
                         CliLine::Event(g, event) if g == generation => {
                             last_heard = tokio::time::Instant::now();
+                            if kind.is_acp()
+                                && event.get("id").is_some()
+                                && event.get("method").is_some()
+                            {
+                                let reply = acp_server_request_reply(&event);
+                                if let Some(p) = process.as_mut() {
+                                    let _ = p.stdin.write_all(format!("{reply}\n").as_bytes()).await;
+                                    let _ = p.stdin.flush().await;
+                                }
+                                continue;
+                            }
                             if let Some(id) = event.get("conversation_id").and_then(Value::as_str)
                                 && kind == CliKind::Antigravity
                             {
@@ -3749,16 +3851,24 @@ impl CodingHarness {
         sink: Option<&StreamHandle>,
         parse: &mut CliParse,
     ) -> (bool, bool) {
-        if let Some(id) = event.get("id").and_then(Value::as_u64) {
-            if id < 10 {
+        if event.get("method").is_none()
+            && let Some(id) = event.get("id").and_then(Value::as_u64)
+        {
+            let matches_active = match parse.active_prompt_id {
+                Some(expected) => id == expected,
+                None => id >= 10,
+            };
+            if !matches_active {
                 return (false, false);
             }
+            parse.active_prompt_id = None;
             if let Some(sink) = sink {
                 StreamBuffer::clear(sink);
             }
             let flushed = self.flush_devin_text(state, sink, parse);
             parse.devin_tools.clear();
             parse.tool_names.clear();
+            parse.tool_hashes.clear();
             state.iterations += 1;
             if let Some(err) = event.get("error") {
                 let msg = err
@@ -3965,6 +4075,9 @@ impl CodingHarness {
                     return (changed, false);
                 }
                 if !call_id.is_empty() {
+                    if mcp {
+                        parse.tool_hashes.insert(call_id.clone(), hash_tool_args(&arguments));
+                    }
                     parse.tool_names.insert(
                         call_id.clone(),
                         if is_meta_list {
@@ -4054,14 +4167,20 @@ impl CodingHarness {
                         arguments: json!({}),
                     });
                 }
-                let own =
-                    if mcp {
-                        parse.served.lock().ok().and_then(|mut served| {
-                            served.get_mut(&name).and_then(|q| q.pop_front())
-                        })
-                    } else {
-                        None
-                    };
+                let own = if mcp {
+                    let expected_hash = parse.tool_hashes.remove(call_id);
+                    parse.served.lock().ok().and_then(|mut served| {
+                        let q = served.get_mut(&name)?;
+                        if let Some(h) = expected_hash
+                            && let Some(pos) = q.iter().position(|(eh, _)| *eh == h)
+                        {
+                            return q.remove(pos).map(|(_, v)| v);
+                        }
+                        q.pop_front().map(|(_, v)| v)
+                    })
+                } else {
+                    None
+                };
                 let result = if let Some(val) = own {
                     val
                 } else if status == "failed" {
@@ -4346,7 +4465,7 @@ mod goal_tests {
             .unwrap()
             .entry("bash".into())
             .or_default()
-            .extend([first.clone(), second.clone()]);
+            .extend([(0, first.clone()), (0, second.clone())]);
         let block = |v: &Value| json!({"type": "tool_result", "content": [{"type": "text", "text": crate::llm::render_tool_result(v)}]});
         assert_eq!(
             served_result_for_block(&served, "bash", &block(&second)),
@@ -4742,6 +4861,83 @@ mod devin_acp_tests {
     }
 
     #[test]
+    fn acp_server_requests_and_out_of_order_parallel_mcp_results() {
+        // Permission request picks allow_once; unknown method returns -32601.
+        let perm = json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "session/request_permission",
+            "params": {
+                "options": [
+                    {"optionId": "deny", "kind": "reject_once"},
+                    {"optionId": "ok", "kind": "allow_once"}
+                ]
+            }
+        });
+        let reply = acp_server_request_reply(&perm);
+        assert_eq!(reply["id"], 42);
+        assert_eq!(reply["result"]["outcome"]["optionId"], "ok");
+
+        let unknown = json!({"jsonrpc": "2.0", "id": 43, "method": "fs/read_text_file", "params": {}});
+        let err = acp_server_request_reply(&unknown);
+        assert_eq!(err["error"]["code"], -32601);
+
+        // Out-of-order parallel MCP completions match by args hash (ignoring toolSummary).
+        let harness = test_harness();
+        let mut state = HarnessState::default();
+        state.status = HarnessStatus::Running;
+        let mut parse = CliParse::default();
+        parse.active_prompt_id = Some(15);
+
+        let args_a = json!({"command": "echo A", "label": "a"});
+        let args_b = json!({"command": "echo B", "label": "b"});
+        {
+            let mut served = parse.served.lock().unwrap();
+            let q = served.entry("bash".to_string()).or_default();
+            // Suppose B finished first in the MCP server, then A.
+            q.push_back((hash_tool_args(&args_b), json!({"schema_version": 1, "status": "success", "data": {"output": "B"}})));
+            q.push_back((hash_tool_args(&args_a), json!({"schema_version": 1, "status": "success", "data": {"output": "A"}})));
+        }
+
+        for (cid, cmd, lbl) in [("c1", "echo A", "a"), ("c2", "echo B", "b")] {
+            let ev = json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "agy-1",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": cid,
+                        "name": "mcp_snippet_bash",
+                        "rawInput": {"command": cmd, "label": lbl, "toolSummary": "ignored"}
+                    }
+                }
+            });
+            harness.apply_devin_event(&mut state, &ev, None, &mut parse);
+        }
+
+        // Now c1 (echo A) completes first in ACP updates: must still get "A", not FIFO "B".
+        let done_a = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": "agy-1", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "completed"}}
+        });
+        harness.apply_devin_event(&mut state, &done_a, None, &mut parse);
+        match state.events.last() {
+            Some(HarnessEvent::ToolResult { result, .. }) => {
+                assert_eq!(result["data"]["output"], "A");
+            }
+            other => panic!("expected ToolResult A, got {other:?}"),
+        }
+
+        // A server request with id=15 does not end the turn because `method` is present.
+        let srv_req = json!({"jsonrpc": "2.0", "id": 15, "method": "session/request_permission", "params": {}});
+        let (changed, finished) = harness.apply_devin_event(&mut state, &srv_req, None, &mut parse);
+        assert!(!changed && !finished);
+        assert_eq!(state.status, HarnessStatus::Running);
+    }
+
+    #[test]
     fn apply_devin_event_surfaces_32011_quota_error_for_rotation() {
         let harness = test_harness();
         let mut state = HarnessState {
@@ -5109,7 +5305,7 @@ mod devinrel_tests {
         assert!(late_text.contains("late output"), "{late_text}");
         let served: Vec<String> = state.served.lock().unwrap()["bash"]
             .iter()
-            .map(|v| v["data"]["output"].as_str().unwrap_or("").to_string())
+            .map(|(_, v)| v["data"]["output"].as_str().unwrap_or("").to_string())
             .collect();
         assert_eq!(served.len(), 2, "one served entry per call: {served:?}");
         assert!(served[0].contains("still running"), "{served:?}");
