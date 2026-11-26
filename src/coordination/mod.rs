@@ -27,6 +27,7 @@ pub mod leases;
 pub mod origin;
 pub mod reach;
 pub mod schema;
+pub mod slots;
 mod task_state;
 mod tasks;
 pub mod types;

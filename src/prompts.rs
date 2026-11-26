@@ -9,6 +9,7 @@ pub const CODING_AGENT_LAYER: &str = include_str!("../prompts/coding_agent_layer
 pub const WORK_SESSION_LAYER: &str = include_str!("../prompts/work_session_layer.md");
 pub const LEAD_LAYER: &str = include_str!("../prompts/lead_layer.md");
 pub const DESK_LAYER: &str = include_str!("../prompts/desk_layer.md");
+pub const DESK_GUIDE: &str = include_str!("../prompts/desk_guide.md");
 pub const LANE_LAYER: &str = include_str!("../prompts/lane_layer.md");
 pub const GIT_WORKTREE_LAYER: &str = include_str!("../prompts/git_worktree_layer.md");
 pub const MEMORY_GUIDANCE_LAYER: &str = include_str!("../prompts/memory_layer.md");
@@ -17,6 +18,35 @@ pub const SKILLS_LAYER: &str = include_str!("../prompts/skills_layer.md");
 pub const VAULT_LAYER: &str = include_str!("../prompts/vault_layer.md");
 pub const VISION_LAYER: &str = include_str!("../prompts/vision_layer.md");
 pub const NO_VISION_LAYER: &str = include_str!("../prompts/no_vision_layer.md");
+
+pub fn desk_guide_topics() -> Vec<&'static str> {
+    DESK_GUIDE
+        .lines()
+        .filter_map(|l| l.strip_prefix("## "))
+        .map(str::trim)
+        .collect()
+}
+
+pub fn desk_guide_section(topic: &str) -> Option<&'static str> {
+    let topic = topic.trim().trim_start_matches('#').trim();
+    let heading = format!("## {topic}");
+    let start = DESK_GUIDE
+        .match_indices(&heading)
+        .map(|(i, _)| i)
+        .find(|&i| {
+            (i == 0 || DESK_GUIDE[..i].ends_with('\n'))
+                && DESK_GUIDE[i + heading.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| c == '\n')
+        })?;
+    let rest = &DESK_GUIDE[start..];
+    let end = rest[heading.len()..]
+        .find("\n## ")
+        .map(|i| i + heading.len() + 1)
+        .unwrap_or(rest.len());
+    Some(rest[..end].trim_end())
+}
 
 /// Capability/environment facts that decide which optional layers render.
 /// These are a session-start snapshot, so the assembled prompt stays stable
@@ -275,6 +305,54 @@ mod seat_layer_tests {
                 body.len()
             );
         }
+    }
+
+    const DESK_GUIDE_MAX_BYTES: usize = 9_000;
+
+    #[test]
+    fn desk_guide_fits_and_covers_every_topic_the_desk_layer_names() {
+        assert!(
+            DESK_GUIDE.len() <= DESK_GUIDE_MAX_BYTES,
+            "desk_guide.md is {} bytes (limit {DESK_GUIDE_MAX_BYTES})",
+            DESK_GUIDE.len()
+        );
+        let named: Vec<&str> = DESK_LAYER
+            .split_once("topics: ")
+            .expect("desk_layer.md names the desk.guide topics")
+            .1
+            .split_once('.')
+            .unwrap()
+            .0
+            .split(',')
+            .map(str::trim)
+            .collect();
+        let topics = desk_guide_topics();
+        assert_eq!(
+            topics,
+            [
+                "loop",
+                "threads",
+                "drafting",
+                "orchestration",
+                "parallelism"
+            ]
+        );
+        for topic in &named {
+            let section = desk_guide_section(topic)
+                .unwrap_or_else(|| panic!("desk_guide.md has no `## {topic}`"));
+            assert!(section.starts_with(&format!("## {topic}\n")), "{section}");
+            assert!(
+                !section[3..].contains("\n## "),
+                "{topic} runs into the next topic"
+            );
+        }
+        assert_eq!(named.len(), topics.len());
+        assert!(
+            desk_guide_section("parallelism")
+                .unwrap()
+                .contains("slot.claim")
+        );
+        assert!(desk_guide_section("nope").is_none());
     }
 
     #[test]

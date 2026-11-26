@@ -455,6 +455,34 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              created_at TEXT NOT NULL,
              PRIMARY KEY (agent_id, thread_id)
          );
+         CREATE TABLE IF NOT EXISTS agent_desk_settings (
+             agent_id TEXT PRIMARY KEY,
+             max_parallel INTEGER NOT NULL,
+             source TEXT NOT NULL DEFAULT 'auto',
+             basis_profile TEXT,
+             basis_window INTEGER,
+             updated_at TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS slot_claims (
+             id TEXT PRIMARY KEY,
+             agent_id TEXT NOT NULL,
+             requested_for TEXT,
+             status TEXT NOT NULL DEFAULT 'waiting',
+             granted_at TEXT,
+             expires_at TEXT,
+             consumed_at TEXT,
+             created_at TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS slot_claims_agent_status
+             ON slot_claims(agent_id, status, created_at);
+         CREATE TABLE IF NOT EXISTS session_progress (
+             session_id TEXT PRIMARY KEY,
+             agent_id TEXT,
+             tool_rounds INTEGER NOT NULL DEFAULT 0,
+             last_reported_round INTEGER NOT NULL DEFAULT 0,
+             turn_start_round INTEGER NOT NULL DEFAULT 0,
+             updated_at TEXT NOT NULL
+         );
 "#,
     )
 }

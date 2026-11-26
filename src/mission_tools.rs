@@ -1926,6 +1926,8 @@ struct StartTaskArgs {
     expected_minutes: Option<u32>,
     #[serde(default)]
     verify_mode: Option<String>,
+    #[serde(default)]
+    profile: Option<String>,
 }
 
 /// A desk's one-call task start: file AND claim, so the offer loop never
@@ -1949,7 +1951,8 @@ impl Tool for StartTask {
                     "blocked_by": {"type": "array", "items": {"type": "string"}},
                     "read_only": {"type": "boolean"},
                     "expected_minutes": {"type": "integer"},
-                    "verify_mode": {"type": "string", "enum": ["self", "reviewer", "lead", "user"], "description": "default self"}
+                    "verify_mode": {"type": "string", "enum": ["self", "reviewer", "lead", "user"], "description": "default self"},
+                    "profile": {"type": "string", "description": "inference profile for the work: strong for hard or open work, cheap for mechanical chores"}
                 }),
                 &["title", "description"],
             ),
@@ -1973,6 +1976,9 @@ impl Tool for StartTask {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
+        if args.blocked_by.is_empty() {
+            check_slot_cap(ctx, &agent_id, session_query)?;
+        }
         let (session_ref, fresh) = match session_query {
             Some(query) => (query.to_string(), false),
             None => {
@@ -2007,6 +2013,7 @@ impl Tool for StartTask {
             "read_only": args.read_only,
             "expected_minutes": args.expected_minutes,
             "verify_mode": args.verify_mode.or_else(|| Some("self".to_string())),
+            "profile": args.profile,
         }))
         .map_err(|e| ToolError::msg(format!("task.start arguments: {e}")))?;
         task_args.self_claim = true;
@@ -2023,14 +2030,67 @@ impl Tool for StartTask {
             .to_string();
         let waiting_on: Vec<String> =
             serde_json::from_value(data["waiting_on"].clone()).unwrap_or_default();
-        let _ = (title, agent_id);
+        let label = if title.trim().is_empty() { task_id.as_str() } else { title.trim() };
+        let next = if waiting_on.is_empty() {
+            "running; its result or progress arrives as an event. Paste link when you tell whoever asked."
+        } else {
+            "queued behind waiting_on; it starts by itself when they finish."
+        };
         Ok(ToolResult::success(json!({
             "task_id": task_id,
             "session_id": session_id,
             "status": data["task"]["status"],
             "waiting_on": waiting_on,
+            "link": format!("[{label}](task:{task_id})"),
+            "session_link": format!("[{label}](session:{session_id})"),
+            "next": next,
         })))
     }
+}
+
+/// Refuse a start at the cap, unless the work joins a session already holding a
+/// slot or a granted slot claim is waiting to be used.
+fn check_slot_cap(
+    ctx: &ToolContext,
+    agent_id: &str,
+    session_query: Option<&str>,
+) -> Result<(), ToolError> {
+    let store = db(ctx)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Some(query) = session_query
+        && let Ok(id) = resolve_target_session(query)
+        && store
+            .list_tasks(Some(&id), Some(&TaskStatus::InProgress))
+            .is_ok_and(|tasks| !tasks.is_empty())
+    {
+        return Ok(());
+    }
+    let (_, window) = crate::coordination_tools::agent_slot_window(&store, agent_id);
+    let cap = store
+        .get_desk_parallelism(agent_id, window)
+        .map_err(|e| ToolError::msg(format!("read parallelism: {e}")))?
+        .max_parallel;
+    let active = store
+        .count_active_slots(agent_id)
+        .map_err(|e| ToolError::msg(format!("count slots: {e}")))?;
+    if active < cap
+        && store
+            .consume_slot_claim(agent_id, &now)
+            .map_err(|e| ToolError::msg(format!("use slot claim: {e}")))?
+            .is_some()
+    {
+        return Ok(());
+    }
+    let reserved = store
+        .reserved_slots(agent_id, &now)
+        .map_err(|e| ToolError::msg(format!("count held slots: {e}")))?;
+    if active + reserved < cap {
+        return Ok(());
+    }
+    Err(ToolError::msg(format!(
+        "all your work slots are in use ({}/{cap}). Call `slot.claim for=<what>` and start this when the slot_free event arrives, or finish running work first; desk.parallelism shows or tunes the cap.",
+        active + reserved
+    )))
 }
 
 /// The canonical id for however the caller named a session: an id in either
@@ -4458,6 +4518,12 @@ mod tests {
         assert_eq!(data["session_id"], session.id);
         let task_id = data["task_id"].as_str().unwrap().to_string();
         assert!(!task_id.is_empty());
+        assert_eq!(data["link"], format!("[Fix the flaky test](task:{task_id})"));
+        assert_eq!(
+            data["session_link"],
+            format!("[Fix the flaky test](session:{})", session.id)
+        );
+        assert!(data["next"].as_str().is_some_and(|n| !n.is_empty()));
 
         let task = db.get_task(&task_id).unwrap().unwrap();
         assert_eq!(task.status, TaskStatus::Todo);
@@ -4472,6 +4538,62 @@ mod tests {
             crate::coordination::direct_thread_id(("agent", "lead"), ("agent", "desk-agent"));
         let events = db.direct_thread_events(&thread, 0, 10).unwrap();
         assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn start_task_refuses_at_the_slot_cap_until_a_grant_is_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open(dir.path().join("snippet.db")).unwrap();
+        db.create_agent(&worker("desk-agent")).unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        db.set_desk_parallelism("desk-agent", 1, "manual", None, None, &now)
+            .unwrap();
+        db.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, workspace_key, workspace, status, created_at, updated_at, agent_id, kind, managed_by)
+                 VALUES ('busy', 'wk', '/tmp/wk', 'running', ?1, ?1, 'desk-agent', 'conversation', 'agent')",
+                rusqlite::params![now],
+            )
+        })
+        .unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let session = crate::session::create_blank_session(
+            folder.path(),
+            "Capped",
+            true,
+            crate::session::WorkspaceMode::Folder,
+        )
+        .unwrap();
+        let ctx = desk_ctx(dir.path(), "desk-agent");
+        let args = json!({"title": "Second job", "description": "brief", "session": session.id});
+        let err = StartTask
+            .execute(&ctx, args.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("(1/1)") && err.contains("slot.claim"), "{err}");
+
+        let queued = StartTask
+            .execute(
+                &ctx,
+                json!({"title": "Later job", "description": "brief", "session": session.id, "blocked_by": ["t-x"]}),
+            )
+            .await;
+        assert!(
+            queued.as_ref().err().is_none_or(|e| !e.to_string().contains("slot")),
+            "a queued start is not capped: {queued:?}"
+        );
+
+        db.with_connection(|conn| {
+            conn.execute("UPDATE sessions SET status = 'idle' WHERE id = 'busy'", [])
+        })
+        .unwrap();
+        db.request_slot_claim("desk-agent", Some("second"), &now).unwrap();
+        db.release_slot_and_grant_next("desk-agent", 0, &now)
+            .unwrap()
+            .unwrap();
+        StartTask.execute(&ctx, args).await.unwrap();
+        assert!(db.consume_slot_claim("desk-agent", &now).unwrap().is_none(), "the grant was used");
     }
 
     /// With no `session`, `start_task` opens a fresh session in `folder`.

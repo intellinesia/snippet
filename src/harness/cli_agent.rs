@@ -657,6 +657,27 @@ impl crate::code_mode::runner::InnerCalls for CliExec {
 }
 
 type SteerQueue = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+const PROGRESS_NUDGE_TAG: &str = "progress_nudge";
+
+fn is_system_nudge(text: &str) -> bool {
+    text.trim_start()
+        .strip_prefix('<')
+        .is_some_and(|rest| rest.starts_with(PROGRESS_NUDGE_TAG))
+}
+
+fn progress_nudge(rounds: u64, since: u64) -> String {
+    crate::envelope::Envelope::new(PROGRESS_NUDGE_TAG)
+        .attr("rounds", rounds.to_string())
+        .attr("since_report", since.to_string())
+        .child(
+            "note",
+            format!(
+                "{since} tool rounds since your last update to your desk. Send it a concise delta now (done, found, next, blockers; no recap): `snippet tool progress.report summary=\"...\"`, with wake=true only if the desk must act now. Then carry on."
+            ),
+        )
+        .render()
+}
 type ServedResults =
     std::sync::Arc<std::sync::Mutex<HashMap<String, std::collections::VecDeque<(u64, Value)>>>>;
 
@@ -1539,11 +1560,16 @@ async fn mcp_dispatch(state: &McpState, request: Value) -> Option<Value> {
                 .lock()
                 .map(|mut q| std::mem::take(&mut *q))
                 .unwrap_or_default();
+            let (system, steers): (Vec<String>, Vec<String>) =
+                steers.into_iter().partition(|s| is_system_nudge(s));
             if !steers.is_empty() {
                 content.push(json!({"type": "text", "text": format!(
                     "<user_message_mid_turn>\nThe user sent this while you were working. It takes priority: adjust what you are doing now.\n{}\n</user_message_mid_turn>",
                     steers.join("\n\n")
                 )}));
+            }
+            for nudge in system {
+                content.push(json!({"type": "text", "text": nudge}));
             }
             json!({
                 "content": content,
@@ -1873,6 +1899,40 @@ impl CodingHarness {
                 .child("note", "The user has stepped away. This turn is for saving to global, project or agent memory what this conversation established since your last memory save that holds beyond it. The work is not continued in this turn. Reply with one line saying what you saved, or that nothing needed saving.")
                 .render()
         })
+    }
+
+    fn progress_store(&self) -> Option<(crate::store::Store, String)> {
+        let key = crate::coordination_tools::progress_key(&self.context)?;
+        let store = crate::store::Store::open_cached(self.context.store_path()?).ok()?;
+        Some((store, key))
+    }
+
+    fn note_turn_start(&self) {
+        if let Some((store, key)) = self.progress_store() {
+            let _ = store.mark_session_turn_start(
+                &key,
+                self.context.agent_id(),
+                &chrono::Utc::now().to_rfc3339(),
+            );
+        }
+    }
+
+    /// Count a tool round; every 40 since the last report, the nudge to send one.
+    fn note_tool_round(&self) -> Option<String> {
+        let (store, key) = self.progress_store()?;
+        let (rounds, since) = store
+            .record_session_tool_round(&key, self.context.agent_id(), &chrono::Utc::now().to_rfc3339())
+            .ok()?;
+        if since == 0 || since % crate::coordination::slots::PROGRESS_EVERY_ROUNDS != 0 {
+            return None;
+        }
+        let session = self
+            .context
+            .lane_origin()
+            .map(|(session, _)| session.to_string())
+            .or_else(|| self.context.durable_session_id().map(str::to_string))?;
+        crate::coordination::origin::managing_desk(&store, &session)?;
+        Some(progress_nudge(rounds, since))
     }
 
     fn compact_command(&self) -> String {
@@ -2518,6 +2578,9 @@ impl CodingHarness {
                 _ => None,
             })
         {
+            if had_initial_request {
+                self.note_turn_start();
+            }
             outbox.push(text);
         }
         if had_initial_request || status_reset || had_interrupted_lanes {
@@ -2982,6 +3045,7 @@ impl CodingHarness {
                                     outbox.push(text);
                                 }
                             } else {
+                                self.note_turn_start();
                                 self.accept_user_message_with_source(&mut state, &mut vars, text.clone(), source).await;
                                 outbox.push(text);
                             }
@@ -3471,6 +3535,18 @@ impl CodingHarness {
                 call = mcp_rx.recv() => {
                     let Some(mut call) = call else { continue };
                     last_heard = tokio::time::Instant::now();
+                    if !call.inner
+                        && let Some(nudge) = self.note_tool_round()
+                    {
+                        state.messages.push(HarnessMessage::User { content: nudge.clone() });
+                        if kind.is_acp() && process.is_some() {
+                            if let Ok(mut queue) = steers.lock() {
+                                queue.push(nudge);
+                            }
+                        } else {
+                            outbox.push(nudge);
+                        }
+                    }
                     if let Ok(mut log) = inner_log.lock() {
                         state.events.append(&mut log);
                     }
@@ -5511,6 +5587,41 @@ mod devinrel_tests {
             served[1], "ok",
             "the second call records its own value: {served:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn progress_nudges_ride_a_tool_result_without_the_user_wrapper() {
+        let (state, mut calls) = test_mcp_state("tok");
+        let state = std::sync::Arc::new(state);
+        let nudge = progress_nudge(80, 40);
+        assert!(is_system_nudge(&nudge));
+        assert!(!is_system_nudge("<progress is fine>"));
+        assert!(nudge.contains("snippet tool progress.report"), "{nudge}");
+        state
+            .steers
+            .lock()
+            .unwrap()
+            .extend([nudge.clone(), "use the staging db".to_string()]);
+        let st = state.clone();
+        let reply = tokio::spawn(async move { mcp_dispatch(&st, call_request(1)).await });
+        let call = calls.recv().await.unwrap();
+        call.reply
+            .send(json!({"schema_version": 1, "status": "success", "data": {"output": "ok"}}))
+            .unwrap();
+        let reply = reply.await.unwrap().unwrap();
+        let texts: Vec<&str> = reply
+            .pointer("/result/content")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(|c| c.get("text").and_then(Value::as_str))
+            .collect();
+        let user = texts
+            .iter()
+            .find(|t| t.contains("<user_message_mid_turn>"))
+            .unwrap();
+        assert!(user.contains("use the staging db") && !user.contains("progress_nudge"), "{user}");
+        assert!(texts.iter().any(|t| *t == nudge), "{texts:?}");
     }
 
     fn get_request(method: &str, token: &str) -> Request {

@@ -42,6 +42,7 @@ impl Seat {
                 "schedule_wake",
                 "wake_schedule",
                 "watch",
+                "progress_report",
             ],
             Self::Desk => &[
                 "record_coordination_note",
@@ -283,14 +284,10 @@ pub(crate) async fn run_tool(State(d): State<Shared>, Json(req): Json<ToolRunReq
             );
         }
     };
-    let (exec_name, exec_args) = if resolved.seat == Seat::Desk {
-        match crate::surface::lower_dotted(tool_name, &arguments) {
-            Ok(Some((internal, lowered))) => (internal, lowered),
-            Ok(None) => (tool_name.to_string(), arguments),
-            Err(err) => return api_error(StatusCode::BAD_REQUEST, err),
-        }
-    } else {
-        (tool_name.to_string(), arguments)
+    let (exec_name, exec_args) = match crate::surface::lower_dotted(tool_name, &arguments) {
+        Ok(Some((internal, lowered))) => (internal, lowered),
+        Ok(None) => (tool_name.to_string(), arguments),
+        Err(err) => return api_error(StatusCode::BAD_REQUEST, err),
     };
     let is_allowed = if resolved.seat == Seat::Desk {
         !matches!(exec_name.as_str(), "bash" | "change_files" | "view_image")
@@ -649,6 +646,9 @@ mod tests {
             "event.hidden",
             "event.release",
             "group.snooze",
+            "desk.parallelism",
+            "desk.guide",
+            "slot.claim",
         ] {
             assert!(names.iter().any(|n| n == name), "{name} missing from {names:?}");
         }

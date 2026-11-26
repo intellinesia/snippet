@@ -469,6 +469,43 @@ const GROUP: Surface = Surface {
     )],
 };
 
+const DESK: Surface = Surface {
+    name: "desk",
+    intro: "Your desk's own settings and handbook.",
+    acts: &[
+        act(
+            "parallelism",
+            "desk_parallelism",
+            "slots used/cap; max_parallel (1 to 6) pins the cap, auto: true resets it.",
+        ),
+        act(
+            "guide",
+            "desk_guide",
+            "the desk handbook by topic; no topic lists them.",
+        ),
+    ],
+};
+
+const SLOT: Surface = Surface {
+    name: "slot",
+    intro: "Work-session slots under your parallelism cap.",
+    acts: &[act(
+        "claim",
+        "slot_claim",
+        "queue for a slot at the cap; slot_free arrives when one frees.",
+    )],
+};
+
+const PROGRESS: Surface = Surface {
+    name: "progress",
+    intro: "Delta updates to the desk that manages this session.",
+    acts: &[act(
+        "report",
+        "progress_report",
+        "what changed since your last update (summary, wake).",
+    )],
+};
+
 const TASKS: Surface = Surface {
     name: "tasks",
     intro: "Create, assign, update, inspect, review, or report mission tasks.",
@@ -575,7 +612,7 @@ const AMBIENT: Surface = Surface {
 
 pub const SURFACES: &[&Surface] = &[
     &WEB, &PROCESS, &PRESENT, &CANVAS, &DELEGATE, &SKILL, &MESSAGE, &READ, &TASK, &WAKE, &EVENT,
-    &GROUP, &TASKS, &SESSIONS, &AMBIENT, &CODE, &CALLS,
+    &GROUP, &DESK, &SLOT, &PROGRESS, &TASKS, &SESSIONS, &AMBIENT, &CODE, &CALLS,
 ];
 
 fn keep_for(role: SeatRole) -> &'static [&'static str] {
@@ -781,7 +818,7 @@ pub fn lower_dotted(name: &str, args: &Value) -> Result<Option<(String, Value)>,
 /// Dotted surface.action definitions for Desk's CLI-backed tools (`snippet tool`).
 pub fn desk_cli_definitions(internal: &[NativeToolDefinition]) -> Vec<NativeToolDefinition> {
     const DESK_CLI_SURFACES: &[&Surface] = &[
-        &MESSAGE, &READ, &TASK, &WAKE, &EVENT, &GROUP, &PRESENT, &WEB,
+        &MESSAGE, &READ, &TASK, &WAKE, &EVENT, &GROUP, &DESK, &SLOT, &PRESENT, &WEB,
     ];
     let by_name: HashMap<&str, &NativeToolDefinition> = internal
         .iter()
@@ -1218,6 +1255,20 @@ mod tests {
         );
 
         assert_eq!(desk_names.len(), 2);
+        let desk_cli: Vec<String> = desk_cli_definitions(
+            &crate::session::coordination_tool_registry(key.clone()).definitions(),
+        )
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+        for name in ["desk.parallelism", "desk.guide", "slot.claim", "list_profiles"] {
+            assert!(desk_cli.iter().any(|n| n == name), "{name} missing from {desk_cli:?}");
+        }
+        assert!(!desk_cli.iter().any(|n| n.starts_with("progress")));
+        let (internal, args) = lower_dotted("progress.report", &json!({"summary": "s"}))
+            .unwrap()
+            .unwrap();
+        assert_eq!((internal.as_str(), args), ("progress_report", json!({"summary": "s"})));
         assert_eq!(lead_names.len(), 14);
         assert!(cli_names.iter().any(|n| n == "custom_tool"));
         assert!(!cli_names.iter().any(|n| n == "complete_goal"));

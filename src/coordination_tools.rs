@@ -2542,6 +2542,218 @@ struct ShareArtifactArgs {
     session: Option<String>,
 }
 
+/// A `canvas:<id>` (optionally `/<frame>[/<el>][@rev]`) reference: its canvas id
+/// and the link to paste.
+fn canvas_share_ref(raw: &str) -> Result<(String, String), ToolError> {
+    let raw = raw.trim();
+    if let Ok(link) = crate::canvas::links::parse_canvas_ref(raw) {
+        return Ok((link.canvas_id, raw.to_string()));
+    }
+    let id = raw.trim_start_matches("canvas:");
+    if crate::canvas::links::is_safe_component(id) {
+        return Ok((id.to_string(), format!("canvas:{id}")));
+    }
+    Err(ToolError::msg(format!(
+        "`{raw}` is not a canvas link; use canvas:<id> or canvas:<id>/<frame>"
+    )))
+}
+
+/// Share a canvas by link: the post carries the ready-to-paste `canvas:` link
+/// and a `canvas` card instead of a file artifact.
+fn share_canvas(
+    ctx: &ToolContext,
+    session: &str,
+    target: &str,
+    canvas_id: &str,
+    link: &str,
+    title: Option<&str>,
+    note: Option<&str>,
+) -> Result<ToolResult, ToolError> {
+    let label = title.unwrap_or(canvas_id);
+    let note = note.map(str::trim).filter(|n| !n.is_empty());
+    let body = match note {
+        Some(n) if n.contains(link) => n.to_string(),
+        Some(n) => format!("{n}\n{link}"),
+        None => format!("{label}\n{link}"),
+    };
+    let card = json!({"id": canvas_id, "title": label, "link": link});
+    let db = db(ctx)?;
+    let (sender_kind, sender_id) = actor(ctx)?;
+    let to_user = target == "human" || matches!(target, "channel:chat" | "channel:push");
+    if to_user && let Some(desk) = crate::coordination::origin::managing_desk(&db, session) {
+        let mut extra = serde_json::Map::new();
+        extra.insert("kind".into(), json!("status"));
+        extra.insert("auto".into(), json!("session_canvas"));
+        extra.insert("canvas".into(), card.clone());
+        let envelope = crate::envelope::Envelope::new("session_canvas")
+            .attr("session", session)
+            .attr("canvas", canvas_id)
+            .child("link", link)
+            .child("note", format!("a session you manage shared this canvas. present.share path={link} to=human posts it in your chat."))
+            .render();
+        crate::coordination::origin::tell_managing_desk(
+            &db,
+            session,
+            &format!("desk-canvas:{session}:{link}"),
+            &envelope,
+            extra,
+        );
+        return Ok(ToolResult::success(json!({
+            "to": "desk",
+            "desk": desk,
+            "canvas": card,
+            "link": link,
+            "note": "your desk shares it with the user in its chat",
+        })));
+    }
+    let about_task = session_task(ctx, session).map(|(id, _)| id);
+    let mut extra = crate::coordination::typed::payload_fields(
+        Some("result"),
+        crate::coordination::typed::Urgency::Normal,
+        about_task.as_deref(),
+    );
+    extra.insert("canvas".into(), card.clone());
+    let saved = deliver_share(
+        ctx,
+        &db,
+        session,
+        target,
+        (sender_kind, sender_id.as_str()),
+        &body,
+        about_task.as_deref(),
+        extra,
+        "canvas",
+        &card,
+    )?;
+    Ok(ToolResult::success(json!({
+        "event_id": saved.event_id,
+        "thread_id": saved.thread_id,
+        "to": target,
+        "canvas": card,
+        "link": link,
+    })))
+}
+
+/// Post a share to its target: a group, a channel, the user or an agent.
+#[allow(clippy::too_many_arguments)]
+fn deliver_share(
+    ctx: &ToolContext,
+    db: &Store,
+    session: &str,
+    target: &str,
+    sender: (&str, &str),
+    body: &str,
+    about_task: Option<&str>,
+    mut extra: serde_json::Map<String, Value>,
+    card_key: &str,
+    card: &Value,
+) -> Result<CoordinationEvent, ToolError> {
+    let (sender_kind, sender_id) = sender;
+    let sender_id = sender_id.to_string();
+    let body = body.to_string();
+    let about_task = about_task.map(str::to_string);
+    let mut group_payload = serde_json::Map::new();
+    group_payload.insert(card_key.to_string(), card.clone());
+    Ok(if target.starts_with("group:") {
+        let now = chrono::Utc::now().to_rfc3339();
+        let ev = db
+            .post_group_message_ex(
+                target,
+                (sender_kind, sender_id.as_str()),
+                &body,
+                &[],
+                None,
+                &Uuid::new_v4().to_string(),
+                &now,
+                Some(Value::Object(group_payload)),
+            )
+            .map_err(|e| {
+                ToolError::msg(format!(
+                    "share artifact to group: {e}; `to` must name a group you belong to"
+                ))
+            })?;
+        crate::session::emit_device_event(json!({
+            "kind": "coordination_event",
+            "event": ev.clone(),
+        }));
+        ev
+    } else if let Some(raw_ch) = target.strip_prefix("channel:") {
+        crate::coordination::reach::deliver_channel(
+            db,
+            (sender_kind, &sender_id),
+            raw_ch.trim(),
+            &body,
+            Some(session),
+            ctx.lane_origin().map(|(_, lane)| lane),
+            about_task.as_deref(),
+            extra,
+        )
+        .map_err(ToolError::msg)?
+    } else if target == "human" {
+        extra.insert("channel".into(), json!("chat"));
+        if sender_kind == "agent" && sender_id != crate::lead::SESSION_ID {
+            crate::coordination::reach::apply_outbound_human(
+                db, &sender_id, &body, &mut extra,
+            );
+        }
+        let key = Uuid::new_v4().to_string();
+        let ev = db
+            .send_direct_message_typed(
+                (sender_kind, &sender_id),
+                ("human", crate::coordination::LOCAL_HUMAN_ID),
+                &body,
+                &key,
+                &chrono::Utc::now().to_rfc3339(),
+                Some(session),
+                ctx.lane_origin().map(|(_, lane)| lane),
+                about_task.as_deref(),
+                extra,
+            )
+            .map_err(|e| ToolError::msg(format!("share artifact: {e}")))?;
+        crate::session::emit_device_event(json!({
+            "kind": "coordination_event",
+            "event": ev.clone(),
+        }));
+        ev
+    } else {
+        match db
+            .get_agent(target)
+            .map_err(|e| ToolError::msg(format!("look up agent: {e}")))?
+        {
+            None => {
+                return Err(ToolError::msg(format!(
+                    "unknown target `{target}`; supported targets are `human`, a directory agent id, `channel:chat`, or `channel:push`"
+                )));
+            }
+            Some(agent)
+                if agent.status == crate::coordination::types::AgentStatus::Disabled =>
+            {
+                return Err(ToolError::msg(format!("agent `{target}` is disabled")));
+            }
+            Some(_) => {}
+        }
+        let key = Uuid::new_v4().to_string();
+        let ev = db
+            .send_direct_message_typed(
+                (sender_kind, &sender_id),
+                ("agent", target),
+                &body,
+                &key,
+                &chrono::Utc::now().to_rfc3339(),
+                Some(session),
+                ctx.lane_origin().map(|(_, lane)| lane),
+                about_task.as_deref(),
+                extra,
+            )
+            .map_err(|e| ToolError::msg(format!("share artifact: {e}")))?;
+        crate::session::emit_device_event(json!({
+            "kind": "coordination_event",
+            "event": ev.clone(),
+        }));
+        ev
+    })
+}
+
 pub struct ShareArtifactTool;
 
 #[async_trait]
@@ -2549,7 +2761,7 @@ impl Tool for ShareArtifactTool {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "share_artifact".into(),
-            description: "Share an artifact (`artifact_id`) or file (`path`, optional `title`) with `human`, agent id, `group:<id>`, or `channel:<id>` (`channel:chat`/`channel:push`).".into(),
+            description: "Share an artifact (`artifact_id`), file (`path`, optional `title`) or canvas (`path` = `canvas:<id>`) with `human`, agent id, `group:<id>`, or `channel:<id>` (`channel:chat`/`channel:push`).".into(),
             input_schema: schema(
                 json!({
                     "artifact_id": {"type": "string"},
@@ -2590,6 +2802,15 @@ impl Tool for ShareArtifactTool {
             .durable_session_id()
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| ToolError::msg("present.share requires a durable session"))?;
+        if let Some(raw) = path.or(artifact_id).filter(|r| r.starts_with("canvas:")) {
+            if artifact_id.is_some() && path.is_some() {
+                return Err(ToolError::msg(
+                    "provide either `artifact_id` or `path`, not both",
+                ));
+            }
+            let (canvas_id, link) = canvas_share_ref(raw)?;
+            return share_canvas(ctx, session, target, &canvas_id, &link, title, args.note.as_deref());
+        }
         let mut shared_from: Option<String> = None;
         let artifact = match (artifact_id, path) {
             (Some(_), Some(_)) => {
@@ -2655,104 +2876,18 @@ impl Tool for ShareArtifactTool {
         );
         extra.insert("artifact".into(), artifact_payload.clone());
 
-        let saved = if target.starts_with("group:") {
-            let now = chrono::Utc::now().to_rfc3339();
-            let ev = db
-                .post_group_message_ex(
-                    target,
-                    (sender_kind, sender_id.as_str()),
-                    &body,
-                    &[],
-                    None,
-                    &Uuid::new_v4().to_string(),
-                    &now,
-                    Some(json!({"artifact": artifact_payload})),
-                )
-                .map_err(|e| {
-                    ToolError::msg(format!(
-                        "share artifact to group: {e}; `to` must name a group you belong to"
-                    ))
-                })?;
-            crate::session::emit_device_event(json!({
-                "kind": "coordination_event",
-                "event": ev.clone(),
-            }));
-            ev
-        } else if let Some(raw_ch) = target.strip_prefix("channel:") {
-            crate::coordination::reach::deliver_channel(
-                &db,
-                (sender_kind, &sender_id),
-                raw_ch.trim(),
-                &body,
-                Some(session),
-                ctx.lane_origin().map(|(_, lane)| lane),
-                about_task.as_deref(),
-                extra,
-            )
-            .map_err(ToolError::msg)?
-        } else if target == "human" {
-            extra.insert("channel".into(), json!("chat"));
-            if sender_kind == "agent" && sender_id != crate::lead::SESSION_ID {
-                crate::coordination::reach::apply_outbound_human(
-                    &db, &sender_id, &body, &mut extra,
-                );
-            }
-            let key = Uuid::new_v4().to_string();
-            let ev = db
-                .send_direct_message_typed(
-                    (sender_kind, &sender_id),
-                    ("human", crate::coordination::LOCAL_HUMAN_ID),
-                    &body,
-                    &key,
-                    &chrono::Utc::now().to_rfc3339(),
-                    Some(session),
-                    ctx.lane_origin().map(|(_, lane)| lane),
-                    about_task.as_deref(),
-                    extra,
-                )
-                .map_err(|e| ToolError::msg(format!("share artifact: {e}")))?;
-            crate::session::emit_device_event(json!({
-                "kind": "coordination_event",
-                "event": ev.clone(),
-            }));
-            ev
-        } else {
-            match db
-                .get_agent(target)
-                .map_err(|e| ToolError::msg(format!("look up agent: {e}")))?
-            {
-                None => {
-                    return Err(ToolError::msg(format!(
-                        "unknown target `{target}`; supported targets are `human`, a directory agent id, `channel:chat`, or `channel:push`"
-                    )));
-                }
-                Some(agent)
-                    if agent.status == crate::coordination::types::AgentStatus::Disabled =>
-                {
-                    return Err(ToolError::msg(format!("agent `{target}` is disabled")));
-                }
-                Some(_) => {}
-            }
-            let key = Uuid::new_v4().to_string();
-            let ev = db
-                .send_direct_message_typed(
-                    (sender_kind, &sender_id),
-                    ("agent", target),
-                    &body,
-                    &key,
-                    &chrono::Utc::now().to_rfc3339(),
-                    Some(session),
-                    ctx.lane_origin().map(|(_, lane)| lane),
-                    about_task.as_deref(),
-                    extra,
-                )
-                .map_err(|e| ToolError::msg(format!("share artifact: {e}")))?;
-            crate::session::emit_device_event(json!({
-                "kind": "coordination_event",
-                "event": ev.clone(),
-            }));
-            ev
-        };
+        let saved = deliver_share(
+            ctx,
+            &db,
+            session,
+            target,
+            (sender_kind, sender_id.as_str()),
+            &body,
+            about_task.as_deref(),
+            extra,
+            "artifact",
+            &artifact_payload,
+        )?;
 
         Ok(ToolResult::success(json!({
             "event_id": saved.event_id,
@@ -3001,6 +3136,9 @@ pub fn add_desk_event_tools(registry: &mut ToolRegistry) {
     registry.insert(DeskEventHidden);
     registry.insert(DeskEventRelease);
     registry.insert(GroupSnooze);
+    registry.insert(DeskParallelismTool);
+    registry.insert(SlotClaimTool);
+    registry.insert(DeskGuideTool);
 }
 
 /// Event ids from a comma-separated string or an array of strings.
@@ -3513,6 +3651,271 @@ impl Tool for GroupSnooze {
             "thread_id": group.id,
             "snoozed": true,
             "until": snooze.until_at.as_deref().unwrap_or("pinged"),
+        })))
+    }
+}
+
+/// Fallback when no config names the work model's window: the full 6 slots.
+const SLOT_FALLBACK_WINDOW: u64 = 200_000;
+
+/// The profile an agent's work sessions run on and its effective window.
+pub(crate) fn agent_slot_window(db: &Store, agent_id: &str) -> (Option<String>, u64) {
+    let config = std::fs::read_to_string(crate::config::default_config_path())
+        .ok()
+        .and_then(|raw| toml::from_str::<crate::config::SnippetConfig>(&raw).ok());
+    let profile = db
+        .agent_profile(agent_id)
+        .ok()
+        .flatten()
+        .or_else(|| config.as_ref().and_then(|c| c.active_setup.clone()));
+    let window = config
+        .as_ref()
+        .map(|c| {
+            profile
+                .as_deref()
+                .and_then(|p| c.setups.as_ref()?.get(p))
+                .unwrap_or(&c.model)
+                .context_window
+        })
+        .filter(|w| *w > 0)
+        .unwrap_or(SLOT_FALLBACK_WINDOW);
+    let limit = db.agent_context_limit(agent_id).ok().flatten();
+    (
+        profile,
+        crate::agent_context::effective_context_window(window, limit),
+    )
+}
+
+/// `used/cap` for an agent: live work sessions plus held grants, against its cap.
+pub(crate) fn slot_usage(db: &Store, agent_id: &str, now: &str) -> Result<(u32, u32), ToolError> {
+    let (_, window) = agent_slot_window(db, agent_id);
+    let cap = db
+        .get_desk_parallelism(agent_id, window)
+        .map_err(|e| ToolError::msg(format!("read parallelism: {e}")))?
+        .max_parallel;
+    let active = db
+        .count_active_slots(agent_id)
+        .map_err(|e| ToolError::msg(format!("count slots: {e}")))?;
+    let reserved = db
+        .reserved_slots(agent_id, now)
+        .map_err(|e| ToolError::msg(format!("count held slots: {e}")))?;
+    Ok((active + reserved, cap))
+}
+
+/// Grant waiting slot claims wherever a slot has come free.
+pub(crate) fn grant_free_slots(db: &Store, now: &str) {
+    let Ok(agents) = db.agents_with_waiting_slot_claims() else {
+        return;
+    };
+    for agent in agents {
+        let (_, window) = agent_slot_window(db, &agent);
+        if let Err(error) = db.release_slot_and_grant_next(&agent, window, now) {
+            eprintln!("[slots] grant for {agent}: {error}");
+        }
+    }
+}
+
+/// The `session_progress` row a work session or lane counts its rounds in.
+pub(crate) fn progress_key(ctx: &ToolContext) -> Option<String> {
+    let work = |s: &str| {
+        !s.trim().is_empty()
+            && !crate::session::is_inbox_session_id(s)
+            && !crate::lead::is_session_id(s)
+    };
+    if let Some((session, lane)) = ctx.lane_origin() {
+        return work(session).then(|| format!("{session}#{lane}"));
+    }
+    ctx.durable_session_id()
+        .filter(|s| work(s))
+        .map(str::to_string)
+}
+
+pub struct DeskParallelismTool;
+#[async_trait]
+impl Tool for DeskParallelismTool {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "desk_parallelism".into(),
+            description: "Show how many work sessions you run at once (slots used/cap). max_parallel (1 to 6) pins the cap; auto: true returns to the default scaled by the work model's context window.".into(),
+            input_schema: schema(
+                json!({
+                    "max_parallel": {"type": "integer", "minimum": 1, "maximum": 6},
+                    "auto": {"type": "boolean"}
+                }),
+                &[],
+            ),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolResult, ToolError> {
+        let agent = desk_agent(ctx)?;
+        let db = db(ctx)?;
+        let now = now_rfc3339();
+        let (profile, window) = agent_slot_window(&db, &agent);
+        let auto = args.get("auto").and_then(Value::as_bool).unwrap_or(false);
+        let max = args.get("max_parallel").and_then(Value::as_u64);
+        if auto && max.is_some() {
+            return Err(ToolError::msg("pass max_parallel or auto: true, not both"));
+        }
+        let set = if auto {
+            Some((crate::coordination::slots::auto_parallel_cap(window), "auto"))
+        } else {
+            max.map(|m| (m.min(u32::MAX as u64) as u32, "manual"))
+        };
+        if let Some((cap, source)) = set {
+            db.set_desk_parallelism(&agent, cap, source, profile.as_deref(), Some(window), &now)
+                .map_err(|e| ToolError::msg(e.to_string()))?;
+        }
+        let p = db
+            .get_desk_parallelism(&agent, window)
+            .map_err(|e| ToolError::msg(e.to_string()))?;
+        let (used, cap) = slot_usage(&db, &agent, &now)?;
+        Ok(ToolResult::success(json!({
+            "max_parallel": p.max_parallel,
+            "source": p.source,
+            "basis_profile": p.basis_profile.or(profile),
+            "basis_window": p.basis_window,
+            "slots": format!("{used}/{cap}"),
+        })))
+    }
+}
+
+#[derive(Deserialize)]
+struct SlotClaimArgs {
+    #[serde(default, rename = "for")]
+    requested_for: Option<String>,
+}
+
+pub struct SlotClaimTool;
+#[async_trait]
+impl Tool for SlotClaimTool {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "slot_claim".into(),
+            description: "Queue for a work-session slot when you are at your cap. A slot_free event arrives when one frees (first come, first served) and holds it 10 minutes for task.start.".into(),
+            input_schema: schema(
+                json!({"for": {"type": "string", "description": "what the slot is for"}}),
+                &[],
+            ),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolResult, ToolError> {
+        let args: SlotClaimArgs =
+            serde_json::from_value(args).map_err(|e| ToolError::msg(e.to_string()))?;
+        let agent = desk_agent(ctx)?;
+        let db = db(ctx)?;
+        let now = now_rfc3339();
+        let (used, cap) = slot_usage(&db, &agent, &now)?;
+        if used < cap {
+            return Ok(ToolResult::success(json!({
+                "slots": format!("{used}/{cap}"),
+                "free": true,
+                "next": "a slot is free now: task.start",
+            })));
+        }
+        let claim = db
+            .request_slot_claim(&agent, args.requested_for.as_deref(), &now)
+            .map_err(|e| ToolError::msg(e.to_string()))?;
+        Ok(ToolResult::success(json!({
+            "claim_id": claim.id,
+            "status": claim.status,
+            "slots": format!("{used}/{cap}"),
+            "next": "wait for the slot_free event, then task.start",
+        })))
+    }
+}
+
+pub struct DeskGuideTool;
+#[async_trait]
+impl Tool for DeskGuideTool {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "desk_guide".into(),
+            description: "The desk handbook, one topic at a time. Without topic it lists the topics.".into(),
+            input_schema: schema(json!({"topic": {"type": "string"}}), &[]),
+        }
+    }
+
+    async fn execute(&self, _ctx: &ToolContext, args: Value) -> Result<ToolResult, ToolError> {
+        let topics = crate::prompts::desk_guide_topics();
+        let Some(topic) = args
+            .get("topic")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        else {
+            return Ok(ToolResult::success(json!({
+                "topics": topics,
+                "next": "desk.guide topic=<name>",
+            })));
+        };
+        let section = crate::prompts::desk_guide_section(&topic.to_ascii_lowercase()).ok_or_else(|| {
+            ToolError::msg(format!(
+                "unknown topic `{topic}`; topics: {}",
+                topics.join(", ")
+            ))
+        })?;
+        Ok(ToolResult::success(json!({
+            "topic": topic.to_ascii_lowercase(),
+            "guide": section,
+        })))
+    }
+}
+
+#[derive(Deserialize)]
+struct ProgressReportArgs {
+    summary: String,
+    #[serde(default)]
+    wake: bool,
+}
+
+pub struct ProgressReportTool;
+#[async_trait]
+impl Tool for ProgressReportTool {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "progress_report".into(),
+            description: "Tell your desk what changed since your last update: a short delta (done, found, next, blockers), never a recap. wake: true only when the desk must act now.".into(),
+            input_schema: schema(
+                json!({
+                    "summary": {"type": "string"},
+                    "wake": {"type": "boolean", "description": "default false"}
+                }),
+                &["summary"],
+            ),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolResult, ToolError> {
+        let args: ProgressReportArgs =
+            serde_json::from_value(args).map_err(|e| ToolError::msg(e.to_string()))?;
+        let lane = ctx.lane_origin().map(|(_, lane)| lane.to_string());
+        let session = ctx
+            .lane_origin()
+            .map(|(session, _)| session.to_string())
+            .or_else(|| ctx.durable_session_id().map(str::to_string))
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| ToolError::msg("progress.report needs a work session"))?;
+        if crate::session::is_inbox_session_id(&session) || crate::lead::is_session_id(&session) {
+            return Err(ToolError::msg("progress.report is for work sessions and lanes"));
+        }
+        let db = db(ctx)?;
+        let desk = crate::coordination::origin::managing_desk(&db, &session).ok_or_else(|| {
+            ToolError::msg("no desk manages this session; nothing to report to")
+        })?;
+        let summary = match lane.as_deref() {
+            Some(lane) => format!("lane {lane}: {}", args.summary.trim()),
+            None => args.summary.trim().to_string(),
+        };
+        let key = progress_key(ctx).unwrap_or_else(|| session.clone());
+        let event = db
+            .record_session_progress_report(&key, &desk, &summary, args.wake, &now_rfc3339())
+            .map_err(|e| ToolError::msg(e.to_string()))?;
+        Ok(ToolResult::success(json!({
+            "event_id": event.id,
+            "to": desk,
+            "wake": event.wake,
         })))
     }
 }
@@ -5410,6 +5813,125 @@ mod group_round_tool_tests {
         assert!(
             GroupSnooze
                 .execute(&desk(dir.path(), "outsider"), json!({"thread_id": group}))
+                .await
+                .is_err()
+        );
+    }
+    #[tokio::test]
+    async fn desk_guide_lists_topics_and_returns_one_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = desk(dir.path(), "a");
+        let out = DeskGuideTool.execute(&ctx, json!({})).await.unwrap();
+        assert_eq!(
+            out.value["data"]["topics"],
+            json!(["loop", "threads", "drafting", "orchestration", "parallelism"])
+        );
+        let out = DeskGuideTool
+            .execute(&ctx, json!({"topic": "Threads"}))
+            .await
+            .unwrap();
+        let guide = out.value["data"]["guide"].as_str().unwrap();
+        assert!(guide.starts_with("## threads"), "{guide}");
+        assert!(!guide.contains("## drafting"), "{guide}");
+        let err = DeskGuideTool
+            .execute(&ctx, json!({"topic": "bogus"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("loop, threads"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn parallelism_and_slot_claims_on_the_desk() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, _) = setup(dir.path());
+        let ctx = desk(dir.path(), "a");
+        let out = DeskParallelismTool
+            .execute(&ctx, json!({"max_parallel": 1}))
+            .await
+            .unwrap();
+        assert_eq!(out.value["data"]["max_parallel"], 1);
+        assert_eq!(out.value["data"]["source"], "manual");
+        assert_eq!(out.value["data"]["slots"], "0/1");
+        assert!(
+            DeskParallelismTool
+                .execute(&ctx, json!({"max_parallel": 1, "auto": true}))
+                .await
+                .is_err()
+        );
+
+        let out = SlotClaimTool.execute(&ctx, json!({"for": "docs"})).await.unwrap();
+        assert_eq!(out.value["data"]["free"], true, "under the cap there is nothing to queue");
+
+        db.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, workspace_key, workspace, status, created_at, updated_at, agent_id, kind, managed_by)
+                 VALUES ('busy', 'wk', '/tmp/wk', 'running', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'a', 'conversation', 'agent')",
+                [],
+            )
+        })
+        .unwrap();
+        let out = SlotClaimTool.execute(&ctx, json!({"for": "docs"})).await.unwrap();
+        assert_eq!(out.value["data"]["slots"], "1/1");
+        assert_eq!(out.value["data"]["status"], "waiting");
+        let state = crate::progress::desk_state_render(&db, "a");
+        assert!(state.is_empty() || state.contains("slots: 1/1"), "{state}");
+
+        let out = DeskParallelismTool
+            .execute(&ctx, json!({"auto": true}))
+            .await
+            .unwrap();
+        assert_eq!(out.value["data"]["source"], "auto");
+        assert!(out.value["data"]["max_parallel"].as_u64().unwrap() >= 2);
+        grant_free_slots(&db, &chrono::Utc::now().to_rfc3339());
+        let events = db.list_open_desk_events("a", 10).unwrap();
+        assert!(events.iter().any(|e| e.kind == "slot_free"), "{events:?}");
+        let state = crate::progress::desk_state_render(&db, "a");
+        assert!(state.contains("slots: 2/"), "{state}");
+    }
+
+    #[tokio::test]
+    async fn progress_report_reaches_the_managing_desk_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, _) = setup(dir.path());
+        db.import_session("work-1", "wk", &crate::harness::HarnessState::blank("/tmp", None), &Default::default())
+            .unwrap();
+        db.set_session_managed_by("work-1", "agent").unwrap();
+        let ctx = ToolContext::new(dir.path())
+            .unwrap()
+            .with_durable_session_id("work-1")
+            .with_store_path(dir.path().join("snippet.db"));
+        for round in 0..3 {
+            db.record_session_tool_round("work-1", None, &chrono::Utc::now().to_rfc3339())
+                .unwrap();
+            let _ = round;
+        }
+        let first = ProgressReportTool
+            .execute(&ctx, json!({"summary": "parser done"}))
+            .await
+            .unwrap();
+        assert_eq!(first.value["data"]["to"], crate::coordination::SNIPPET_AGENT_ID);
+        assert_eq!(first.value["data"]["wake"], false);
+        let second = ProgressReportTool
+            .execute(&ctx, json!({"summary": "tests pass", "wake": true}))
+            .await
+            .unwrap();
+        let open = db
+            .list_open_desk_events(crate::coordination::SNIPPET_AGENT_ID, 10)
+            .unwrap();
+        let ids: Vec<&str> = open.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                first.value["data"]["event_id"].as_str().unwrap(),
+                second.value["data"]["event_id"].as_str().unwrap()
+            ]
+        );
+        assert!(open[0].summary.contains("r3: parser done"), "{}", open[0].summary);
+        assert!(open[1].wake);
+        assert!(
+            ProgressReportTool
+                .execute(&desk(dir.path(), "a"), json!({"summary": "x"}))
                 .await
                 .is_err()
         );

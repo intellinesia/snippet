@@ -278,6 +278,12 @@ pub fn desk_state_render(db: &Store, agent_id: &str) -> String {
         return String::new();
     }
     let mut lines = vec!["now:".to_string()];
+    if let Ok((used, cap)) =
+        crate::coordination_tools::slot_usage(db, agent_id, &chrono::Utc::now().to_rfc3339())
+    {
+        let hint = if used >= cap { " (at cap: slot.claim)" } else { "" };
+        lines.push(format!("  slots: {used}/{cap}{hint}"));
+    }
     if !snoozes.is_empty() {
         let mut parts: Vec<String> = snoozes
             .iter()
@@ -390,6 +396,7 @@ mod desk_state_tests {
             .unwrap();
         let out = desk_state_render(&store, "a");
         assert!(out.starts_with("now:"), "{out}");
+        assert!(out.contains("  slots: 0/"), "{out}");
         assert!(out.contains("dm p0 @ reply=direct:a:human: can you check the deploy?"), "{out}");
         assert!(out.contains(&format!("{} self p2 due=2026-11-26T12:00:00Z", reminder.id)), "{out}");
         assert!(out.contains(&format!("deadlines: {}@2026-11-26T12:00:00Z", reminder.id)), "{out}");

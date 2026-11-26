@@ -552,6 +552,7 @@ pub(crate) fn work_tool_registry(
         tools.remove(name);
     }
     tools.insert(crate::review_tools::SubmitReview);
+    tools.insert(crate::coordination_tools::ProgressReportTool);
     tools.insert(crate::profiles::ListProfiles);
     tools.insert(crate::followup_tool::SessionWakeTool);
     tools.insert(crate::session_handoff_tool::HandOffSession);
@@ -570,6 +571,7 @@ pub(crate) fn coordination_tool_registry(exa_api_key: Option<String>) -> ToolReg
     tools.insert(crate::mission_tools::SteerSession);
     tools.insert(crate::coordination_tools::DeclineTask);
     tools.insert(crate::followup_tool::SessionWakeTool);
+    tools.insert(crate::profiles::ListProfiles);
     tools.insert(crate::builtins::BashTool);
     tools.insert(crate::builtins::ChangeFilesTool);
     tools.insert(crate::builtins::ViewImageTool);

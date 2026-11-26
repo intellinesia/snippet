@@ -844,6 +844,7 @@ pub(crate) async fn desk_fallback_loop(d: Shared) {
     loop {
         tick.tick().await;
         let now = chrono::Utc::now().to_rfc3339();
+        crate::coordination_tools::grant_free_slots(&d.store, &now);
         present_desk_batches(&d, &now).await;
         if sweeps % DESK_FALLBACK_EVERY_SWEEPS == 0 {
             run_desk_fallbacks(&d.store, &now, fallback_still_pending);
@@ -883,6 +884,27 @@ fn pending_approval(state: &crate::harness::HarnessState) -> Option<(usize, Stri
 }
 
 /// When an agent-managed session stops, tell the desk that manages it.
+/// A clean stop after a short turn is not worth a desk wake; a question, an
+/// approval, a failure or a turn of [`STOP_NOTIFY_MIN_ROUNDS`] rounds always is.
+/// An untracked session always notifies.
+///
+/// [`STOP_NOTIFY_MIN_ROUNDS`]: crate::coordination::slots::STOP_NOTIFY_MIN_ROUNDS
+pub(crate) fn quiet_stop(
+    store: &crate::store::Store,
+    session_id: &str,
+    status: &str,
+    pending: bool,
+) -> bool {
+    if pending || status == "failed" {
+        return false;
+    }
+    store
+        .rounds_since_turn_start(session_id)
+        .ok()
+        .flatten()
+        .is_some_and(|rounds| rounds < crate::coordination::slots::STOP_NOTIFY_MIN_ROUNDS)
+}
+
 pub(crate) fn relay_stop(
     store: &crate::store::Store,
     session_id: &str,
@@ -920,6 +942,10 @@ pub(crate) fn relay_stop(
         .as_ref()
         .map(super::autonomy::question_text)
         .filter(|q| !q.trim().is_empty());
+    let approval = pending_approval(state);
+    if quiet_stop(store, session_id, status, question.is_some() || approval.is_some()) {
+        return;
+    }
     let title = row
         .title
         .as_deref()
@@ -934,7 +960,7 @@ pub(crate) fn relay_stop(
     }
     let mut note =
         format!("a session you manage stopped. message.send to session:{session_id} reaches it.");
-    if let Some((index, summary)) = pending_approval(state) {
+    if let Some((index, summary)) = approval {
         envelope = envelope
             .child("approval", &summary)
             .attr("desk_may_answer", "no")
@@ -3691,6 +3717,52 @@ mod tests {
             ("human", crate::coordination::LOCAL_HUMAN_ID),
         );
         store.recent_direct_thread_events(&thread, 50).unwrap()
+    }
+
+    #[test]
+    fn short_clean_stops_skip_the_desk_but_pending_or_long_ones_do_not() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let mut idle = crate::harness::HarnessState::blank("/tmp", None);
+        idle.status = crate::harness::HarnessStatus::Idle;
+        idle.events.push(E::AssistantText {
+            text: "Done.".into(),
+            quiet: false,
+        });
+        store
+            .import_session("sess-short", "wk", &idle, &Default::default())
+            .unwrap();
+        store.set_session_managed_by("sess-short", "agent").unwrap();
+        let now = "2026-11-26T10:00:00Z";
+        let stops = |store: &crate::store::Store| {
+            let thread = crate::coordination::direct_thread_id(
+                ("agent", "snippet"),
+                ("session", "sess-short"),
+            );
+            store.recent_direct_thread_events(&thread, 50).unwrap().len()
+        };
+
+        assert!(!super::quiet_stop(&store, "sess-short", "idle", false), "untracked sessions notify");
+        store.mark_session_turn_start("sess-short", None, now).unwrap();
+        for _ in 0..9 {
+            store.record_session_tool_round("sess-short", None, now).unwrap();
+        }
+        assert!(super::quiet_stop(&store, "sess-short", "idle", false));
+        assert!(!super::quiet_stop(&store, "sess-short", "idle", true));
+        assert!(!super::quiet_stop(&store, "sess-short", "failed", false));
+        super::relay_stop(&store, "sess-short", "idle", &idle);
+        assert_eq!(stops(&store), 0, "9 rounds and nothing pending stays quiet");
+
+        super::relay_stop(&store, "sess-short", "waiting_for_input", &waiting_question_state());
+        assert_eq!(stops(&store), 1, "a pending question always reaches the desk");
+
+        store.record_session_tool_round("sess-short", None, now).unwrap();
+        assert!(!super::quiet_stop(&store, "sess-short", "idle", false));
+        idle.events.push(E::AssistantText {
+            text: "Shipped.".into(),
+            quiet: false,
+        });
+        super::relay_stop(&store, "sess-short", "idle", &idle);
+        assert_eq!(stops(&store), 2, "10 rounds reach the desk");
     }
 
     #[test]

@@ -183,20 +183,57 @@ async fn review_due(
     let age_minutes = chrono::DateTime::parse_from_rfc3339(&state.review_started_at)
         .map(|at| (now - at.with_timezone(&chrono::Utc)).num_minutes())
         .unwrap_or(0);
+    let owner = task.notification_target();
+    let desk_owned = owner != crate::lead::SESSION_ID;
     match action {
         ReviewDue::Nudge => {
             let nudges = state.review_nudges + 1;
             let _ = d
                 .store
                 .modify_task_state(&task.id, &stamp, |s| s.review_nudges = nudges);
+            let tool = if desk_owned {
+                "task.review"
+            } else {
+                "tasks.review"
+            };
             let envelope = crate::envelope::Envelope::new("review_due")
                 .attr("task_id", &task.id)
                 .attr("title", &task.title)
                 .attr("in_review_minutes", age_minutes.to_string())
                 .child("report", report)
-                .child("note", "No verdict has arrived. tasks.review takes verdict approve, or changes with findings.")
+                .child("note", format!("No verdict has arrived. {tool} takes verdict approve, or changes with findings."))
                 .render();
-            super::autonomy::deliver_to_lead(d, envelope).await;
+            if desk_owned {
+                tell_review_owner(
+                    d,
+                    task,
+                    &owner,
+                    &envelope,
+                    &format!("review-due:{}:{nudges}", task.id),
+                );
+            } else {
+                super::autonomy::deliver_to_lead(d, envelope).await;
+            }
+        }
+        ReviewDue::Escalate if desk_owned => {
+            let _ = d
+                .store
+                .modify_task_state(&task.id, &stamp, |s| s.review_escalated = true);
+            let envelope = crate::envelope::Envelope::new("review_due")
+                .attr("task_id", &task.id)
+                .attr("title", &task.title)
+                .attr("in_review_minutes", age_minutes.to_string())
+                .attr("escalated", "true")
+                .child("report", report)
+                .child("note", "Still no verdict after every reminder. Decide now with task.review, or ask the user in your own words if only they can.")
+                .render();
+            tell_review_owner(
+                d,
+                task,
+                &owner,
+                &envelope,
+                &format!("review-escalated:{}", task.id),
+            );
         }
         ReviewDue::Escalate => {
             let _ = d
@@ -217,6 +254,31 @@ async fn review_due(
                 Some(&task.id),
             );
         }
+    }
+}
+
+/// A desk-owned task's review clock reaches its desk, never the user directly.
+fn tell_review_owner(d: &Shared, task: &Task, desk: &str, body: &str, key: &str) {
+    let mut extra = serde_json::Map::new();
+    extra.insert("kind".into(), serde_json::json!("status"));
+    extra.insert("auto".into(), serde_json::json!("review_due"));
+    let from = if task.session_id.trim().is_empty() {
+        ("agent", crate::lead::SESSION_ID)
+    } else {
+        ("session", task.session_id.as_str())
+    };
+    if let Err(error) = d.store.send_direct_message_typed(
+        from,
+        ("agent", desk),
+        body,
+        key,
+        &chrono::Utc::now().to_rfc3339(),
+        None,
+        None,
+        Some(&task.id),
+        extra,
+    ) {
+        eprintln!("[review] review_due for {} to {desk}: {error}", task.id);
     }
 }
 
