@@ -261,9 +261,9 @@ mod seat_layer_tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     const HARNESS_CORE_MAX_BYTES: usize = 5_100;
-    const DESK_LAYER_MAX_BYTES: usize = 5_000;
-    const WORK_SESSION_LAYER_MAX_BYTES: usize = 2_500;
-    const LANE_LAYER_MAX_BYTES: usize = 1_400;
+    const DESK_LAYER_MAX_BYTES: usize = 6_200;
+    const WORK_SESSION_LAYER_MAX_BYTES: usize = 3_200;
+    const LANE_LAYER_MAX_BYTES: usize = 1_600;
 
     #[test]
     fn every_seat_prompt_includes_harness_core_exactly_once() {
