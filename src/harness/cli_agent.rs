@@ -2104,6 +2104,19 @@ impl CodingHarness {
         cmd
     }
 
+    fn unknown_tool_hint(&self) -> &'static str {
+        if self.context.workspace_root() == crate::lead::workspace_path() {
+            " You are Lead: to check on, run or change anything in a project, ask the session that owns it (tasks.create to that session, or read.session)."
+        } else if self
+            .session_id()
+            .is_some_and(|id| crate::session::is_inbox_session_id(&id))
+        {
+            " You are a desk: run desk tools through bash as `snippet tool <name> key=value` (`snippet tool --list` lists them, `snippet tool <name> --help` shows flags)."
+        } else {
+            ""
+        }
+    }
+
     async fn acp_rpc(
         label: &str,
         stdin: &mut ChildStdin,
@@ -3574,10 +3587,11 @@ impl CodingHarness {
                         if !advertised_tools.iter().any(|d| d.name == "custom_tool") {
                             let available: Vec<&str> =
                                 advertised_tools.iter().map(|d| d.name.as_str()).collect();
+                            let hint = self.unknown_tool_hint();
                             let _ = call.reply.send(error_result(
                                 "unknown_tool",
                                 &format!(
-                                    "`custom_tool` isn't a tool in this session. Tools you have: {}.",
+                                    "`custom_tool` isn't a tool in this session.{hint} Tools you have: {}.",
                                     available.join(", ")
                                 ),
                             ));
@@ -3589,13 +3603,7 @@ impl CodingHarness {
                         let Some(advertised) = advertised_tools.iter().find(|d| d.name == call.name) else {
                             let available: Vec<&str> =
                                 advertised_tools.iter().map(|d| d.name.as_str()).collect();
-                            let hint = if self.context.workspace_root()
-                                == crate::lead::workspace_path()
-                            {
-                                " You are Lead: to check on, run or change anything in a project, ask the session that owns it (tasks action=create to that session, or read action=session)."
-                            } else {
-                                ""
-                            };
+                            let hint = self.unknown_tool_hint();
                             let _ = call.reply.send(error_result(
                                 "unknown_tool",
                                 &format!(
@@ -3994,11 +4002,7 @@ impl CodingHarness {
                     .into_iter()
                     .map(|d| d.name)
                     .collect();
-                let hint = if self.context.workspace_root() == crate::lead::workspace_path() {
-                    " You are Lead: to check on, run or change anything in a project, ask the session that owns it (tasks.create to that session, or read.session)."
-                } else {
-                    ""
-                };
+                let hint = self.unknown_tool_hint();
                 error_result(
                     "unknown_tool",
                     &format!(
