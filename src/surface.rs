@@ -421,6 +421,34 @@ const WAKE: Surface = Surface {
     ],
 };
 
+const EVENT: Surface = Surface {
+    name: "event",
+    intro: "Your desk events: what you were told and have not settled yet.",
+    acts: &[
+        act("list", "desk_event_list", "open events, most pressing first."),
+        act(
+            "ack",
+            "desk_event_ack",
+            "mark events handled (ids); re=<id> on any call does it on success.",
+        ),
+        act(
+            "noop",
+            "desk_event_noop",
+            "close events that need nothing (ids, bulk).",
+        ),
+        act(
+            "defer",
+            "desk_event_defer",
+            "present an event again later (id, deadline, in_minutes or in_seconds).",
+        ),
+        act(
+            "create",
+            "desk_event_create",
+            "open an event for yourself with an optional deadline and thread_id.",
+        ),
+    ],
+};
+
 const TASKS: Surface = Surface {
     name: "tasks",
     intro: "Create, assign, update, inspect, review, or report mission tasks.",
@@ -526,8 +554,8 @@ const AMBIENT: Surface = Surface {
 };
 
 pub const SURFACES: &[&Surface] = &[
-    &WEB, &PROCESS, &PRESENT, &CANVAS, &DELEGATE, &SKILL, &MESSAGE, &READ, &TASK, &WAKE, &TASKS,
-    &SESSIONS, &AMBIENT, &CODE, &CALLS,
+    &WEB, &PROCESS, &PRESENT, &CANVAS, &DELEGATE, &SKILL, &MESSAGE, &READ, &TASK, &WAKE, &EVENT,
+    &TASKS, &SESSIONS, &AMBIENT, &CODE, &CALLS,
 ];
 
 fn keep_for(role: SeatRole) -> &'static [&'static str] {
@@ -732,7 +760,7 @@ pub fn lower_dotted(name: &str, args: &Value) -> Result<Option<(String, Value)>,
 
 /// Dotted surface.action definitions for Desk's CLI-backed tools (`snippet tool`).
 pub fn desk_cli_definitions(internal: &[NativeToolDefinition]) -> Vec<NativeToolDefinition> {
-    const DESK_CLI_SURFACES: &[&Surface] = &[&MESSAGE, &READ, &TASK, &WAKE, &PRESENT, &WEB];
+    const DESK_CLI_SURFACES: &[&Surface] = &[&MESSAGE, &READ, &TASK, &WAKE, &EVENT, &PRESENT, &WEB];
     let by_name: HashMap<&str, &NativeToolDefinition> = internal
         .iter()
         .map(|d| (d.name.as_str(), d))

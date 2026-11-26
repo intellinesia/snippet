@@ -406,6 +406,35 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
          );
          CREATE INDEX IF NOT EXISTS desk_fallbacks_due
              ON desk_fallbacks(done_at, due_at);
+         CREATE TABLE IF NOT EXISTS desk_inbox (
+             id TEXT PRIMARY KEY,
+             agent_id TEXT NOT NULL,
+             kind TEXT NOT NULL,
+             thread_id TEXT,
+             reply_thread TEXT,
+             source_ref TEXT,
+             priority INTEGER NOT NULL DEFAULT 0,
+             is_mention INTEGER NOT NULL DEFAULT 0,
+             summary TEXT NOT NULL,
+             payload_json TEXT NOT NULL DEFAULT '{}',
+             deadline_at TEXT,
+             wake INTEGER NOT NULL DEFAULT 1,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             delivered_at TEXT,
+             presented_at TEXT,
+             resolved_at TEXT,
+             resolution TEXT,
+             attempts INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE INDEX IF NOT EXISTS desk_inbox_open
+             ON desk_inbox(agent_id, resolved_at);
+         CREATE INDEX IF NOT EXISTS desk_inbox_thread
+             ON desk_inbox(agent_id, thread_id, resolved_at);
+         CREATE INDEX IF NOT EXISTS desk_inbox_source
+             ON desk_inbox(agent_id, source_ref);
+         CREATE INDEX IF NOT EXISTS desk_inbox_pending
+             ON desk_inbox(resolved_at, presented_at, created_at);
 "#,
     )
 }

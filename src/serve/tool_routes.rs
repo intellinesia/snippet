@@ -265,9 +265,17 @@ pub(crate) async fn run_tool(State(d): State<Shared>, Json(req): Json<ToolRunReq
     if tool_name.is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "tool name is required");
     }
+    let mut re_ids: Vec<String> = Vec::new();
     let arguments = match req.arguments {
         Value::Null => json!({}),
-        Value::Object(map) => Value::Object(map),
+        Value::Object(mut map) => {
+            if resolved.seat == Seat::Desk
+                && let Some(re) = map.remove("re")
+            {
+                re_ids = crate::coordination_tools::parse_event_ids(&re);
+            }
+            Value::Object(map)
+        }
         _ => {
             return api_error(
                 StatusCode::BAD_REQUEST,
@@ -322,7 +330,22 @@ pub(crate) async fn run_tool(State(d): State<Shared>, Json(req): Json<ToolRunReq
                     .unwrap_or("tool execution failed");
                 return api_error(StatusCode::BAD_REQUEST, message);
             }
-            (StatusCode::OK, Json(result.value)).into_response()
+            let mut value = result.value;
+            if !re_ids.is_empty()
+                && let Some(agent) = resolved.context.agent_id()
+            {
+                let now = chrono::Utc::now().to_rfc3339();
+                match d.store.ack_desk_events(agent, &re_ids, &now) {
+                    Ok(settled) => {
+                        let acked: Vec<&str> = settled.iter().map(|e| e.id.as_str()).collect();
+                        if let Some(map) = value.as_object_mut() {
+                            map.insert("re_acked".into(), json!(acked));
+                        }
+                    }
+                    Err(error) => eprintln!("[tools] ack re={re_ids:?} for {agent}: {error}"),
+                }
+            }
+            (StatusCode::OK, Json(value)).into_response()
         }
         Err(err) => api_error(StatusCode::BAD_REQUEST, err),
     }
@@ -534,4 +557,92 @@ mod tests {
         assert_eq!(board.len(), 1);
         assert_eq!(board[0].summary, "Verified CLI tool route on temp store");
     }
+
+    #[tokio::test]
+    async fn desk_re_argument_acks_events_and_finishes_their_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = daemon_with_disk_store(dir.path());
+        let now = chrono::Utc::now().to_rfc3339();
+        d.store
+            .schedule_desk_fallback(&crate::coordination::desk_fallbacks::DeskFallback {
+                key: "desk-approval:s:3".into(),
+                desk: "scout".into(),
+                session_id: "s".into(),
+                what: "approval".into(),
+                event_index: 3,
+                body: "b".into(),
+                extra: Default::default(),
+                created_at: now.clone(),
+                due_at: now.clone(),
+            })
+            .unwrap();
+        let relay = d
+            .store
+            .enqueue_desk_event(
+                &crate::coordination::desk_inbox::NewDeskEvent {
+                    agent_id: "scout".into(),
+                    kind: "approval".into(),
+                    source_ref: Some("desk-approval:s:3".into()),
+                    priority: 50,
+                    summary: "s waits on approval".into(),
+                    wake: true,
+                    ..Default::default()
+                },
+                &now,
+            )
+            .unwrap();
+        let app = test_router(d.clone());
+        let run = |args: Value| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::post("/api/tools/run?token=secret-token")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"session_id": "inbox-scout", "tool": "event.create", "arguments": args})
+                                .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        let failed = run(json!({"re": relay.id})).await;
+        assert_eq!(failed.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(d.store.list_open_desk_events("scout", 10).unwrap().len(), 1, "a failed call acks nothing");
+
+        let ok = run(json!({"summary": "told the user about the approval", "in_minutes": 30, "re": relay.id})).await;
+        assert_eq!(ok.status(), StatusCode::OK);
+        let body = body_json(ok).await;
+        assert_eq!(body["re_acked"], json!([relay.id]));
+        let settled = d.store.get_desk_event("scout", &relay.id).unwrap().unwrap();
+        assert_eq!(settled.resolution.as_deref(), Some("ack"));
+        assert!(d.store.due_desk_fallbacks("2999-01-01T00:00:00Z", 10).unwrap().is_empty());
+        let open = d.store.list_open_desk_events("scout", 10).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].kind, "self");
+        assert!(open[0].deadline_at.is_some());
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::get("/api/tools?token=secret-token&session_id=inbox-scout")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let names: Vec<String> = body_json(listed).await["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        for name in ["event.list", "event.ack", "event.noop", "event.defer", "event.create"] {
+            assert!(names.iter().any(|n| n == name), "{name} missing from {names:?}");
+        }
+    }
+
 }

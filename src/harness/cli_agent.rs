@@ -460,6 +460,25 @@ struct CliParse {
     claude_call: Option<crate::llm::TokenUsage>,
     served: ServedResults,
     envelope_marker: Option<PathBuf>,
+    prev_prompt_tokens: u64,
+    silent_compaction: bool,
+}
+
+const SILENT_COMPACTION_FLOOR: u64 = 50_000;
+
+impl CliParse {
+    /// An ACP runtime compacts on its own; a context that shrinks below 60% of
+    /// a large previous one means the injected state was summarised away.
+    fn note_context_size(&mut self, current: u64) {
+        if current == 0 {
+            return;
+        }
+        let previous = self.prev_prompt_tokens;
+        if previous > SILENT_COMPACTION_FLOOR && current.saturating_mul(10) < previous.saturating_mul(6) {
+            self.silent_compaction = true;
+        }
+        self.prev_prompt_tokens = current;
+    }
 }
 
 pub struct CliAgentModel {
@@ -1857,7 +1876,14 @@ impl CodingHarness {
     }
 
     fn compact_command(&self) -> String {
-        "/compact Keep the summary lean, about 2k tokens: the user's requests in order (one line each), the goal and what counts as done, progress (done, in progress, left), decisions and constraints, the next steps and the exact values (paths, ids, error strings) they need.".to_string()
+        let mut command = "/compact Keep the summary lean, about 2k tokens: the user's requests in order (one line each), the goal and what counts as done, progress (done, in progress, left), decisions and constraints, the next steps and the exact values (paths, ids, error strings) they need.".to_string();
+        if self
+            .session_id()
+            .is_some_and(|id| crate::session::is_inbox_session_id(&id))
+        {
+            command.push_str(" This is a desk: keep every open desk event id (ev-...) with its kind, deadline and reply thread, every promised follow-up with its deadline, and the exact thread or group each pending reply goes to.");
+        }
+        command
     }
 
     fn effort_arg(profile: &InferenceProfileConfig) -> Option<&str> {
@@ -3226,6 +3252,11 @@ impl CodingHarness {
                                     self.apply_devin_event(&mut state, &event, sink.as_ref(), &mut parse)
                                 }
                             };
+                            if std::mem::take(&mut parse.silent_compaction) {
+                                last_task_note.clear();
+                                last_vault_line.clear();
+                                need_snapshot = true;
+                            }
                             if kind == CliKind::ClaudeCode
                                 && event.get("type").and_then(Value::as_str) == Some("rate_limit_event")
                             {
@@ -4100,6 +4131,8 @@ impl CodingHarness {
                 }
                 let n = |k: &str| meta.get(k).and_then(Value::as_u64).unwrap_or(0);
                 let prompt = n("cognition.ai/inputTokens");
+                let used = update.get("used").and_then(Value::as_u64).unwrap_or(0);
+                parse.note_context_size(if used > 0 { used } else { prompt });
                 let completion = n("cognition.ai/outputTokens") + n("cognition.ai/thoughtTokens");
                 let cached = n("cognition.ai/cachedReadTokens");
                 let created = n("cognition.ai/cachedWriteTokens");
@@ -4905,6 +4938,42 @@ mod devin_acp_tests {
         assert!(state.events.iter().any(
             |e| matches!(e, HarnessEvent::ToolResult { tool_name, .. } if tool_name == "bash")
         ));
+    }
+
+    #[test]
+    fn a_large_context_that_shrinks_reads_as_silent_compaction() {
+        let harness = test_harness();
+        let mut state = HarnessState::blank("/tmp", None);
+        let mut parse = CliParse::default();
+        let usage = |used: u64| {
+            json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {"sessionId": "s", "update": {"sessionUpdate": "usage_update", "used": used, "size": 1048576}}
+            })
+        };
+        for used in [20_000, 40_000, 30_000] {
+            harness.apply_devin_event(&mut state, &usage(used), None, &mut parse);
+        }
+        assert!(!parse.silent_compaction, "small contexts never count");
+        harness.apply_devin_event(&mut state, &usage(120_000), None, &mut parse);
+        harness.apply_devin_event(&mut state, &usage(80_000), None, &mut parse);
+        assert!(!parse.silent_compaction, "a modest drop is not a compaction");
+        harness.apply_devin_event(&mut state, &usage(30_000), None, &mut parse);
+        assert!(parse.silent_compaction);
+        assert_eq!(parse.prev_prompt_tokens, 30_000);
+
+        let mut devin = CliParse::default();
+        let devin_usage = |input: u64| {
+            json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {"sessionId": "s", "update": {"sessionUpdate": "usage_update", "_meta": {"cognition.ai/inputTokens": input, "cognition.ai/outputTokens": 10}}}
+            })
+        };
+        harness.apply_devin_event(&mut state, &devin_usage(200_000), None, &mut devin);
+        harness.apply_devin_event(&mut state, &devin_usage(60_000), None, &mut devin);
+        assert!(devin.silent_compaction);
     }
 
     #[test]

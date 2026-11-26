@@ -625,6 +625,25 @@ fn schedule_desk_fallback(
     };
     if let Err(error) = store.schedule_desk_fallback(&fallback) {
         eprintln!("[relay] schedule fallback for {session_id}: {error}");
+        return;
+    }
+    let label = crate::coordination::origin::session_label(store, session_id);
+    let event = crate::coordination::desk_inbox::NewDeskEvent {
+        agent_id: desk.to_string(),
+        kind: what.to_string(),
+        reply_thread: Some(crate::coordination::direct_thread_id(
+            ("agent", desk),
+            ("human", crate::coordination::LOCAL_HUMAN_ID),
+        )),
+        source_ref: Some(fallback.key.clone()),
+        priority: crate::coordination::desk_inbox::APPROVAL_PRIORITY,
+        summary: format!("{label} ({session_id}) waits on the user's {what}"),
+        payload: Some(json!({"session": session_id})),
+        wake: true,
+        ..Default::default()
+    };
+    if let Err(error) = store.enqueue_desk_event(&event, &fallback.created_at) {
+        eprintln!("[relay] desk event for {session_id}: {error}");
     }
 }
 
@@ -698,25 +717,6 @@ fn tell_desk_of_question(
     );
 }
 
-/// Whether the desk itself has written to the user since `since`.
-fn desk_spoke_since(store: &crate::store::Store, desk: &str, since: &str) -> bool {
-    let thread = crate::coordination::direct_thread_id(
-        ("agent", desk),
-        ("human", crate::coordination::LOCAL_HUMAN_ID),
-    );
-    store
-        .recent_direct_thread_events(&thread, 30)
-        .unwrap_or_default()
-        .iter()
-        .any(|e| {
-            e.actor_kind == "agent"
-                && e.actor_id == desk
-                && e.created_at.as_str() > since
-                && e.payload.get("system").and_then(|v| v.as_bool()) != Some(true)
-                && e.payload.get("auto").is_none()
-        })
-}
-
 fn fallback_still_pending(f: &crate::coordination::desk_fallbacks::DeskFallback) -> bool {
     let Some(state) = crate::session::state_path_for_id(&f.session_id)
         .and_then(|path| crate::session::read_session_meta(&path))
@@ -747,7 +747,8 @@ fn run_desk_fallbacks(
         return;
     };
     for f in due {
-        if !desk_spoke_since(store, &f.desk, &f.created_at) && pending(&f) {
+        let posted = pending(&f);
+        if posted {
             let mut extra = f.extra.clone();
             extra.insert("fallback".into(), json!(true));
             extra.insert("session".into(), json!(f.session_id));
@@ -763,18 +764,91 @@ fn run_desk_fallbacks(
             );
         }
         let _ = store.finish_desk_fallback(&f.key, now);
+        let resolution = if posted { "fallback" } else { "settled" };
+        let _ = store.settle_desk_events_for_source(&f.desk, &f.key, resolution, now);
     }
 }
 
-pub(crate) async fn desk_fallback_loop(store: crate::store::Store) {
-    let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+const DESK_BATCH_DEBOUNCE_SECS: i64 = 30;
+const DESK_SWEEP_SECS: u64 = 5;
+const DESK_FALLBACK_EVERY_SWEEPS: u64 = 3;
+
+/// One `<desk_events>` envelope for a batch, most pressing first.
+pub(crate) fn desk_events_envelope(events: &[crate::coordination::desk_inbox::DeskEvent]) -> String {
+    let mut envelope = crate::envelope::Envelope::new("desk_events")
+        .attr("count", events.len().to_string());
+    for e in events {
+        let priority = e.priority.to_string();
+        let mut attrs: Vec<(&str, &str)> = vec![
+            ("id", e.id.as_str()),
+            ("kind", e.kind.as_str()),
+            ("priority", priority.as_str()),
+        ];
+        if e.is_mention {
+            attrs.push(("mention", "yes"));
+        }
+        if let Some(reply) = e.reply_thread.as_deref().or(e.thread_id.as_deref()) {
+            attrs.push(("reply_thread", reply));
+        }
+        if let Some(deadline) = e.deadline_at.as_deref() {
+            attrs.push(("deadline", deadline));
+        }
+        envelope = envelope.child_with("event", &attrs, &e.summary);
+    }
+    envelope
+        .child(
+            "note",
+            "Handle these in order. Pass re=<id> (comma-separated for several) on the call that handles an event and it is acked when the call succeeds; event.noop closes ones that need nothing, event.defer brings one back later. An approval or question you do not ack reaches the user as an automatic notice.",
+        )
+        .render()
+}
+
+async fn present_desk_batches(d: &Shared, now: &str) {
+    let due = match d.store.due_desk_batches(now, DESK_BATCH_DEBOUNCE_SECS) {
+        Ok(due) => due,
+        Err(error) => {
+            eprintln!("[desk events] due query failed: {error}");
+            return;
+        }
+    };
+    for batch in due {
+        if super::routing_routes::is_desk_profile_limited(d, &batch.agent_id).await {
+            continue;
+        }
+        let session = crate::session::inbox_session_id(&batch.agent_id);
+        let delivered = async {
+            ensure_agent_inbox(d, &batch.agent_id).await?;
+            let Some((tx, _path, _stream)) = d.ensure_live(&session).await else {
+                return Err(format!("session `{session}` could not be opened"));
+            };
+            drop(tx);
+            deliver_by_urgency(d, &session, desk_events_envelope(&batch.events), &json!({}), false)
+                .await;
+            Ok::<(), String>(())
+        }
+        .await;
+        if let Err(error) = &delivered {
+            eprintln!("[desk events] {} for {}: {error}", batch.events.len(), batch.agent_id);
+            continue;
+        }
+        let ids: Vec<String> = batch.events.iter().map(|e| e.id.clone()).collect();
+        if let Err(error) = d.store.mark_desk_events_presented(&ids, now) {
+            eprintln!("[desk events] mark presented for {}: {error}", batch.agent_id);
+        }
+    }
+}
+
+pub(crate) async fn desk_fallback_loop(d: Shared) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(DESK_SWEEP_SECS));
+    let mut sweeps = 0u64;
     loop {
         tick.tick().await;
-        run_desk_fallbacks(
-            &store,
-            &chrono::Utc::now().to_rfc3339(),
-            fallback_still_pending,
-        );
+        let now = chrono::Utc::now().to_rfc3339();
+        present_desk_batches(&d, &now).await;
+        if sweeps % DESK_FALLBACK_EVERY_SWEEPS == 0 {
+            run_desk_fallbacks(&d.store, &now, fallback_still_pending);
+        }
+        sweeps += 1;
     }
 }
 
@@ -3856,11 +3930,12 @@ mod tests {
     }
 
     #[test]
-    fn a_desk_that_speaks_or_a_settled_wait_suppresses_the_fallback() {
+    fn a_desk_ack_or_a_settled_wait_suppresses_the_fallback() {
         let store = crate::store::Store::open_in_memory().unwrap();
         store.create_agent(&agent("a")).unwrap();
         let state = waiting_question_state();
         import_waiting_session(&store, "sess-1", "a", &state);
+        store.set_session_managed_by("sess-1", "agent").unwrap();
         super::relay_question(&store, "sess-1", &state);
         super::run_desk_fallbacks(&store, "2999-01-01T00:00:00Z", |_| false);
         assert!(thread_events(&store, "a").is_empty(), "answered already");
@@ -3874,6 +3949,11 @@ mod tests {
             },
         );
         super::relay_question(&store, "sess-1", &second);
+        let open = store.list_open_desk_events("a", 10).unwrap();
+        assert_eq!(open.len(), 1, "the settled wait closed its event: {open:?}");
+        let relay = &open[0];
+        assert_eq!(relay.kind, "question");
+        assert_eq!(relay.priority, crate::coordination::desk_inbox::APPROVAL_PRIORITY);
         store
             .send_direct_message_typed(
                 ("agent", "a"),
@@ -3887,10 +3967,68 @@ mod tests {
                 serde_json::Map::new(),
             )
             .unwrap();
+        store
+            .ack_desk_events("a", &[relay.id.clone()], &chrono::Utc::now().to_rfc3339())
+            .unwrap();
         super::run_desk_fallbacks(&store, "2999-01-01T00:00:00Z", |_| true);
         let events = thread_events(&store, "a");
         assert_eq!(events.len(), 1, "only the desk's own words");
         assert_eq!(events[0].idempotency_key, "desk-own");
+    }
+
+    #[test]
+    fn an_unrelated_desk_post_no_longer_suppresses_the_fallback() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store.create_agent(&agent("a")).unwrap();
+        let state = waiting_question_state();
+        import_waiting_session(&store, "sess-1", "a", &state);
+        store.set_session_managed_by("sess-1", "agent").unwrap();
+        super::relay_question(&store, "sess-1", &state);
+        store
+            .send_direct_message_typed(
+                ("agent", "a"),
+                ("human", crate::coordination::LOCAL_HUMAN_ID),
+                "Unrelated chatter.",
+                "desk-chat",
+                &chrono::Utc::now().to_rfc3339(),
+                None,
+                None,
+                None,
+                serde_json::Map::new(),
+            )
+            .unwrap();
+        super::run_desk_fallbacks(&store, "2999-01-01T00:00:00Z", |_| true);
+        let events = thread_events(&store, "a");
+        assert_eq!(events.len(), 2, "the fallback still reaches the user");
+        let closed = store.list_open_desk_events("a", 10).unwrap();
+        assert!(closed.is_empty(), "a posted fallback closes its event");
+    }
+
+    #[test]
+    fn desk_events_envelope_lists_each_event_with_its_reply_target() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let e = store
+            .enqueue_desk_event(
+                &crate::coordination::desk_inbox::NewDeskEvent {
+                    agent_id: "a".into(),
+                    kind: "dm".into(),
+                    thread_id: Some("t1".into()),
+                    reply_thread: Some("t1".into()),
+                    is_mention: true,
+                    summary: "ping".into(),
+                    wake: true,
+                    ..Default::default()
+                },
+                "2026-11-26T10:00:00Z",
+            )
+            .unwrap();
+        let text = super::desk_events_envelope(&[e.clone()]);
+        assert!(crate::envelope::is(&text, "desk_events"));
+        assert_eq!(crate::envelope::child(&text, "event").as_deref(), Some("ping"));
+        let attrs = crate::envelope::child_attrs(&text, "event");
+        assert!(attrs.contains(&("id".to_string(), e.id.clone())));
+        assert!(attrs.contains(&("reply_thread".to_string(), "t1".to_string())));
+        assert!(attrs.contains(&("mention".to_string(), "yes".to_string())));
     }
 
     #[test]

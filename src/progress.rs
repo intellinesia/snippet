@@ -255,3 +255,145 @@ fn digest_line(row: &BoardEntry) -> String {
         clip_summary(&row.summary),
     )
 }
+
+const DESK_STATE_EVENTS: u32 = 8;
+const DESK_STATE_SESSIONS: u32 = 6;
+const DESK_STATE_SUMMARY_CHARS: usize = 90;
+pub const DESK_STATE_MAX_BYTES: usize = 1500;
+
+/// The desk's live state for its reminder: open events, their deadlines and
+/// the work sessions it is waiting on, capped so it fits every turn.
+pub fn desk_state_render(db: &Store, agent_id: &str) -> String {
+    let events = db
+        .list_open_desk_events(agent_id, DESK_STATE_EVENTS)
+        .unwrap_or_default();
+    let sessions = db
+        .desk_work_sessions(agent_id, DESK_STATE_SESSIONS)
+        .unwrap_or_default();
+    if events.is_empty() && sessions.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["now:".to_string()];
+    if events.is_empty() {
+        lines.push("  events: none open".to_string());
+    } else {
+        lines.push("  events (event.ack/noop/defer; re=<id> on a call acks it):".to_string());
+        for e in &events {
+            let mut line = format!("  - {} {} p{}", e.id, e.kind, e.priority);
+            if e.is_mention {
+                line.push_str(" @");
+            }
+            if let Some(reply) = e.reply_thread.as_deref().or(e.thread_id.as_deref()) {
+                line.push_str(&format!(" reply={reply}"));
+            }
+            if let Some(due) = e.deadline_at.as_deref() {
+                line.push_str(&format!(" due={due}"));
+            }
+            let summary: String = e
+                .summary
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let summary = match summary.char_indices().nth(DESK_STATE_SUMMARY_CHARS) {
+                Some((cut, _)) => format!("{}…", &summary[..cut]),
+                None => summary,
+            };
+            line.push_str(&format!(": {summary}"));
+            lines.push(line);
+        }
+        let mut deadlines: Vec<(&str, &str)> = events
+            .iter()
+            .filter_map(|e| e.deadline_at.as_deref().map(|d| (d, e.id.as_str())))
+            .collect();
+        deadlines.sort();
+        if !deadlines.is_empty() {
+            lines.push(format!(
+                "  deadlines: {}",
+                deadlines
+                    .iter()
+                    .map(|(d, id)| format!("{id}@{d}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    if !sessions.is_empty() {
+        lines.push("  work:".to_string());
+        for s in &sessions {
+            lines.push(format!(
+                "  - session={} task={} reply={}",
+                s.session_id,
+                s.task_id,
+                s.reply_thread.as_deref().unwrap_or("-")
+            ));
+        }
+    }
+    let mut out = String::new();
+    for line in lines {
+        if out.len() + line.len() + 1 > DESK_STATE_MAX_BYTES - 5 {
+            out.push_str("\n  …");
+            break;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&line);
+    }
+    out
+}
+
+#[cfg(test)]
+mod desk_state_tests {
+    use super::*;
+    use crate::coordination::desk_inbox::NewDeskEvent;
+
+    #[test]
+    fn renders_open_events_and_stays_under_the_cap() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(desk_state_render(&store, "a"), "");
+        let now = "2026-11-26T10:00:00Z";
+        store
+            .enqueue_desk_event(
+                &NewDeskEvent {
+                    agent_id: "a".into(),
+                    kind: "dm".into(),
+                    thread_id: Some("direct:a:human".into()),
+                    reply_thread: Some("direct:a:human".into()),
+                    is_mention: true,
+                    summary: "can you check the deploy?".into(),
+                    wake: true,
+                    ..Default::default()
+                },
+                now,
+            )
+            .unwrap();
+        let reminder = store
+            .create_self_desk_event("a", "follow up on CI", Some("2026-11-26T12:00:00Z"), None, 2, now)
+            .unwrap();
+        let out = desk_state_render(&store, "a");
+        assert!(out.starts_with("now:"), "{out}");
+        assert!(out.contains("dm p0 @ reply=direct:a:human: can you check the deploy?"), "{out}");
+        assert!(out.contains(&format!("{} self p2 due=2026-11-26T12:00:00Z", reminder.id)), "{out}");
+        assert!(out.contains(&format!("deadlines: {}@2026-11-26T12:00:00Z", reminder.id)), "{out}");
+
+        for i in 0..20 {
+            store
+                .enqueue_desk_event(
+                    &NewDeskEvent {
+                        agent_id: "a".into(),
+                        kind: "progress".into(),
+                        reply_thread: Some(format!("task-thread-with-a-long-name-{i}-{}", "x".repeat(60))),
+                        deadline_at: Some("2026-11-26T13:00:00Z".into()),
+                        summary: "y".repeat(400),
+                        wake: true,
+                        ..Default::default()
+                    },
+                    now,
+                )
+                .unwrap();
+        }
+        let out = desk_state_render(&store, "a");
+        assert!(out.len() <= DESK_STATE_MAX_BYTES, "{}", out.len());
+        assert!(out.ends_with('…'), "{out}");
+    }
+}

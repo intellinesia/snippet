@@ -172,6 +172,10 @@ pub(crate) fn task_awareness(ctx: &ToolContext) -> String {
     if let (Some(agent), Some(session)) = (ctx.agent_id(), session)
         && crate::session::is_inbox_session_id(session)
     {
+        let state = crate::progress::desk_state_render(&db, agent);
+        if !state.is_empty() {
+            out.push(state);
+        }
         let digest = crate::progress::inbox_digest(&db, agent);
         if !digest.is_empty() {
             out.push(digest);
@@ -2983,6 +2987,249 @@ pub(crate) fn stamp_origin(ctx: &ToolContext, mut payload: Value) -> Value {
         payload["origin_session"] = json!(session);
     }
     payload
+}
+
+pub fn add_desk_event_tools(registry: &mut ToolRegistry) {
+    registry.insert(DeskEventList);
+    registry.insert(DeskEventAck);
+    registry.insert(DeskEventNoop);
+    registry.insert(DeskEventDefer);
+    registry.insert(DeskEventCreate);
+}
+
+/// Event ids from a comma-separated string or an array of strings.
+pub(crate) fn parse_event_ids(value: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = match value {
+        Value::String(s) => s.split(',').map(|p| p.trim().to_string()).collect(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .flat_map(|s| s.split(','))
+            .map(|p| p.trim().to_string())
+            .collect(),
+        _ => Vec::new(),
+    };
+    ids.retain(|id| !id.is_empty());
+    ids.dedup();
+    ids
+}
+
+fn desk_agent(ctx: &ToolContext) -> Result<String, ToolError> {
+    let session = ctx
+        .durable_session_id()
+        .filter(|s| crate::session::is_inbox_session_id(s))
+        .ok_or_else(|| ToolError::msg("desk events belong to a desk (inbox) session"))?;
+    Ok(ctx
+        .agent_id()
+        .map(str::to_string)
+        .unwrap_or_else(|| session.trim_start_matches("inbox-").to_string()))
+}
+
+fn event_json(e: &crate::coordination::desk_inbox::DeskEvent) -> Value {
+    json!({
+        "id": e.id,
+        "kind": e.kind,
+        "priority": e.priority,
+        "mention": e.is_mention,
+        "thread_id": e.thread_id,
+        "reply_thread": e.reply_thread,
+        "deadline_at": e.deadline_at,
+        "summary": e.summary,
+        "created_at": e.created_at,
+        "updated_at": e.updated_at,
+        "presented": e.presented_at.is_some(),
+    })
+}
+
+fn deadline_from(args: &Value, required: bool) -> Result<Option<String>, ToolError> {
+    if let Some(at) = args
+        .get("deadline")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+    {
+        return crate::coordination::desk_inbox::normalize_ts(at)
+            .map(Some)
+            .map_err(|e| ToolError::msg(e.to_string()));
+    }
+    let seconds = match (
+        args.get("in_seconds").and_then(Value::as_i64),
+        args.get("in_minutes").and_then(Value::as_i64),
+    ) {
+        (Some(s), _) => Some(s),
+        (None, Some(m)) => Some(m.saturating_mul(60)),
+        (None, None) => None,
+    };
+    match seconds {
+        Some(s) if s < 1 => Err(ToolError::msg("in_seconds / in_minutes must be positive")),
+        Some(s) => Ok(Some(
+            (chrono::Utc::now() + chrono::Duration::seconds(s.min(366 * 86_400)))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        )),
+        None if required => Err(ToolError::msg(
+            "give deadline (RFC 3339), in_minutes or in_seconds",
+        )),
+        None => Ok(None),
+    }
+}
+
+fn ids_schema() -> Value {
+    json!({
+        "type": "string",
+        "description": "event ids, comma-separated (an array of ids also works)"
+    })
+}
+
+fn deadline_props(mut props: Value) -> Value {
+    props["deadline"] = json!({"type": "string", "description": "RFC 3339 time"});
+    props["in_minutes"] = json!({"type": "integer", "minimum": 1});
+    props["in_seconds"] = json!({"type": "integer", "minimum": 1});
+    props
+}
+
+pub struct DeskEventList;
+#[async_trait]
+impl Tool for DeskEventList {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "desk_event_list".into(),
+            description: "Your open desk events, most pressing first: mentions, then priority, then age.".into(),
+            input_schema: schema(json!({"limit": {"type": "integer", "minimum": 1, "maximum": 100}}), &[]),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolResult, ToolError> {
+        let agent = desk_agent(ctx)?;
+        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(30).clamp(1, 100) as u32;
+        let events = db(ctx)?
+            .list_open_desk_events(&agent, limit)
+            .map_err(|e| ToolError::msg(format!("list events: {e}")))?;
+        Ok(ToolResult::success(json!({
+            "events": events.iter().map(event_json).collect::<Vec<_>>(),
+        })))
+    }
+}
+
+async fn settle_events(ctx: &ToolContext, args: &Value, resolution: &str) -> Result<ToolResult, ToolError> {
+    let agent = desk_agent(ctx)?;
+    let ids = parse_event_ids(args.get("ids").or_else(|| args.get("id")).unwrap_or(&Value::Null));
+    if ids.is_empty() {
+        return Err(ToolError::msg("ids is required (comma-separated or an array)"));
+    }
+    let db = db(ctx)?;
+    let now = now_rfc3339();
+    let settled = if resolution == "ack" {
+        db.ack_desk_events(&agent, &ids, &now)
+    } else {
+        db.resolve_desk_events(&agent, &ids, resolution, &now)
+    }
+    .map_err(|e| ToolError::msg(format!("{resolution} events: {e}")))?;
+    let done: Vec<&str> = settled.iter().map(|e| e.id.as_str()).collect();
+    let unknown: Vec<&String> = ids.iter().filter(|id| !done.contains(&id.as_str())).collect();
+    Ok(ToolResult::success(json!({
+        "resolution": resolution,
+        "settled": done,
+        "not_open": unknown,
+    })))
+}
+
+pub struct DeskEventAck;
+#[async_trait]
+impl Tool for DeskEventAck {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "desk_event_ack".into(),
+            description: "Mark desk events handled. re=<id> on any other call does the same once that call succeeds.".into(),
+            input_schema: schema(json!({"ids": ids_schema()}), &["ids"]),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolResult, ToolError> {
+        settle_events(ctx, &args, "ack").await
+    }
+}
+
+pub struct DeskEventNoop;
+#[async_trait]
+impl Tool for DeskEventNoop {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "desk_event_noop".into(),
+            description: "Close desk events that need nothing from you. A noop on an approval or question still lets the daemon's fallback notice reach the user.".into(),
+            input_schema: schema(json!({"ids": ids_schema()}), &["ids"]),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolResult, ToolError> {
+        settle_events(ctx, &args, "noop").await
+    }
+}
+
+pub struct DeskEventDefer;
+#[async_trait]
+impl Tool for DeskEventDefer {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "desk_event_defer".into(),
+            description: "Push a desk event back: it stays open and is presented again at the deadline.".into(),
+            input_schema: schema(deadline_props(json!({"id": {"type": "string"}})), &["id"]),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolResult, ToolError> {
+        let agent = desk_agent(ctx)?;
+        let id = args
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ToolError::msg("id is required"))?;
+        let deadline = deadline_from(&args, true)?.unwrap_or_default();
+        let event = db(ctx)?
+            .defer_desk_event(&agent, id, &deadline, &now_rfc3339())
+            .map_err(|e| ToolError::msg(format!("defer event: {e}")))?
+            .ok_or_else(|| ToolError::msg(format!("no open event `{id}`")))?;
+        Ok(ToolResult::success(json!({"event": event_json(&event)})))
+    }
+}
+
+pub struct DeskEventCreate;
+#[async_trait]
+impl Tool for DeskEventCreate {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "desk_event_create".into(),
+            description: "Open a desk event for yourself: a commitment or follow-up that is presented back to you at its deadline and stays open until you ack it.".into(),
+            input_schema: schema(
+                deadline_props(json!({
+                    "summary": {"type": "string"},
+                    "thread_id": {"type": "string", "description": "the chat it concerns, where the answer goes"},
+                    "priority": {"type": "integer", "minimum": 0, "maximum": 100}
+                })),
+                &["summary"],
+            ),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolResult, ToolError> {
+        let agent = desk_agent(ctx)?;
+        let summary = args
+            .get("summary")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ToolError::msg("summary is required"))?;
+        let deadline = deadline_from(&args, false)?;
+        let thread = args
+            .get("thread_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let priority = args.get("priority").and_then(Value::as_i64).unwrap_or(0).clamp(0, 100);
+        let event = db(ctx)?
+            .create_self_desk_event(&agent, summary, deadline.as_deref(), thread, priority, &now_rfc3339())
+            .map_err(|e| ToolError::msg(format!("create event: {e}")))?;
+        Ok(ToolResult::success(json!({"event": event_json(&event)})))
+    }
 }
 
 #[cfg(test)]

@@ -1177,9 +1177,9 @@ pub async fn run_serve(
         tokio::spawn(async move { groups::group_dispatch_loop(groups_d).await });
         let followups_d = watches_d.clone();
         tokio::spawn(async move { watches::watch_loop(watches_d).await });
-        let fallback_store = followups_d.store.clone();
+        let fallback_d = followups_d.clone();
         tokio::spawn(async move { followups::followup_loop(followups_d).await });
-        tokio::spawn(async move { direct::desk_fallback_loop(fallback_store).await });
+        tokio::spawn(async move { direct::desk_fallback_loop(fallback_d).await });
         tokio::spawn(crate::bg::watch_loop());
     }
     {
