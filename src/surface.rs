@@ -829,6 +829,14 @@ pub fn lower_dotted(name: &str, args: &Value) -> Result<Option<(String, Value)>,
         Value::Null => serde_json::Map::new(),
         _ => return Err(format!("`{name}` expects a JSON object for arguments")),
     };
+    // Dotted op-bearing tools (e.g. `message.group`) show `action` in `--help`;
+    // accept `action=<op>` as an alias for `op=<op>` before lowering the surface.
+    if uses_op(surface, &serde_json::json!({ "action": action }))
+        && !map.contains_key("op")
+        && let Some(caller_op) = map.remove("action")
+    {
+        map.insert("op".to_string(), caller_op);
+    }
     map.insert("action".to_string(), Value::String(action.to_string()));
     lower(surface, &Value::Object(map))
 }

@@ -574,11 +574,6 @@ async fn deliver_group(
     if d.store.group_wake_snoozed(pending, &now).unwrap_or(false) {
         return Ok(GroupWake::Skipped);
     }
-    if agent_id != crate::lead::SESSION_ID
-        && super::routing_routes::is_desk_profile_limited(d, agent_id).await
-    {
-        return Ok(GroupWake::Skipped);
-    }
     if pending.recipient_kind == "group_unanswered" {
         if d.store.group_post_answered(event).unwrap_or(false) {
             return Ok(GroupWake::Skipped);
@@ -586,10 +581,38 @@ async fn deliver_group(
         let waiting = chrono::DateTime::parse_from_rfc3339(&event.created_at)
             .map(|at| (chrono::Utc::now() - at.with_timezone(&chrono::Utc)).num_minutes())
             .unwrap_or_default();
-        let envelope = group_unanswered_envelope(event, waiting);
         if agent_id != crate::lead::SESSION_ID {
-            super::direct::ensure_agent_inbox(d, agent_id).await?;
+            let body = event
+                .payload
+                .get("body")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let desk_event = crate::coordination::desk_inbox::NewDeskEvent {
+                agent_id: agent_id.to_string(),
+                kind: "group".to_string(),
+                thread_id: Some(event.thread_id.clone()),
+                reply_thread: Some(event.thread_id.clone()),
+                source_ref: Some(format!("unanswered:{}", event.event_id)),
+                priority: 30,
+                is_mention: true,
+                summary: format!(
+                    "Unanswered in group for {waiting}m [msg:{}]: {body}",
+                    event.event_id
+                ),
+                payload: Some(serde_json::json!({
+                    "event_id": event.event_id,
+                    "group_id": event.thread_id,
+                    "unanswered_minutes": waiting,
+                })),
+                deadline_at: None,
+                wake: true,
+            };
+            d.store
+                .enqueue_desk_event(&desk_event, &now)
+                .map_err(|e| format!("enqueue group_unanswered for `{agent_id}`: {e}"))?;
+            return Ok(GroupWake::Delivered);
         }
+        let envelope = group_unanswered_envelope(event, waiting);
         let session_id = super::direct::recipient_session_id(agent_id);
         let Some((tx, _path, _stream)) = d.ensure_live(&session_id).await else {
             return Err(format!("could not start inbox session `{session_id}`"));
@@ -675,8 +698,14 @@ async fn deliver_group(
             .is_some_and(|arr| {
                 arr.iter()
                     .filter_map(serde_json::Value::as_str)
-                    .any(|m| m == agent_id)
-            });
+                    .any(|m| {
+                        let norm = m.trim().trim_start_matches('@');
+                        norm.eq_ignore_ascii_case(agent_id)
+                            || norm.eq_ignore_ascii_case("everyone")
+                    })
+            })
+            || body.to_ascii_lowercase().contains(&format!("@{}", agent_id.to_ascii_lowercase()))
+            || body.to_ascii_lowercase().contains("@everyone");
         let is_lead = lead.is_some_and(|(_, mine)| mine);
         let lead_tag = if is_lead { " (you lead)" } else { "" };
         let priority = match wake {
@@ -796,7 +825,14 @@ async fn check_round_failovers(d: &Shared) {
         let now = chrono::Utc::now();
         let snoozed = d
             .store
-            .is_group_snoozed(&round.lead_agent, &round.thread_id, &now.to_rfc3339())
+            .group_wake_snoozed(
+                &crate::coordination::PendingDirectMessage {
+                    event: post.clone(),
+                    recipient_kind: "group".into(),
+                    recipient_id: round.lead_agent.clone(),
+                },
+                &now.to_rfc3339(),
+            )
             .unwrap_or(false);
         let Some(reason) = round_failover_reason(&round, limited, snoozed, now) else {
             continue;

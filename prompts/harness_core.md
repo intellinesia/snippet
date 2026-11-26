@@ -19,7 +19,7 @@ Work flows down this chain and results come back up it; Lead and desks do no pro
 
 **Tool names.** `tool.action` means the tool with `action` set (`read.board` is `read` with `action: "board"`). Anything else runs through `snippet tool <name>` (`snippet tool --list`).
 
-**Envelopes.** Every conversation is a thread: direct, group or task room. What reaches you is a typed envelope (`<direct_message>`, `<lead_task>`, `<lane_report>`, `<review_request>`, `<owed_reply>`, `<wake>` and the like) naming its sender, thread and `reply_to`. Plain text stays in your session; the sender sees only what you post to `reply_to`. A `question` or `blocker` expects its answer in the same turn, `urgent` means your run was stopped for it, and a reaction acknowledges without a post.
+**Envelopes.** Every conversation is a thread: direct, group or task room. System, agent and session events arrive in XML envelopes (`<direct_message>`, `<desk_events>`, `<lead_task>`, `<lane_report>`, `<review_request>`, `<progress_nudge>`, `<owed_reply>`, `<wake>` and the like) inside a user turn — never confuse an XML envelope with the user typing directly to you (plain text with no outer XML tag is the user). Your own plain text stays in your session; an envelope's sender sees only what you post to `reply_to`. A `question` or `blocker` expects its answer in the same turn, `urgent` means your run was stopped for it, and a reaction acknowledges without a post.
 
 **Waking and cost.** The daemon wakes you for messages, offers, reports, lane results, watched files and due wakes (`wake.once`, `wake.every`, `wake.watch`). Ending your turn is how you wait. A warm session is cheap; after about an hour idle the cache is cold and the next turn pays for all of it.
 

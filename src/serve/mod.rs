@@ -581,6 +581,10 @@ impl Daemon {
                         .filter(|l| !l.join.is_finished())
                         .map(|l| (l.profile.clone(), l.state_path.clone()));
                     let Some((current, sp)) = live_info else {
+                        if is_agent_desk(&id) && !desk_only {
+                            let target = d.agent_profile(&agent_id).unwrap_or_default();
+                            d.on_desk_provider_changed(&agent_id, "", &target, false);
+                        }
                         continue;
                     };
                     if !is_agent_desk(&id) && d.pinned_session_profile(&id, &sp).is_some() {
@@ -604,12 +608,12 @@ impl Daemon {
                         {
                             Ok(()) => {
                                 config_routes::notify_models(Some(&id));
-                                if is_agent_desk(&id) {
+                                if is_agent_desk(&id) && !desk_only {
                                     d.on_desk_provider_changed(
                                         &agent_id,
                                         current.as_deref().unwrap_or(""),
                                         target.as_deref().unwrap_or(""),
-                                        desk_only,
+                                        false,
                                     );
                                 }
                             }

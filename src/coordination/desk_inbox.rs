@@ -504,12 +504,13 @@ impl Store {
     ) -> Result<Vec<DeskWorkSession>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT ta.work_session_id, ta.task_id, tr.reply_to
+                "SELECT COALESCE(NULLIF(ta.work_session_id, ''), t.session_id) AS sid, ta.task_id, tr.reply_to
                  FROM task_agents ta
                  JOIN tasks t ON t.id = ta.task_id
                  LEFT JOIN task_requesters tr ON tr.task_id = ta.task_id
                  WHERE ta.agent_id = ?1 AND ta.removed_at IS NULL
-                   AND ta.work_session_id IS NOT NULL AND ta.work_session_id != ''
+                   AND COALESCE(NULLIF(ta.work_session_id, ''), t.session_id) IS NOT NULL
+                   AND COALESCE(NULLIF(ta.work_session_id, ''), t.session_id) != ''
                    AND t.status IN ('in_progress', 'blocked', 'in_review')
                  ORDER BY t.updated_at DESC LIMIT ?2",
             )?;

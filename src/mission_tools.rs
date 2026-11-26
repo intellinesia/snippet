@@ -2227,6 +2227,14 @@ impl Tool for StartTask {
                 let (session, _) =
                     open_folder_session(folder, &args.title, true, args.force_new, workspace, None)
                         .await?;
+                if let Some(store) = crate::session::store_for_sessions() {
+                    let _ = store.set_session_role(
+                        &session.id,
+                        crate::session::role_str(crate::session::SessionRole::Standard),
+                        Some(&agent_id),
+                    );
+                    let _ = store.set_session_managed_by(&session.id, "agent");
+                }
                 if let Some(mode) = tool_mode.as_deref() {
                     set_work_session_tool_mode(&session.id, mode)?;
                 }
@@ -2298,6 +2306,11 @@ fn check_slot_cap(
     let now = chrono::Utc::now().to_rfc3339();
     if let Some(query) = session_query
         && let Ok(id) = resolve_target_session(query)
+        && store
+            .get_session_row(&id)
+            .ok()
+            .flatten()
+            .is_some_and(|row| row.agent_id.as_deref() == Some(agent_id))
         && store
             .list_tasks(Some(&id), Some(&TaskStatus::InProgress))
             .is_ok_and(|tasks| !tasks.is_empty())

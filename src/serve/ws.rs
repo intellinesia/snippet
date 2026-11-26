@@ -711,6 +711,27 @@ async fn handle_ws(
                             .store
                             .set_session_user_seen(&session, crate::session::now_unix_secs());
                     }
+                    // When the user steps in and drives an agent-managed work
+                    // session directly, ownership transfers to the user.
+                    if by == "human"
+                        && matches!(
+                            input.inner(),
+                            LoopInput::UserMessage(_)
+                                | LoopInput::Queue(_)
+                                | LoopInput::SteerQueued(_)
+                        )
+                        && !crate::session::is_inbox_session_id(&session)
+                        && session != crate::lead::SESSION_ID
+                        && daemon
+                            .store
+                            .session_managed_by(&session)
+                            .ok()
+                            .flatten()
+                            .as_deref()
+                            == Some("agent")
+                    {
+                        let _ = daemon.store.set_session_managed_by(&session, "human");
+                    }
                     if let LoopInput::Answer(text) = input.inner()
                         && let Some(question) =
                             direct::latest_question_event(&daemon.store, &session)

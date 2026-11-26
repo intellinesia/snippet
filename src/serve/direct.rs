@@ -857,20 +857,6 @@ pub(crate) async fn restart_continuation(d: Shared) {
     };
     let now = chrono::Utc::now().to_rfc3339();
     for hit in hits {
-        let profile = d
-            .agent_profile(&hit.agent_id)
-            .or_else(|| {
-                d.store
-                    .get_session_row(&hit.session_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|row| row.profile)
-            })
-            .or_else(|| d.config.lock().unwrap().active_setup.clone())
-            .unwrap_or_default();
-        if !profile.is_empty() && crate::routing::limited_until(&profile).is_some() {
-            continue;
-        }
         if let Err(error) = d.store.enqueue_restart_interrupted(&hit, &now) {
             eprintln!(
                 "[restart] notify {} about {}: {error}",
