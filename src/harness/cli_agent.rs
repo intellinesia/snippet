@@ -39,10 +39,8 @@ enum CliKind {
 
 impl CliKind {
     fn memory_save_after(self) -> std::time::Duration {
-        match self {
-            CliKind::ClaudeCode | CliKind::Devin => std::time::Duration::from_secs(50 * 60),
-            CliKind::Antigravity => std::time::Duration::from_secs(3 * 60),
-        }
+        let _ = self;
+        std::time::Duration::from_secs(50 * 60)
     }
 
     fn of(provider: &str) -> Self {
@@ -2685,7 +2683,7 @@ impl CodingHarness {
                         }
                     }
                 }
-                _ = tokio::time::sleep_until(save_at.unwrap_or_else(tokio::time::Instant::now)), if save_at.is_some() && state.status == HarnessStatus::Idle && outbox.is_empty() => {
+                _ = tokio::time::sleep_until(save_at.unwrap_or_else(tokio::time::Instant::now)), if save_at.is_some() && state.status == HarnessStatus::Idle && outbox.is_empty() && lanes.active_count() == 0 => {
                     save_at = None;
                     if super::memory_reflection::reflection_scope(&state).is_some()
                         && session.started
