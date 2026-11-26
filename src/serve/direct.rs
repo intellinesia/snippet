@@ -822,8 +822,12 @@ async fn present_desk_batches(d: &Shared, now: &str) {
                 return Err(format!("session `{session}` could not be opened"));
             };
             drop(tx);
-            deliver_by_urgency(d, &session, desk_events_envelope(&batch.events), &json!({}), false)
-                .await;
+            let mut envelope = desk_events_envelope(&batch.events);
+            let now_state = crate::progress::desk_state_render(&d.store, &batch.agent_id);
+            if !now_state.is_empty() {
+                envelope = format!("{now_state}\n{envelope}");
+            }
+            deliver_by_urgency(d, &session, envelope, &json!({}), false).await;
             Ok::<(), String>(())
         }
         .await;
@@ -1738,6 +1742,23 @@ async fn deliver_direct(
         return Ok(());
     }
     let agent_id = pending.recipient_id.as_str();
+    if crate::coordination::direct::is_removed_reaction(&event.payload) {
+        return Ok(());
+    }
+    let is_interrupt = event
+        .payload
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        == Some("interrupt")
+        || event
+            .payload
+            .get("urgency")
+            .and_then(serde_json::Value::as_str)
+            == Some("urgent");
+    if agent_id != crate::lead::SESSION_ID && !is_interrupt {
+        enqueue_direct_for_desk(&d.store, agent_id, event)?;
+        return Ok(());
+    }
     let session_id = recipient_session_id(agent_id);
     if agent_id != crate::lead::SESSION_ID
         && !d
@@ -1748,9 +1769,6 @@ async fn deliver_direct(
             .is_some_and(|s| !s.join.is_finished())
     {
         ensure_agent_inbox(d, agent_id).await?;
-    }
-    if crate::coordination::direct::is_removed_reaction(&event.payload) {
-        return Ok(());
     }
     let Some((tx, _path, _stream)) = d.ensure_live(&session_id).await else {
         return Err(format!("could not start inbox session `{session_id}`"));
@@ -1790,6 +1808,93 @@ async fn deliver_direct(
         deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
     }
     Ok(())
+}
+
+fn enqueue_direct_for_desk(
+    store: &crate::store::Store,
+    agent_id: &str,
+    event: &crate::coordination::types::CoordinationEvent,
+) -> Result<(), String> {
+    let body = event
+        .payload
+        .get("body")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let auto = event
+        .payload
+        .get("auto")
+        .and_then(serde_json::Value::as_str);
+    // A held_for_user session_question already enqueued a relay desk event in
+    // schedule_desk_fallback; skip duplicating it here.
+    if auto == Some("session_question") && body.contains("<held_for_user>") {
+        return Ok(());
+    }
+    let sender = match event.actor_kind.as_str() {
+        "human" => "human".to_string(),
+        "agent" => event.actor_id.clone(),
+        "session" => format!("session:{}", event.actor_id),
+        other => format!("{other}:{}", event.actor_id),
+    };
+    let reply_thread = match event.actor_kind.as_str() {
+        "human" => "human".to_string(),
+        "agent" => event.actor_id.clone(),
+        "session" => format!("session:{}", event.actor_id),
+        _ => event.thread_id.clone(),
+    };
+    let (kind, priority, summary) = if let Some(reaction) = event
+        .payload
+        .get("reaction")
+        .and_then(serde_json::Value::as_str)
+    {
+        let prio = if reaction_answers_question(store, event) {
+            30
+        } else {
+            10
+        };
+        (
+            "dm",
+            prio,
+            format!("{sender} reacted :{reaction} [msg:{}]", event.event_id),
+        )
+    } else if is_task_offer(&event.payload) {
+        (
+            "task_offer",
+            35,
+            format!("{sender} [msg:{}]: {body}", event.event_id),
+        )
+    } else if auto.is_some() {
+        let (k, p) = match auto {
+            Some("session_question") => ("question", crate::coordination::desk_inbox::APPROVAL_PRIORITY),
+            Some("session_approval") => ("approval", crate::coordination::desk_inbox::APPROVAL_PRIORITY),
+            _ => ("session", 20),
+        };
+        (k, p, format!("{sender} [msg:{}]: {body}", event.event_id))
+    } else {
+        let prio = if event.actor_kind == "human" { 30 } else { 15 };
+        ("dm", prio, format!("{sender} [msg:{}]: {body}", event.event_id))
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    let desk_event = crate::coordination::desk_inbox::NewDeskEvent {
+        agent_id: agent_id.to_string(),
+        kind: kind.to_string(),
+        thread_id: Some(event.thread_id.clone()),
+        reply_thread: Some(reply_thread),
+        source_ref: Some(event.event_id.clone()),
+        priority,
+        is_mention: false,
+        summary,
+        payload: Some(serde_json::json!({
+            "event_id": event.event_id,
+            "from": format!("{}:{}", event.actor_kind, event.actor_id),
+            "thread_id": event.thread_id,
+        })),
+        deadline_at: None,
+        wake: true,
+    };
+    store
+        .enqueue_desk_event(&desk_event, &now)
+        .map(|_| ())
+        .map_err(|e| format!("enqueue desk event for `{agent_id}`: {e}"))
 }
 
 fn is_task_offer(payload: &serde_json::Value) -> bool {
@@ -2994,15 +3099,19 @@ mod tests {
             task_rx.try_recv().is_err(),
             "the task session hears it only through the desk"
         );
-        match desk_rx.try_recv().expect("desk got the message") {
+        assert!(
+            desk_rx.try_recv().is_err(),
+            "desk DM is debounced in desk_inbox before the 30s window elapses"
+        );
+        let after = (chrono::Utc::now() + chrono::Duration::seconds(35)).to_rfc3339();
+        super::present_desk_batches(&d, &after).await;
+        match desk_rx.try_recv().expect("desk got the debounced batch") {
             LoopInput::UserMessage(text) => {
-                assert!(text.contains("<body>how is it going</body>"), "{text}");
-                assert!(
-                    text.contains("  t1  in_progress  Task t1  session:task-session\n"),
-                    "{text}"
-                );
+                assert!(text.contains("<desk_events"), "{text}");
+                assert!(text.contains("how is it going"), "{text}");
+                assert!(text.contains("reply_thread=\"human\""), "{text}");
             }
-            other => panic!("expected the message on the desk, got {other:?}"),
+            other => panic!("expected the debounced batch on the desk, got {other:?}"),
         }
     }
 
@@ -3026,24 +3135,17 @@ mod tests {
         .await
         .unwrap();
         assert!(rx.try_recv().is_err());
-        match desk_rx.try_recv().expect("desk got the message") {
+        assert!(desk_rx.try_recv().is_err(), "debounced in desk_inbox");
+        let after = (chrono::Utc::now() + chrono::Duration::seconds(35)).to_rfc3339();
+        super::present_desk_batches(&d, &after).await;
+        match desk_rx.try_recv().expect("desk got the debounced batch") {
             LoopInput::UserMessage(text) => {
-                assert!(
-                    text.contains("<note>forward with message.send to task:<id> and forward: <event_id> when it is about running work."),
-                    "{text}"
-                );
-                assert!(text.contains("<now>\nrunning (you lead):\n"), "{text}");
-                assert!(
-                    text.contains("  t1  in_progress  Task t1  session:s-one\n"),
-                    "{text}"
-                );
-                assert!(
-                    text.contains("  t2  in_progress  Task t2  session:s-two\n"),
-                    "{text}"
-                );
-                let tasks_pos = text.find("<now>").unwrap();
-                let body_pos = text.find("<body>hello</body>").unwrap();
-                assert!(tasks_pos < body_pos, "{text}");
+                assert!(text.contains("<desk_events"), "{text}");
+                assert!(text.contains("hello"), "{text}");
+                assert!(text.contains("now:"), "{text}");
+                let now_pos = text.find("now:").unwrap();
+                let batch_pos = text.find("<desk_events").unwrap();
+                assert!(now_pos < batch_pos, "{text}");
             }
             other => panic!("unexpected desk input: {other:?}"),
         }
@@ -3174,12 +3276,14 @@ mod tests {
         )
         .await
         .unwrap();
-        match desk_rx.try_recv().expect("desk got the message") {
+        assert!(desk_rx.try_recv().is_err(), "debounced in desk_inbox");
+        let after = (chrono::Utc::now() + chrono::Duration::seconds(35)).to_rfc3339();
+        super::present_desk_batches(&d, &after).await;
+        match desk_rx.try_recv().expect("desk got the debounced batch") {
             LoopInput::UserMessage(text) => {
-                assert!(
-                    text.contains("<now>\nno open tasks or working sessions\n</now>\n<body>anyone there?</body>"),
-                    "{text}"
-                );
+                assert!(text.contains("<desk_events"), "{text}");
+                assert!(text.contains("anyone there?"), "{text}");
+                assert!(text.contains("now:"), "{text}");
             }
             other => panic!("unexpected desk input: {other:?}"),
         }
@@ -3329,6 +3433,8 @@ mod tests {
         )
         .await
         .unwrap();
+        let after = (chrono::Utc::now() + chrono::Duration::seconds(35)).to_rfc3339();
+        super::present_desk_batches(&d, &after).await;
         assert!(d.store.has_conversation("inbox-a").unwrap());
         assert!(rx.try_recv().is_err());
     }

@@ -657,10 +657,66 @@ async fn deliver_group(
     };
     let lead = d.store.group_round_lead(&event.thread_id).ok().flatten();
     let lead = lead.as_deref().map(|lead| (lead, lead == agent_id));
-    let envelope = group_message_envelope(event, &title, wake, &history, &members, &[], lead);
     if agent_id != crate::lead::SESSION_ID {
-        super::direct::ensure_agent_inbox(d, agent_id).await?;
+        let body = event
+            .payload
+            .get("body")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let sender = match event.actor_kind.as_str() {
+            "human" => "human".to_string(),
+            "agent" => event.actor_id.clone(),
+            other => format!("{other}:{}", event.actor_id),
+        };
+        let explicitly_mentioned = event
+            .payload
+            .get("mentions")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|arr| {
+                arr.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .any(|m| m == agent_id)
+            });
+        let is_lead = lead.is_some_and(|(_, mine)| mine);
+        let lead_tag = if is_lead { " (you lead)" } else { "" };
+        let priority = match wake {
+            GroupWakeKind::Asked if event.actor_kind == "human" => 30,
+            GroupWakeKind::Asked => 25,
+            GroupWakeKind::Peer | GroupWakeKind::Optional => 10,
+        };
+        let summary = if let Some(reaction) = event
+            .payload
+            .get("reaction")
+            .and_then(serde_json::Value::as_str)
+        {
+            format!("[{title}] {sender} reacted :{reaction} [msg:{}]", event.event_id)
+        } else {
+            format!("[{title}] {sender} [msg:{}]{lead_tag}: {body}", event.event_id)
+        };
+        let desk_event = crate::coordination::desk_inbox::NewDeskEvent {
+            agent_id: agent_id.to_string(),
+            kind: "group".to_string(),
+            thread_id: Some(event.thread_id.clone()),
+            reply_thread: Some(event.thread_id.clone()),
+            source_ref: Some(event.event_id.clone()),
+            priority,
+            is_mention: wake == GroupWakeKind::Asked && explicitly_mentioned,
+            summary,
+            payload: Some(serde_json::json!({
+                "event_id": event.event_id,
+                "from": format!("{}:{}", event.actor_kind, event.actor_id),
+                "group_id": event.thread_id,
+                "is_lead": is_lead,
+            })),
+            deadline_at: None,
+            wake: true,
+        };
+        d.store
+            .enqueue_desk_event(&desk_event, &now)
+            .map_err(|e| format!("enqueue group desk event for `{agent_id}`: {e}"))?;
+        return Ok(GroupWake::Delivered);
     }
+    let envelope = group_message_envelope(event, &title, wake, &history, &members, &[], lead);
     let session_id = super::direct::recipient_session_id(agent_id);
     let Some((tx, _path, _stream)) = d.ensure_live(&session_id).await else {
         return Err(format!("could not start inbox session `{session_id}`"));
