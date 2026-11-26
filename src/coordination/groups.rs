@@ -5,10 +5,12 @@
 //! recorded in `message_deliveries` like a direct message: `group` rows are
 //! the immediate wakes, `group_deferred` rows carry a `retry_at` ten seconds
 //! out and are skipped at fire time once anyone has replied to the post
-//! (`group_replies` is the claim ledger, one reply per agent per post).
-//! A deferred wake that finds a reply is still delivered, with the replies,
-//! as context. Naming a member in the body (id, handle or display name) wakes
-//! it like a mention. An agent's first post after the latest human post also
+//! (`group_replies` is the claim ledger, one reply per agent per post), or
+//! once any agent has posted in the thread since. Naming a member in the body
+//! (id, handle, display name or nickname) wakes it like a mention; generic
+//! words such as `snippet` count only as `@snippet`. A snoozed member gets no
+//! optional wakes unless it is explicitly mentioned. Each human post opens or
+//! joins a `group_rounds` row whose lead can fail over for that round only. An agent's first post after the latest human post also
 //! reaches the other agents as a `group_peer` wake; later posts in that round
 //! reach only whom they name, which bounds agents waking each other.
 
@@ -88,22 +90,39 @@ pub(crate) fn mentions_human(body: &str, mentions: &[String]) -> bool {
     })
 }
 
+/// Words that are also ordinary prose (the product name, the lead's role):
+/// they name an agent only as an explicit `@word`.
+const GENERIC_TERMS: &[&str] = &["snippet", "lead"];
+
+#[cfg(test)]
 pub(crate) fn named_in_body(body: &str, members: &[(String, String, String)]) -> Vec<String> {
+    let terms: Vec<(String, Vec<String>)> = members
+        .iter()
+        .map(|(id, display, handle)| (id.clone(), vec![id.clone(), handle.clone(), display.clone()]))
+        .collect();
+    named_by_terms(body, &terms)
+}
+
+/// Members named in `body` by any of their terms (id, handle, display name,
+/// nickname) as whole words; a generic or short term counts only as `@term`.
+pub(crate) fn named_by_terms(body: &str, members: &[(String, Vec<String>)]) -> Vec<String> {
     let text = body.to_lowercase();
     let joined = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '/');
     let found = |term: &str| {
-        let term = term.trim().to_lowercase();
-        if term.chars().count() < 3 {
+        let term = term.trim().trim_start_matches('@').to_lowercase();
+        if term.is_empty() {
             return false;
         }
+        let generic = term.chars().count() < 3 || GENERIC_TERMS.contains(&term.as_str());
         text.match_indices(&term).any(|(at, m)| {
             let mut before = text[..at].chars().rev();
             let mut after = text[at + m.len()..].chars();
             let open = match before.next() {
+                Some('@') => before.next().is_none_or(|c| !joined(c) && c != '.'),
+                _ if generic => false,
                 Some(c) => !(joined(c) || c == '.'),
                 None => true,
             };
-            // A trailing `.` ends a sentence unless a file extension follows.
             let close = match after.next() {
                 Some('.') => !after.next().is_some_and(|c| c.is_alphanumeric()),
                 Some(c) => !joined(c),
@@ -114,9 +133,53 @@ pub(crate) fn named_in_body(body: &str, members: &[(String, String, String)]) ->
     };
     members
         .iter()
-        .filter(|(id, display, handle)| found(id) || found(handle) || found(display))
-        .map(|(id, _, _)| id.clone())
+        .filter(|(_, terms)| terms.iter().any(|t| found(t)))
+        .map(|(id, _)| id.clone())
         .collect()
+}
+
+/// Whether `agent_id` is addressed explicitly: listed in `mentions` by id or
+/// nickname, or written as `@id` / `@nickname` in the body.
+pub(crate) fn explicitly_mentions(
+    body: &str,
+    mentions: &[String],
+    agent_id: &str,
+    nickname: Option<&str>,
+) -> bool {
+    let names: Vec<String> = std::iter::once(agent_id)
+        .chain(nickname)
+        .map(|n| n.trim().to_lowercase())
+        .filter(|n| !n.is_empty())
+        .collect();
+    if mentions.iter().any(|m| {
+        let m = m.trim().trim_start_matches('@').to_lowercase();
+        m == "everyone" || names.contains(&m)
+    }) {
+        return true;
+    }
+    let text = body.to_lowercase();
+    let joined = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '/');
+    names.iter().any(|name| {
+        let tag = format!("@{name}");
+        text.match_indices(&tag).any(|(at, m)| {
+            let open = text[..at].chars().next_back().is_none_or(|c| !joined(c));
+            let mut after = text[at + m.len()..].chars();
+            let close = match after.next() {
+                Some('.') => !after.next().is_some_and(|c| c.is_alphanumeric()),
+                Some(c) => !joined(c),
+                None => true,
+            };
+            open && close
+        })
+    })
+}
+
+fn load_nicknames(
+    conn: &rusqlite::Connection,
+) -> Result<std::collections::HashMap<String, String>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT agent_id, nickname FROM agent_nicknames")?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
 }
 
 fn invalid_input(message: String) -> rusqlite::Error {
@@ -604,7 +667,7 @@ impl Store {
         let defer_at = after(GROUP_DEFER_SECONDS);
         let nudge_at = after(GROUP_UNANSWERED_SECONDS);
 
-        group_store_result(self.with_connection(|conn| {
+        let round_lead = group_store_result(self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let scope: Option<String> = tx
                 .query_row(
@@ -673,6 +736,7 @@ impl Store {
                 .query_map(params![thread_id], |row| row.get(0))?
                 .collect::<Result<Vec<_>, _>>()?;
             let poster_agent = (actor.0 == "agent").then_some(actor.1);
+            let nicknames = load_nicknames(&tx)?;
             let everyone = mentions.iter().any(|m| m == "everyone");
             let mut mentioned: Vec<String> = Vec::new();
             if everyone {
@@ -683,32 +747,65 @@ impl Store {
                 }
             } else {
                 for mention in mentions {
-                    if agents.iter().any(|a| a == mention)
-                        && poster_agent != Some(mention.as_str())
-                        && !mentioned.contains(mention)
+                    let bare = mention.trim().trim_start_matches('@');
+                    let resolved = agents.iter().find(|a| a.as_str() == bare).or_else(|| {
+                        agents.iter().find(|a| {
+                            nicknames
+                                .get(a.as_str())
+                                .is_some_and(|n| n.trim().eq_ignore_ascii_case(bare))
+                        })
+                    });
+                    if let Some(agent) = resolved
+                        && poster_agent != Some(agent.as_str())
+                        && !mentioned.contains(agent)
                     {
-                        mentioned.push(mention.clone());
+                        mentioned.push(agent.clone());
                     }
                 }
             }
-            let names: Vec<(String, String, String)> = {
+            let names: Vec<(String, Vec<String>)> = {
                 let mut stmt = tx.prepare(
                     "SELECT id, display_name, handle FROM agents WHERE id = ?1",
                 )?;
                 let mut out = Vec::new();
                 for agent in &agents {
-                    if let Some(row) = stmt
-                        .query_row(params![agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    let mut terms: Vec<String> = match stmt
+                        .query_row(params![agent], |r| {
+                            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                        })
                         .optional()?
                     {
-                        out.push(row);
+                        Some((id, display, handle)) => vec![id, handle, display],
+                        None => Vec::new(),
+                    };
+                    if let Some(nick) = nicknames.get(agent) {
+                        terms.push(nick.clone());
+                    }
+                    if !terms.is_empty() {
+                        out.push((agent.clone(), terms));
                     }
                 }
                 out
             };
-            for agent in named_in_body(body, &names) {
+            for agent in named_by_terms(body, &names) {
                 if poster_agent != Some(agent.as_str()) && !mentioned.contains(&agent) {
                     mentioned.push(agent);
+                }
+            }
+            for agent in &agents {
+                if poster_agent != Some(agent.as_str())
+                    && explicitly_mentions(
+                        body,
+                        mentions,
+                        agent,
+                        nicknames.get(agent).map(String::as_str),
+                    )
+                {
+                    tx.execute(
+                        "DELETE FROM group_snoozes
+                         WHERE agent_id = ?1 AND thread_id = ?2 AND until_at IS NULL",
+                        params![agent, thread_id],
+                    )?;
                 }
             }
             // An agent's first post in a round (since the latest human post)
@@ -753,6 +850,14 @@ impl Store {
                 .filter(|a| poster_agent.is_none() && !immediate.contains(a))
                 .cloned()
                 .collect();
+            let round_lead = if actor.0 == "human" && wake_agents {
+                match lead.as_deref() {
+                    Some(lead) if immediate.iter().any(|a| a == lead) => Some(lead.to_string()),
+                    _ => immediate.first().cloned(),
+                }
+            } else {
+                None
+            };
 
             if wake_agents {
             for agent in &immediate {
@@ -796,7 +901,7 @@ impl Store {
                 params![event_id, actor_ref("human", "human"), created_at, own_read],
             )?;
             tx.commit()?;
-            Ok(())
+            Ok(round_lead)
         }))?;
 
         let mut stored: Vec<String> = mentions
@@ -843,7 +948,14 @@ impl Store {
             created_at: created_at.to_string(),
         };
         match self.append_event(&event) {
-            Ok(saved) => Ok(saved),
+            Ok(saved) => {
+                if let Some(lead) = round_lead.as_deref() {
+                    self.open_or_coalesce_group_round(thread_id, lead, &saved.event_id, created_at)?;
+                } else if actor.0 == "agent" {
+                    self.ack_group_round(thread_id, actor.1, created_at)?;
+                }
+                Ok(saved)
+            }
             Err(error) => {
                 let _ = self.discard_group_wakes(&event.event_id);
                 Err(error)
@@ -969,7 +1081,11 @@ impl Store {
             idempotency_key: idempotency_key.to_string(),
             created_at: created_at.to_string(),
         };
-        self.append_event(&event)
+        let saved = self.append_event(&event)?;
+        if actor.0 == "agent" && !removed {
+            self.ack_group_round(thread_id, actor.1, created_at)?;
+        }
+        Ok(saved)
     }
 
     /// Drop the scheduled wakes and reply claim of a post that never landed.
@@ -1122,6 +1238,393 @@ impl Store {
             )?;
             Ok(())
         })
+    }
+}
+
+/// How long a round's lead has to engage before the round fails over.
+pub const GROUP_ROUND_ACK_SECONDS: i64 = 90;
+
+/// One turn of a group conversation: the human's post (or burst of posts) and
+/// the agent leading the answer. Failover moves only this row's lead; the
+/// group's configured lead in `group_meta` never changes.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct GroupRound {
+    pub round_id: String,
+    pub thread_id: String,
+    pub lead_agent: String,
+    pub opened_at: String,
+    pub latest_event_id: String,
+    pub lead_acked_at: Option<String>,
+    pub lead_decision: Option<String>,
+    pub failover_count: i64,
+    pub status: String,
+}
+
+/// A member's quiet period in one group; `until_at` None means until pinged.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct GroupSnooze {
+    pub thread_id: String,
+    pub until_at: Option<String>,
+    pub created_at: String,
+}
+
+const ROUND_COLUMNS: &str = "round_id, thread_id, lead_agent, opened_at, latest_event_id, lead_acked_at, lead_decision, failover_count, status";
+
+fn round_from_row(row: &rusqlite::Row<'_>) -> Result<GroupRound, rusqlite::Error> {
+    Ok(GroupRound {
+        round_id: row.get(0)?,
+        thread_id: row.get(1)?,
+        lead_agent: row.get(2)?,
+        opened_at: row.get(3)?,
+        latest_event_id: row.get(4)?,
+        lead_acked_at: row.get(5)?,
+        lead_decision: row.get(6)?,
+        failover_count: row.get(7)?,
+        status: row.get(8)?,
+    })
+}
+
+fn open_round(
+    conn: &rusqlite::Connection,
+    thread_id: &str,
+) -> Result<Option<GroupRound>, rusqlite::Error> {
+    conn.query_row(
+        &format!(
+            "SELECT {ROUND_COLUMNS} FROM group_rounds
+             WHERE thread_id = ?1 AND status = 'open'
+             ORDER BY opened_at DESC LIMIT 1"
+        ),
+        params![thread_id],
+        round_from_row,
+    )
+    .optional()
+}
+
+fn ts(at: &str) -> Result<String, StoreError> {
+    super::desk_inbox::normalize_ts(at)
+}
+
+impl Store {
+    /// Snooze `agent_id` in a group until `until_at`, or until it is pinged.
+    pub fn set_group_snooze(
+        &self,
+        agent_id: &str,
+        thread_id: &str,
+        until_at: Option<&str>,
+        now: &str,
+    ) -> Result<GroupSnooze, StoreError> {
+        let now = ts(now)?;
+        let until = until_at.map(ts).transpose()?;
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO group_snoozes (agent_id, thread_id, until_at, created_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(agent_id, thread_id) DO UPDATE
+                 SET until_at = excluded.until_at, created_at = excluded.created_at",
+                params![agent_id, thread_id, until, now],
+            )
+        })?;
+        Ok(GroupSnooze {
+            thread_id: thread_id.to_string(),
+            until_at: until,
+            created_at: now,
+        })
+    }
+
+    pub fn clear_group_snooze(&self, agent_id: &str, thread_id: &str) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "DELETE FROM group_snoozes WHERE agent_id = ?1 AND thread_id = ?2",
+                params![agent_id, thread_id],
+            )
+            .map(|n| n > 0)
+        })
+    }
+
+    pub fn is_group_snoozed(
+        &self,
+        agent_id: &str,
+        thread_id: &str,
+        now: &str,
+    ) -> Result<bool, StoreError> {
+        let now = ts(now)?;
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM group_snoozes
+                 WHERE agent_id = ?1 AND thread_id = ?2
+                   AND (until_at IS NULL OR until_at > ?3))",
+                params![agent_id, thread_id, now],
+                |row| row.get(0),
+            )
+        })
+    }
+
+    /// The agent's snoozes still in force, soonest to lapse first.
+    pub fn list_active_group_snoozes(
+        &self,
+        agent_id: &str,
+        now: &str,
+    ) -> Result<Vec<GroupSnooze>, StoreError> {
+        let now = ts(now)?;
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT thread_id, until_at, created_at FROM group_snoozes
+                 WHERE agent_id = ?1 AND (until_at IS NULL OR until_at > ?2)
+                 ORDER BY until_at IS NULL, until_at, thread_id",
+            )?;
+            let rows = stmt.query_map(params![agent_id, now], |r| {
+                Ok(GroupSnooze {
+                    thread_id: r.get(0)?,
+                    until_at: r.get(1)?,
+                    created_at: r.get(2)?,
+                })
+            })?;
+            rows.collect()
+        })
+    }
+
+    /// Whether a snooze holds back this wake: optional wakes (`group_deferred`,
+    /// `group_peer`) unless the agent is explicitly mentioned, and the lead's
+    /// `group` wake for a post that does not name it at all.
+    pub fn group_wake_snoozed(
+        &self,
+        pending: &PendingDirectMessage,
+        now: &str,
+    ) -> Result<bool, StoreError> {
+        if !matches!(pending.recipient_kind.as_str(), "group" | "group_deferred" | "group_peer") {
+            return Ok(false);
+        }
+        let agent = pending.recipient_id.as_str();
+        if !self.is_group_snoozed(agent, &pending.event.thread_id, now)? {
+            return Ok(false);
+        }
+        let payload = &pending.event.payload;
+        let body = payload.get("body").and_then(|v| v.as_str()).unwrap_or_default();
+        let mentions: Vec<String> = payload
+            .get("mentions")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        let nickname = self.agent_nicknames()?.remove(agent);
+        if explicitly_mentions(body, &mentions, agent, nickname.as_deref()) {
+            return Ok(false);
+        }
+        if pending.recipient_kind == "group" {
+            let mut terms = vec![agent.to_string()];
+            if let Some(known) = self.get_agent(agent)? {
+                terms.push(known.handle);
+                terms.push(known.display_name);
+            }
+            terms.extend(nickname);
+            return Ok(named_by_terms(body, &[(agent.to_string(), terms)]).is_empty());
+        }
+        Ok(true)
+    }
+
+    /// The thread's open round, if any.
+    pub fn open_group_round(&self, thread_id: &str) -> Result<Option<GroupRound>, StoreError> {
+        self.with_connection(|conn| open_round(conn, thread_id))
+    }
+
+    /// Fold a human post into the thread's open round while nobody has
+    /// engaged with it yet (a burst is one round); otherwise close that round
+    /// and open a new one led by `lead_agent`.
+    pub fn open_or_coalesce_group_round(
+        &self,
+        thread_id: &str,
+        lead_agent: &str,
+        event_id: &str,
+        now: &str,
+    ) -> Result<GroupRound, StoreError> {
+        let now = ts(now)?;
+        self.with_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            if let Some(round) = open_round(&tx, thread_id)? {
+                let answered: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM board_events r
+                     WHERE r.thread_id = ?1 AND r.event_type = 'group_message'
+                       AND r.actor_kind = 'agent'
+                       AND json_extract(r.payload_json, '$.reaction') IS NULL
+                       AND r.sequence > COALESCE(
+                           (SELECT sequence FROM board_events WHERE event_id = ?2), 0))",
+                    params![thread_id, round.latest_event_id],
+                    |row| row.get(0),
+                )?;
+                if round.lead_acked_at.is_none() && !answered {
+                    tx.execute(
+                        "UPDATE group_rounds SET latest_event_id = ?2 WHERE round_id = ?1",
+                        params![round.round_id, event_id],
+                    )?;
+                    tx.commit()?;
+                    return Ok(GroupRound {
+                        latest_event_id: event_id.to_string(),
+                        ..round
+                    });
+                }
+                tx.execute(
+                    "UPDATE group_rounds SET status = 'closed' WHERE round_id = ?1",
+                    params![round.round_id],
+                )?;
+            }
+            let raw = uuid::Uuid::new_v4().simple().to_string();
+            let round = GroupRound {
+                round_id: format!("round-{}", &raw[..12]),
+                thread_id: thread_id.to_string(),
+                lead_agent: lead_agent.to_string(),
+                opened_at: now.clone(),
+                latest_event_id: event_id.to_string(),
+                lead_acked_at: None,
+                lead_decision: None,
+                failover_count: 0,
+                status: "open".into(),
+            };
+            tx.execute(
+                "INSERT INTO group_rounds
+                 (round_id, thread_id, lead_agent, opened_at, latest_event_id, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'open')",
+                params![
+                    round.round_id,
+                    round.thread_id,
+                    round.lead_agent,
+                    round.opened_at,
+                    round.latest_event_id
+                ],
+            )?;
+            tx.commit()?;
+            Ok(round)
+        })
+    }
+
+    /// The round lead engaged (posted or reacted): its failover clock stops.
+    pub fn ack_group_round(
+        &self,
+        thread_id: &str,
+        agent_id: &str,
+        now: &str,
+    ) -> Result<bool, StoreError> {
+        let now = ts(now)?;
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE group_rounds SET lead_acked_at = ?3
+                 WHERE thread_id = ?1 AND lead_agent = ?2 AND status = 'open'
+                   AND lead_acked_at IS NULL",
+                params![thread_id, agent_id, now],
+            )
+            .map(|n| n > 0)
+        })
+    }
+
+    /// Close the thread's open round on its lead's word, recording the
+    /// decision. Fenced: only the current round lead releases. The round's
+    /// pending owed-reply nudges are dropped, since the lead has settled it.
+    pub fn release_group_round(
+        &self,
+        thread_id: &str,
+        by_agent: &str,
+        decision: Option<&str>,
+        now: &str,
+    ) -> Result<Option<GroupRound>, StoreError> {
+        let now = ts(now)?;
+        self.with_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let Some(round) = open_round(&tx, thread_id)? else {
+                return Ok(None);
+            };
+            let changed = tx.execute(
+                "UPDATE group_rounds
+                 SET status = 'released', lead_acked_at = COALESCE(lead_acked_at, ?3),
+                     lead_decision = ?4
+                 WHERE round_id = ?1 AND lead_agent = ?2 AND status = 'open'",
+                params![round.round_id, by_agent, now, decision],
+            )?;
+            if changed == 0 {
+                return Ok(None);
+            }
+            tx.execute(
+                "UPDATE message_deliveries SET delivered_at = ?2
+                 WHERE recipient_kind = 'group_unanswered' AND delivered_at IS NULL
+                   AND event_id IN (SELECT event_id FROM board_events WHERE thread_id = ?1)",
+                params![thread_id, now],
+            )?;
+            let released = tx.query_row(
+                &format!("SELECT {ROUND_COLUMNS} FROM group_rounds WHERE round_id = ?1"),
+                params![round.round_id],
+                round_from_row,
+            )?;
+            tx.commit()?;
+            Ok(Some(released))
+        })
+    }
+
+    /// Hand one round to `next_lead`, only while `expected_lead` still holds
+    /// it unacknowledged. The group's configured lead is left alone.
+    pub fn failover_group_round(
+        &self,
+        round_id: &str,
+        expected_lead: &str,
+        next_lead: &str,
+        now: &str,
+    ) -> Result<bool, StoreError> {
+        let now = ts(now)?;
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE group_rounds
+                 SET lead_agent = ?3, opened_at = ?4, failover_count = failover_count + 1
+                 WHERE round_id = ?1 AND lead_agent = ?2 AND status = 'open'
+                   AND lead_acked_at IS NULL",
+                params![round_id, expected_lead, next_lead, now],
+            )
+            .map(|n| n > 0)
+        })
+    }
+
+    /// Park a round nobody can take, so its one notice is posted once.
+    pub fn stall_group_round(&self, round_id: &str, expected_lead: &str) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE group_rounds SET status = 'stalled'
+                 WHERE round_id = ?1 AND lead_agent = ?2 AND status = 'open'
+                   AND lead_acked_at IS NULL",
+                params![round_id, expected_lead],
+            )
+            .map(|n| n > 0)
+        })
+    }
+
+    /// Open rounds whose lead has not engaged yet, oldest first.
+    pub fn list_unacked_group_rounds(&self) -> Result<Vec<GroupRound>, StoreError> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {ROUND_COLUMNS} FROM group_rounds
+                 WHERE status = 'open' AND lead_acked_at IS NULL ORDER BY opened_at"
+            ))?;
+            let rows = stmt.query_map([], round_from_row)?;
+            rows.collect()
+        })
+    }
+
+    /// Whether any agent has posted in the thread after `after_seq`
+    /// (reactions aside): one reply answers a whole burst.
+    pub fn has_agent_reply_after(&self, thread_id: &str, after_seq: u64) -> Result<bool, StoreError> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM board_events
+                 WHERE thread_id = ?1 AND event_type = 'group_message'
+                   AND actor_kind = 'agent' AND sequence > ?2
+                   AND json_extract(payload_json, '$.reaction') IS NULL)",
+                params![thread_id, after_seq as i64],
+                |row| row.get(0),
+            )
+        })
+    }
+
+    /// Whether a deferred wake for `event` is moot: the post was claimed, or
+    /// any agent has spoken in the thread since.
+    pub fn group_post_answered(&self, event: &CoordinationEvent) -> Result<bool, StoreError> {
+        Ok(self.group_has_replies(&event.event_id)?
+            || self.has_agent_reply_after(&event.thread_id, event.sequence)?)
     }
 }
 
@@ -1774,5 +2277,180 @@ mod tests {
         })
         .unwrap();
         assert!(db.room_replying(&task.thread_id).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod round_tests {
+    use super::*;
+    use crate::coordination::types::{Agent, AgentKind, AgentStatus};
+
+    const T0: &str = "2026-01-01T00:00:00+00:00";
+    const T1: &str = "2026-01-01T00:00:01+00:00";
+    const T2: &str = "2026-01-01T00:00:02+00:00";
+
+    fn agent(id: &str, display: &str) -> Agent {
+        Agent {
+            id: id.into(),
+            display_name: display.into(),
+            handle: id.into(),
+            kind: AgentKind::Worker,
+            status: AgentStatus::Active,
+            capabilities: vec![],
+        }
+    }
+
+    fn group(ids: &[(&str, &str)], lead: &str) -> (Store, String) {
+        let db = Store::open_in_memory().unwrap();
+        for (id, display) in ids {
+            db.create_agent(&agent(id, display)).unwrap();
+        }
+        let members: Vec<String> = ids.iter().map(|(id, _)| id.to_string()).collect();
+        let g = db
+            .create_group("build", ("human", "human"), &members, Some(lead), T0)
+            .unwrap();
+        (db, g.id)
+    }
+
+    fn immediate(db: &Store, event_id: &str) -> Vec<String> {
+        db.group_immediate_recipients(event_id).unwrap()
+    }
+
+    fn human(db: &Store, g: &str, body: &str, at: &str) -> CoordinationEvent {
+        db.post_group_message(g, ("human", "human"), body, &[], None, &uuid::Uuid::new_v4().to_string(), at)
+            .unwrap()
+    }
+
+    fn pending_for(db: &Store, event_id: &str, kind: &str, agent: &str) -> PendingDirectMessage {
+        db.list_pending_group_deliveries(100, "2999-01-01T00:00:00Z")
+            .unwrap()
+            .into_iter()
+            .find(|p| p.event.event_id == event_id && p.recipient_kind == kind && p.recipient_id == agent)
+            .unwrap_or_else(|| panic!("no {kind} wake for {agent}"))
+    }
+
+    #[test]
+    fn nicknames_route_mentions_and_bare_snippet_is_prose() {
+        let (db, g) = group(
+            &[("mobile-design", "Mobile Design"), ("snippet", "Snippet"), ("x-scout", "X Scout")],
+            "x-scout",
+        );
+        db.set_agent_nickname("mobile-design", Some("Sashy")).unwrap();
+
+        let p = human(&db, &g, "Sashy, can you redo the onboarding screen?", T0);
+        assert_eq!(immediate(&db, &p.event_id), vec!["mobile-design"]);
+
+        let p = db
+            .post_group_message(&g, ("human", "human"), "thoughts?", &["@sashy".into()], None, "k-nick", T1)
+            .unwrap();
+        assert_eq!(immediate(&db, &p.event_id), vec!["mobile-design"]);
+
+        let p = human(&db, &g, "the snippet app crashes on launch", T1);
+        assert_eq!(immediate(&db, &p.event_id), vec!["x-scout"], "bare snippet is the product");
+
+        let p = human(&db, &g, "@snippet please look at the crash", T2);
+        assert_eq!(immediate(&db, &p.event_id), vec!["snippet"]);
+
+        let terms = vec![("snippet".to_string(), vec!["snippet".to_string(), "Snippet".to_string()])];
+        assert!(named_by_terms("Snippet is slow today.", &terms).is_empty());
+        assert_eq!(named_by_terms("ask @Snippet.", &terms), vec!["snippet"]);
+        assert!(named_by_terms("mail me@snippet.dev", &terms).is_empty());
+    }
+
+    #[test]
+    fn any_later_agent_reply_answers_a_whole_burst() {
+        let (db, g) = group(&[("a", "a"), ("b", "b")], "a");
+        let p1 = human(&db, &g, "first thought", T0);
+        let p2 = human(&db, &g, "and another", T1);
+        assert!(!db.group_post_answered(&p1).unwrap());
+        assert!(!db.group_post_answered(&p2).unwrap());
+        let _ = pending_for(&db, &p1.event_id, "group_unanswered", "a");
+        let _ = pending_for(&db, &p1.event_id, "group_deferred", "b");
+
+        db.post_group_message(&g, ("agent", "a"), "covering both", &[], Some(&p2.event_id), "r1", T2)
+            .unwrap();
+        assert!(db.group_post_answered(&p1).unwrap(), "the owed-reply nudge for p1 is moot");
+        assert!(db.group_post_answered(&p2).unwrap(), "the deferred wake for p2 is moot");
+        assert!(!db.has_agent_reply_after(&g, p2.sequence + 1).unwrap());
+    }
+
+    #[test]
+    fn a_burst_is_one_round_and_a_reply_starts_the_next() {
+        let (db, g) = group(&[("a", "a"), ("b", "b")], "a");
+        let p1 = human(&db, &g, "one", T0);
+        let p2 = human(&db, &g, "two", T1);
+        let round = db.open_group_round(&g).unwrap().unwrap();
+        assert_eq!(round.latest_event_id, p2.event_id);
+        assert_eq!(db.list_unacked_group_rounds().unwrap().len(), 1);
+        db.post_group_message(&g, ("agent", "a"), "done", &[], Some(&p1.event_id), "r", T2)
+            .unwrap();
+        assert!(db.list_unacked_group_rounds().unwrap().is_empty(), "the lead's post acks the round");
+        human(&db, &g, "three", T2);
+        let next = db.open_group_round(&g).unwrap().unwrap();
+        assert_ne!(next.round_id, round.round_id);
+    }
+
+    #[test]
+    fn snoozes_hold_optional_wakes_but_not_explicit_mentions() {
+        let (db, g) = group(&[("a", "a"), ("b", "b"), ("c", "c")], "a");
+        let now = "2026-01-01T00:00:05Z";
+        db.set_group_snooze("b", &g, None, T0).unwrap();
+        db.set_group_snooze("c", &g, Some("2026-01-01T01:00:00Z"), T0).unwrap();
+        assert_eq!(db.list_active_group_snoozes("b", now).unwrap().len(), 1);
+
+        let p = human(&db, &g, "status?", T1);
+        assert!(db.group_wake_snoozed(&pending_for(&db, &p.event_id, "group_deferred", "b"), now).unwrap());
+        assert!(db.group_wake_snoozed(&pending_for(&db, &p.event_id, "group_deferred", "c"), now).unwrap());
+        assert!(
+            !db.group_wake_snoozed(&pending_for(&db, &p.event_id, "group_deferred", "c"), "2026-01-01T02:00:00Z")
+                .unwrap(),
+            "a timed snooze lapses"
+        );
+        assert!(!db.group_wake_snoozed(&pending_for(&db, &p.event_id, "group_unanswered", "a"), now).unwrap());
+
+        let mut addressed = pending_for(&db, &p.event_id, "group_deferred", "c");
+        addressed.event.payload["body"] = serde_json::json!("@c can you check?");
+        assert!(!db.group_wake_snoozed(&addressed, now).unwrap(), "@mention gets through");
+
+        db.set_group_snooze("a", &g, None, T0).unwrap();
+        let p = human(&db, &g, "anyone around?", T1);
+        assert!(
+            db.group_wake_snoozed(&pending_for(&db, &p.event_id, "group", "a"), now).unwrap(),
+            "a snoozed lead is not woken for a post that does not name it"
+        );
+        let named = human(&db, &g, "@a over to you", T1);
+        assert!(!db.group_wake_snoozed(&pending_for(&db, &named.event_id, "group", "a"), now).unwrap());
+
+        let p = human(&db, &g, "@b and @c, please weigh in", T2);
+        assert_eq!(immediate(&db, &p.event_id), vec!["b", "c"]);
+        assert!(!db.is_group_snoozed("b", &g, now).unwrap(), "a ping ends an until-pinged snooze");
+        assert!(db.is_group_snoozed("c", &g, now).unwrap(), "a timed snooze outlasts a ping");
+    }
+
+    #[test]
+    fn failover_moves_one_round_and_never_the_group_lead() {
+        let (db, g) = group(&[("a", "a"), ("b", "b"), ("c", "c")], "a");
+        human(&db, &g, "help", T0);
+        let round = db.open_group_round(&g).unwrap().unwrap();
+        assert_eq!(round.lead_agent, "a");
+
+        assert!(!db.failover_group_round(&round.round_id, "b", "c", T1).unwrap(), "fenced on the expected lead");
+        assert!(db.failover_group_round(&round.round_id, "a", "b", T1).unwrap());
+        assert!(!db.failover_group_round(&round.round_id, "a", "c", T1).unwrap(), "a stale failover loses");
+        let moved = db.open_group_round(&g).unwrap().unwrap();
+        assert_eq!((moved.lead_agent.as_str(), moved.failover_count), ("b", 1));
+        assert_eq!(db.get_group(&g).unwrap().unwrap().lead.as_deref(), Some("a"));
+
+        assert!(db.release_group_round(&g, "a", None, T2).unwrap().is_none(), "only the round lead releases");
+        let released = db.release_group_round(&g, "b", Some("wait for CI"), T2).unwrap().unwrap();
+        assert_eq!(released.status, "released");
+        assert_eq!(released.lead_decision.as_deref(), Some("wait for CI"));
+        assert!(!db.failover_group_round(&round.round_id, "b", "c", T2).unwrap());
+
+        human(&db, &g, "next one", T2);
+        assert_eq!(db.open_group_round(&g).unwrap().unwrap().lead_agent, "a");
+        let stalled = db.open_group_round(&g).unwrap().unwrap();
+        assert!(db.stall_group_round(&stalled.round_id, "a").unwrap());
+        assert!(!db.stall_group_round(&stalled.round_id, "a").unwrap(), "one notice per round");
     }
 }

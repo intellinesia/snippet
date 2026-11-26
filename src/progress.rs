@@ -258,6 +258,7 @@ fn digest_line(row: &BoardEntry) -> String {
 
 const DESK_STATE_EVENTS: u32 = 8;
 const DESK_STATE_SESSIONS: u32 = 6;
+const DESK_STATE_SNOOZES: usize = 4;
 const DESK_STATE_SUMMARY_CHARS: usize = 90;
 pub const DESK_STATE_MAX_BYTES: usize = 1500;
 
@@ -270,10 +271,27 @@ pub fn desk_state_render(db: &Store, agent_id: &str) -> String {
     let sessions = db
         .desk_work_sessions(agent_id, DESK_STATE_SESSIONS)
         .unwrap_or_default();
-    if events.is_empty() && sessions.is_empty() {
+    let snoozes = db
+        .list_active_group_snoozes(agent_id, &chrono::Utc::now().to_rfc3339())
+        .unwrap_or_default();
+    if events.is_empty() && sessions.is_empty() && snoozes.is_empty() {
         return String::new();
     }
     let mut lines = vec!["now:".to_string()];
+    if !snoozes.is_empty() {
+        let mut parts: Vec<String> = snoozes
+            .iter()
+            .take(DESK_STATE_SNOOZES)
+            .map(|s| match s.until_at.as_deref() {
+                Some(until) => format!("{} until {until}", s.thread_id),
+                None => format!("{} until pinged", s.thread_id),
+            })
+            .collect();
+        if snoozes.len() > DESK_STATE_SNOOZES {
+            parts.push(format!("+{} more", snoozes.len() - DESK_STATE_SNOOZES));
+        }
+        lines.push(format!("  snoozes (group.snooze off=true ends one): {}", parts.join(", ")));
+    }
     if events.is_empty() {
         lines.push("  events: none open".to_string());
     } else {

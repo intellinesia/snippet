@@ -2131,6 +2131,9 @@ fn strip_leading_mentions(mut s: &str) -> &str {
     }
 }
 
+const GROUP_POST_MAX_CHARS: usize = 2500;
+const GROUP_POST_MAX_QUOTED_CHARS: usize = 6000;
+
 fn check_group_post_chatter(body: &str) -> Result<(), &'static str> {
     const ACK_PREFIXES: &[&str] = &[
         "thank you",
@@ -2160,9 +2163,9 @@ fn check_group_post_chatter(body: &str) -> Result<(), &'static str> {
         .filter(|l| !l.trim_start().starts_with('>'))
         .map(|l| l.chars().count())
         .sum();
-    if unquoted > 700 || trimmed.chars().count() > 3000 {
+    if unquoted > GROUP_POST_MAX_CHARS || trimmed.chars().count() > GROUP_POST_MAX_QUOTED_CHARS {
         return Err(
-            "Too long for one post. Send several short posts, one point each: only your first after the user's post reaches the room, later ones wake only whom they name. Long material goes in a file shared with present.share (path, to: the group).",
+            "Too long for one post. Put long material in a file shared with present.share (path, to: the group) and post the gist.",
         );
     }
     let stripped = strip_leading_mentions(trimmed).trim_end();
@@ -2995,6 +2998,9 @@ pub fn add_desk_event_tools(registry: &mut ToolRegistry) {
     registry.insert(DeskEventNoop);
     registry.insert(DeskEventDefer);
     registry.insert(DeskEventCreate);
+    registry.insert(DeskEventHidden);
+    registry.insert(DeskEventRelease);
+    registry.insert(GroupSnooze);
 }
 
 /// Event ids from a comma-separated string or an array of strings.
@@ -3229,6 +3235,285 @@ impl Tool for DeskEventCreate {
             .create_self_desk_event(&agent, summary, deadline.as_deref(), thread, priority, &now_rfc3339())
             .map_err(|e| ToolError::msg(format!("create event: {e}")))?;
         Ok(ToolResult::success(json!({"event": event_json(&event)})))
+    }
+}
+
+const HIDDEN_EVENT_PRIORITY: i64 = 20;
+const ROUND_WAKE_PRIORITY: i64 = 40;
+
+/// A group the caller belongs to (Lead and the group's lead always do).
+fn member_group(
+    db: &Store,
+    args: &Value,
+    caller: &str,
+) -> Result<crate::coordination::GroupSummary, ToolError> {
+    let thread_id = args
+        .get("thread_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ToolError::msg("thread_id is required"))?;
+    let group = require_group(db, thread_id)?;
+    if group.lead.as_deref() != Some(caller) {
+        require_group_member(&group, caller)?;
+    }
+    Ok(group)
+}
+
+/// A group member that can take desk events: an agent with a desk, not Lead.
+fn desk_member(
+    group: &crate::coordination::GroupSummary,
+    raw: &str,
+) -> Result<String, ToolError> {
+    let id = bare_address(raw).to_string();
+    if id == crate::lead::SESSION_ID {
+        return Err(ToolError::msg("Lead has no desk inbox; reach it with message.send"));
+    }
+    if !group.members.iter().any(|m| m.kind == "agent" && m.id == id) {
+        return Err(ToolError::msg(format!("`{id}` is not an agent member of `{}`", group.id)));
+    }
+    Ok(id)
+}
+
+fn clipped_title(title: &str) -> String {
+    let title: String = title.chars().take(40).collect();
+    title
+}
+
+pub struct DeskEventHidden;
+#[async_trait]
+impl Tool for DeskEventHidden {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "desk_event_hidden".into(),
+            description: "Hand a group member a private desk event about that group: it reaches only their desk inbox, never the thread, and wakes them. Use it to steer a peer without posting.".into(),
+            input_schema: schema(
+                deadline_props(json!({
+                    "thread_id": {"type": "string", "description": "the group it concerns"},
+                    "to": {"type": "string", "description": "the agent member it is for"},
+                    "summary": {"type": "string"},
+                    "priority": {"type": "integer", "minimum": 0, "maximum": 100}
+                })),
+                &["thread_id", "to", "summary"],
+            ),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolResult, ToolError> {
+        let caller = group_agent(ctx)?;
+        let db = db(ctx)?;
+        let group = member_group(&db, &args, &caller)?;
+        let to = args
+            .get("to")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::msg("to is required"))?;
+        let to = desk_member(&group, to)?;
+        if to == caller {
+            return Err(ToolError::msg("that is you; event.create opens an event for yourself"));
+        }
+        let summary = args
+            .get("summary")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ToolError::msg("summary is required"))?;
+        let deadline = deadline_from(&args, false)?;
+        let priority = args
+            .get("priority")
+            .and_then(Value::as_i64)
+            .unwrap_or(HIDDEN_EVENT_PRIORITY)
+            .clamp(0, 100);
+        let event = db
+            .enqueue_desk_event(
+                &crate::coordination::desk_inbox::NewDeskEvent {
+                    agent_id: to.clone(),
+                    kind: "hidden".into(),
+                    thread_id: Some(group.id.clone()),
+                    reply_thread: Some(group.id.clone()),
+                    priority,
+                    is_mention: true,
+                    summary: format!("from {caller} about \"{}\": {summary}", clipped_title(&group.title)),
+                    payload: Some(json!({"from": caller})),
+                    deadline_at: deadline,
+                    wake: true,
+                    ..Default::default()
+                },
+                &now_rfc3339(),
+            )
+            .map_err(|e| ToolError::msg(format!("hidden event: {e}")))?;
+        Ok(ToolResult::success(json!({"to": to, "event": event_json(&event)})))
+    }
+}
+
+pub struct DeskEventRelease;
+#[async_trait]
+impl Tool for DeskEventRelease {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "desk_event_release".into(),
+            description: "Release the group round you lead, with your decision. wake_agents are woken to engage; with a decision and nobody named, the other unsnoozed members are woken with it, else they get it as a quiet event. Stops the round's owed-reply nudge.".into(),
+            input_schema: schema(
+                json!({
+                    "thread_id": {"type": "string"},
+                    "wake_agents": {"type": "string", "description": "agent members to wake, comma-separated (an array also works)"},
+                    "decision": {"type": "string", "description": "what you decided, passed to the members"}
+                }),
+                &["thread_id"],
+            ),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolResult, ToolError> {
+        let caller = group_agent(ctx)?;
+        let db = db(ctx)?;
+        let group = member_group(&db, &args, &caller)?;
+        let wake: Vec<String> = parse_event_ids(args.get("wake_agents").unwrap_or(&Value::Null))
+            .iter()
+            .map(|raw| desk_member(&group, raw))
+            .collect::<Result<_, _>>()?;
+        let decision = args
+            .get("decision")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let now = now_rfc3339();
+        let Some(round) = db
+            .release_group_round(&group.id, &caller, decision, &now)
+            .map_err(|e| ToolError::msg(format!("release round: {e}")))?
+        else {
+            let open = db.open_group_round(&group.id).ok().flatten();
+            return Err(ToolError::msg(match open {
+                Some(round) => format!("this round is led by {}; only its lead releases it", round.lead_agent),
+                None => "there is no open round in this group to release".to_string(),
+            }));
+        };
+        let title = clipped_title(&group.title);
+        let said = decision.map(|d| format!(": {d}")).unwrap_or_default();
+        let enqueue = |agent: &str, summary: String, priority: i64, mention: bool, wake: bool| {
+            db.enqueue_desk_event(
+                &crate::coordination::desk_inbox::NewDeskEvent {
+                    agent_id: agent.to_string(),
+                    kind: "round".into(),
+                    thread_id: Some(group.id.clone()),
+                    reply_thread: Some(group.id.clone()),
+                    priority,
+                    is_mention: mention,
+                    summary,
+                    payload: Some(json!({
+                        "round_id": round.round_id,
+                        "from": caller,
+                        "decision": decision,
+                    })),
+                    wake,
+                    ..Default::default()
+                },
+                &now,
+            )
+            .map(|e| e.id)
+            .map_err(|e| ToolError::msg(format!("round event for {agent}: {e}")))
+        };
+        let mut woken = Vec::new();
+        for agent in wake.iter().filter(|a| **a != caller) {
+            enqueue(
+                agent,
+                format!("{caller} released the round in \"{title}\" and asks you to engage{said}"),
+                ROUND_WAKE_PRIORITY,
+                true,
+                true,
+            )?;
+            woken.push(agent.clone());
+        }
+        let mut told = Vec::new();
+        if decision.is_some() {
+            for member in group.members.iter().filter(|m| m.kind == "agent") {
+                let id = member.id.as_str();
+                if id == caller
+                    || id == crate::lead::SESSION_ID
+                    || wake.iter().any(|w| w == id)
+                    || db.is_group_snoozed(id, &group.id, &now).unwrap_or(false)
+                {
+                    continue;
+                }
+                enqueue(
+                    id,
+                    format!("{caller} released the round in \"{title}\"{said}. Engage only if you add something, else event.noop."),
+                    0,
+                    false,
+                    wake.is_empty(),
+                )?;
+                told.push(id.to_string());
+            }
+        }
+        Ok(ToolResult::success(json!({
+            "round_id": round.round_id,
+            "decision": round.lead_decision,
+            "woken": woken,
+            "told": told,
+        })))
+    }
+}
+
+pub struct GroupSnooze;
+#[async_trait]
+impl Tool for GroupSnooze {
+    fn definition(&self) -> NativeToolDefinition {
+        NativeToolDefinition {
+            name: "group_snooze".into(),
+            description: "Stop optional wakes from a group: in_minutes, in_seconds or until (RFC 3339) for a timed snooze, none for until someone @mentions you, off: true to end it. An explicit mention always reaches you.".into(),
+            input_schema: schema(
+                json!({
+                    "thread_id": {"type": "string"},
+                    "in_minutes": {"type": "integer", "minimum": 1},
+                    "in_seconds": {"type": "integer", "minimum": 1},
+                    "until": {"type": "string", "description": "RFC 3339 time"},
+                    "off": {"type": "boolean"}
+                }),
+                &["thread_id"],
+            ),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolResult, ToolError> {
+        let caller = group_agent(ctx)?;
+        let db = db(ctx)?;
+        let group = member_group(&db, &args, &caller)?;
+        if args.get("off").and_then(Value::as_bool).unwrap_or(false) {
+            let cleared = db
+                .clear_group_snooze(&caller, &group.id)
+                .map_err(|e| ToolError::msg(format!("clear snooze: {e}")))?;
+            return Ok(ToolResult::success(json!({
+                "thread_id": group.id,
+                "snoozed": false,
+                "was_snoozed": cleared,
+            })));
+        }
+        let until = match args
+            .get("until")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+        {
+            Some(at) => Some(
+                crate::coordination::desk_inbox::normalize_ts(at)
+                    .map_err(|e| ToolError::msg(e.to_string()))?,
+            ),
+            None => deadline_from(&args, false)?,
+        };
+        let now = now_rfc3339();
+        if let Some(at) = until.as_deref()
+            && at <= crate::coordination::desk_inbox::normalize_ts(&now)
+                .map_err(|e| ToolError::msg(e.to_string()))?
+                .as_str()
+        {
+            return Err(ToolError::msg("until must be in the future"));
+        }
+        let snooze = db
+            .set_group_snooze(&caller, &group.id, until.as_deref(), &now)
+            .map_err(|e| ToolError::msg(format!("snooze: {e}")))?;
+        Ok(ToolResult::success(json!({
+            "thread_id": group.id,
+            "snoozed": true,
+            "until": snooze.until_at.as_deref().unwrap_or("pinged"),
+        })))
     }
 }
 
@@ -4895,16 +5180,14 @@ mod tests {
         assert!(check_group_post_chatter("Ok, which draft should we send?").is_ok());
         assert!(check_group_post_chatter("Okayama office confirmed the booking.").is_ok());
         assert!(check_group_post_chatter("Copyright check passed.").is_ok());
-        assert!(check_group_post_chatter(&"a".repeat(700)).is_ok());
-        let draft = format!("Draft for you:\n> {}", "word ".repeat(400));
+        assert!(check_group_post_chatter(&"a".repeat(2500)).is_ok());
+        let draft = format!("Draft for you:\n> {}", "word ".repeat(1000));
         assert!(check_group_post_chatter(&draft).is_ok());
-        let too_long = "a".repeat(701);
-        assert!(
-            check_group_post_chatter(&too_long)
-                .unwrap_err()
-                .starts_with("Too long for one post. Send several short posts")
-        );
-        assert!(check_group_post_chatter(&format!("> {}", "a".repeat(3000))).is_err());
+        let too_long = "a".repeat(2501);
+        let err = check_group_post_chatter(&too_long).unwrap_err();
+        assert!(err.starts_with("Too long for one post."), "{err}");
+        assert!(!err.contains("several short posts"), "{err}");
+        assert!(check_group_post_chatter(&format!("> {}", "a".repeat(6000))).is_err());
 
         let dir = tempfile::tempdir().unwrap();
         let db = migrate(dir.path());
@@ -4948,7 +5231,7 @@ mod tests {
                 json!({
                     "action": "post",
                     "thread_id": group.id,
-                    "body": "x".repeat(1501),
+                    "body": "x".repeat(2501),
                 }),
             )
             .await
@@ -4969,5 +5252,166 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod group_round_tool_tests {
+    use super::*;
+    use crate::coordination::types::{Agent, AgentKind, AgentStatus};
+
+    fn agent(id: &str) -> Agent {
+        Agent {
+            id: id.into(),
+            display_name: id.into(),
+            handle: id.into(),
+            kind: AgentKind::Worker,
+            status: AgentStatus::Active,
+            capabilities: vec![],
+        }
+    }
+
+    fn desk(root: &std::path::Path, id: &str) -> ToolContext {
+        ToolContext::new(root)
+            .unwrap()
+            .with_durable_session_id(format!("inbox-{id}"))
+            .with_store_path(root.join("snippet.db"))
+            .with_agent_id(id)
+    }
+
+    fn setup(root: &std::path::Path) -> (Store, String) {
+        let db = Store::open(root.join("snippet.db")).unwrap();
+        for id in ["a", "b", "c", "outsider"] {
+            db.create_agent(&agent(id)).unwrap();
+        }
+        let group = db
+            .create_group(
+                "ops",
+                ("human", "human"),
+                &["a".into(), "b".into(), "c".into()],
+                Some("a"),
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+        (db, group.id)
+    }
+
+    fn board_count(db: &Store, thread: &str) -> usize {
+        db.events_for_thread(thread, 0, 200).unwrap().len()
+    }
+
+    #[tokio::test]
+    async fn hidden_events_reach_only_the_target_desk_and_never_the_board() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, group) = setup(dir.path());
+        let before = board_count(&db, &group);
+        let out = DeskEventHidden
+            .execute(
+                &desk(dir.path(), "a"),
+                json!({"thread_id": group, "to": "b", "summary": "take the CI question", "in_minutes": 5}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.value["data"]["to"], "b");
+        assert_eq!(board_count(&db, &group), before, "a hidden event writes no board event");
+        let open = db.list_open_desk_events("b", 10).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].kind, "hidden");
+        assert_eq!(open[0].thread_id.as_deref(), Some(group.as_str()));
+        assert_eq!(open[0].reply_thread.as_deref(), Some(group.as_str()));
+        assert!(open[0].wake && open[0].deadline_at.is_some());
+        assert!(open[0].summary.contains("from a"), "{}", open[0].summary);
+        assert!(db.list_open_desk_events("c", 10).unwrap().is_empty());
+
+        let err = DeskEventHidden
+            .execute(
+                &desk(dir.path(), "outsider"),
+                json!({"thread_id": group, "to": "b", "summary": "x"}),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a member"), "{err}");
+        let err = DeskEventHidden
+            .execute(
+                &desk(dir.path(), "a"),
+                json!({"thread_id": group, "to": "outsider", "summary": "x"}),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not an agent member"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn release_wakes_named_agents_and_passes_the_decision() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, group) = setup(dir.path());
+        db.post_group_message(&group, ("human", "human"), "what ships today?", &[], None, "k1", "2026-01-01T00:01:00Z")
+            .unwrap();
+        let round = db.open_group_round(&group).unwrap().unwrap();
+        assert_eq!(round.lead_agent, "a");
+
+        let err = DeskEventRelease
+            .execute(&desk(dir.path(), "b"), json!({"thread_id": group, "decision": "ship"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("led by a"), "{err}");
+
+        let out = DeskEventRelease
+            .execute(
+                &desk(dir.path(), "a"),
+                json!({"thread_id": group, "wake_agents": "b", "decision": "ship the API today"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.value["data"]["woken"], json!(["b"]));
+        assert_eq!(out.value["data"]["told"], json!(["c"]));
+        assert_eq!(out.value["data"]["decision"], "ship the API today");
+        let b = db.list_open_desk_events("b", 10).unwrap();
+        assert_eq!(b.len(), 1);
+        assert!(b[0].wake && b[0].is_mention && b[0].priority >= 40);
+        assert_eq!(b[0].payload["decision"], "ship the API today");
+        let c = db.list_open_desk_events("c", 10).unwrap();
+        assert_eq!(c.len(), 1);
+        assert!(!c[0].wake, "with someone named, peers get the decision quietly");
+        assert!(c[0].summary.contains("ship the API today"));
+        assert!(db.open_group_round(&group).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn snooze_is_timed_until_pinged_or_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, group) = setup(dir.path());
+        let ctx = desk(dir.path(), "b");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let out = GroupSnooze
+            .execute(&ctx, json!({"thread_id": group, "in_minutes": 30}))
+            .await
+            .unwrap();
+        assert_ne!(out.value["data"]["until"], "pinged");
+        assert!(db.is_group_snoozed("b", &group, &now).unwrap());
+        let later = (chrono::Utc::now() + chrono::Duration::minutes(31)).to_rfc3339();
+        assert!(!db.is_group_snoozed("b", &group, &later).unwrap());
+
+        let out = GroupSnooze.execute(&ctx, json!({"thread_id": group})).await.unwrap();
+        assert_eq!(out.value["data"]["until"], "pinged");
+        assert!(db.is_group_snoozed("b", &group, &later).unwrap());
+        let state = crate::progress::desk_state_render(&db, "b");
+        assert!(state.contains(&format!("{group} until pinged")), "{state}");
+
+        GroupSnooze
+            .execute(&ctx, json!({"thread_id": group, "off": true}))
+            .await
+            .unwrap();
+        assert!(!db.is_group_snoozed("b", &group, &now).unwrap());
+        assert!(
+            GroupSnooze
+                .execute(&desk(dir.path(), "outsider"), json!({"thread_id": group}))
+                .await
+                .is_err()
+        );
     }
 }

@@ -640,7 +640,16 @@ mod tests {
             .iter()
             .filter_map(|t| t["name"].as_str().map(str::to_string))
             .collect();
-        for name in ["event.list", "event.ack", "event.noop", "event.defer", "event.create"] {
+        for name in [
+            "event.list",
+            "event.ack",
+            "event.noop",
+            "event.defer",
+            "event.create",
+            "event.hidden",
+            "event.release",
+            "group.snooze",
+        ] {
             assert!(names.iter().any(|n| n == name), "{name} missing from {names:?}");
         }
     }

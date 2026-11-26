@@ -435,6 +435,26 @@ pub fn ensure(connection: &Connection) -> Result<(), rusqlite::Error> {
              ON desk_inbox(agent_id, source_ref);
          CREATE INDEX IF NOT EXISTS desk_inbox_pending
              ON desk_inbox(resolved_at, presented_at, created_at);
+         CREATE TABLE IF NOT EXISTS group_rounds (
+             round_id TEXT PRIMARY KEY,
+             thread_id TEXT NOT NULL,
+             lead_agent TEXT NOT NULL,
+             opened_at TEXT NOT NULL,
+             latest_event_id TEXT NOT NULL,
+             lead_acked_at TEXT,
+             lead_decision TEXT,
+             failover_count INTEGER NOT NULL DEFAULT 0,
+             status TEXT NOT NULL DEFAULT 'open'
+         );
+         CREATE INDEX IF NOT EXISTS group_rounds_thread_status
+             ON group_rounds(thread_id, status);
+         CREATE TABLE IF NOT EXISTS group_snoozes (
+             agent_id TEXT NOT NULL,
+             thread_id TEXT NOT NULL,
+             until_at TEXT,
+             created_at TEXT NOT NULL,
+             PRIMARY KEY (agent_id, thread_id)
+         );
 "#,
     )
 }

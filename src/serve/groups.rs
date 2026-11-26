@@ -432,7 +432,7 @@ fn group_message_envelope(
             if summary.is_empty() {
                 id.clone()
             } else {
-                format!("{id} ({summary})")
+                format!("{id}: {summary}")
             }
         })
         .collect();
@@ -554,6 +554,14 @@ async fn first_responder_busy(d: &Shared, event_id: &str) -> bool {
     false
 }
 
+/// A member as group envelopes name it: `mobile-design (Sashy)`.
+fn member_label(id: &str, nickname: Option<&str>) -> String {
+    match nickname.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(nick) => format!("{id} ({nick})"),
+        None => id.to_string(),
+    }
+}
+
 /// Hand one scheduled group wake to its agent's session. A deferred wake
 /// whose post already has a reply is skipped — that is the claim window.
 async fn deliver_group(
@@ -562,8 +570,17 @@ async fn deliver_group(
 ) -> Result<GroupWake, String> {
     let event = &pending.event;
     let agent_id = pending.recipient_id.as_str();
+    let now = chrono::Utc::now().to_rfc3339();
+    if d.store.group_wake_snoozed(pending, &now).unwrap_or(false) {
+        return Ok(GroupWake::Skipped);
+    }
+    if agent_id != crate::lead::SESSION_ID
+        && super::routing_routes::is_desk_profile_limited(d, agent_id).await
+    {
+        return Ok(GroupWake::Skipped);
+    }
     if pending.recipient_kind == "group_unanswered" {
-        if d.store.group_has_replies(&event.event_id).unwrap_or(false) {
+        if d.store.group_post_answered(event).unwrap_or(false) {
             return Ok(GroupWake::Skipped);
         }
         let waiting = chrono::DateTime::parse_from_rfc3339(&event.created_at)
@@ -581,14 +598,10 @@ async fn deliver_group(
         super::direct::deliver_by_urgency(d, &session_id, envelope, &event.payload, false).await;
         return Ok(GroupWake::Delivered);
     }
-    let replies = if pending.recipient_kind == "group_deferred" {
-        d.store
-            .group_post_replies(&event.event_id)
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    if pending.recipient_kind == "group_deferred" && replies.is_empty() {
+    if pending.recipient_kind == "group_deferred" {
+        if d.store.group_post_answered(event).unwrap_or(false) {
+            return Ok(GroupWake::Skipped);
+        }
         let age = chrono::DateTime::parse_from_rfc3339(&event.created_at)
             .map(|at| (chrono::Utc::now() - at.with_timezone(&chrono::Utc)).num_seconds())
             .unwrap_or(i64::MAX);
@@ -608,6 +621,7 @@ async fn deliver_group(
         .map(|group| group.title.clone())
         .unwrap_or_default();
     let root = crate::coordination::agents_root(&d.lead_root);
+    let nicknames = d.store.agent_nicknames().unwrap_or_default();
     let members: Vec<(String, String)> = group
         .as_ref()
         .map(|group| {
@@ -621,7 +635,7 @@ async fn deliver_group(
                         .and_then(|home| home.read_identity().ok())
                         .map(|text| crate::coordination_tools::identity_summary(&text))
                         .unwrap_or_default();
-                    (m.id.clone(), summary)
+                    (member_label(&m.id, nicknames.get(&m.id).map(String::as_str)), summary)
                 })
                 .collect()
         })
@@ -643,7 +657,7 @@ async fn deliver_group(
     };
     let lead = d.store.group_round_lead(&event.thread_id).ok().flatten();
     let lead = lead.as_deref().map(|lead| (lead, lead == agent_id));
-    let envelope = group_message_envelope(event, &title, wake, &history, &members, &replies, lead);
+    let envelope = group_message_envelope(event, &title, wake, &history, &members, &[], lead);
     if agent_id != crate::lead::SESSION_ID {
         super::direct::ensure_agent_inbox(d, agent_id).await?;
     }
@@ -667,11 +681,189 @@ async fn deliver_group(
     Ok(GroupWake::Delivered)
 }
 
+const ROUND_FAILOVER_PRIORITY: i64 = 40;
+const ROUND_CHECK_EVERY_TICKS: u64 = 10;
+
+/// Why a round's lead is passed over, or None while it still has time.
+fn round_failover_reason(
+    round: &crate::coordination::GroupRound,
+    lead_limited: bool,
+    lead_snoozed: bool,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<&'static str> {
+    if lead_limited {
+        return Some("is rate-limited");
+    }
+    if lead_snoozed {
+        return Some("has snoozed this group");
+    }
+    let opened = chrono::DateTime::parse_from_rfc3339(&round.opened_at).ok()?;
+    let waited = (now - opened.with_timezone(&chrono::Utc)).num_seconds();
+    (waited >= crate::coordination::GROUP_ROUND_ACK_SECONDS).then_some("did not pick it up within 90s")
+}
+
+/// The members after `lead` in rotation order, the lead itself last out.
+fn rotation_after(agents: &[String], lead: &str) -> Vec<String> {
+    let start = agents.iter().position(|a| a == lead).map_or(0, |i| i + 1);
+    agents[start..]
+        .iter()
+        .chain(agents[..start].iter())
+        .filter(|a| a.as_str() != lead)
+        .cloned()
+        .collect()
+}
+
+/// Per-round lead failover: a round whose lead is rate-limited, has snoozed
+/// the group, or has not engaged within
+/// [`crate::coordination::GROUP_ROUND_ACK_SECONDS`], passes to the next
+/// available member for that round only. When nobody can take it, the round
+/// stalls with one notice in the group.
+async fn check_round_failovers(d: &Shared) {
+    let rounds = match d.store.list_unacked_group_rounds() {
+        Ok(rounds) => rounds,
+        Err(error) => {
+            eprintln!("[coordination] list group rounds: {error}");
+            return;
+        }
+    };
+    for round in rounds {
+        let Some(post) = d.store.event_by_id(&round.latest_event_id).ok().flatten() else {
+            continue;
+        };
+        if d.store
+            .has_agent_reply_after(&round.thread_id, post.sequence)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let limited = super::routing_routes::is_desk_profile_limited(d, &round.lead_agent).await;
+        let now = chrono::Utc::now();
+        let snoozed = d
+            .store
+            .is_group_snoozed(&round.lead_agent, &round.thread_id, &now.to_rfc3339())
+            .unwrap_or(false);
+        let Some(reason) = round_failover_reason(&round, limited, snoozed, now) else {
+            continue;
+        };
+        let Some(group) = d.store.get_group(&round.thread_id).ok().flatten() else {
+            continue;
+        };
+        let agents: Vec<String> = group
+            .members
+            .iter()
+            .filter(|m| m.kind == "agent")
+            .map(|m| m.id.clone())
+            .collect();
+        let now_s = now.to_rfc3339();
+        let mut next = None;
+        if round.failover_count < agents.len() as i64 {
+            for candidate in rotation_after(&agents, &round.lead_agent) {
+                if candidate == crate::lead::SESSION_ID
+                    || d.store
+                        .is_group_snoozed(&candidate, &round.thread_id, &now_s)
+                        .unwrap_or(true)
+                    || d.store.get_agent(&candidate).ok().flatten().is_none_or(|a| {
+                        matches!(
+                            a.status,
+                            crate::coordination::types::AgentStatus::Paused
+                                | crate::coordination::types::AgentStatus::Disabled
+                        )
+                    })
+                    || super::routing_routes::is_desk_profile_limited(d, &candidate).await
+                {
+                    continue;
+                }
+                next = Some(candidate);
+                break;
+            }
+        }
+        match next {
+            Some(next) => {
+                if !d
+                    .store
+                    .failover_group_round(&round.round_id, &round.lead_agent, &next, &now_s)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let event = crate::coordination::desk_inbox::NewDeskEvent {
+                    agent_id: next.clone(),
+                    kind: "round".into(),
+                    thread_id: Some(round.thread_id.clone()),
+                    reply_thread: Some(round.thread_id.clone()),
+                    priority: ROUND_FAILOVER_PRIORITY,
+                    is_mention: true,
+                    summary: format!(
+                        "You lead this round in \"{}\" ({} {reason}). Answer post {} via message.group, or event.release.",
+                        group.title.chars().take(30).collect::<String>(),
+                        round.lead_agent,
+                        post.event_id
+                    ),
+                    payload: Some(serde_json::json!({
+                        "round_id": round.round_id,
+                        "from_lead": round.lead_agent,
+                        "reason": reason,
+                        "event_id": post.event_id,
+                    })),
+                    wake: true,
+                    ..Default::default()
+                };
+                if let Err(error) = d.store.enqueue_desk_event(&event, &now_s) {
+                    eprintln!("[coordination] round failover event for {next}: {error}");
+                }
+            }
+            None => {
+                if !d
+                    .store
+                    .stall_group_round(&round.round_id, &round.lead_agent)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                post_round_stalled_notice(d, &round, limited);
+            }
+        }
+    }
+}
+
+/// The one notice a round gets when its lead is passed over and no other
+/// member can take it.
+fn post_round_stalled_notice(d: &Shared, round: &crate::coordination::GroupRound, limited: bool) {
+    let body = if limited {
+        "Every agent in this group is rate-limited or unavailable right now, so this round is on hold. Post again or @mention an agent once a limit resets."
+    } else {
+        "Nobody in this group has picked up this round and no other agent is available to take it. Post again or @mention an agent to retry."
+    };
+    let posted = d.store.post_group_card(
+        &round.thread_id,
+        ("agent", round.lead_agent.as_str()),
+        body,
+        Some(serde_json::json!({"notice": "round_stalled", "round_id": round.round_id})),
+        &format!("round-stalled:{}", round.round_id),
+        &chrono::Utc::now().to_rfc3339(),
+    );
+    match posted {
+        Ok(saved) => {
+            let _ = d.coordination_events.send(saved.clone());
+            crate::session::emit_device_event(serde_json::json!({
+                "kind": "coordination_event",
+                "event": saved,
+            }));
+        }
+        Err(error) => eprintln!("[coordination] round stalled notice: {error}"),
+    }
+}
+
 /// Deliver every scheduled-but-undelivered group wake. Same shape as the
 /// direct-message loop: read the pending set, hand each over, record the
 /// outcome durably.
 pub async fn group_dispatch_loop(d: Shared) {
+    let mut ticks = 0u64;
     loop {
+        if ticks.is_multiple_of(ROUND_CHECK_EVERY_TICKS) {
+            check_round_failovers(&d).await;
+        }
+        ticks = ticks.wrapping_add(1);
         let now = chrono::Utc::now().to_rfc3339();
         match d
             .store
@@ -713,6 +905,28 @@ pub async fn group_dispatch_loop(d: Shared) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_round_fails_over_on_limit_snooze_or_timeout_only() {
+        let now = chrono::Utc::now();
+        let round = |opened: chrono::DateTime<chrono::Utc>| crate::coordination::GroupRound {
+            round_id: "r".into(),
+            thread_id: "group:g".into(),
+            lead_agent: "a".into(),
+            opened_at: opened.to_rfc3339(),
+            latest_event_id: "e".into(),
+            lead_acked_at: None,
+            lead_decision: None,
+            failover_count: 0,
+            status: "open".into(),
+        };
+        let fresh = round(now - chrono::Duration::seconds(10));
+        assert_eq!(super::round_failover_reason(&fresh, false, false, now), None);
+        assert_eq!(super::round_failover_reason(&fresh, true, false, now), Some("is rate-limited"));
+        assert_eq!(super::round_failover_reason(&fresh, false, true, now), Some("has snoozed this group"));
+        let stale = round(now - chrono::Duration::seconds(91));
+        assert!(super::round_failover_reason(&stale, false, false, now).is_some());
+    }
+
 
     #[test]
     fn group_added_notice_names_members_and_says_no_reply() {
@@ -967,7 +1181,7 @@ mod tests {
         for field in [
             "thread_id=\"group:x\"",
             "title=\"build\"",
-            "<members>a (Reviews Rust PRs.); b</members>",
+            "<members>a: Reviews Rust PRs.; b</members>",
             "from=\"human:human\"",
             "mentions=\"b\"",
             "in_reply_to=\"p0\"",

@@ -446,7 +446,27 @@ const EVENT: Surface = Surface {
             "desk_event_create",
             "open an event for yourself with an optional deadline and thread_id.",
         ),
+        act(
+            "hidden",
+            "desk_event_hidden",
+            "a private event for a group member's desk only (thread_id, to, summary); never posted.",
+        ),
+        act(
+            "release",
+            "desk_event_release",
+            "release the group round you lead (thread_id, wake_agents, decision).",
+        ),
     ],
+};
+
+const GROUP: Surface = Surface {
+    name: "group",
+    intro: "Your standing in group threads.",
+    acts: &[act(
+        "snooze",
+        "group_snooze",
+        "hold optional wakes from a group (timed, until pinged, or off); mentions still reach you.",
+    )],
 };
 
 const TASKS: Surface = Surface {
@@ -555,7 +575,7 @@ const AMBIENT: Surface = Surface {
 
 pub const SURFACES: &[&Surface] = &[
     &WEB, &PROCESS, &PRESENT, &CANVAS, &DELEGATE, &SKILL, &MESSAGE, &READ, &TASK, &WAKE, &EVENT,
-    &TASKS, &SESSIONS, &AMBIENT, &CODE, &CALLS,
+    &GROUP, &TASKS, &SESSIONS, &AMBIENT, &CODE, &CALLS,
 ];
 
 fn keep_for(role: SeatRole) -> &'static [&'static str] {
@@ -760,7 +780,9 @@ pub fn lower_dotted(name: &str, args: &Value) -> Result<Option<(String, Value)>,
 
 /// Dotted surface.action definitions for Desk's CLI-backed tools (`snippet tool`).
 pub fn desk_cli_definitions(internal: &[NativeToolDefinition]) -> Vec<NativeToolDefinition> {
-    const DESK_CLI_SURFACES: &[&Surface] = &[&MESSAGE, &READ, &TASK, &WAKE, &EVENT, &PRESENT, &WEB];
+    const DESK_CLI_SURFACES: &[&Surface] = &[
+        &MESSAGE, &READ, &TASK, &WAKE, &EVENT, &GROUP, &PRESENT, &WEB,
+    ];
     let by_name: HashMap<&str, &NativeToolDefinition> = internal
         .iter()
         .map(|d| (d.name.as_str(), d))

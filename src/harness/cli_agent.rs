@@ -969,13 +969,13 @@ fn empty_call_example(name: &str, schema: &Value) -> Value {
 fn tool_prompt_preamble(kind: CliKind) -> String {
     match kind {
         CliKind::ClaudeCode => format!(
-            "## Tools in this runtime\n\nThe tools named in this prompt are served to you as `{MCP_PREFIX}<name>`: where it says `bash`, call `{MCP_PREFIX}bash`, and so on. These are your only tools: you have no built-in ones in this session. Read and search files with `bash` (cat, sed -n, rg, ls), and make every change, command, question and delegation through the snippet tools."
+            "## Tools in this runtime\n\nYou run as Claude Code over stream-json; Snippet drives each turn and compacts your context with Claude Code's native /compact when it grows. The tools named in this prompt are served to you as `{MCP_PREFIX}<name>`: where it says `bash`, call `{MCP_PREFIX}bash`, and so on. These are your only tools: you have no built-in ones in this session. Read and search files with `bash` (cat, sed -n, rg, ls), and make every change, command, question and delegation through the snippet tools."
         ),
         CliKind::Devin => format!(
-            "## Tools in this runtime\n\nThe tools named in these instructions are served by the `{MCP_SERVER}` MCP server. Do not call `mcp_list_tools` — every available tool and its arguments are already listed below. Call them directly via `mcp_call_tool` with `server_name: \"{MCP_SERVER}\"`, `tool_name` set to the exact tool name (`bash`, `change_files`, `code`, `ask_user`, and the rest), and `arguments` matching its schema. The nested `arguments` object is required on every call and carries the tool's own fields in full, for example `{{\"server_name\": \"{MCP_SERVER}\", \"tool_name\": \"bash\", \"arguments\": {{\"command\": \"ls\", \"label\": \"list files\"}}}}`; a call without it reaches the tool empty and fails. Every built-in tool of yours (`exec`, `read`, `write`, `edit`, `grep`, `glob`, `skill`, `ask_user_question`, `todo_write`) is disabled in this session: read and search files with `bash` (`cat`, `sed -n`, `rg`, `ls`), edit files with `change_files`, and make every command, question and delegation through the `{MCP_SERVER}` MCP tools."
+            "## Tools in this runtime\n\nYou run as Devin over `devin acp`; these instructions are your AGENTS.md, and you manage your own context compaction. Snippet's tools come from the `{MCP_SERVER}` MCP server and are listed below, so skip `mcp_list_tools`. Call each via `mcp_call_tool` with `server_name: \"{MCP_SERVER}\"`, `tool_name` (`bash`, `change_files`, `code`, ...) and a nested `arguments` object carrying the tool's own fields in full on every call, for example `{{\"server_name\": \"{MCP_SERVER}\", \"tool_name\": \"bash\", \"arguments\": {{\"command\": \"ls\", \"label\": \"list files\"}}}}`; without it the tool gets nothing and fails. Your built-in tools (`exec`, `read`, `write`, `edit`, `grep`, `glob`, `skill`, `ask_user_question`, `todo_write`) are disabled: read and search with `bash`, edit with `change_files`, and run every command, question and delegation through the snippet tools."
         ),
         CliKind::Antigravity => format!(
-            "## Tools in this runtime\n\nThe tools named in these instructions are served directly as `{0}<name>`: where it says `bash`, call `{0}bash`, `change_files` -> `{0}change_files`, `code` -> `{0}code`, and so on. These are your only working tools: every built-in tool of yours is switched off in this session. Read and search files with `{0}bash` (cat, sed -n, rg, ls), edit files with `{0}change_files`, and make every command, question and delegation through the snippet tools. The one exception: when a tool result says its output was saved to a file inside your own Antigravity folder, read that file with `view_file`.",
+            "## Tools in this runtime\n\nYou run as Antigravity over `agy acp` and manage your own context compaction. Snippet's tools are served directly as `{0}<name>`: `bash` is `{0}bash`, `change_files` is `{0}change_files`, `code` is `{0}code`, and so on. These are your only working tools; your built-in ones are switched off. Read and search files with `{0}bash` (cat, sed -n, rg, ls), edit with `{0}change_files`, and run every command, question and delegation through the snippet tools. One exception: a file Snippet saved inside your own `.gemini` folder (a tool output or an image) is opened with `view_file`.",
             crate::antigravity::ACP_TOOL_PREFIX,
         ),
     }
@@ -5641,5 +5641,32 @@ mod lane_closing_tests {
         };
         assert!(has(true));
         assert!(!has(false));
+    }
+}
+
+#[cfg(test)]
+mod preamble_tests {
+    use super::{CliKind, tool_prompt_preamble};
+
+    #[test]
+    fn each_preamble_names_its_runtime_and_stays_small() {
+        let cases: [(CliKind, &[&str]); 3] = [
+            (CliKind::ClaudeCode, &["Claude Code", "stream-json", "/compact", "mcp__snippet__bash"]),
+            (
+                CliKind::Devin,
+                &["`devin acp`", "AGENTS.md", "own context compaction", "mcp_call_tool", "arguments"],
+            ),
+            (
+                CliKind::Antigravity,
+                &["`agy acp`", "own context compaction", "mcp_snippet_bash", "view_file", ".gemini"],
+            ),
+        ];
+        for (kind, facts) in cases {
+            let text = tool_prompt_preamble(kind);
+            assert!(text.len() <= 1100, "{kind:?} preamble is {} bytes", text.len());
+            for fact in facts {
+                assert!(text.contains(fact), "{kind:?} preamble lacks {fact}: {text}");
+            }
+        }
     }
 }

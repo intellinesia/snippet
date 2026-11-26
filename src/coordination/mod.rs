@@ -41,7 +41,7 @@ pub use direct::{
     DirectThreadSummary, InboxEntry, InboxKind, InboxQuery, LOCAL_HUMAN_ID, OwedReply,
     PendingDirectMessage, actor_ref, direct_thread_id,
 };
-pub use groups::{GroupMember, GroupSummary};
+pub use groups::{GROUP_ROUND_ACK_SECONDS, GroupMember, GroupRound, GroupSnooze, GroupSummary};
 pub use identity::{AgentHome, IdentityError};
 pub use task_state::{Decision, PendingReport, StatePatch, TaskState, VerifyMethod, VerifyMode};
 pub use tasks::{
