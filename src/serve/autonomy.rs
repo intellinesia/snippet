@@ -294,13 +294,6 @@ fn session_status(id: &str) -> Option<crate::harness::HarnessState> {
     crate::session::state_path_for_id(id).and_then(|p| crate::session::read_session_meta(&p))
 }
 
-fn session_full_state(id: &str) -> Option<crate::harness::HarnessState> {
-    if id.trim().is_empty() {
-        return None;
-    }
-    crate::session::state_path_for_id(id).and_then(|p| crate::session::read_session_state(&p))
-}
-
 pub(super) fn question_text(question: &Value) -> String {
     let mut lines = Vec::new();
     if let Some(context) = question
@@ -358,9 +351,6 @@ fn pending_offers(
         .collect()
 }
 
-const DORMANT_AFTER_SECS: i64 = 2 * 3600;
-const DORMANT_WINDOW_SECS: i64 = 7 * 86400;
-
 fn one_line(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() > max {
@@ -370,67 +360,39 @@ fn one_line(text: &str, max: usize) -> String {
     }
 }
 
-fn waiting_and_dormant(
-    tasks: &[crate::coordination::Task],
-    now: i64,
-) -> (Vec<String>, Vec<String>) {
-    let busy: std::collections::HashSet<&str> = tasks
-        .iter()
-        .filter(|t| !t.status.is_terminal())
-        .map(|t| t.session_id.as_str())
-        .collect();
-    let mut sessions = crate::session::list_routable_sessions();
-    sessions.sort_by_key(|s| -s.last_active);
+/// Only Lead-owned active task sessions that are waiting for input.
+/// Human-managed direct sessions and desk-owned sessions are never surfaced to Lead.
+fn lead_waiting_sessions(tasks: &[crate::coordination::Task], now: i64) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
     let mut waiting = Vec::new();
-    let mut dormant = Vec::new();
-    for session in sessions {
-        let idle = now - session.last_active;
-        if idle > DORMANT_WINDOW_SECS {
+    for task in tasks {
+        if task.status.is_terminal() || task.session_id.is_empty() {
             continue;
         }
-        let Some(state) = session_status(&session.id) else {
+        if !seen.insert(task.session_id.as_str()) {
+            continue;
+        }
+        let Some(state) = session_status(&task.session_id) else {
             continue;
         };
-        if state.status == HarnessStatus::WaitingForInput {
-            let question = state
-                .pending_question
-                .as_ref()
-                .map(question_text)
-                .unwrap_or_default();
-            waiting.push(format!(
-                "- {} · {} · waiting {} · asked: {}",
-                session.title,
-                session.id,
-                ago(idle),
-                one_line(&question, 220)
-            ));
+        if state.status != HarnessStatus::WaitingForInput {
             continue;
         }
-        if busy.contains(session.id.as_str())
-            || idle < DORMANT_AFTER_SECS
-            || state.status == HarnessStatus::Running
-        {
-            continue;
-        }
-        if dormant.len() < 8 {
-            let last_said = session_full_state(&session.id).and_then(|full| {
-                full.events.iter().rev().find_map(|event| match event {
-                    crate::harness::HarnessEvent::AssistantText { text, .. } => {
-                        Some(one_line(text, 220))
-                    }
-                    _ => None,
-                })
-            });
-            dormant.push(format!(
-                "- {} · {} · quiet {} · last said: {}",
-                session.title,
-                session.id,
-                ago(idle),
-                last_said.unwrap_or_else(|| "(nothing)".to_string())
-            ));
-        }
+        let question = state
+            .pending_question
+            .as_ref()
+            .map(question_text)
+            .unwrap_or_default();
+        let idle = secs_since(&task.updated_at, now);
+        waiting.push(format!(
+            "- {} · {} · waiting {} · asked: {}",
+            task.title,
+            task.session_id,
+            ago(idle),
+            one_line(&question, 220)
+        ));
     }
-    (waiting, dormant)
+    waiting
 }
 
 /// Blocked tasks that are only waiting on unfinished blockers, with the
@@ -572,14 +534,10 @@ fn round_envelope(
         out.push_str(&finished.join("\n"));
     }
 
-    let (waiting, dormant) = waiting_and_dormant(tasks, now);
+    let waiting = lead_waiting_sessions(tasks, now);
     if !waiting.is_empty() {
-        out.push_str("\n\n## Sessions waiting on the user\n");
+        out.push_str("\n\n## Lead task sessions waiting on input\n");
         out.push_str(&waiting.join("\n"));
-    }
-    if !dormant.is_empty() {
-        out.push_str("\n\n## Recent work that went quiet (no open task)\n");
-        out.push_str(&dormant.join("\n"));
     }
 
     let brief = mission_autonomy::read_brief();
