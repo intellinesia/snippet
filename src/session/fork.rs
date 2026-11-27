@@ -33,12 +33,22 @@ pub fn resolve_fork_point(
             message_end: cp.message_index.min(state.messages.len()),
         });
     }
-    let Some(idx) = event_index else {
-        return Err("fork requires `checkpoint` or `event_index`".into());
-    };
     if state.events.is_empty() {
         return Err("nothing to fork — session has no events".into());
     }
+    let Some(idx) = event_index else {
+        // Omitting both checkpoint and event_index forks the full conversation.
+        let event_end = snap_event_end_safe(&state.events, state.events.len());
+        let message_end = if event_end == state.events.len() {
+            state.messages.len()
+        } else {
+            message_end_for_events(state, event_end)
+        };
+        return Ok(ForkPoint {
+            event_end,
+            message_end,
+        });
+    };
     if idx >= state.events.len() {
         return Err(format!(
             "event_index {idx} out of range (0..{})",

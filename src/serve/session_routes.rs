@@ -536,8 +536,12 @@ pub(crate) struct ForkReq {
     #[serde(default)]
     checkpoint: Option<String>,
     /// Inclusive event index to keep through (snapped to a provider-safe boundary).
+    /// When omitted alongside `checkpoint`, forks the full conversation.
     #[serde(default)]
     event_index: Option<usize>,
+    /// Optional custom title for the forked conversation.
+    #[serde(default)]
+    title: Option<String>,
 }
 
 // POST /session/fork {session, checkpoint?|event_index?} — branch a NEW conversation
@@ -582,7 +586,12 @@ pub(crate) async fn fork_session(State(d): State<Shared>, Json(req): Json<ForkRe
     };
 
     match crate::session::write_forked_conversation(&sp, &state, point) {
-        Ok(forked) => {
+        Ok(mut forked) => {
+            if let Some(custom) = req.title.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                && crate::session::set_session_title(&forked.state_path, custom).is_ok()
+            {
+                forked.title = custom.to_string();
+            }
             crate::harness::fork_cli_conversations(
                 &crate::session::session_id_for_state_path(&sp),
                 &crate::session::session_id_for_state_path(&forked.state_path),
