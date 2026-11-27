@@ -86,34 +86,55 @@ impl PromptContext {
         }
     }
 
-    fn conditional_layers(&self) -> Vec<&'static str> {
+    fn conditional_layers(&self) -> Vec<String> {
         let mut layers = Vec::new();
         if self.worktree {
-            layers.push(GIT_WORKTREE_LAYER.trim());
+            layers.push(GIT_WORKTREE_LAYER.trim().to_string());
         }
         if self.skills {
-            layers.push(SKILLS_LAYER.trim());
+            let mut names: Vec<String> = crate::skills::discover()
+                .into_iter()
+                .map(|s| s.name)
+                .collect();
+            names.sort();
+            names.dedup();
+            if names.is_empty() {
+                layers.push(SKILLS_LAYER.trim().to_string());
+            } else {
+                let shown: Vec<&str> = names.iter().take(24).map(String::as_str).collect();
+                layers.push(format!(
+                    "{}\n\nInstalled skills: {}",
+                    SKILLS_LAYER.trim(),
+                    shown.join(", ")
+                ));
+            }
         }
         if self.vault {
-            layers.push(VAULT_LAYER.trim());
+            layers.push(VAULT_LAYER.trim().to_string());
         }
-        layers.push(if self.images {
-            VISION_LAYER.trim()
-        } else {
-            NO_VISION_LAYER.trim()
-        });
+        layers.push(
+            if self.images {
+                VISION_LAYER.trim()
+            } else {
+                NO_VISION_LAYER.trim()
+            }
+            .to_string(),
+        );
         if self.memory {
-            layers.push(MEMORY_GUIDANCE_LAYER.trim());
+            layers.push(MEMORY_GUIDANCE_LAYER.trim().to_string());
         }
         if self.memory && self.memory_writable {
-            layers.push(MEMORY_WRITE_LAYER.trim());
+            layers.push(MEMORY_WRITE_LAYER.trim().to_string());
         }
         layers
     }
 }
 
 pub fn coding_prompt(context: &PromptContext) -> String {
-    let mut parts = vec![CODING_AGENT_LAYER.trim(), HARNESS_CORE.trim()];
+    let mut parts = vec![
+        CODING_AGENT_LAYER.trim().to_string(),
+        HARNESS_CORE.trim().to_string(),
+    ];
     parts.extend(context.conditional_layers());
     parts.join("\n\n")
 }
@@ -136,7 +157,7 @@ pub fn conversation_prompt(context: &PromptContext) -> String {
         CODING_AGENT_LAYER.trim().to_string(),
         HARNESS_CORE.trim().to_string(),
     ];
-    parts.extend(context.conditional_layers().into_iter().map(String::from));
+    parts.extend(context.conditional_layers());
     parts.push(work_session_layer(context));
     parts.join("\n\n")
 }
@@ -195,9 +216,9 @@ fn identity_overlay(agent_id: &str, identity: &str) -> String {
 /// A delegated lane's prompt: the execution contract and the lane layer,
 /// without the harness core, plus the assigned agent's identity.
 pub fn lane_prompt(context: &PromptContext, identity: Option<(&str, &str)>) -> String {
-    let mut parts = vec![CODING_AGENT_LAYER.trim()];
+    let mut parts = vec![CODING_AGENT_LAYER.trim().to_string()];
     parts.extend(context.conditional_layers());
-    parts.push(LANE_LAYER.trim());
+    parts.push(LANE_LAYER.trim().to_string());
     let base = parts.join("\n\n");
     match identity {
         Some((agent_id, body)) => format!("{base}\n\n{}", identity_overlay(agent_id, body)),

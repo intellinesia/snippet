@@ -982,13 +982,19 @@ impl Tool for SendAgentMessage {
             "kind": "coordination_event",
             "event": saved,
         }));
-        Ok(ToolResult::success(json!({
+        let mut res = json!({
             "event_id": saved.event_id,
             "thread_id": saved.thread_id,
             "sequence": saved.sequence,
             "to": format!("{to_kind}:{to_id}"),
             "note": "Accepted and queued for delivery. This is conversation only — it does not start work.",
-        })))
+        });
+        if desk_to_user && reaction.is_none() && body.chars().count() > 400 {
+            res["hint"] = json!(
+                "Long DM (>400 chars); keep user DMs to 1-2 lines + link/artifact."
+            );
+        }
+        Ok(ToolResult::success(res))
     }
 }
 

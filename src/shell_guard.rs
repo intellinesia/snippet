@@ -23,7 +23,16 @@ fn unquote(token: &str) -> &str {
 /// tools.
 fn is_tracked_write_target(target: &str) -> bool {
     let t = unquote(target);
-    if t.is_empty() {
+    if t.is_empty()
+        || t.contains('\n')
+        || t.contains('(')
+        || t.contains(')')
+        || t.contains('[')
+        || t.contains(']')
+        || t.contains('=')
+        || t.ends_with(':')
+        || t.chars().all(|c| c.is_ascii_digit())
+    {
         return false;
     }
     if t.starts_with("/tmp")
@@ -37,6 +46,41 @@ fn is_tracked_write_target(target: &str) -> bool {
         return false;
     }
     true
+}
+
+/// Remove heredoc bodies (`<<EOF ... EOF`) so embedded Python/JS/data lines
+/// containing `>` comparisons are not misparsed as shell file redirections.
+fn strip_heredoc_bodies(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut end_marker: Option<String> = None;
+    for line in command.lines() {
+        if let Some(marker) = &end_marker {
+            if line.trim() == marker {
+                end_marker = None;
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+        if let Some(pos) = line.find("<<") {
+            let after = line[pos + 2..].trim_start();
+            // Skip here-strings (`<<<`).
+            if after.starts_with('<') {
+                continue;
+            }
+            let after = after.strip_prefix('-').unwrap_or(after).trim_start();
+            let raw = after.split_whitespace().next().unwrap_or("");
+            let delim = raw.trim_matches(|c| c == '\'' || c == '"' || c == '\\');
+            if !delim.is_empty()
+                && delim
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                end_marker = Some(delim.to_string());
+            }
+        }
+    }
+    out
 }
 
 // Redirect (`>`, `>>`, `&>`, `N>`) to a tracked target. Skips fd dups
@@ -261,9 +305,10 @@ const WRITE_GIT: &[&str] = &[
 /// as targets (possibly none: `git commit` writes without naming a file).
 /// `None` for a read. Writes only to throwaway sinks (`/tmp`, `/dev/null`) are reads.
 pub fn shell_writes(command: &str) -> Option<Vec<String>> {
+    let stripped = strip_heredoc_bodies(command);
     let mut targets: Vec<String> = Vec::new();
     let mut writes = false;
-    for seg in segments(command) {
+    for seg in segments(&stripped) {
         let toks = tokens(&seg);
         let Some(verb) = toks.first().map(String::as_str) else {
             continue;
