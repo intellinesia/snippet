@@ -120,7 +120,10 @@ fn segments(command: &str) -> Vec<String> {
             i += 2;
             continue;
         }
-        if c == '|' || c == ';' || c == '\n' {
+        let prev = i.checked_sub(1).and_then(|p| chars.get(p)).copied();
+        let next = chars.get(i + 1).copied();
+        let single_bg = c == '&' && !matches!(prev, Some('>' | '<')) && next != Some('>');
+        if c == '|' || c == ';' || c == '\n' || single_bg {
             out.push(std::mem::take(&mut cur));
             i += 1;
             continue;
@@ -141,6 +144,24 @@ fn tokens(segment: &str) -> Vec<String> {
         .map(|t| unquote(t).to_string())
         .filter(|t| !t.is_empty())
         .collect()
+}
+
+/// First git subcommand after skipping global options like `-C <dir>`, `-c <k=v>`.
+fn git_subcommand(toks: &[String]) -> Option<&str> {
+    let mut i = 1;
+    while i < toks.len() {
+        let t = toks[i].as_str();
+        if matches!(t, "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace") {
+            i += 2;
+            continue;
+        }
+        if t.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        return Some(t);
+    }
+    None
 }
 
 /// `sed -i` / `sed --in-place` (in-place file edit) in any form.
@@ -248,11 +269,7 @@ pub fn shell_writes(command: &str) -> Option<Vec<String>> {
             continue;
         };
         let git_write = verb == "git"
-            && toks
-                .iter()
-                .skip(1)
-                .find(|t| !t.starts_with('-'))
-                .is_some_and(|sub| WRITE_GIT.contains(&sub.as_str()));
+            && git_subcommand(&toks).is_some_and(|sub| WRITE_GIT.contains(&sub));
         if git_write {
             writes = true;
         } else if is_sed_inplace(&toks) {

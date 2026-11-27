@@ -796,12 +796,14 @@ async fn parse_responses_sse(
                     });
                 }
             }
-            "response.failed" | "response.incomplete" => {
+            "error" | "response.failed" | "response.incomplete" => {
                 if chunk.get("type").and_then(Value::as_str) == Some("response.incomplete") {
                     incomplete = true;
                 }
                 failure = chunk
                     .pointer("/response/error/message")
+                    .or_else(|| chunk.pointer("/error/message"))
+                    .or_else(|| chunk.get("message"))
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .or_else(|| Some("response failed".to_string()));
@@ -816,8 +818,7 @@ async fn parse_responses_sse(
     .map_err(|e| ToolError::model_request(format!("chatgpt stream error: {e}"), true))?;
 
     if let Some(err) = failure
-        && text.is_empty()
-        && calls.is_empty()
+        && (!incomplete || (text.is_empty() && calls.is_empty()))
     {
         let fatal = err.contains("context_length")
             || err.contains("insufficient_quota")

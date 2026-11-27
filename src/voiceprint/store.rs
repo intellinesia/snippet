@@ -138,7 +138,14 @@ pub fn store_enrolment_audio(pcm: &[u8]) -> Result<String, String> {
 }
 
 pub fn delete_audio(path: &Option<String>) {
-    if let Some(p) = path.as_deref().filter(|p| Path::new(p).starts_with(dir())) {
-        let _ = std::fs::remove_file(p);
+    let Some(p) = path.as_deref() else { return };
+    let Ok(root) = dir().canonicalize() else {
+        return;
+    };
+    let Ok(target) = Path::new(p).canonicalize() else {
+        return;
+    };
+    if target.starts_with(&root) {
+        let _ = std::fs::remove_file(target);
     }
 }

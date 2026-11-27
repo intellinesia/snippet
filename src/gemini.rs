@@ -573,9 +573,16 @@ async fn parse_gemini_sse(
     let mut calls: Vec<CandidatePart> = Vec::new();
     let mut usage: Option<UsageMetadata> = None;
     let mut finish: Option<String> = None;
+    let mut stream_error: Option<String> = None;
 
     crate::sse::for_each_event(response, |data| {
         if data.is_empty() {
+            return;
+        }
+        if let Ok(raw) = serde_json::from_str::<Value>(data)
+            && let Some(err) = raw.pointer("/error/message").and_then(Value::as_str)
+        {
+            stream_error = Some(err.to_string());
             return;
         }
         let Ok(chunk) = serde_json::from_str::<GeminiResponse>(data) else {
@@ -609,6 +616,10 @@ async fn parse_gemini_sse(
         }
     })
     .await?;
+
+    if let Some(err) = stream_error {
+        return Err(format!("gemini stream error: {err}"));
+    }
 
     let mut parts = Vec::new();
     if !text.is_empty() {

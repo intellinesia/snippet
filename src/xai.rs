@@ -942,8 +942,16 @@ async fn parse_responses_sse(
             return;
         };
 
-        // Catch top-level error object (xAI error envelope)
-        if let Some(err) = chunk.pointer("/error/message").and_then(Value::as_str) {
+        // Catch top-level error object or Responses `type: "error"` event
+        if let Some(err) = chunk
+            .pointer("/error/message")
+            .or_else(|| {
+                (chunk.get("type").and_then(Value::as_str) == Some("error"))
+                    .then(|| chunk.get("message"))
+                    .flatten()
+            })
+            .and_then(Value::as_str)
+        {
             failure = Some(err.to_string());
             return;
         }
@@ -1259,8 +1267,7 @@ async fn parse_responses_sse(
     }
 
     if let Some(err) = failure
-        && text.is_empty()
-        && calls.is_empty()
+        && (!incomplete || (text.is_empty() && calls.is_empty()))
     {
         return Err(ToolError::model_request(format!("xAI: {err}"), false));
     }

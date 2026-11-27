@@ -141,11 +141,14 @@ pub fn snapshot_diagnostic(workspace: &Path, label: &str) -> Result<String, Stri
 fn shadow_lock(workspace: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     type Locks = std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>;
     static LOCKS: std::sync::OnceLock<std::sync::Mutex<Locks>> = std::sync::OnceLock::new();
+    let key = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
     LOCKS
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .entry(workspace.to_path_buf())
+        .entry(key)
         .or_default()
         .clone()
 }
