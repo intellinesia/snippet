@@ -762,25 +762,34 @@ impl Store {
         Ok(claims)
     }
 
-    /// Non-lane sessions (desks, agent-managed, and human-managed) whose final
-    /// event is a recent `daemon_restart` and that were not waiting on human input.
-    pub fn restart_interrupted_resumable(&self, cutoff_iso: &str) -> Result<Vec<String>, StoreError> {
+    /// Non-lane sessions (desks, agent-managed, and human-managed) that were
+    /// actively running when the daemon stopped: either their final event is a
+    /// recent `daemon_restart`, or their row is still `running` from a crash/kill
+    /// within the cutoff window (and not waiting on human input).
+    pub fn restart_interrupted_resumable(
+        &self,
+        cutoff_iso: &str,
+        cutoff_unix: i64,
+    ) -> Result<Vec<String>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT s.id
                  FROM sessions s
-                 JOIN session_events e ON e.session_id = s.id
+                 LEFT JOIN session_events e ON e.session_id = s.id
                   AND e.ordinal = (SELECT MAX(ordinal) FROM session_events WHERE session_id = s.id)
                  WHERE s.id != 'lead'
                    AND s.id NOT LIKE '%/lanes/%'
                    AND s.status != 'waiting_for_input'
                    AND json_extract(s.state_json, '$.pending_question') IS NULL
-                   AND json_extract(e.payload_json, '$.kind') = 'system_decision'
-                   AND json_extract(e.payload_json, '$.step') = 'daemon_restart'
-                   AND e.created_at >= ?1
+                   AND (
+                        (json_extract(e.payload_json, '$.kind') = 'system_decision'
+                         AND json_extract(e.payload_json, '$.step') = 'daemon_restart'
+                         AND e.created_at >= ?1)
+                        OR (s.status = 'running' AND s.last_active >= ?2)
+                   )
                  ORDER BY s.id",
             )?;
-            stmt.query_map(params![cutoff_iso], |r| r.get::<_, String>(0))?
+            stmt.query_map(params![cutoff_iso, cutoff_unix], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()
         })
     }

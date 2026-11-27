@@ -856,7 +856,9 @@ pub(crate) async fn restart_continuation(d: Shared) {
     }
     let now_dt = chrono::Utc::now();
     let now = now_dt.to_rfc3339();
-    let cutoff = (now_dt - chrono::Duration::minutes(5)).to_rfc3339();
+    let cutoff_dt = now_dt - chrono::Duration::minutes(5);
+    let cutoff = cutoff_dt.to_rfc3339();
+    let cutoff_unix = cutoff_dt.timestamp();
 
     if let Ok(hits) = d.store.restart_interrupted_sessions() {
         for hit in hits {
@@ -872,7 +874,7 @@ pub(crate) async fn restart_continuation(d: Shared) {
         }
     }
 
-    let resumable = match d.store.restart_interrupted_resumable(&cutoff) {
+    let resumable = match d.store.restart_interrupted_resumable(&cutoff, cutoff_unix) {
         Ok(ids) => ids,
         Err(error) => {
             eprintln!("[restart] resumable sessions query failed: {error}");
