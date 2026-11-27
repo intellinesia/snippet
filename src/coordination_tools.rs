@@ -595,6 +595,8 @@ struct SendAgentMessageArgs {
     reaction: Option<String>,
     #[serde(default)]
     forward: Option<String>,
+    #[serde(default)]
+    choices: Option<Vec<String>>,
 }
 
 /// The session id named by the most recent human message in a direct thread.
@@ -658,7 +660,8 @@ impl Tool for SendAgentMessage {
                     "urgency":{"type":"string","enum":["normal","urgent"],"description":"default normal; `interrupt` is always urgent"},
                     "reply_to":{"type":"string","description":DESK_QUOTE},
                     "reaction":{"type":"string","enum":["check","eyes","thumbs_up","question","thinking"]},
-                    "forward":{"type":"string","description":"event id of a chat message to quote under your body as context"}
+                    "forward":{"type":"string","description":"event id of a chat message to quote under your body as context"},
+                    "choices":{"type":"array","items":{"type":"string"}}
                 }),
                 &["to"],
             ),
@@ -874,6 +877,30 @@ impl Tool for SendAgentMessage {
             reply_to.as_deref(),
             reaction.as_deref(),
         );
+        if let Some(raw_choices) = args.choices {
+            if reaction.is_some() {
+                return Err(ToolError::msg("a reaction cannot include `choices`"));
+            }
+            if to_kind == "human" {
+                let mut cleaned = Vec::new();
+                for c in raw_choices {
+                    let s = c.trim();
+                    if s.is_empty() {
+                        continue;
+                    }
+                    if s.chars().count() > 40 {
+                        return Err(ToolError::msg("each choice must be at most 40 characters"));
+                    }
+                    cleaned.push(s.to_string());
+                }
+                if cleaned.len() > 4 {
+                    return Err(ToolError::msg("at most 4 choices are allowed"));
+                }
+                if !cleaned.is_empty() {
+                    extra.insert("choices".into(), json!(cleaned));
+                }
+            }
+        }
         if let Some(title) = &about_task_title {
             extra.insert("about_task_title".into(), json!(title));
         }

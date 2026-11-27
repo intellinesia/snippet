@@ -362,10 +362,17 @@ pub fn desk_state_render_excluding(
         }
     }
     if !sessions.is_empty() {
+        let now_ts = chrono::Utc::now().timestamp();
         lines.push("  work:".to_string());
         for s in &sessions {
+            let quiet = chrono::DateTime::parse_from_rfc3339(&s.updated_at)
+                .ok()
+                .map(|dt| now_ts.saturating_sub(dt.timestamp()))
+                .filter(|&secs| secs >= 24 * 3600)
+                .map(|secs| format!(" quiet={}d", secs / (24 * 3600)))
+                .unwrap_or_default();
             lines.push(format!(
-                "  - session={} task={} reply={}",
+                "  - session={} task={} reply={}{quiet}",
                 s.session_id,
                 s.task_id,
                 s.reply_thread.as_deref().unwrap_or("-")

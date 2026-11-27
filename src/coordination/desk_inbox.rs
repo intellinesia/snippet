@@ -61,6 +61,7 @@ pub struct DeskWorkSession {
     pub session_id: String,
     pub task_id: String,
     pub reply_thread: Option<String>,
+    pub updated_at: String,
 }
 
 const COLUMNS: &str = "id, agent_id, kind, thread_id, reply_thread, source_ref, priority, is_mention, summary, payload_json, deadline_at, wake, created_at, updated_at, delivered_at, presented_at, resolved_at, resolution, attempts";
@@ -545,7 +546,7 @@ impl Store {
     ) -> Result<Vec<DeskWorkSession>, StoreError> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT COALESCE(NULLIF(ta.work_session_id, ''), t.session_id) AS sid, ta.task_id, tr.reply_to
+                "SELECT COALESCE(NULLIF(ta.work_session_id, ''), t.session_id) AS sid, ta.task_id, tr.reply_to, t.updated_at
                  FROM task_agents ta
                  JOIN tasks t ON t.id = ta.task_id
                  LEFT JOIN task_requesters tr ON tr.task_id = ta.task_id
@@ -561,6 +562,7 @@ impl Store {
                         session_id: r.get(0)?,
                         task_id: r.get(1)?,
                         reply_thread: r.get(2)?,
+                        updated_at: r.get(3)?,
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
