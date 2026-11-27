@@ -846,51 +846,57 @@ async fn present_desk_batches(d: &Shared, now: &str) {
 
 const RESTART_SETTLE_SECS: u64 = 3;
 
-/// After a restart, re-queue in-flight desk events, auto-resume interrupted
-/// desk inboxes and agent-managed CLI work sessions, and notify owning desks.
+/// After a restart, re-queue in-flight desk events, notify owning desks about
+/// interrupted agent-managed tasks, and auto-resume every session (desk,
+/// agent-managed, or human-managed) that was actively running at shutdown.
 pub(crate) async fn restart_continuation(d: Shared) {
     tokio::time::sleep(std::time::Duration::from_secs(RESTART_SETTLE_SECS)).await;
     if let Err(error) = d.store.requeue_inflight_desk_events() {
         eprintln!("[restart] requeue inflight desk events failed: {error}");
     }
-    if let Ok(inboxes) = d.store.restart_interrupted_inboxes() {
-        for (session_id, agent_id) in inboxes {
-            if super::routing_routes::is_desk_profile_limited(&d, &agent_id).await {
-                continue;
-            }
-            if ensure_agent_inbox(&d, &agent_id).await.is_ok() {
-                let _ = d.ensure_live(&session_id).await;
+    let now_dt = chrono::Utc::now();
+    let now = now_dt.to_rfc3339();
+    let cutoff = (now_dt - chrono::Duration::minutes(5)).to_rfc3339();
+
+    if let Ok(hits) = d.store.restart_interrupted_sessions() {
+        for hit in hits {
+            let _ = d
+                .store
+                .settle_stale_relays_for_session(&hit.agent_id, &hit.session_id, &now);
+            if let Err(error) = d.store.enqueue_restart_interrupted(&hit, &now) {
+                eprintln!(
+                    "[restart] notify {} about {}: {error}",
+                    hit.agent_id, hit.session_id
+                );
             }
         }
     }
-    let hits = match d.store.restart_interrupted_sessions() {
-        Ok(hits) => hits,
+
+    let resumable = match d.store.restart_interrupted_resumable(&cutoff) {
+        Ok(ids) => ids,
         Err(error) => {
-            eprintln!("[restart] interrupted sessions query failed: {error}");
+            eprintln!("[restart] resumable sessions query failed: {error}");
             return;
         }
     };
-    let now = chrono::Utc::now().to_rfc3339();
-    for hit in hits {
-        let _ = d
-            .store
-            .settle_stale_relays_for_session(&hit.agent_id, &hit.session_id, &now);
-        if let Err(error) = d.store.enqueue_restart_interrupted(&hit, &now) {
-            eprintln!(
-                "[restart] notify {} about {}: {error}",
-                hit.agent_id, hit.session_id
-            );
+    for session_id in resumable {
+        if let Some(agent_id) = session_id.strip_prefix("inbox-") {
+            if super::routing_routes::is_desk_profile_limited(&d, agent_id).await {
+                continue;
+            }
+            if ensure_agent_inbox(&d, agent_id).await.is_err() {
+                continue;
+            }
         }
-        let still_running = d
-            .store
-            .get_session_row(&hit.session_id)
-            .ok()
-            .flatten()
-            .is_some_and(|row| row.status == "running");
-        if still_running
-            && !super::routing_routes::is_desk_profile_limited(&d, &hit.agent_id).await
-        {
-            let _ = d.ensure_live(&hit.session_id).await;
+        if d.ensure_live(&session_id).await.is_some() {
+            d.deliver(
+                &session_id,
+                LoopInput::UserMessage(
+                    "Snippet restarted while this turn was running. Carry on from where you left off."
+                        .to_string(),
+                ),
+            )
+            .await;
         }
     }
 }
