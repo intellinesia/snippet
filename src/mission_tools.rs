@@ -2121,9 +2121,7 @@ impl Tool for CreateMissionTask {
         NativeToolDefinition { name: "create_mission_task".into(), description: "Create a task for project work requested by the user or an agent. Prerequisites link with `blocked_by`. The description is the worker's full brief and scope. `resume` continues the target session's context, `fresh` starts clean; `agent_id` names a specialist; `crew` seats reviewers or advisors before work starts.".into(), input_schema: schema(json!({"title":{"type":"string"}, "description":{"type":"string"}, "session":{"type":"string","description":"Session id, title fragment or workspace path; `latest` selects the most recent match."}, "supersedes":{"type":"string","description":"optional; id of the cancelled task this one replaces"}, "handoff_mode":{"type":"string","enum":["resume","fresh"]}, "owned_paths":{"type":"array","items":{"type":"string"}}, "agent_id":{"type":"string","description":"Specialist agent id from snippet tool list_coordination_agents."}, "crew":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"role":{"type":"string","description":"reviewer (default), advisor or tester"}},"required":["agent_id"]},"description":"Agents seated beside the worker; they wait until called."}, "profile":{"type":"string","description":"Profile from snippet tool list_profiles. Overrides the session model and restarts it, losing its prompt cache; use only to rescue a rate-limited session."}, "reply_to":{"type":"string","description":"Exact `reply_to` value from the request message, such as `session:<id>` or `agent:<id>`."}, "blocked_by":{"type":"array","items":{"type":"string"},"description":"Task ids that must finish first."}, "read_only":{"type":"boolean","description":"investigation that changes nothing"}, "verify_mode":{"type":"string","enum":["self","reviewer","lead","user"],"description":"Who confirms completion. `self` skips review; `reviewer` uses a read-only agent; `lead` or `user` leaves the verdict with you. Defaults to reviewer (self when read_only)."}, "reviewer":{"type":"string","description":"Agent id for the reviewer; defaults to the worker in a fresh lane."}, "revises_task_id":{"type":"string","description":"optional; the finished task this one revises"}, "audience":{"type":"string","description":"Intended audience for content work."}, "definition_of_good":{"type":"string","description":"Quality bar for content work."}, "goal":{"type":"string","description":"Open goal id this task serves."}, "expected_minutes":{"type":"integer","description":"Expected duration in minutes; flagged stalled after twice this (minimum 20). Defaults by verify_mode."}}), &["title","description","session"]) }
     }
     async fn execute(&self, ctx: &ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let mut args: CreateTaskArgs = serde_json::from_value(arguments)?;
-        args.description
-            .push_str(&crate::mission_autonomy::standing_rules_note());
+        let args: CreateTaskArgs = serde_json::from_value(arguments)?;
         create_task(ctx, args, ("agent", crate::lead::SESSION_ID)).await
     }
 }
@@ -2241,8 +2239,7 @@ impl Tool for StartTask {
                 (session.id, true)
             }
         };
-        let mut description = args.description;
-        description.push_str(&crate::mission_autonomy::standing_rules_note());
+        let description = args.description;
         let mut task_args: CreateTaskArgs = serde_json::from_value(json!({
             "title": args.title,
             "description": description,
@@ -2864,12 +2861,7 @@ impl Tool for DeliverToSession {
                 .is_some()
                 .then_some(crate::coordination::VerifyMode::Reviewer),
         };
-        let brief = format!(
-            "{}{}",
-            args.brief.trim(),
-            crate::mission_autonomy::standing_rules_note()
-        );
-        let brief = brief.as_str();
+        let brief = args.brief.trim();
         let session_id = resolve_target_session(&args.session)?;
         if crate::session::is_inbox_session_id(&session_id)
             || crate::session::is_lane_session_id(&session_id)

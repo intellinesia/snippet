@@ -212,23 +212,6 @@ fn user_state_line() -> String {
     }
 }
 
-const STANDING_RULES: &str = "## Standing rules";
-
-/// The brief's standing rules, which travel in every briefing so a worker can't miss a correction.
-pub fn standing_rules_note() -> String {
-    let brief = read_brief();
-    let Some(start) = brief.find(STANDING_RULES) else {
-        return String::new();
-    };
-    let body = &brief[start + STANDING_RULES.len()..];
-    let body = body.split("\n## ").next().unwrap_or("").trim();
-    if body.is_empty() {
-        return String::new();
-    }
-    let body: String = body.chars().take(2500).collect();
-    format!("\n\nThe user's standing rules (these apply to this work):\n{body}")
-}
-
 pub fn brief_path() -> PathBuf {
     crate::config::snippet_home().join("lead").join("brief.md")
 }
