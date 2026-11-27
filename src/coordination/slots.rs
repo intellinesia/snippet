@@ -458,6 +458,40 @@ impl Store {
         })
     }
 
+    pub fn rounds_since_progress_report(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(u64, u64)>, StoreError> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT tool_rounds, tool_rounds - last_reported_round FROM session_progress WHERE session_id = ?1",
+                params![session_id],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?.max(0) as u64,
+                        r.get::<_, i64>(1)?.max(0) as u64,
+                    ))
+                },
+            )
+            .optional()
+        })
+    }
+
+    pub fn mark_session_progress_reported(
+        &self,
+        session_id: &str,
+        now: &str,
+    ) -> Result<(), StoreError> {
+        let now = normalize_ts(now)?;
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE session_progress SET last_reported_round = tool_rounds, updated_at = ?2 WHERE session_id = ?1",
+                params![session_id, now],
+            )
+            .map(|_| ())
+        })
+    }
+
     /// A session's delta update: a `progress` event for `desk_agent`, ordered
     /// after the earlier ones, and the report mark moved to the current round.
     pub fn record_session_progress_report(

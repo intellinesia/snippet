@@ -666,6 +666,8 @@ fn is_system_nudge(text: &str) -> bool {
         .is_some_and(|rest| rest.starts_with(PROGRESS_NUDGE_TAG))
 }
 
+const COMPACTION_PROGRESS_MIN_ROUNDS: u64 = 15;
+
 fn progress_nudge(rounds: u64, since: u64) -> String {
     crate::envelope::Envelope::new(PROGRESS_NUDGE_TAG)
         .attr("rounds", rounds.to_string())
@@ -673,7 +675,20 @@ fn progress_nudge(rounds: u64, since: u64) -> String {
         .child(
             "note",
             format!(
-                "{since} tool rounds since your last update to your desk. Send it a concise delta now (done, found, next, blockers; no recap): `snippet tool progress.report summary=\"...\"`, with wake=true only if the desk must act now. Then carry on."
+                "{since} tool rounds since your last update to your desk. Send it a concise delta now (done, found, next, blockers; no recap): `snippet tool progress.report summary=\"...\"`, with wake=true if the desk needs feedback or must act now. Then carry on."
+            ),
+        )
+        .render()
+}
+
+fn lane_progress_nudge(rounds: u64, since: u64) -> String {
+    crate::envelope::Envelope::new(PROGRESS_NUDGE_TAG)
+        .attr("rounds", rounds.to_string())
+        .attr("since_report", since.to_string())
+        .child(
+            "note",
+            format!(
+                "{since} tool rounds since your last update to your parent. Send a concise one-line delta now (done, found, next, blockers; no recap) using `message_parent`, then carry on."
             ),
         )
         .render()
@@ -1926,11 +1941,25 @@ impl CodingHarness {
         if since == 0 || since % crate::coordination::slots::PROGRESS_EVERY_ROUNDS != 0 {
             return None;
         }
-        let session = self
-            .context
-            .lane_origin()
-            .map(|(session, _)| session.to_string())
-            .or_else(|| self.context.durable_session_id().map(str::to_string))?;
+        if self.context.lane_origin().is_some() {
+            return Some(lane_progress_nudge(rounds, since));
+        }
+        let session = self.context.durable_session_id()?.to_string();
+        crate::coordination::origin::managing_desk(&store, &session)?;
+        Some(progress_nudge(rounds, since))
+    }
+
+    /// After compaction, nudge for a progress delta if the last report was not recent.
+    fn compaction_progress_nudge(&self) -> Option<String> {
+        let (store, key) = self.progress_store()?;
+        let (rounds, since) = store.rounds_since_progress_report(&key).ok().flatten()?;
+        if since < COMPACTION_PROGRESS_MIN_ROUNDS {
+            return None;
+        }
+        if self.context.lane_origin().is_some() {
+            return Some(lane_progress_nudge(rounds, since));
+        }
+        let session = self.context.durable_session_id()?.to_string();
         crate::coordination::origin::managing_desk(&store, &session)?;
         Some(progress_nudge(rounds, since))
     }
@@ -3214,7 +3243,12 @@ impl CodingHarness {
                                 generation += 1;
                                 session.restart();
                                 session.mark_synced(&state.messages, state.compactions, 0);
-                                after_compaction = Some(text);
+                                let mut notice = text;
+                                if let Some(nudge) = self.compaction_progress_nudge() {
+                                    notice.push_str("\n\n");
+                                    notice.push_str(&nudge);
+                                }
+                                after_compaction = Some(notice);
                                 need_snapshot = true;
                                 last_task_note.clear();
                                 last_vault_line.clear();
@@ -3328,6 +3362,12 @@ impl CodingHarness {
                                     mode_notice = Some(
                                         "Current tool mode: code mode (use `code` for scripted/batch calls, `bash`, `change_files`, `view_image`, `ask_user`, `custom_tool`, `calls`).".to_string()
                                     );
+                                }
+                                if let Some(nudge) = self.compaction_progress_nudge() {
+                                    after_compaction = Some(match after_compaction.take() {
+                                        Some(prev) => format!("{prev}\n\n{nudge}"),
+                                        None => nudge,
+                                    });
                                 }
                                 self.persist(&mut state, &lanes).await?;
                                 session.mark_synced(&state.messages, state.compactions, tokens("post_tokens"));

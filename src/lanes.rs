@@ -359,6 +359,10 @@ impl Tool for MessageParent {
                 ToolError::msg("the agent that handed you this has gone; put it in your report")
             })?;
         if let Some(Ok(store)) = bound_store(ctx.store_path()) {
+            if let Some(key) = crate::coordination_tools::progress_key(ctx) {
+                let _ = store
+                    .mark_session_progress_reported(&key, &chrono::Utc::now().to_rfc3339());
+            }
             let flat: String = message
                 .split_whitespace()
                 .collect::<Vec<_>>()
