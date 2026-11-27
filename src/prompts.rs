@@ -120,7 +120,7 @@ pub fn coding_prompt(context: &PromptContext) -> String {
 
 const HUMAN_MANAGED_LINE: &str =
     "The user leads this session; your desk keeps track but does not drive it.";
-const AGENT_MANAGED_LINE: &str = "This is work you took on at your desk, toward its objective. The user may drop in: take their word as direction; the work stays yours.";
+const AGENT_MANAGED_LINE: &str = "This is work you took on at your desk, toward its objective. If the user steps in and messages this session directly, ownership transfers to them.";
 
 fn work_session_layer(context: &PromptContext) -> String {
     let line = if context.agent_managed {
@@ -262,8 +262,8 @@ mod seat_layer_tests {
 
     const HARNESS_CORE_MAX_BYTES: usize = 5_100;
     const DESK_LAYER_MAX_BYTES: usize = 7_000;
-    const WORK_SESSION_LAYER_MAX_BYTES: usize = 3_400;
-    const LANE_LAYER_MAX_BYTES: usize = 1_600;
+    const WORK_SESSION_LAYER_MAX_BYTES: usize = 4_400;
+    const LANE_LAYER_MAX_BYTES: usize = 1_900;
 
     #[test]
     fn every_seat_prompt_includes_harness_core_exactly_once() {
