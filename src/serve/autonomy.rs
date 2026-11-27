@@ -24,8 +24,16 @@ fn spawn_quick_wake(daemon: Shared, w: crate::ambient::QuickWake) {
             );
             return;
         }
-        if lead_busy() {
-            return;
+        let mut retries = 0u8;
+        while lead_busy() {
+            if retries >= 6 {
+                return;
+            }
+            retries += 1;
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            if w.unless_user_speaks && crate::ambient::run_generation() != w.generation {
+                return;
+            }
         }
         let since = chrono::Utc::now().timestamp() - (w.seconds as i64 + 15);
         let recent: Vec<String> = daemon

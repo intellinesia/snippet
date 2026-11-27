@@ -63,8 +63,13 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // While a mutating tool waits for approval (manual mode), keys are y/n/Esc only.
-    if app.screen == Screen::Main && app.pending_approval().is_some() {
+    // While a live mutating tool waits for approval (manual mode), keys are y/n/Esc only,
+    // leaving Ctrl chords (Ctrl+C/Ctrl+Q) and disconnected sessions unblocked.
+    if app.screen == Screen::Main
+        && app.agent_alive()
+        && app.pending_approval().is_some()
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+    {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 let _ = app.send_loop_input(LoopInput::Approve);

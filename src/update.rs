@@ -85,20 +85,30 @@ fn parse(v: &str) -> Option<((u64, u64, u64), bool, Vec<Ident>)> {
 
 /// Download `version`'s binary for this platform and atomically replace the
 /// running executable. The new code takes effect on the next launch.
+const MAX_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_BINARY_BYTES: usize = 256 * 1024 * 1024;
+
 pub async fn download_and_replace(client: &reqwest::Client, version: &str) -> Result<(), String> {
     let asset = asset_name().ok_or("no prebuilt binary for this platform")?;
     let url = format!("https://github.com/{REPO}/releases/download/v{version}/{asset}");
-    let bytes = client
+    let mut resp = client
         .get(url)
         .header(reqwest::header::USER_AGENT, UA)
         .send()
         .await
         .map_err(|e| e.to_string())?
         .error_for_status()
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .await
         .map_err(|e| e.to_string())?;
+    if resp.content_length().is_some_and(|n| n > MAX_ARCHIVE_BYTES as u64) {
+        return Err("release archive exceeds size limit".to_string());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_ARCHIVE_BYTES {
+            return Err("release archive exceeds size limit".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     let bin = extract_binary(&bytes)?;
     // A real binary is multi-MB and starts with a known magic — guard against a
     // truncated download or an HTML error page slipping through.
@@ -135,7 +145,7 @@ fn extract_binary(gz: &[u8]) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let mut archive = tar::Archive::new(GzDecoder::new(gz));
     for entry in archive.entries().map_err(|e| e.to_string())? {
-        let mut entry = entry.map_err(|e| e.to_string())?;
+        let entry = entry.map_err(|e| e.to_string())?;
         let is_snippet = entry
             .path()
             .ok()
@@ -143,7 +153,13 @@ fn extract_binary(gz: &[u8]) -> Result<Vec<u8>, String> {
             .unwrap_or(false);
         if is_snippet {
             let mut buf = Vec::new();
-            entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            entry
+                .take(MAX_BINARY_BYTES as u64 + 1)
+                .read_to_end(&mut buf)
+                .map_err(|e| e.to_string())?;
+            if buf.len() > MAX_BINARY_BYTES {
+                return Err("extracted binary exceeds size limit".to_string());
+            }
             return Ok(buf);
         }
     }
@@ -151,14 +167,31 @@ fn extract_binary(gz: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn replace_exe(exe: &Path, new_bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
     let dir = exe.parent().ok_or("executable has no parent directory")?;
-    // Temp in the same dir so the rename stays on one filesystem (atomic).
-    let tmp = dir.join(".snippet-update.tmp");
-    std::fs::write(&tmp, new_bytes).map_err(|e| format!("write temp: {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+    // Unique temp in the same dir so concurrent updaters don't collide and rename stays atomic.
+    let tmp = dir.join(format!(
+        ".snippet-update.{}.{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let write_res = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(new_bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+        }
+        f.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = write_res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("write temp: {e}"));
     }
     // Replacing a running binary is safe on Unix: the running process keeps the
     // old inode open; the path now resolves to the new file for the next launch.

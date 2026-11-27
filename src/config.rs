@@ -1105,10 +1105,32 @@ pub fn save_config(config: &SnippetConfig, path: &Path) -> Result<(), String> {
     let toml_str = toml::to_string_pretty(config).map_err(|e| e.to_string())?;
     toml::from_str::<SnippetConfig>(&toml_str)
         .map_err(|e| format!("refusing to write config that won't round-trip: {e}"))?;
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    use std::io::Write;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let _ = std::fs::create_dir_all(parent);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config.toml");
+    let tmp = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), uuid::Uuid::new_v4()));
+    let write_res = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        set_private(&tmp);
+        f.write_all(toml_str.as_bytes())?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = write_res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("write {}: {e}", path.display()));
     }
-    std::fs::write(path, toml_str).map_err(|e| format!("write {}: {e}", path.display()))?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("rename {}: {e}", path.display()));
+    }
     set_private(path);
     Ok(())
 }

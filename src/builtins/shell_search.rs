@@ -263,7 +263,8 @@ impl Tool for BashTool {
         let total_lines = total_stdout_lines + total_stderr_lines;
         let total_bytes = stdout_str.len() + stderr_str.len();
 
-        let byte_budget = args.max_bytes.max(4000);
+        const MAX_BASH_BYTES: usize = 512 * 1024;
+        let byte_budget = args.max_bytes.clamp(4000, MAX_BASH_BYTES);
         let stderr_budget = stderr_str.len().min(byte_budget / 4);
         let (stdout_display, stdout_truncated) = format_output_preview(
             &stdout_str,

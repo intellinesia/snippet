@@ -308,10 +308,29 @@ pub(crate) async fn bg_log(Query(req): Query<BgReq>) -> Response {
     if !crate::bg::valid_id(id) {
         return api_error(StatusCode::BAD_REQUEST, "invalid id");
     }
-    let text = std::fs::read_to_string(crate::bg::log_path(&dir, id)).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
+    const MAX_LOG_WINDOW: u64 = 256 * 1024;
+    let mut sought = false;
+    let text = match std::fs::File::open(crate::bg::log_path(&dir, id)) {
+        Ok(mut f) => {
+            use std::io::{Read, Seek, SeekFrom};
+            if let Ok(meta) = f.metadata()
+                && meta.len() > MAX_LOG_WINDOW
+                && f.seek(SeekFrom::End(-(MAX_LOG_WINDOW as i64))).is_ok()
+            {
+                sought = true;
+            }
+            let mut buf = Vec::new();
+            let _ = f.take(MAX_LOG_WINDOW + 1024).read_to_end(&mut buf);
+            String::from_utf8_lossy(&buf).into_owned()
+        }
+        Err(_) => String::new(),
+    };
+    let mut lines: Vec<&str> = text.lines().collect();
+    if sought && !lines.is_empty() {
+        lines.remove(0);
+    }
     let start = lines.len().saturating_sub(req.tail.unwrap_or(400));
-    Json(serde_json::json!({ "log": lines[start..].join("\n"), "truncated": start > 0 }))
+    Json(serde_json::json!({ "log": lines[start..].join("\n"), "truncated": sought || start > 0 }))
         .into_response()
 }
 
