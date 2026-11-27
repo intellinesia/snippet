@@ -98,7 +98,17 @@ pub async fn autonomy_loop(daemon: Shared) {
             continue;
         }
         let now = chrono::Utc::now().timestamp();
-        let tasks = daemon.store.list_tasks(None, None).unwrap_or_default();
+        // Only Lead-created (or human-created) tasks drive Lead's automated
+        // wakes; desk-started tasks belong to their owning desk.
+        let tasks: Vec<_> = daemon
+            .store
+            .list_tasks(None, None)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| {
+                t.created_by_kind != "agent" || t.created_by_id == crate::lead::SESSION_ID
+            })
+            .collect();
         let digest = board_digest(&tasks);
         let due = mission_autonomy::take_due_followups(now);
         let decision = round_decision(RoundInputs {

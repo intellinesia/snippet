@@ -1350,11 +1350,30 @@ async fn deliver_lead_reports(daemon: &Shared) {
                 delivered_any = true;
             } else {
                 let text = report_text(&task, marker);
-                let _ = super::direct::ensure_agent_inbox(daemon, &marker.target).await;
-                let inbox = crate::session::inbox_session_id(&marker.target);
-                daemon
-                    .deliver_wake(&inbox, LoopInput::UserMessage(text))
-                    .await;
+                let now = chrono::Utc::now().to_rfc3339();
+                let event = crate::coordination::desk_inbox::NewDeskEvent {
+                    agent_id: marker.target.clone(),
+                    kind: "task_report".to_string(),
+                    thread_id: Some(task.thread_id.clone()),
+                    reply_thread: Some(format!("task:{}", task.id)),
+                    source_ref: Some(format!("task-report:{}:{}", task.id, marker.kind)),
+                    priority: 30,
+                    is_mention: false,
+                    summary: format!("Task {} ({}) {}: {}", task.id, task.title, marker.kind, text),
+                    payload: Some(serde_json::json!({
+                        "task_id": task.id,
+                        "kind": marker.kind,
+                        "session_id": task.session_id,
+                    })),
+                    deadline_at: None,
+                    wake: true,
+                };
+                if let Err(error) = daemon.store.enqueue_desk_event(&event, &now) {
+                    eprintln!(
+                        "[lead] enqueue task_report for {} on {}: {error}",
+                        marker.target, task.id
+                    );
+                }
             }
             let _ = daemon
                 .store
