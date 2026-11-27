@@ -1575,7 +1575,7 @@ async fn announce_restart(d: &Shared, interrupted: Vec<(String, crate::harness::
     for (id, meta) in interrupted {
         let event = crate::harness::HarnessEvent::SystemDecision {
             step: "daemon_restart".to_string(),
-            reasoning: "Snippet restarted while this turn was running; continuing is up to the next message".to_string(),
+            reasoning: "Snippet restarted mid-turn; resuming automatically".to_string(),
         };
         let _ = d
             .store

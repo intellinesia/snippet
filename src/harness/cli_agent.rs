@@ -3089,7 +3089,9 @@ impl CodingHarness {
                                 }
                             } else if state.status == HarnessStatus::Running {
                                 Self::note_human_wait(&mut state, &text, true);
-                                state.events.push(HarnessEvent::Steer { text: text.clone() });
+                                if !crate::envelope::is(&text, "daemon_restart") {
+                                    state.events.push(HarnessEvent::Steer { text: text.clone() });
+                                }
                                 state.messages.push(HarnessMessage::User { content: text.clone() });
                                 self.bump_activity();
                                 if matches!(kind, CliKind::Antigravity | CliKind::Devin) && process.is_some() {
@@ -3207,7 +3209,9 @@ impl CodingHarness {
                             };
                             if state.status == HarnessStatus::Running && process.is_some() {
                                 Self::note_human_wait(&mut state, &text, true);
-                                state.events.push(HarnessEvent::Steer { text: text.clone() });
+                                if !crate::envelope::is(&text, "daemon_restart") {
+                                    state.events.push(HarnessEvent::Steer { text: text.clone() });
+                                }
                                 state.messages.push(HarnessMessage::User { content: text.clone() });
                                 self.bump_activity();
                                 if matches!(kind, CliKind::Antigravity | CliKind::Devin) {

@@ -83,7 +83,11 @@ impl CodingHarness {
             },
         });
         Self::note_human_wait(state, &text, false);
-        state.events.push(HarnessEvent::UserInput { text });
+        // Shutdown already logged a visible `daemon_restart` decision; keep
+        // the resume envelope in model messages without duplicating it in UI.
+        if !crate::envelope::is(&text, "daemon_restart") {
+            state.events.push(HarnessEvent::UserInput { text });
+        }
         state.status = HarnessStatus::Running;
         vars.empty_reply_reprompts = 0;
         self.bump_activity();
