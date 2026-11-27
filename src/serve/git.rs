@@ -174,13 +174,26 @@ pub(super) async fn git_diff(Query(req): Query<GitDiffReq>) -> Response {
         let Some(f) = file else {
             return api_error(StatusCode::BAD_REQUEST, "untracked diff needs a file");
         };
+        let p = std::path::Path::new(f);
+        if p.is_absolute() {
+            return api_error(StatusCode::BAD_REQUEST, "path must be relative");
+        }
+        let Ok(root) = std::fs::canonicalize(&dir) else {
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid session dir");
+        };
+        let Ok(resolved) = std::fs::canonicalize(dir.join(p)) else {
+            return api_error(StatusCode::NOT_FOUND, "file not found");
+        };
+        if !resolved.starts_with(&root) {
+            return api_error(StatusCode::BAD_REQUEST, "path escapes session workspace");
+        }
         // /dev/null → file shows the entire file as additions.
         vec![
             "diff".into(),
             "--no-index".into(),
             "--".into(),
             "/dev/null".into(),
-            f.to_string(),
+            resolved.to_string_lossy().into_owned(),
         ]
     } else {
         let mut a = vec!["diff".into()];
@@ -399,8 +412,9 @@ pub(super) async fn git_checkout(
     State(d): State<Shared>,
     Json(req): Json<GitCheckoutReq>,
 ) -> Response {
-    if req.target.trim().is_empty() {
-        return api_error(StatusCode::BAD_REQUEST, "empty target");
+    let target = req.target.trim();
+    if target.is_empty() || target.starts_with('-') {
+        return api_error(StatusCode::BAD_REQUEST, "invalid target");
     }
     let dir = match resolve_session_dir(&req.session) {
         Ok(d) => d,

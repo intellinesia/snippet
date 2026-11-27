@@ -89,14 +89,16 @@ async fn run(socket: WebSocket, d: Shared, device: String) {
                         );
                     }
                     Some("open") => {
-                        opened = Some(h);
                         let started = v
                             .get("started_at")
                             .and_then(|x| x.as_str())
                             .map(str::to_string);
                         let answer =
                             match super::listener::open(&d, &device, h, started.as_deref()).await {
-                                Ok(()) => serde_json::json!({"t":"opened","h":h}),
+                                Ok(()) => {
+                                    opened = Some(h);
+                                    serde_json::json!({"t":"opened","h":h})
+                                }
                                 Err(code) => serde_json::json!({"t":"err","h":h,"code":code}),
                             };
                         reply(&out_tx, answer);
@@ -174,7 +176,13 @@ async fn run(socket: WebSocket, d: Shared, device: String) {
         super::listener::close(&device, Some(h));
     }
     drop(out_tx);
-    let _ = writer.await;
+    let mut writer = writer;
+    if tokio::time::timeout(std::time::Duration::from_secs(3), &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+    }
 }
 
 fn reply(out: &tokio::sync::mpsc::UnboundedSender<PhoneFrame>, value: serde_json::Value) {

@@ -689,6 +689,19 @@ pub fn has_queued(root: &Path) -> bool {
 /// After a successful delivery: clear queue, stamp last_run, advance schedule
 /// from `now` (skip missed intervals). A `Once` schedule is disabled instead —
 /// it has fired its one shot and stays visible in the UI as done.
+fn next_for_job(job: &RecurringJob, now: u64) -> u64 {
+    if let Some(off) = job
+        .wake
+        .as_ref()
+        .and_then(|w| w.utc_offset_minutes)
+        .and_then(|m| chrono::FixedOffset::east_opt(m * 60))
+    {
+        job.schedule.next_after_in(now, off)
+    } else {
+        job.schedule.next_after(now)
+    }
+}
+
 pub fn mark_fired(root: &Path, id: &str, now: u64) -> Result<RecurringJob, String> {
     update_job(root, id, |job| {
         job.queued = false;
@@ -697,7 +710,7 @@ pub fn mark_fired(root: &Path, id: &str, now: u64) -> Result<RecurringJob, Strin
         if matches!(job.schedule, Schedule::Once { .. }) {
             job.enabled = false;
         } else {
-            job.next_run_at = job.schedule.next_after(now);
+            job.next_run_at = next_for_job(job, now);
         }
     })
 }
@@ -715,9 +728,13 @@ pub fn mark_error(root: &Path, id: &str, error: &str) -> Result<RecurringJob, St
     let now = epoch_secs();
     update_job(root, id, |job| {
         job.last_error = Some(error.to_string());
-        // Still advance so a persistent failure doesn't tight-loop.
         job.queued = false;
-        job.next_run_at = job.schedule.next_after(now);
+        if matches!(job.schedule, Schedule::Once { .. }) {
+            // Don't tight-loop a failed one-shot wake every tick.
+            job.enabled = false;
+        } else {
+            job.next_run_at = next_for_job(job, now);
+        }
     })
 }
 

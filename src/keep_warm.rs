@@ -186,6 +186,7 @@ pub fn record_outcome(entry: &mut KeepWarm, outcome: &Outcome, now: i64) {
         }
         Outcome::Failed(error) => {
             entry.skipped_reason = Some(format!("ping failed: {error}"));
+            entry.skipped_at = Some(now);
         }
     }
 }

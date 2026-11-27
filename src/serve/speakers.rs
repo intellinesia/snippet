@@ -156,6 +156,7 @@ impl Speakers {
             let best = self
                 .clusters
                 .iter_mut()
+                .filter(|c| at_ms - c.last_ms <= KEEP_MS)
                 .map(|c| (cosine(emb, &c.centroid), c))
                 .max_by(|a, b| a.0.total_cmp(&b.0));
             let need = if v.voiced_secs >= FOUND_SECS {

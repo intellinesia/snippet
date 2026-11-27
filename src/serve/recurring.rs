@@ -37,7 +37,9 @@ pub async fn tick_loop(daemon: Shared) {
                 continue;
             }
             if session_busy_for_recurring(&job.session_id) {
-                let _ = recurring::mark_queued(&daemon.recurring_root, &job.id);
+                if !job.queued {
+                    let _ = recurring::mark_queued(&daemon.recurring_root, &job.id);
+                }
                 continue;
             }
             if let Some(wake) = &job.wake

@@ -20,8 +20,20 @@ fn attachment_path(line: &str) -> Option<PathBuf> {
     {
         return None;
     }
-    let path = trimmed.rsplit_once(": ")?.1.trim_end_matches(']').trim();
-    (!path.is_empty()).then(|| PathBuf::from(path))
+    let raw = trimmed.rsplit_once(": ")?.1.trim_end_matches(']').trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let resolved = std::fs::canonicalize(raw).ok()?;
+    let allowed_roots = [
+        std::env::temp_dir().join("snippet-uploads"),
+        crate::config::snippet_home(),
+    ];
+    allowed_roots
+        .iter()
+        .filter_map(|r| std::fs::canonicalize(r).ok())
+        .any(|root| resolved.starts_with(&root))
+        .then_some(resolved)
 }
 
 async fn audio_duration_seconds(path: &Path) -> Result<f64, String> {
