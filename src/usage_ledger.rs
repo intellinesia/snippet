@@ -307,7 +307,7 @@ impl Store {
 
 fn bucket_floor(since: Option<i64>) -> i64 {
     since
-        .map(|at| at - at.rem_euclid(BUCKET_SECS))
+        .map(|at| at.saturating_sub(at.rem_euclid(BUCKET_SECS)))
         .unwrap_or(i64::MIN)
 }
 

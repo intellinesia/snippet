@@ -1231,6 +1231,19 @@ pub(crate) fn sweep(
         .unwrap_or_default();
     store.write(|c| {
         for id in &old {
+            let mut stmt =
+                c.prepare("SELECT event_ids FROM ambient_call_lines WHERE call_id = ?1")?;
+            let rows = stmt
+                .query_map([id], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut seen = std::collections::HashSet::new();
+            for j in &rows {
+                for e in serde_json::from_str::<Vec<String>>(j).unwrap_or_default() {
+                    if seen.insert(e.clone()) {
+                        scrub_row(c, &e)?;
+                    }
+                }
+            }
             c.execute("DELETE FROM ambient_call_lines WHERE call_id = ?1", [id])?;
             c.execute("DELETE FROM ambient_calls WHERE id = ?1", [id])?;
         }

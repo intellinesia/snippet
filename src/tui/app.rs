@@ -576,7 +576,7 @@ impl App {
     }
 
     pub(crate) fn scroll_up(&mut self, lines: usize) {
-        self.scroll = (self.scroll + lines).min(self.max_scroll.get());
+        self.scroll = self.scroll.saturating_add(lines).min(self.max_scroll.get());
     }
 
     pub(crate) fn scroll_down(&mut self, lines: usize) {

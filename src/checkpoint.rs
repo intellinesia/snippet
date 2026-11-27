@@ -50,9 +50,16 @@ fn git(workspace: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+fn is_valid_oid(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Files changed, lines added and removed between checkpoint `from` and `to`, or
 /// the current working tree when `to` is None.
 pub fn shortstat(workspace: &Path, from: &str, to: Option<&str>) -> Option<(u64, u64, u64)> {
+    if !is_valid_oid(from) || to.is_some_and(|t| !is_valid_oid(t)) {
+        return None;
+    }
     let mut args = vec!["diff", "--shortstat", from];
     if let Some(to) = to {
         args.push(to);

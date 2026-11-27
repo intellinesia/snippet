@@ -305,6 +305,9 @@ pub(crate) async fn bg_log(Query(req): Query<BgReq>) -> Response {
     let Some(id) = req.id.as_deref() else {
         return api_error(StatusCode::BAD_REQUEST, "id required");
     };
+    if !crate::bg::valid_id(id) {
+        return api_error(StatusCode::BAD_REQUEST, "invalid id");
+    }
     let text = std::fs::read_to_string(crate::bg::log_path(&dir, id)).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(req.tail.unwrap_or(400));

@@ -183,7 +183,10 @@ pub async fn attach(info: &DaemonInfo, state_path: &Path) -> Result<SidecarAttac
 
     let (ws, _) = tokio_tungstenite::connect_async(&ws_url)
         .await
-        .map_err(|e| format!("connect {ws_url}: {e}"))?;
+        .map_err(|e| {
+            let safe_url = ws_url.split('?').next().unwrap_or(&ws_url);
+            format!("connect {safe_url}: {e}")
+        })?;
     let (mut sink, mut source) = ws.split();
 
     let (state_tx, state_rx) = watch::channel::<Option<HarnessState>>(None);

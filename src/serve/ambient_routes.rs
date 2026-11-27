@@ -976,6 +976,10 @@ pub(crate) fn warm_voice(d: Shared) {
     tokio::spawn(async move {
         crate::tts::clean_old_replies().await;
         crate::tts::apply_config(&d.config.lock().unwrap());
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            crate::tts::clean_old_replies().await;
+        }
     });
 }
 

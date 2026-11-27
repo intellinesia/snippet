@@ -287,7 +287,7 @@ pub fn find(workspace: &Path, id: &str) -> Option<BgStatus> {
 /// Terminate a recorded background process (its group if it leads one, else the
 /// process). Returns Ok(true) if the process was running and signaled, Ok(false)
 /// if it had already exited. Returns Err if the record doesn't exist or is invalid.
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id
             .bytes()
