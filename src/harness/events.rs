@@ -661,7 +661,7 @@ impl CodingHarness {
                 .child(
                     "note",
                     format!(
-                        "one of your lanes wrote to you while working and may be waiting on an answer. delegate.run with lane_id {id} and the answer as the description replies.",
+                        "a lane sent a status delta or question while working. Reply with delegate.run lane_id={id} only if it asked a question or needs steering; otherwise note it and carry on.",
                         id = progress.id
                     ),
                 )

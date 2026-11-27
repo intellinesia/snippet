@@ -860,45 +860,50 @@ pub(crate) async fn restart_continuation(d: Shared) {
     let cutoff = cutoff_dt.to_rfc3339();
     let cutoff_unix = cutoff_dt.timestamp();
 
+    let mut resumed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    match d.store.restart_interrupted_resumable(&cutoff, cutoff_unix) {
+        Ok(resumable) => {
+            let resume_envelope = crate::envelope::Envelope::new("daemon_restart")
+                .child(
+                    "note",
+                    "Snippet restarted while this turn was running. Carry on from where you left off.",
+                )
+                .render();
+            for session_id in resumable {
+                if let Some(agent_id) = session_id.strip_prefix("inbox-") {
+                    if super::routing_routes::is_desk_profile_limited(&d, agent_id).await {
+                        continue;
+                    }
+                    if ensure_agent_inbox(&d, agent_id).await.is_err() {
+                        continue;
+                    }
+                }
+                if d.ensure_live(&session_id).await.is_some() {
+                    d.deliver(&session_id, LoopInput::UserMessage(resume_envelope.clone()))
+                        .await;
+                    resumed.insert(session_id);
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("[restart] resumable sessions query failed: {error}");
+        }
+    }
+
     if let Ok(hits) = d.store.restart_interrupted_sessions() {
         for hit in hits {
             let _ = d
                 .store
                 .settle_stale_relays_for_session(&hit.agent_id, &hit.session_id, &now);
+            if resumed.contains(&hit.session_id) {
+                continue;
+            }
             if let Err(error) = d.store.enqueue_restart_interrupted(&hit, &now) {
                 eprintln!(
                     "[restart] notify {} about {}: {error}",
                     hit.agent_id, hit.session_id
                 );
             }
-        }
-    }
-
-    let resumable = match d.store.restart_interrupted_resumable(&cutoff, cutoff_unix) {
-        Ok(ids) => ids,
-        Err(error) => {
-            eprintln!("[restart] resumable sessions query failed: {error}");
-            return;
-        }
-    };
-    for session_id in resumable {
-        if let Some(agent_id) = session_id.strip_prefix("inbox-") {
-            if super::routing_routes::is_desk_profile_limited(&d, agent_id).await {
-                continue;
-            }
-            if ensure_agent_inbox(&d, agent_id).await.is_err() {
-                continue;
-            }
-        }
-        if d.ensure_live(&session_id).await.is_some() {
-            d.deliver(
-                &session_id,
-                LoopInput::UserMessage(
-                    "Snippet restarted while this turn was running. Carry on from where you left off."
-                        .to_string(),
-                ),
-            )
-            .await;
         }
     }
 }

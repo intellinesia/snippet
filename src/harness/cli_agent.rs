@@ -1922,7 +1922,7 @@ impl CodingHarness {
         Some((store, key))
     }
 
-    fn note_turn_start(&self) {
+    pub(super) fn note_turn_start(&self) {
         if let Some((store, key)) = self.progress_store() {
             let _ = store.mark_session_turn_start(
                 &key,
@@ -1933,7 +1933,7 @@ impl CodingHarness {
     }
 
     /// Count a tool round; every 40 since the last report, the nudge to send one.
-    fn note_tool_round(&self) -> Option<String> {
+    pub(super) fn note_tool_round(&self) -> Option<String> {
         let (store, key) = self.progress_store()?;
         let (rounds, since) = store
             .record_session_tool_round(&key, self.context.agent_id(), &chrono::Utc::now().to_rfc3339())

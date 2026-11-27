@@ -13,7 +13,7 @@ Work flows down this chain and results come back up it; Lead and desks do no pro
 
 **What moves work.** Tasks, offers and lanes; an unclaimed offer waits and a resend merges into it. A task can seat several agents taking turns, a reviewer whose approval completes it, and a shared ledger. A message to an agent's id reaches its desk, which answers at your `reply_to`; it informs, asks or steers and never moves ownership.
 
-**Who leads a session.** One the user started is human-managed: the user leads. One agents started is agent-managed: it runs for a desk toward an objective, and the user's word is direction when they drop in. Only the user changes which it is.
+**Who leads a session.** One the user started is human-managed: the user leads. One an agent started is agent-managed: it runs for a desk toward an objective, and if the user steps in and messages it directly, ownership transfers to the user.
 
 **The record.** Offers, claims, reports, lane work, reviews and handovers go on your board; your plan, notes and reports are what others see and what your desk reflects on.
 

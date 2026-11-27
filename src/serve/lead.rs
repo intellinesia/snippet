@@ -1351,11 +1351,18 @@ async fn deliver_lead_reports(daemon: &Shared) {
             } else {
                 let text = report_text(&task, marker);
                 let now = chrono::Utc::now().to_rfc3339();
+                let reply_thread = daemon
+                    .store
+                    .task_requester(&task.id)
+                    .ok()
+                    .flatten()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "human".to_string());
                 let event = crate::coordination::desk_inbox::NewDeskEvent {
                     agent_id: marker.target.clone(),
                     kind: "task_report".to_string(),
                     thread_id: Some(task.thread_id.clone()),
-                    reply_thread: Some(format!("task:{}", task.id)),
+                    reply_thread: Some(reply_thread),
                     source_ref: Some(format!("task-report:{}:{}", task.id, marker.kind)),
                     priority: 30,
                     is_mention: false,

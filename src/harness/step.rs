@@ -56,6 +56,9 @@ impl CodingHarness {
 
         // This turn counts against the current request's soft turn budget.
         vars.turns_this_request = vars.turns_this_request.saturating_add(1);
+        if vars.turns_this_request == 1 {
+            self.note_turn_start();
+        }
 
         // Keep the lane snapshot current so the live context shows what's still
         // running (the orchestrator must know what it's waiting on).
@@ -143,6 +146,24 @@ impl CodingHarness {
             Err(end) => return end,
         };
         apply_turn_guards(vars, &stats, conversation_mode, false);
+
+        if let Some(nudge) = self.note_tool_round() {
+            state.messages.push(HarnessMessage::User { content: nudge });
+        }
+        if self
+            .session_id()
+            .is_some_and(|id| crate::session::is_inbox_session_id(&id))
+            && vars.turns_this_request >= 12
+        {
+            return StepResult::TurnEnded {
+                kind: TurnEndKind::Complete,
+                final_text: Some(
+                    "Desk turn cap reached (12 rounds). Ending turn until the next event."
+                        .to_string(),
+                ),
+                closing: None,
+            };
+        }
 
         // Every call this iteration was a successful delegation → the wait takes
         // effect NOW: end the turn so the agent goes idle and the lane reports
