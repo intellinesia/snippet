@@ -479,11 +479,11 @@ impl Store {
                    AND (json_extract(payload_json, '$.session') = ?2 OR source_ref LIKE ?4)",
                 params![agent_id, session_id, now, pattern],
             )?;
-            let _ = conn.execute(
-                "UPDATE desk_fallbacks SET handled_at = ?3
-                 WHERE desk = ?1 AND session_id = ?2 AND handled_at IS NULL",
+            conn.execute(
+                "UPDATE desk_fallbacks SET done_at = ?3
+                 WHERE desk = ?1 AND session_id = ?2 AND done_at IS NULL",
                 params![agent_id, session_id, now],
-            );
+            )?;
             Ok(count)
         })
     }

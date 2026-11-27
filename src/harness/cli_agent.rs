@@ -2018,6 +2018,7 @@ impl CodingHarness {
             .env("MCP_TOOL_TIMEOUT", "3600000")
             .env("MCP_TIMEOUT", "30000")
             .env("CLAUDE_CODE_ENTRYPOINT", "snippet");
+        cmd.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
         if let Some(token) = account.and_then(claude_account_token) {
             cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
         }
@@ -2926,13 +2927,9 @@ impl CodingHarness {
                             reminder.join("\n\n")
                         );
                     }
-                    session.mark_synced(
-                        &state.messages,
-                        state.compactions,
-                        state.last_prompt_tokens,
-                    );
                     last_heard = tokio::time::Instant::now();
                     desk_turn_rounds = 0;
+                    let mut write_ok = true;
                     if kind.is_acp() {
                         let combined = std::mem::take(&mut outbox)
                             .into_iter()
@@ -2958,6 +2955,7 @@ impl CodingHarness {
                         });
                         let sent = p.stdin.write_all(format!("{line}\n").as_bytes()).await;
                         if sent.is_err() || p.stdin.flush().await.is_err() {
+                            write_ok = false;
                             state.events.push(HarnessEvent::ModelError {
                                 message: format!("{} stopped accepting input", kind.label()),
                             });
@@ -2978,6 +2976,7 @@ impl CodingHarness {
                             let line = user_line_with_attachments(kind, &text);
                             let sent = p.stdin.write_all(format!("{line}\n").as_bytes()).await;
                             if sent.is_err() || p.stdin.flush().await.is_err() {
+                                write_ok = false;
                                 state.events.push(HarnessEvent::ModelError {
                                     message: format!("{} stopped accepting input", kind.label()),
                                 });
@@ -2986,6 +2985,13 @@ impl CodingHarness {
                                 break;
                             }
                         }
+                    }
+                    if write_ok {
+                        session.mark_synced(
+                            &state.messages,
+                            state.compactions,
+                            state.last_prompt_tokens,
+                        );
                     }
                 }
             }

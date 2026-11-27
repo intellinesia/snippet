@@ -344,7 +344,7 @@ impl CodingHarness {
         let mut progress_text = None;
 
         if let Some(text) = output.content_text.as_deref() {
-            if looks_like_inline_tool_submission(text) {
+            if calls.is_empty() && looks_like_inline_tool_submission(text) {
                 let inline = extract_inline_tool_submissions(text);
                 let residual = inline.residual_text.clone().unwrap_or_default();
                 // Only adopt recovered calls when the markup dominated the message

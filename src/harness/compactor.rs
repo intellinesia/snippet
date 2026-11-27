@@ -38,6 +38,7 @@ impl CodingHarness {
             .rposition(|message| matches!(message, HarnessMessage::Summary { kind, .. } if kind == "compacted_window"));
         let window_start = last_summary_index.map(|idx| idx + 1).unwrap_or(1);
         if state.messages.len().saturating_sub(window_start) <= MIN_COMPACTABLE_MESSAGES {
+            state.compacting = false;
             return Ok(());
         }
 

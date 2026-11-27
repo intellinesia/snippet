@@ -248,7 +248,10 @@ pub fn build_config_json(exe_path: &Path, org_id: Option<&str>) -> Value {
                 "matcher": "",
                 "hooks": [{
                     "type": "command",
-                    "command": format!("'{}' devin-hook", exe_path.display()),
+                    "command": format!(
+                        "'{}' devin-hook",
+                        exe_path.display().to_string().replace('\'', "'\\''")
+                    ),
                     "timeout": 10,
                     "fail_closed": true
                 }]
@@ -417,7 +420,7 @@ pub async fn auth_status() -> (bool, Option<String>) {
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     let temp = if let Some(token) = account.as_deref().and_then(account_token) {
-        let dir = crate::config::snippet_home().join("devin/probe");
+        let dir = crate::config::snippet_home().join(format!("devin/probe-{}", uuid::Uuid::new_v4()));
         let devin_dir = dir.join("devin");
         let _ = std::fs::create_dir_all(&devin_dir);
         let _ = write_credentials_file(&devin_dir.join("credentials.toml"), &token);
@@ -427,7 +430,9 @@ pub async fn auth_status() -> (bool, Option<String>) {
         None
     };
     let out = tokio::time::timeout(std::time::Duration::from_secs(6), cmd.output()).await;
-    let _ = temp;
+    if let Some(dir) = temp {
+        let _ = std::fs::remove_dir_all(dir);
+    }
     let Ok(Ok(out)) = out else {
         return (false, None);
     };
