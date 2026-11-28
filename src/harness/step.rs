@@ -154,15 +154,15 @@ impl CodingHarness {
             .session_id()
             .is_some_and(|id| crate::session::is_inbox_session_id(&id))
         {
-            if vars.turns_this_request == 12 {
+            if vars.turns_this_request == 20 {
                 state.messages.push(HarnessMessage::User {
-                    content: "<system-reminder>Desk turn soft limit reached (12 rounds). You have at most 3 more rounds to finish acking, delegating, or replying. Batch remaining calls together immediately and end your turn to free the desk.</system-reminder>".to_string(),
+                    content: "<system-reminder>Desk turn soft limit reached (20 rounds). You have at most 5 more rounds to finish acking, delegating, or replying. Batch remaining calls together immediately and end your turn to free the desk.</system-reminder>".to_string(),
                 });
-            } else if vars.turns_this_request >= 15 {
+            } else if vars.turns_this_request >= 25 {
                 return StepResult::TurnEnded {
                     kind: TurnEndKind::Complete,
                     final_text: Some(
-                        "Desk turn cap reached (15 rounds). Ending turn until the next event."
+                        "Desk turn cap reached (25 rounds). Ending turn until the next event."
                             .to_string(),
                     ),
                     closing: None,

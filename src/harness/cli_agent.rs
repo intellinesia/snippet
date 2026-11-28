@@ -3659,13 +3659,13 @@ impl CodingHarness {
                 call = mcp_rx.recv() => {
                     let Some(mut call) = call else { continue };
                     last_heard = tokio::time::Instant::now();
-                    const DESK_TURN_SOFT_CAP: u32 = 12;
-                    const DESK_TURN_HARD_CAP: u32 = 15;
-                    const DESK_TURN_WRAPUP_CEILING: u32 = 18;
+                    const DESK_TURN_SOFT_CAP: u32 = 20;
+                    const DESK_TURN_HARD_CAP: u32 = 25;
+                    const DESK_TURN_WRAPUP_CEILING: u32 = 28;
                     if is_desk_inbox && !call.inner {
                         desk_turn_rounds = desk_turn_rounds.saturating_add(1);
                         if desk_turn_rounds == DESK_TURN_SOFT_CAP {
-                            let warn = "<system-reminder>Desk turn soft limit reached (12 rounds). You have at most 3 more rounds to finish acking, delegating, or replying. Batch remaining `snippet tool` calls together immediately and end your turn to free the desk.</system-reminder>".to_string();
+                            let warn = "<system-reminder>Desk turn soft limit reached (20 rounds). You have at most 5 more rounds to finish acking, delegating, or replying. Batch remaining `snippet tool` calls together immediately and end your turn to free the desk.</system-reminder>".to_string();
                             state.messages.push(HarnessMessage::User { content: warn.clone() });
                             if kind.is_acp() && process.is_some() {
                                 if let Ok(mut queue) = steers.lock() {
@@ -3680,7 +3680,7 @@ impl CodingHarness {
                             if !whitelisted {
                                 let _ = call.reply.send(error_result(
                                     "desk_turn_cap",
-                                    "Desk turn cap reached (15 tool rounds). Stop calling tools and end this turn now; only final ack/delegate/reply `snippet tool` calls are allowed to wrap up.",
+                                    "Desk turn cap reached (25 tool rounds). Stop calling tools and end this turn now; only final ack/delegate/reply `snippet tool` calls are allowed to wrap up.",
                                 ));
                                 continue;
                             }
