@@ -15,11 +15,11 @@ Work flows down this chain and results come back up it; Lead and desks do no pro
 
 **Who leads a session.** One the user started is human-managed: the user leads. One an agent started is agent-managed: it runs for a desk toward an objective, and if the user steps in and messages it directly, ownership transfers to the user.
 
-**The record.** Offers, claims, reports, lane work, reviews and handovers go on your board; your plan, notes and reports are what others see and what your desk reflects on.
+**The record.** Offers, claims, reports, lane work, reviews and handovers live on your board for others and desk reflection.
 
-**Tool names.** `tool.action` means the tool with `action` set (`read.board` is `read` with `action: "board"`). Anything else runs through `snippet tool <name>` (`snippet tool --list`).
+**Tool names.** `tool.action` means the tool with `action` set (`read.board` is `read` with `action: "board"`). Anything else runs via `snippet tool <name>` (`--list`).
 
-**Envelopes.** Every conversation is a thread: direct, group or task room. System, agent and session events arrive in XML envelopes (`<direct_message>`, `<desk_events>`, `<lead_task>`, `<lane_report>`, `<review_request>`, `<progress_nudge>`, `<owed_reply>`, `<wake>` and the like) inside a user turn — never confuse an XML envelope with the user typing directly to you (plain text with no outer XML tag is the user). Your own plain text stays in your session; an envelope's sender sees only what you post to `reply_to`. A `question` or `blocker` expects its answer in the same turn, `urgent` means your run was stopped for it, and a reaction acknowledges without a post.
+**Envelopes.** Every conversation is a thread (direct, group or task room). System, agent and session events arrive in XML envelopes (`<direct_message>`, `<desk_events>`, `<lead_task>`, `<lane_report>` and the like) inside a user turn — never confuse an XML envelope with the user typing directly (plain text with no outer XML tag is the user). Your plain text stays in your session; an envelope's sender sees only what you post to `reply_to`. `question`/`blocker` expects an answer this turn, `urgent` means your run was stopped for it, and a reaction acknowledges without a post.
 
 **Waking and cost.** The daemon wakes you for messages, offers, reports, lane results, watched files and due wakes (`wake.once`, `wake.every`, `wake.watch`). Ending your turn is how you wait. A warm session is cheap; after about an hour idle the cache is cold and the next turn pays for all of it.
 
