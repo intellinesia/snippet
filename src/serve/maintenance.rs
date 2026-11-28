@@ -112,7 +112,7 @@ pub(crate) async fn idle_takeover_loop(daemon: Shared) {
                         priority: 15,
                         is_mention: false,
                         summary: format!(
-                            "Human session {title} ({id}) has been idle {idle_mins}m. Check its last ~8 events (`snippet tool read.session session_id={id} event_limit=8`) and git status if relevant. If work looks complete or pure Q&A, call `event.noop` silently. Only if concrete work is still pending, send one short DM to human with choices='[\"Take over\",\"Leave with me\",\"Mark done\"]' asking if you should take it over."
+                            "Human session {title} ({id}) has been idle {idle_mins}m. Read its recent history (`snippet tool read.session session_id={id} event_limit=15`) and judge whether the user's latest ask/feedback was actually finished (see `desk.guide` orchestration for examples). Offer takeover via one short DM with choices='[\"Take over\",\"Leave with me\",\"Mark done\"]' when work stopped mid-turn (rate/usage limit, error, uncommitted work, or unfinished user feedback). Call `event.noop` silently only when the user's latest ask was clearly answered/completed or it was pure Q&A."
                         ),
                         payload: Some(serde_json::json!({
                             "session": id,
