@@ -464,7 +464,7 @@ impl Tool for DeskSessionStop {
             .map(str::trim)
             .filter(|r| !r.is_empty())
             .unwrap_or("stopped by its desk");
-        let out = interrupt_session(&id, reason).await?;
+        let out = interrupt_session(&id, reason, StopActor::Desk(&desk)).await?;
         Ok(ToolResult::success(
             json!({"session_id": id, "stopped": true, "detail": out}),
         ))
@@ -3993,6 +3993,7 @@ impl Tool for CancelMissionTask {
                 stopped = match interrupt_session(
                     session,
                     &format!("task {task_id} cancelled: {reason}"),
+                    StopActor::Lead,
                 )
                 .await
                 {
@@ -4074,8 +4075,28 @@ fn session_is_running(store: &Store, session: &str) -> bool {
         .is_some_and(|row| matches!(row.status.as_str(), "running" | "waiting_for_input"))
 }
 
+#[derive(Clone, Copy)]
+enum StopActor<'a> {
+    Lead,
+    Desk(&'a str),
+}
+
+impl<'a> StopActor<'a> {
+    fn fields(self) -> (&'static str, Option<&'a str>) {
+        match self {
+            Self::Lead => ("lead", None),
+            Self::Desk(id) => ("desk", Some(id)),
+        }
+    }
+}
+
 /// End a session's current run the way the stop button does.
-async fn interrupt_session(id: &str, reason: &str) -> Result<Value, ToolError> {
+async fn interrupt_session(
+    id: &str,
+    reason: &str,
+    actor: StopActor<'_>,
+) -> Result<Value, ToolError> {
+    let (actor_kind, actor_id) = actor.fields();
     let info = crate::serve::sidecar::read_daemon_info()
         .ok_or_else(|| ToolError::msg("the daemon's address isn't available"))?;
     let url = format!(
@@ -4085,7 +4106,12 @@ async fn interrupt_session(id: &str, reason: &str) -> Result<Value, ToolError> {
     );
     let response = reqwest::Client::new()
         .post(&url)
-        .json(&json!({"session": id, "reason": reason}))
+        .json(&json!({
+            "session": id,
+            "reason": reason,
+            "actor_kind": actor_kind,
+            "actor_id": actor_id,
+        }))
         .send()
         .await
         .map_err(|e| ToolError::msg(format!("stop failed: {e}")))?;
@@ -4250,7 +4276,9 @@ impl Tool for StopSession {
                 "that's your own session; end your turn instead",
             ));
         }
-        Ok(ToolResult::success(interrupt_session(id, reason).await?))
+        Ok(ToolResult::success(
+            interrupt_session(id, reason, StopActor::Lead).await?,
+        ))
     }
 }
 

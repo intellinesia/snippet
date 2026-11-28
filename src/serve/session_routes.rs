@@ -443,6 +443,43 @@ pub(crate) struct InterruptReq {
     session: String,
     #[serde(default)]
     reason: Option<String>,
+    #[serde(default)]
+    actor_kind: Option<String>,
+    #[serde(default)]
+    actor_id: Option<String>,
+}
+
+fn stop_decision(
+    actor_kind: Option<&str>,
+    actor_id: Option<&str>,
+    reason: &str,
+) -> (String, String) {
+    let kind = actor_kind.map(str::trim).filter(|kind| !kind.is_empty());
+    let id = actor_id.map(str::trim).filter(|id| !id.is_empty());
+    match kind {
+        Some("desk") => {
+            let who = id
+                .map(|id| format!("desk {id}"))
+                .unwrap_or_else(|| "desk".to_string());
+            (
+                "stopped_by_desk".to_string(),
+                format!("Stopped by {who}: {reason}"),
+            )
+        }
+        Some("lead") => (
+            "stopped_by_lead".to_string(),
+            format!("Stopped by Lead: {reason}"),
+        ),
+        Some("human") | Some("user") => (
+            "stopped_by_user".to_string(),
+            format!("Stopped by user: {reason}"),
+        ),
+        Some("system") => (
+            "stopped_by_system".to_string(),
+            format!("Stopped by system: {reason}"),
+        ),
+        _ => ("stopped".to_string(), format!("Stopped: {reason}")),
+    }
 }
 
 pub(crate) async fn interrupt_session(
@@ -486,11 +523,16 @@ pub(crate) async fn interrupt_session(
         .map(str::trim)
         .filter(|r| !r.is_empty())
     {
+        let (step, reasoning) = stop_decision(
+            req.actor_kind.as_deref(),
+            req.actor_id.as_deref(),
+            reason,
+        );
         d.deliver(
             &req.session,
             LoopInput::Notice(crate::harness::HarnessEvent::SystemDecision {
-                step: "stopped_by_lead".to_string(),
-                reasoning: format!("Stopped by Lead: {reason}"),
+                step,
+                reasoning,
             }),
         )
         .await;
@@ -894,5 +936,27 @@ mod wire_surface_tests {
         let arr = delta.as_array().unwrap();
         assert_eq!(arr[0]["tool_name"], "web_search");
         assert_eq!(arr[0]["surface_tool"], "web");
+    }
+
+    #[test]
+    fn stop_decision_uses_the_actor_that_requested_the_stop() {
+        assert_eq!(
+            stop_decision(Some("desk"), Some("snippet"), "done"),
+            (
+                "stopped_by_desk".to_string(),
+                "Stopped by desk snippet: done".to_string(),
+            )
+        );
+        assert_eq!(
+            stop_decision(Some("lead"), None, "done"),
+            (
+                "stopped_by_lead".to_string(),
+                "Stopped by Lead: done".to_string(),
+            )
+        );
+        assert_eq!(
+            stop_decision(None, None, "done"),
+            ("stopped".to_string(), "Stopped: done".to_string())
+        );
     }
 }
