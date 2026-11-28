@@ -3,7 +3,7 @@ use rusqlite::{OptionalExtension, params};
 use crate::store::{Store, StoreError};
 
 pub const DAILY_SECS: i64 = 24 * 3600;
-pub const JOB_END_GAP_SECS: i64 = 3600;
+pub const JOB_END_GAP_SECS: i64 = 6 * 3600;
 pub const IDENTITY_BUDGET_BYTES: usize = 6 * 1024;
 const MAX_LISTED: usize = 12;
 

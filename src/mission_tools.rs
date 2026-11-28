@@ -2207,7 +2207,28 @@ impl Tool for StartTask {
             check_slot_cap(ctx, &agent_id, session_query)?;
         }
         let (session_ref, fresh) = match session_query {
-            Some(query) => (query.to_string(), false),
+            Some(query) => {
+                // Allow a desk to take over an existing human-managed session on demand
+                // (never stealing another desk's session, Lead, or an inbox session).
+                if let Ok(resolved) = resolve_target_session(query)
+                    && resolved != crate::lead::SESSION_ID
+                    && !crate::session::is_inbox_session_id(&resolved)
+                    && let Some(store) = crate::session::store_for_sessions()
+                    && let Ok(Some(row)) = store.get_session_row(&resolved)
+                    && row.managed_by == "human"
+                {
+                    let _ = store.set_session_role(
+                        &resolved,
+                        crate::session::role_str(crate::session::SessionRole::Standard),
+                        Some(&agent_id),
+                    );
+                    let _ = store.set_session_managed_by(&resolved, "agent");
+                    if let Some(mode) = tool_mode.as_deref() {
+                        set_work_session_tool_mode(&resolved, mode)?;
+                    }
+                }
+                (query.to_string(), false)
+            }
             None => {
                 let folder = args
                     .folder
