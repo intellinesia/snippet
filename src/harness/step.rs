@@ -153,16 +153,21 @@ impl CodingHarness {
         if self
             .session_id()
             .is_some_and(|id| crate::session::is_inbox_session_id(&id))
-            && vars.turns_this_request >= 12
         {
-            return StepResult::TurnEnded {
-                kind: TurnEndKind::Complete,
-                final_text: Some(
-                    "Desk turn cap reached (12 rounds). Ending turn until the next event."
-                        .to_string(),
-                ),
-                closing: None,
-            };
+            if vars.turns_this_request == 12 {
+                state.messages.push(HarnessMessage::User {
+                    content: "<system-reminder>Desk turn soft limit reached (12 rounds). You have at most 3 more rounds to finish acking, delegating, or replying. Batch remaining calls together immediately and end your turn to free the desk.</system-reminder>".to_string(),
+                });
+            } else if vars.turns_this_request >= 15 {
+                return StepResult::TurnEnded {
+                    kind: TurnEndKind::Complete,
+                    final_text: Some(
+                        "Desk turn cap reached (15 rounds). Ending turn until the next event."
+                            .to_string(),
+                    ),
+                    closing: None,
+                };
+            }
         }
 
         // Every call this iteration was a successful delegation → the wait takes

@@ -1198,6 +1198,54 @@ fn user_line_with_attachments(kind: CliKind, text: &str) -> Value {
     json!({"type": "user", "message": {"role": "user", "content": content}})
 }
 
+/// Allow final desk wrap-up commands (ack/delegate/reply) past the hard turn cap
+/// so a desk never gets cut off mid-confirmation or mid-dispatch.
+fn is_desk_wrapup_command(tool_name: &str, args: &Value) -> bool {
+    if tool_name != "bash" {
+        return false;
+    }
+    let Some(cmd) = args.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    const ALLOWED: &[&str] = &[
+        "message.send",
+        "message.group",
+        "message.task",
+        "event.ack",
+        "event.noop",
+        "event.defer",
+        "session.create",
+        "task.start",
+        "task.claim",
+        "task.decline",
+        "task.answer",
+        "task.cancel",
+        "task.update",
+        "present.share",
+        "slot.claim",
+    ];
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let mut saw_any = false;
+    for part in trimmed.split("&&") {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        let Some(rest) = p.strip_prefix("snippet tool ") else {
+            return false;
+        };
+        let sub = rest.split_whitespace().next().unwrap_or("");
+        if !ALLOWED.contains(&sub) {
+            return false;
+        }
+        saw_any = true;
+    }
+    saw_any
+}
+
 fn error_result(code: &str, message: &str) -> Value {
     json!({"schema_version": 1, "status": "error", "error": {"code": code, "message": message}})
 }
@@ -3611,15 +3659,31 @@ impl CodingHarness {
                 call = mcp_rx.recv() => {
                     let Some(mut call) = call else { continue };
                     last_heard = tokio::time::Instant::now();
-                    const DESK_TURN_ROUND_CAP: u32 = 12;
+                    const DESK_TURN_SOFT_CAP: u32 = 12;
+                    const DESK_TURN_HARD_CAP: u32 = 15;
+                    const DESK_TURN_WRAPUP_CEILING: u32 = 18;
                     if is_desk_inbox && !call.inner {
                         desk_turn_rounds = desk_turn_rounds.saturating_add(1);
-                        if desk_turn_rounds > DESK_TURN_ROUND_CAP {
-                            let _ = call.reply.send(error_result(
-                                "desk_turn_cap",
-                                "Desk turn cap reached (12 tool rounds). Stop calling tools and end this turn now; you will wake again on the next event. Never do long-running or project work in your desk inbox: dispatch a work session with `snippet tool session.create` + `snippet tool task.start`.",
-                            ));
-                            continue;
+                        if desk_turn_rounds == DESK_TURN_SOFT_CAP {
+                            let warn = "<system-reminder>Desk turn soft limit reached (12 rounds). You have at most 3 more rounds to finish acking, delegating, or replying. Batch remaining `snippet tool` calls together immediately and end your turn to free the desk.</system-reminder>".to_string();
+                            state.messages.push(HarnessMessage::User { content: warn.clone() });
+                            if kind.is_acp() && process.is_some() {
+                                if let Ok(mut queue) = steers.lock() {
+                                    queue.push(warn);
+                                }
+                            } else {
+                                outbox.push(warn);
+                            }
+                        } else if desk_turn_rounds > DESK_TURN_HARD_CAP {
+                            let whitelisted = desk_turn_rounds <= DESK_TURN_WRAPUP_CEILING
+                                && is_desk_wrapup_command(&call.name, &call.arguments);
+                            if !whitelisted {
+                                let _ = call.reply.send(error_result(
+                                    "desk_turn_cap",
+                                    "Desk turn cap reached (15 tool rounds). Stop calling tools and end this turn now; only final ack/delegate/reply `snippet tool` calls are allowed to wrap up.",
+                                ));
+                                continue;
+                            }
                         }
                     }
                     if !call.inner
