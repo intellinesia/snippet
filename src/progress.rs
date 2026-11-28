@@ -328,7 +328,7 @@ fn recent_active_sessions(db: &Store) -> Vec<String> {
                     format!(" — {clipped}")
                 })
                 .unwrap_or_default();
-            format!("{title_short} [{state}, {managed_by}, ws:{ws_name}] id={id}{note}")
+            format!("[{title_short}](session:{id}) [{state}, {managed_by}, ws:{ws_name}]{note}")
         })
         .collect()
 }

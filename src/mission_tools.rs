@@ -1755,9 +1755,16 @@ impl Tool for InspectSession {
             .iter()
             .filter_map(inspect_event_row)
             .collect();
+        let label = state
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .unwrap_or(&args.session_id);
         Ok(ToolResult::success(json!({
             "id": args.session_id,
             "title": state.title,
+            "link": format!("[{label}](session:{})", args.session_id),
             "workspace": state.workspace,
             "status": state.status,
             "pending_question": state.pending_question,

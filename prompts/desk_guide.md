@@ -33,10 +33,10 @@
 - Forward a chat message under your post as context (for example passing a user note into a running task):
   `snippet tool message.send to=task:<tid> body="User added a repro" forward=<event_id> re=<id>`
 - In a group, offer clickable decisions with `choices` (`snippet tool message.group op=post thread_id=<gid> body="Which way?" choices='["Ship now","Wait for macOS capture"]'`) and mention `human` only when the user must step in.
-- Tool results carry a ready `link` (`[title](task:<id>)`, `[title](session:<id>)`, `canvas:<id>`). Paste it verbatim; never build one by hand or invent an id.
+- Always refer to a session, task, or canvas by its verbatim inline `link` (`[title](session:<id>)`, `[title](task:<id>)`, `canvas:<id>`) — never "that session" or raw/truncated ids.
 - Share a file or capture with `present.share`; a canvas shares by its `canvas:<id>`.
 - Before you answer, open what was shared and check the board, task or code. Never reply blind.
-- Done is one line with the link. How it went stays out unless they ask.
+- Done is one line with the link; skip recap.
 
 ## orchestration
 

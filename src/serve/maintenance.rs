@@ -79,6 +79,16 @@ pub(crate) async fn idle_takeover_loop(daemon: Shared) {
                            AND id NOT LIKE '%/lanes/%'
                            AND id NOT LIKE 'inbox-%'
                            AND id != 'lead'
+                           AND NOT EXISTS (
+                             SELECT 1 FROM sessions s2
+                             WHERE s2.workspace = sessions.workspace
+                               AND s2.workspace IS NOT NULL AND s2.workspace != ''
+                               AND s2.id != sessions.id
+                               AND s2.settled_at IS NULL
+                               AND s2.id NOT LIKE '%/lanes/%'
+                               AND s2.id NOT LIKE 'inbox-%'
+                               AND (s2.status IN ('running', 'waiting_for_input') OR COALESCE(s2.last_active, 0) > sessions.last_active)
+                           )
                          ORDER BY last_active DESC
                          LIMIT 8",
                     )?;
@@ -102,6 +112,7 @@ pub(crate) async fn idle_takeover_loop(daemon: Shared) {
                     continue;
                 }
                 let idle_mins = (now_secs - last_active).max(0) / 60;
+                let link = format!("[{title}](session:{id})");
                 let _ = daemon.store.enqueue_desk_event(
                     &crate::coordination::desk_inbox::NewDeskEvent {
                         agent_id: desk,
@@ -112,10 +123,11 @@ pub(crate) async fn idle_takeover_loop(daemon: Shared) {
                         priority: 15,
                         is_mention: false,
                         summary: format!(
-                            "Human session {title} ({id}) has been idle {idle_mins}m. Read its recent history (`snippet tool read.session session_id={id} event_limit=15`) and judge whether the user's latest ask/feedback was actually finished (see `desk.guide` orchestration for examples). Offer takeover via one short DM with choices='[\"Take over\",\"Leave with me\",\"Mark done\"]' when work stopped mid-turn (rate/usage limit, error, uncommitted work, or unfinished user feedback). Call `event.noop` silently only when the user's latest ask was clearly answered/completed or it was pure Q&A."
+                            "Human session {link} has been idle {idle_mins}m. Read its recent history (`snippet tool read.session session_id={id} event_limit=15`) and check any sibling/fork sessions in the same workspace before claiming work is unfinished. If work genuinely stopped mid-turn (rate/usage limit, error, uncommitted work, or unfinished user feedback), offer takeover via one short DM that includes `{link}` verbatim and choices='[\"Take over\",\"Leave with me\",\"Mark done\"]'. Otherwise `event.noop` silently."
                         ),
                         payload: Some(serde_json::json!({
                             "session": id,
+                            "link": link,
                             "idle_mins": idle_mins,
                             "event": "idle_takeover_check",
                         })),
