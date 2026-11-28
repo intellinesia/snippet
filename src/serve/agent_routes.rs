@@ -364,21 +364,16 @@ pub(crate) async fn record_agent_message(
 /// and will report back on its own, so waking Lead would spend a turn
 /// on something that needs no decision.
 pub(crate) async fn record_dispatch_notice(d: &Daemon, task: &crate::coordination::Task) {
-    // Lead dispatching through its own tool already has the tool call
-    // and result in its transcript. Recording a notice too would tell it twice,
-    // so this is for dispatches made AROUND it — the case where its record would
-    // otherwise show work appearing from nowhere.
-    if task.created_by_id == crate::lead::SESSION_ID {
+    // Only record tasks created directly by the user on the board. Lead's own
+    // dispatches are already in its transcript, and desk-started tasks belong
+    // to their owning desk rather than Lead.
+    if task.created_by_kind != "human" {
         return;
     }
     let target = crate::session::state_path_for_id(&task.session_id)
         .map(|path| crate::session::session_id_for_state_path(&path))
         .unwrap_or_else(|| task.session_id.clone());
-    let by = if task.created_by_kind == "human" {
-        "You".to_string()
-    } else {
-        format!("{}:{}", task.created_by_kind, task.created_by_id)
-    };
+    let by = "You".to_string();
     record_notice(
         d,
         crate::lead::SESSION_ID,
