@@ -639,7 +639,7 @@ fn schedule_desk_fallback(
         priority: crate::coordination::desk_inbox::APPROVAL_PRIORITY,
         summary: format!("{label} ({session_id}) waits on the user's {what}"),
         payload: Some(json!({"session": session_id})),
-        wake: true,
+        wake: false,
         ..Default::default()
     };
     if let Err(error) = store.enqueue_desk_event(&event, &fallback.created_at) {
@@ -658,7 +658,6 @@ fn tell_desk_of_question(
     body: &str,
     mut card: serde_json::Map<String, serde_json::Value>,
 ) {
-    let name = relay_agent_name(store, desk, desk);
     let label = crate::coordination::origin::session_label(store, session_id);
     let refusal = desk_answer_refusal(question);
     if refusal.is_some() {
@@ -670,7 +669,7 @@ fn tell_desk_of_question(
             "question",
             format!("ask:{session_id}:{index}"),
             index,
-            format!("Automatic fallback: {name} has not passed this on. {label} asks:\n{body}"),
+            format!("{label} asks:\n{body}"),
             card,
         );
     }
@@ -696,7 +695,7 @@ fn tell_desk_of_question(
                 .attr("desk_may_answer", "no")
                 .child("held_for_user", reason);
             format!(
-                "only the user can answer this: pass it on in your own words; if you post nothing in your chat with them within {} minutes, the daemon posts the question card itself.",
+                "only the user can answer this; do not post prose asking them to open the session — the daemon forwards the question card after {} minutes if still pending.",
                 DESK_FALLBACK_SECS / 60
             )
         }
@@ -1044,7 +1043,7 @@ pub(crate) fn relay_stop(
             .child("held_for_user", "approvals stay with the user");
         {
             note.push_str(&format!(
-                " Tell the user about the approval in your own words; only they can approve it, in the session. If you post nothing in your chat with them within {} minutes, the daemon tells them itself.",
+                " Do not post prose telling the user to approve it in the session; the daemon forwards the approval after {} minutes if still pending. If the user already authorized this single shell command, task.session session_id={session_id} allow_next_shell=true unblocks it once.",
                 DESK_FALLBACK_SECS / 60
             ));
         }
@@ -1059,9 +1058,7 @@ pub(crate) fn relay_stop(
                 "approval",
                 format!("desk-approval:{session_id}:{index}"),
                 index,
-                format!(
-                    "Automatic fallback: {title} is waiting on your approval: {summary}. Only you can approve it, in the session."
-                ),
+                format!("{title} is waiting on your approval: {summary}."),
                 extra,
             );
         }
@@ -1070,7 +1067,7 @@ pub(crate) fn relay_stop(
         envelope = envelope.child("question", text);
         {
             note.push_str(&format!(
-                " Pass its question to the user in your own words unless you answer it; if you post nothing in your chat with them within {} minutes, the daemon posts the question card itself.",
+                " Answer it with task.answer when you can; if it is held for the user, do not post prose — the daemon forwards the question card after {} minutes if still pending.",
                 DESK_FALLBACK_SECS / 60
             ));
         }
@@ -4170,7 +4167,7 @@ mod tests {
             notices[0].payload["body"]
                 .as_str()
                 .unwrap()
-                .starts_with("Automatic fallback: Ship is waiting on your approval")
+                .starts_with("Ship is waiting on your approval")
         );
         let thread =
             crate::coordination::direct_thread_id(("agent", "snippet"), ("session", "sess-agent"));

@@ -445,6 +445,7 @@ mod seat_layer_tests {
         // Non-tool snake_case parameters, enums, fields, reactions, and agent ids.
         let arg_allow: BTreeSet<&str> = [
             "agent_id",
+            "allow_next_shell",
             "artifact_id",
             "blocked_by",
             "continuation_of",

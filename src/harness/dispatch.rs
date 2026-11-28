@@ -892,6 +892,18 @@ impl CodingHarness {
                 None => approval_summary(&tool_name, &args),
             };
             Self::record_rule_decision(state, &tool_name, summary, label);
+        } else if !lane_approved
+            && (force_vault_approval || manual_gated)
+            && tool_name == "bash"
+            && self.session_id().as_deref().is_some_and(super::take_next_shell)
+        {
+            let summary = approval_summary(&tool_name, &args);
+            Self::record_rule_decision(
+                state,
+                &tool_name,
+                summary,
+                "one-time desk grant".to_string(),
+            );
         } else if !lane_approved && (force_vault_approval || manual_gated) {
             *approval_index += 1;
             while approval_rx.try_recv().is_ok() {}

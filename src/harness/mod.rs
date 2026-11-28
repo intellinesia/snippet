@@ -948,3 +948,22 @@ pub(crate) fn is_daemon_envelope(text: &str) -> bool {
     }
     crate::envelope::kind(first).is_some_and(|tag| tag != "ambient_turn")
 }
+
+static NEXT_SHELL_GRANTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// Arm a one-time approval bypass for the next gated `bash` command on `session_id`.
+pub fn grant_next_shell(session_id: &str) {
+    if let Ok(mut set) = NEXT_SHELL_GRANTS.lock() {
+        set.insert(session_id.to_string());
+    }
+}
+
+/// Consume a pending one-time shell grant for `session_id`.
+pub fn take_next_shell(session_id: &str) -> bool {
+    NEXT_SHELL_GRANTS
+        .lock()
+        .map(|mut set| set.remove(session_id))
+        .unwrap_or(false)
+}

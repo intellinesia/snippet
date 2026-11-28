@@ -47,6 +47,7 @@
 - Session lifecycle, for sessions your desk manages:
   - `session.create workspace=<folder> title=... profile=... tool_mode=...` opens an idle session (own worktree by default, `isolation=folder` to work in place) and returns its `link`; give it work with `task.start session=<id>`.
   - `task.session session_id=<id> profile=<name>` moves it to another provider or model; it restarts and loses its prompt cache, so do it to rescue a rate-limited or struggling session, not on a whim.
+  - `task.session session_id=<id> allow_next_shell=true` grants one shell command (or unblocks one pending approval) when already authorized; never post prose asking the user to approve in a session (the daemon forwards the card after 2 minutes).
   - `task.session session_id=<id> to_agent=<id>` hands it to another agent with its context.
   - `session.stop session_id=<id> reason=...` ends a run the way the stop button does; its task stays on the board.
   - `session.delete session_id=<id>` removes an idle session with no open task. User-managed sessions, other desks' sessions and your own desk are refused.

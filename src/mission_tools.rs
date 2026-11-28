@@ -279,6 +279,8 @@ struct SteerSessionArgs {
     #[serde(default)]
     tool_mode: Option<String>,
     #[serde(default)]
+    allow_next_shell: bool,
+    #[serde(default)]
     note: String,
 }
 
@@ -522,11 +524,12 @@ impl Tool for SteerSession {
     fn definition(&self) -> NativeToolDefinition {
         NativeToolDefinition {
             name: "steer_session".into(),
-            description: "A session your desk manages: profile sets its model; tool_mode (code|direct|inherit) applies from its next turn; to_agent hands it on with its context.".into(),
+            description: "A session your desk manages: profile sets its model; tool_mode (code|direct|inherit) applies next turn; allow_next_shell grants one shell command; to_agent hands it on.".into(),
             input_schema: schema(json!({
                 "session_id": {"type": "string"},
                 "profile": {"type": "string"},
                 "tool_mode": {"type": "string", "enum": ["code", "direct", "inherit"]},
+                "allow_next_shell": {"type": "boolean"},
                 "to_agent": {"type": "string"},
                 "note": {"type": "string"}
             }), &["session_id"]),
@@ -554,13 +557,32 @@ impl Tool for SteerSession {
             .map(str::trim)
             .filter(|a| !a.is_empty());
         let tool_mode = work_tool_mode(args.tool_mode.as_deref())?;
-        if profile.is_none() && to_agent.is_none() && tool_mode.is_none() {
-            return Err(ToolError::msg("give profile, tool_mode, to_agent or a mix"));
+        if profile.is_none() && to_agent.is_none() && tool_mode.is_none() && !args.allow_next_shell {
+            return Err(ToolError::msg(
+                "give profile, tool_mode, allow_next_shell, to_agent or a mix",
+            ));
         }
         let mut out = json!({"session": session});
         if let Some(mode) = tool_mode.as_deref() {
             set_work_session_tool_mode(&session, mode)?;
             out["tool_mode"] = json!(mode);
+        }
+        if args.allow_next_shell {
+            let waiting_approval = crate::session::state_path_for_id(&session)
+                .and_then(|p| crate::session::read_session_meta(&p))
+                .is_some_and(|s| {
+                    s.status == crate::harness::HarnessStatus::WaitingForInput
+                        && s.pending_question.is_none()
+                });
+            if waiting_approval && let Some(daemon) = crate::serve::live_daemon() {
+                daemon
+                    .deliver(&session, crate::harness::LoopInput::Approve)
+                    .await;
+                out["unblocked_pending"] = json!(true);
+            } else {
+                crate::harness::grant_next_shell(&session);
+            }
+            out["allow_next_shell"] = json!(true);
         }
         if profile.is_none() && to_agent.is_none() {
             return Ok(ToolResult::success(out));
