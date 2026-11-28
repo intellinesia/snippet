@@ -98,7 +98,7 @@ pub fn is_chat_kind(kind: &str) -> bool {
 }
 
 fn is_relay_kind(kind: &str) -> bool {
-    matches!(kind, "approval" | "question")
+    matches!(kind, "approval" | "question" | "idle_check")
 }
 
 /// One UTC second-precision form, so stored timestamps compare as text.

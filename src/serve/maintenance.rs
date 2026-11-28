@@ -50,6 +50,86 @@ pub(crate) async fn config_watch_loop(daemon: Shared) {
 
 /// Keep worktree sessions' diff totals current: every row once at start, then whatever is running
 /// or was active in the last few minutes, so a turn's edits and a finished turn both show up.
+/// Every 15 minutes (outside quiet hours), find human-managed sessions that
+/// have been idle 90m..24h and ask their desk once per idle spell to check if
+/// concrete work is still pending and offer a one-tap takeover DM.
+pub(crate) async fn idle_takeover_loop(daemon: Shared) {
+    use std::time::Duration;
+
+    const IDLE_MIN_SECS: i64 = 90 * 60;
+    const IDLE_MAX_SECS: i64 = 24 * 3600;
+    tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+    loop {
+        if !crate::mission_autonomy::in_quiet_hours(&crate::mission_autonomy::load().settings) {
+            let now_secs = crate::session::now_unix_secs();
+            let max_last_active = now_secs - IDLE_MIN_SECS;
+            let min_last_active = now_secs - IDLE_MAX_SECS;
+            let candidates: Vec<(String, String, String, i64)> = daemon
+                .store
+                .with_connection(|conn| {
+                    let mut stmt = conn.prepare(
+                        "SELECT id, COALESCE(NULLIF(title, ''), id), COALESCE(agent_id, ''), last_active
+                         FROM sessions
+                         WHERE managed_by = 'human'
+                           AND status = 'idle'
+                           AND settled_at IS NULL
+                           AND last_active IS NOT NULL
+                           AND last_active <= ?1
+                           AND last_active >= ?2
+                           AND id NOT LIKE '%/lanes/%'
+                           AND id NOT LIKE 'inbox-%'
+                           AND id != 'lead'
+                         ORDER BY last_active DESC
+                         LIMIT 8",
+                    )?;
+                    let rows = stmt
+                        .query_map(rusqlite::params![max_last_active, min_last_active], |r| {
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    Ok(rows)
+                })
+                .unwrap_or_default();
+
+            let now_iso = chrono::Utc::now().to_rfc3339();
+            for (id, title, agent_id, last_active) in candidates {
+                let desk = if !agent_id.is_empty() && agent_id != crate::lead::SESSION_ID {
+                    agent_id
+                } else {
+                    "snippet".to_string()
+                };
+                if daemon.store.get_agent(&desk).ok().flatten().is_none() {
+                    continue;
+                }
+                let idle_mins = (now_secs - last_active).max(0) / 60;
+                let _ = daemon.store.enqueue_desk_event(
+                    &crate::coordination::desk_inbox::NewDeskEvent {
+                        agent_id: desk,
+                        kind: "idle_check".into(),
+                        thread_id: None,
+                        reply_thread: Some("human".into()),
+                        source_ref: Some(format!("idle-check:{id}:{last_active}")),
+                        priority: 15,
+                        is_mention: false,
+                        summary: format!(
+                            "Human session {title} ({id}) has been idle {idle_mins}m. Check its last ~8 events (`snippet tool read.session session_id={id} event_limit=8`) and git status if relevant. If work looks complete or pure Q&A, call `event.noop` silently. Only if concrete work is still pending, send one short DM to human with choices='[\"Take over\",\"Leave with me\",\"Mark done\"]' asking if you should take it over."
+                        ),
+                        payload: Some(serde_json::json!({
+                            "session": id,
+                            "idle_mins": idle_mins,
+                            "event": "idle_takeover_check",
+                        })),
+                        deadline_at: None,
+                        wake: true,
+                    },
+                    &now_iso,
+                );
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(15 * 60)).await;
+    }
+}
+
 pub(crate) async fn worktree_totals_loop(daemon: Shared) {
     use std::time::Duration;
 

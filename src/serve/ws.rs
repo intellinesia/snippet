@@ -730,7 +730,38 @@ async fn handle_ws(
                             .as_deref()
                             == Some("agent")
                     {
+                        let prev_desk =
+                            crate::coordination::origin::managing_desk(&daemon.store, &session);
                         let _ = daemon.store.set_session_managed_by(&session, "human");
+                        if let Some(desk) = prev_desk {
+                            let label =
+                                crate::coordination::origin::session_label(&daemon.store, &session);
+                            let now = chrono::Utc::now().to_rfc3339();
+                            let _ = daemon.store.enqueue_desk_event(
+                                &crate::coordination::desk_inbox::NewDeskEvent {
+                                    agent_id: desk,
+                                    kind: "session".into(),
+                                    thread_id: None,
+                                    reply_thread: None,
+                                    source_ref: Some(format!(
+                                        "takeover:{session}:{}",
+                                        crate::session::now_unix_secs()
+                                    )),
+                                    priority: 10,
+                                    is_mention: false,
+                                    summary: format!(
+                                        "The user took over session {label} ({session}); hands off unless asked."
+                                    ),
+                                    payload: Some(serde_json::json!({
+                                        "session": session,
+                                        "event": "user_takeover",
+                                    })),
+                                    deadline_at: None,
+                                    wake: false,
+                                },
+                                &now,
+                            );
+                        }
                     }
                     if let LoopInput::Answer(text) = input.inner()
                         && let Some(question) =

@@ -1254,6 +1254,10 @@ pub async fn run_serve(
         let d = daemon.clone();
         tokio::spawn(async move { worktree_totals_loop(d).await });
     }
+    {
+        let d = daemon.clone();
+        tokio::spawn(async move { idle_takeover_loop(d).await });
+    }
     tokio::spawn(github_routes::pr_refresh_loop());
     {
         let d = daemon.clone();
