@@ -2215,16 +2215,39 @@ impl Tool for StartTask {
                     && !crate::session::is_inbox_session_id(&resolved)
                     && let Some(store) = crate::session::store_for_sessions()
                     && let Ok(Some(row)) = store.get_session_row(&resolved)
-                    && row.managed_by == "human"
                 {
-                    let _ = store.set_session_role(
-                        &resolved,
-                        crate::session::role_str(crate::session::SessionRole::Standard),
-                        Some(&agent_id),
-                    );
-                    let _ = store.set_session_managed_by(&resolved, "agent");
-                    if let Some(mode) = tool_mode.as_deref() {
-                        set_work_session_tool_mode(&resolved, mode)?;
+                    if !row.workspace.is_empty()
+                        && let Ok(Some((other_id, other_title))) = store.with_connection(|conn| {
+                            use rusqlite::OptionalExtension;
+                            conn.query_row(
+                                "SELECT id, COALESCE(NULLIF(title, ''), id)
+                                 FROM sessions
+                                 WHERE workspace = ?1
+                                   AND id != ?2
+                                   AND status = 'running'
+                                   AND id NOT LIKE '%/lanes/%'
+                                 LIMIT 1",
+                                rusqlite::params![row.workspace, resolved],
+                                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                            )
+                            .optional()
+                        })
+                    {
+                        return Err(ToolError::msg(format!(
+                            "workspace `{}` already has a running session `{other_title}` ({other_id}); route to that session or open a new worktree instead of running two sessions in the same directory.",
+                            row.workspace
+                        )));
+                    }
+                    if row.managed_by == "human" {
+                        let _ = store.set_session_role(
+                            &resolved,
+                            crate::session::role_str(crate::session::SessionRole::Standard),
+                            Some(&agent_id),
+                        );
+                        let _ = store.set_session_managed_by(&resolved, "agent");
+                        if let Some(mode) = tool_mode.as_deref() {
+                            set_work_session_tool_mode(&resolved, mode)?;
+                        }
                     }
                 }
                 (query.to_string(), false)

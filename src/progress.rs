@@ -262,6 +262,77 @@ const DESK_STATE_SNOOZES: usize = 4;
 const DESK_STATE_SUMMARY_CHARS: usize = 90;
 pub const DESK_STATE_MAX_BYTES: usize = 1500;
 
+/// Compact 1-line summary of running or recently active (last 24h, unsettled)
+/// non-lane, non-inbox sessions so a desk sees what work is live in each workspace.
+fn recent_active_sessions(db: &Store) -> Vec<String> {
+    let now_s = chrono::Utc::now().timestamp();
+    let cutoff = now_s - 24 * 3600;
+    let rows: Vec<(String, String, String, String, String, Option<i64>, Option<String>)> = db
+        .with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, COALESCE(NULLIF(title, ''), id), status, COALESCE(managed_by, 'human'),
+                        COALESCE(workspace, ''), last_active, result_summary
+                 FROM sessions
+                 WHERE settled_at IS NULL
+                   AND id NOT LIKE '%/lanes/%'
+                   AND id NOT LIKE 'inbox-%'
+                   AND id != 'lead'
+                   AND (status IN ('running', 'waiting_for_input') OR (last_active IS NOT NULL AND last_active >= ?1))
+                 ORDER BY CASE WHEN status IN ('running', 'waiting_for_input') THEN 0 ELSE 1 END,
+                          COALESCE(last_active, 0) DESC
+                 LIMIT 6",
+            )?;
+            let out = stmt
+                .query_map(rusqlite::params![cutoff], |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(out)
+        })
+        .unwrap_or_default();
+
+    rows.into_iter()
+        .map(|(id, title, status, managed_by, workspace, last_active, summary)| {
+            let ws_name = std::path::Path::new(&workspace)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("-");
+            let state = if status == "idle" {
+                let mins = last_active
+                    .map(|la| (now_s - la).max(0) / 60)
+                    .unwrap_or(0);
+                if mins >= 60 {
+                    format!("idle {}h", mins / 60)
+                } else {
+                    format!("idle {mins}m")
+                }
+            } else {
+                status
+            };
+            let title_short: String = title.chars().take(42).collect();
+            let note = summary
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    let clean: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let clipped: String = clean.chars().take(60).collect();
+                    format!(" — {clipped}")
+                })
+                .unwrap_or_default();
+            format!("{title_short} [{state}, {managed_by}, ws:{ws_name}] id={id}{note}")
+        })
+        .collect()
+}
+
 /// The desk's live state for its reminder: open events, their deadlines and
 /// the work sessions it is waiting on, capped so it fits every turn.
 pub fn desk_state_render(db: &Store, agent_id: &str) -> String {
@@ -287,7 +358,8 @@ pub fn desk_state_render_excluding(
     let snoozes = db
         .list_active_group_snoozes(agent_id, &chrono::Utc::now().to_rfc3339())
         .unwrap_or_default();
-    if events.is_empty() && sessions.is_empty() && snoozes.is_empty() {
+    let recent = recent_active_sessions(db);
+    if events.is_empty() && sessions.is_empty() && snoozes.is_empty() && recent.is_empty() {
         return String::new();
     }
     let mut lines = vec!["now:".to_string()];
@@ -377,6 +449,12 @@ pub fn desk_state_render_excluding(
                 s.task_id,
                 s.reply_thread.as_deref().unwrap_or("-")
             ));
+        }
+    }
+    if !recent.is_empty() {
+        lines.push("  active_sessions (inspect unfamiliar recent ones with read.session):".to_string());
+        for r in &recent {
+            lines.push(format!("  - {r}"));
         }
     }
     let mut out = String::new();

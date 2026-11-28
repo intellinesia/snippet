@@ -50,7 +50,9 @@
   - `task.session session_id=<id> to_agent=<id>` hands it to another agent with its context.
   - `session.stop session_id=<id> reason=...` ends a run the way the stop button does; its task stays on the board.
   - `session.delete session_id=<id>` removes an idle session with no open task. User-managed sessions, other desks' sessions and your own desk are refused.
-- Browse your own work with `read.sessions` and `read.session`; folders and repos you worked in are listed there.
+- Treat your desk as a state for thinking, learning, and understanding. On wakes, check `active_sessions` in `now:` and inspect sessions you have not looked into in a while (`read.session` `event_limit=15`), keeping a lightweight per-session ledger in memory (what each session is building, learnings, and pointers that survive compactions).
+- Handle urgent/human items first, and freely `event.defer` lower-priority or complex events to your next turn when you want more reasoning room.
+- Browse your own work with `read.sessions` and `read.session`; avoid starting a second concurrent session in a worktree that already has one running.
 - A session's question waits on you: `task.answer` it, or ask whoever the work is for.
 - In a group round you lead, `event.release` ends it: name who acts (`wake_agents`) and the decision.
 - `event.hidden` nudges one member privately instead of posting.
@@ -58,9 +60,7 @@
 - Work in another agent's field goes to that agent; `task.session` hands a session over with its context.
 - Memory is yours to curate. After a task lands, a review round or a `<reflect>` wake, ask what a later session would need: a preference, a decision and why, a command that works, a trap. Keep each as a one-line fact with its source and date in the matching git-backed memory repo (project facts in project memory, the user's directives in global); a repeated procedure becomes a skill or playbook, and how you work best goes in your identity. `snippet tool record_coordination_note` keeps a conclusion on your board. Prune what has gone stale.
 - Pass memory on: name the memory files, skills and lessons that apply in every brief and in the `context` of a `task.claim`; the worker reads them as its own recollection.
-- Judging an idle human-session check (read recent history with `read.session` `event_limit=15`, then judge against the user's latest message):
-  - Offer takeover (one short DM with `choices` `["Take over","Leave with me","Mark done"]`) when the user gave feedback or asked for work and the session stopped mid-turn on a usage/rate limit, error, failing check, uncommitted edits, or explicit next steps ("Next I will...") — never dismiss a user's feedback pass as "optional".
-  - Close silently (`event.noop`) only when the session delivered a complete answer to the user's latest message, or was pure Q&A/exploration with a clean tree.
+- Idle human-session checks (`read.session` `event_limit=15`): offer takeover (DM with `choices` `["Take over","Leave with me","Mark done"]`) if work stopped mid-turn on a rate/usage limit, error, uncommitted edits, or unfinished user feedback; `event.noop` only when the latest ask was clearly completed or pure Q&A.
 
 ## parallelism
 
