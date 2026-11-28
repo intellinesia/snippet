@@ -18,26 +18,64 @@ fn envelope_body(text: &str) -> Option<&str> {
     crate::envelope::is(body, "direct_message").then_some(body)
 }
 
-/// Record that the agent's turn consumed the direct message `text` carries.
+/// Extract `[msg:<event_id>]` references from a `<desk_events>` batch (which may
+/// be preceded by a `now:` status block or `note:` line).
+fn desk_event_msg_ids(text: &str) -> Vec<String> {
+    let Some(start) = text.find("<desk_events") else {
+        return Vec::new();
+    };
+    let slice = &text[start..];
+    let mut ids = Vec::new();
+    for line in slice.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("<event ") {
+            continue;
+        }
+        let mut rest = trimmed;
+        while let Some(pos) = rest.find("[msg:") {
+            let after = &rest[pos + 5..];
+            if let Some(end) = after.find(']') {
+                let id = after[..end].trim();
+                if !id.is_empty() && !ids.iter().any(|existing| existing == id) {
+                    ids.push(id.to_string());
+                }
+                rest = &after[end + 1..];
+            } else {
+                break;
+            }
+        }
+    }
+    ids
+}
+
+/// Record that the agent's turn consumed the direct message(s) `text` carries.
 ///
-/// Cheap no-op — the prefix check runs before any store or socket work — for
-/// anything that is not a `<direct_message>` envelope with an `event_id` attribute.
-/// Returns whether the message was marked read.
+/// Handles both `<direct_message event_id="...">` envelopes (Lead/session DMs)
+/// and `<desk_events>` batches (desk-inbox DMs carrying `[msg:<event_id>]`).
+/// Returns whether at least one message was marked read.
 pub fn direct_consumed(text: &str) -> bool {
-    let Some(body) = envelope_body(text) else {
+    let mut event_ids: Vec<String> = Vec::new();
+    if let Some(body) = envelope_body(text)
+        && let Some(id) = crate::envelope::attr(body, "event_id").filter(|id| !id.is_empty())
+    {
+        event_ids.push(id);
+    } else if text.contains("<desk_events") {
+        event_ids = desk_event_msg_ids(text);
+    }
+    if event_ids.is_empty() {
         return false;
-    };
-    let Some(event_id) = crate::envelope::attr(body, "event_id").filter(|id| !id.is_empty()) else {
-        return false;
-    };
+    }
     let Some(store) = crate::session::store_for_sessions() else {
         return false;
     };
-    let _ = store.mark_direct_read_event(&event_id, &chrono::Utc::now().to_rfc3339());
-    crate::session::emit_device_event(json!({
-        "kind": "coordination_event",
-        "event": {"event_type": "direct_message.read", "event_id": event_id},
-    }));
+    let now = chrono::Utc::now().to_rfc3339();
+    for event_id in event_ids {
+        let _ = store.mark_direct_read_event(&event_id, &now);
+        crate::session::emit_device_event(json!({
+            "kind": "coordination_event",
+            "event": {"event_type": "direct_message.read", "event_id": event_id},
+        }));
+    }
     true
 }
 
